@@ -29,8 +29,6 @@ func collectGatewayMetrics(t *testing.T, fn func(ctx context.Context)) []metricd
 	require.NoError(t, err)
 	cacheMissesCounter, err = gatewayMeter.Int64Counter("talon.cache.misses")
 	require.NoError(t, err)
-	shadowViolationsCounter, err = gatewayMeter.Int64Counter("talon.shadow.violations.total")
-	require.NoError(t, err)
 	budgetUtilizationGauge, err = gatewayMeter.Float64Gauge("talon.budget.utilization")
 	require.NoError(t, err)
 	budgetAlertsCounter, err = gatewayMeter.Int64Counter("talon.budget.alerts.total")
@@ -144,22 +142,6 @@ func TestRecordCacheResult_Miss(t *testing.T) {
 	sum := m.Data.(metricdata.Sum[int64])
 	require.Len(t, sum.DataPoints, 1)
 	assert.Equal(t, int64(1), sum.DataPoints[0].Value)
-}
-
-func TestRecordShadowViolation(t *testing.T) {
-	metrics := collectGatewayMetrics(t, func(ctx context.Context) {
-		RecordShadowViolation(ctx, "pii_block")
-		RecordShadowViolation(ctx, "rate_limit")
-	})
-
-	m := findMetric(metrics, "talon.shadow.violations.total")
-	require.NotNil(t, m)
-	sum := m.Data.(metricdata.Sum[int64])
-	var total int64
-	for _, dp := range sum.DataPoints {
-		total += dp.Value
-	}
-	assert.Equal(t, int64(2), total)
 }
 
 func TestRecordBudgetUtilization(t *testing.T) {

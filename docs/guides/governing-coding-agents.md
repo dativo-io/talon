@@ -59,7 +59,7 @@ talon init --pack coding-agents --name coding-gateway
 This creates `agent.talon.yaml`, `agents/codex/agent.talon.yaml`, `talon.config.yaml`, and `pricing/models.yaml` pre-configured for coding traffic (source of truth: `internal/pack/templates/coding-agents/`; the pricing table is a copy of the embedded default). The defaults are deliberate:
 
 - **Two agents, one per tool** — `claude-code` (the primary `agent.talon.yaml`, Anthropic route) and `codex` (`agents/codex/agent.talon.yaml`, OpenAI route), each its own AI use case with its own vault-bound agent key, `metadata.team: coding`, `policies.allowed_providers`, and its own budgets. Budgets and audit attribute **per tool**. To serve both from one `talon serve`, set `agents_dir: "."` (#267, shipped; the pack ships it commented out) — discovery matches the exact filename `agent.talon.yaml` and fails closed on duplicate `agent.name`. Without `agents_dir`, `talon serve` runs the single default `agent.talon.yaml`.
-- **Shadow mode** — would-have-denied decisions are recorded in signed evidence while nothing blocks. Flip to `mode: "enforce"` once the dashboard looks right.
+- **Always enforced, deliberately permissive defaults** — there is no shadow posture (#442). The pack keeps traffic flowing by choice of rule action (input PII `warn`, response PII `allow`) and reserves real denials for the provider allowlist and the budgets. Tighten rule by rule after reading the evidence.
 - **`response_pii_action: allow`** (organization baseline) — the honest streaming default: any other value buffers the *entire* SSE stream before the first token reaches the developer (see [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)). Input-side scanning (`input_scan: true` → warn) still applies, and a per-agent downgrade to `allow` is deliberately not expressible.
 - **Long timeouts** (`request_timeout: 600s`) — the 120s default hard-cuts long coding generations (#230).
 - **Credential recognizers** — high-precision patterns for PEM private keys, AWS `AKIA...` ids, GitHub tokens, and `sk-ant-`/`sk-proj-` LLM keys. Talon is not a secret scanner; run gitleaks/trufflehog in pre-commit for repository hygiene — these cover prompt/response traffic only.
@@ -170,7 +170,7 @@ How the session cap (`session_limits.max_cost`) behaves — precisely:
 - Spend accumulates **per session, not per provider** — the same session is denied on the other provider's route too (`TestSessionBudget_CrossProviderDeny`).
 - It is a **soft cap**: one in-flight request whose real cost exceeds the estimate can overshoot, and N concurrent first requests are bounded only by N × per-request cost. Atomic reservation is #144 (`TestSessionBudget_SoftCapOvershoot`, `TestSessionBudget_ConcurrentBurstBound`).
 - Session denies carry a **structured evidence detail** (limit, spent, estimate) — populated only for session-budget denies, not other reasons (`TestSessionBudgetDetail_OnlyOnSessionDeny`).
-- In **shadow mode** the would-have-denied request proceeds and the deny is recorded as a shadow violation in signed evidence (`TestSessionBudget_ShadowMode`).
+- A budget deny is **preventive**: the provider is never dispatched (`TestSessionBudget_ExceededDeny_ZeroDispatch` asserts zero upstream calls). There is no observe-and-forward posture (#442).
 - If the session store fails, the budget check **fails open** and the gap is annotated in signed evidence (`session_budget_unavailable`, `TestSessionBudget_FailOpenAnnotated`).
 
 ### 5. Watch it: audit, costs, dashboard
@@ -220,7 +220,7 @@ The mock provider speaks both the Anthropic Messages wire and the OpenAI Respons
 | Junk stage strings bloating session state | Fixed stage set (`generation`/`judge`/`commit`); others dropped at ingestion | `TestNormalizeStage` |
 | Subagent forges its identity | Attribution, not authentication: `provenance: client_asserted`; identity never a policy input; budgets bind to the Talon agent | `TestPolicyInputParity_WithAssertedSession`; [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
 | Session store outage | Budget check fails open; gap annotated in signed evidence (`session_budget_unavailable`) | `TestSessionBudget_FailOpenAnnotated` |
-| Budget denials disrupting rollout | Shadow mode records would-have-denied as shadow violations while traffic flows | `mode: "shadow"`; `TestSessionBudget_ShadowMode` |
+| Budget denials disrupting rollout | Start with a generous `session_limits.max_cost`, read `talon audit list --session`, then lower it; denials are always real and dispatch nothing | `session_limits.max_cost`; `TestSessionBudget_ExceededDeny_ZeroDispatch` |
 | Credentials pasted into prompts | High-precision recognizers (PEM, `AKIA...`, GitHub tokens, `sk-ant-`/`sk-proj-`) evidenced via `pii_action: warn` | pack `agent.talon.yaml` `custom_recognizers` |
 | Evidence tampering | HMAC verification over every record in the session | `talon audit verify --session <id>` |
 

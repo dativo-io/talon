@@ -149,7 +149,7 @@ func TestGatewayCacheCost_EndToEnd(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &GatewayConfig{
-		Enabled: true, ListenPrefix: "/v1/proxy", Mode: ModeEnforce,
+		Enabled: true, ListenPrefix: "/v1/proxy",
 		Providers:          map[string]ProviderConfig{"anthropic": {Enabled: true, BaseURL: upstream.URL, SecretName: "anthropic-key"}},
 		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn", ResponsePIIAction: "allow", DailyCost: 100, MonthlyCost: 2000}},
 		RateLimits:         RateLimitsConfig{GlobalRequestsPerMin: 10000, PerAgentRequestsPerMin: 10000},
@@ -178,7 +178,7 @@ func TestGatewayCacheCost_EndToEnd(t *testing.T) {
 		}
 		return CostResult{Amount: cost, PricingKnown: known, PricingBasis: basis}
 	}
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, estimator)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), estimator)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })

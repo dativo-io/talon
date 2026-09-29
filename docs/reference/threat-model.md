@@ -77,6 +77,8 @@ Trust-boundary crossings (each is a point where data changes trust domain):
   (token bucket).
 - Request bodies are **untrusted input**: parsed defensively, scanned for PII, and (for
   attachments) sandboxed and scanned for prompt-injection patterns.
+- A policy denial is always enforced: there is no observe-and-forward posture (#442), so a
+  denied request never reaches the upstream provider or tool.
 
 ### 3.2 Gateway ↔ Upstream provider
 

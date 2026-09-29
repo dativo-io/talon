@@ -18,7 +18,7 @@ import (
 )
 
 // LoadedAgentFromPolicy is the shared policy → gateway adapter (#266). It
-// lives in internal/agentbridge so `talon doctor` and `talon enforce enable`
+// lives in internal/agentbridge so `talon doctor` and the gateway identity preflight
 // construct the IDENTICAL identity serve startup does — see that package's
 // doc comment. This alias keeps cmd-internal call sites short.
 func LoadedAgentFromPolicy(pol *policy.Policy, path string) gateway.LoadedAgent {

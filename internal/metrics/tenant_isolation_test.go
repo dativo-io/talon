@@ -51,7 +51,7 @@ func TestTenantIsolation_MapToGatewayEventFromTenantScopedEvidence(t *testing.T)
 	require.NoError(t, err)
 	require.Len(t, acmeOnly, 1)
 
-	collector := NewCollector("enforce", store, WithTenantID("acme"))
+	collector := NewCollector(store, WithTenantID("acme"))
 	t.Cleanup(collector.Close)
 	for i := range acmeOnly {
 		ev, ok := MapToGatewayEvent(&acmeOnly[i])

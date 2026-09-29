@@ -78,6 +78,9 @@ func LoadPolicy(ctx context.Context, path string, strict bool, baseDir string) (
 	if err := ValidateSchema(content, strict); err != nil {
 		return nil, fmt.Errorf("schema validation: %w", err)
 	}
+	if err := rejectLegacyPostureKeys(content); err != nil {
+		return nil, err
+	}
 
 	var pol Policy
 	if err := yaml.Unmarshal(content, &pol); err != nil {
@@ -218,55 +221,37 @@ func applyDefaults(p *Policy) {
 	}
 }
 
-// LoadProxyPolicy loads and validates a .talon.yaml file for proxy mode.
-// baseDir is the directory path is resolved against; the resolved path must stay under baseDir.
-// If baseDir is empty, the current working directory is used.
-// It checks that agent.type is "mcp_proxy", that an upstream URL is set,
-// and that at least one allowed_tool is defined.
-func LoadProxyPolicy(path string, baseDir string) (*ProxyPolicyConfig, error) {
-	if baseDir == "" {
-		var err error
-		baseDir, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("proxy policy base directory: %w", err)
+// LegacyPostureRemovedHint is the shared migration text for every removed
+// live-posture selector (#442): gateway.mode, proxy.mode, audit.observation_only
+// and tool_policies.*.schema_validation. Live policy is always enforced; the
+// only policy-checking paths that never contact a provider are the non-live
+// ones named here.
+const LegacyPostureRemovedHint = "live policy is always enforced; there is no shadow, log_only, passthrough or enforce posture to select (breaking change, #442). Delete the key. To check configuration without live traffic use 'talon doctor' (infrastructure config), 'talon validate' (agent policies) and 'talon run --dry-run' (native policy evaluation, no provider call); a side-effect-free policy-impact preview is tracked in #459"
+
+// rejectLegacyPostureKeys fails closed on agent configuration that still
+// selects a removed live-enforcement posture. It runs on EVERY load path
+// (including the ones where unknown keys are merely warned about) so an old
+// file can never be silently treated as enforced.
+func rejectLegacyPostureKeys(content []byte) error {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(content, &raw); err != nil {
+		return nil // the typed unmarshal reports the real parse error
+	}
+	if audit, ok := raw["audit"].(map[string]interface{}); ok {
+		if v, present := audit["observation_only"]; present {
+			return fmt.Errorf("agent policy uses removed key \"audit.observation_only\" (value %v) — a policy denial is always enforced for native runs; %s", v, LegacyPostureRemovedHint)
 		}
 	}
-	safePath, err := ResolvePathUnderBase(baseDir, path)
-	if err != nil {
-		return nil, fmt.Errorf("proxy policy path: %w", err)
+	if tps, ok := raw["tool_policies"].(map[string]interface{}); ok {
+		for name, tp := range tps {
+			m, ok := tp.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if v, present := m["schema_validation"]; present {
+				return fmt.Errorf("agent policy uses removed key \"tool_policies.%s.schema_validation\" (value %v) — tool argument schema validation is always enforced when a tool declares an input schema; %s", name, v, LegacyPostureRemovedHint)
+			}
+		}
 	}
-	data, err := os.ReadFile(safePath)
-	if err != nil {
-		return nil, fmt.Errorf("reading proxy policy file %s: %w", safePath, err)
-	}
-
-	var config ProxyPolicyConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("parsing proxy policy YAML: %w", err)
-	}
-
-	if config.Agent.Type != "mcp_proxy" {
-		return nil, fmt.Errorf("agent.type must be 'mcp_proxy' for proxy configs, got %q", config.Agent.Type)
-	}
-
-	if config.Proxy.Upstream.URL == "" {
-		return nil, fmt.Errorf("proxy.upstream.url is required")
-	}
-
-	if len(config.Proxy.AllowedTools) == 0 {
-		return nil, fmt.Errorf("proxy.allowed_tools must have at least one entry")
-	}
-
-	// Mode (#346): default unset to intercept and reject unknown values —
-	// identical contract to the serve loader (internal/mcp LoadProxyConfig)
-	// so the two loaders cannot diverge on enforcement semantics again.
-	switch config.Proxy.Mode {
-	case "":
-		config.Proxy.Mode = ProxyModeIntercept
-	case ProxyModeIntercept, ProxyModePassthrough, ProxyModeShadow:
-	default:
-		return nil, fmt.Errorf("proxy.mode %q is invalid; use intercept, passthrough, or shadow", config.Proxy.Mode)
-	}
-
-	return &config, nil
+	return nil
 }

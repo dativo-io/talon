@@ -91,12 +91,6 @@ type Server struct {
 	// lookup. Captured by value from serve (config has no reload seam yet).
 	fleetOrg       gateway.OrganizationPolicy
 	fleetProviders map[string]gateway.ProviderConfig
-	// fleetEnforcing gates the attention queue's BLOCKED state (#270 review
-	// round 2): budget exhaustion and agent-wide policy invalidity only prevent
-	// new work in enforce mode (or native execution). Defaults to true — the
-	// safe default is to surface BLOCKED unless serve knows the gateway is in
-	// shadow/log_only.
-	fleetEnforcing bool
 }
 
 // SetClassifier attaches the process-wide scanner engine. Call after
@@ -311,9 +305,6 @@ func NewServer(
 		eventsReplayBacklog:  1000,
 		eventsRecentMaxLimit: 500,
 		eventsPollInterval:   1 * time.Second,
-		// Safe default: surface BLOCKED unless serve tells us the gateway runs in
-		// shadow/log_only (WithFleetEnforcing(false)).
-		fleetEnforcing: true,
 	}
 	for _, opt := range opts {
 		opt(s)

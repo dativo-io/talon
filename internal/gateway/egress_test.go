@@ -50,7 +50,7 @@ func euOnlyEgressPolicy() *EgressPolicyConfig {
 // region. override customizes the agent's policy override (nil = the standard
 // warn/caps override). Returns the gateway, the upstream call counter, and the
 // evidence store.
-func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, providerRegion string, override *PolicyOverride) (*Gateway, *atomic.Int64, *evidence.Store) {
+func setupEgressGateway(t *testing.T, egress *EgressPolicyConfig, providerRegion string, override *PolicyOverride) (*Gateway, *atomic.Int64, *evidence.Store) {
 	t.Helper()
 
 	var upstreamCalls atomic.Int64
@@ -66,7 +66,6 @@ func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, pro
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         mode,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key", Region: providerRegion},
 		},
@@ -137,7 +136,7 @@ func latestEgressEvidence(t *testing.T, evStore *evidence.Store) *evidence.Evide
 }
 
 func TestGateway_Egress_Tier2DeniedAndEvidenced(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US", nil)
+	gw, upstreamCalls, evStore := setupEgressGateway(t, euOnlyEgressPolicy(), "US", nil)
 
 	w := makeEgressRequest(gw, egressTier2Body)
 
@@ -179,7 +178,7 @@ func TestGateway_Egress_Tier2DeniedAndEvidenced(t *testing.T) {
 }
 
 func TestGateway_Egress_Tier2AllowedToEURegion(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "EU", nil)
+	gw, upstreamCalls, evStore := setupEgressGateway(t, euOnlyEgressPolicy(), "EU", nil)
 
 	w := makeEgressRequest(gw, egressTier2Body)
 
@@ -196,7 +195,7 @@ func TestGateway_Egress_Tier2AllowedToEURegion(t *testing.T) {
 }
 
 func TestGateway_Egress_Tier0AllowedToGlobalProvider(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US", nil)
+	gw, upstreamCalls, evStore := setupEgressGateway(t, euOnlyEgressPolicy(), "US", nil)
 
 	w := makeEgressRequest(gw, egressCleanBody)
 
@@ -211,7 +210,7 @@ func TestGateway_Egress_Tier0AllowedToGlobalProvider(t *testing.T) {
 }
 
 func TestGateway_Egress_UnconfiguredKeepsCurrentBehavior(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, nil, "US", nil)
+	gw, upstreamCalls, evStore := setupEgressGateway(t, nil, "US", nil)
 
 	w := makeEgressRequest(gw, egressTier2Body)
 
@@ -222,26 +221,20 @@ func TestGateway_Egress_UnconfiguredKeepsCurrentBehavior(t *testing.T) {
 	assert.Nil(t, ev.EgressDecision, "no egress_decision section when egress is unconfigured")
 }
 
-func TestGateway_Egress_ShadowModeForwardsAndRecordsViolation(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeShadow, euOnlyEgressPolicy(), "US", nil)
+// A denied egress request is a preventive control: nothing reaches the
+// provider and the deny record carries no posture override (#442 removed the
+// shadow posture that used to forward it).
+func TestGateway_Egress_DenyIsPreventiveAndUnposturedInEvidence(t *testing.T) {
+	gw, upstreamCalls, evStore := setupEgressGateway(t, euOnlyEgressPolicy(), "US", nil)
 
 	w := makeEgressRequest(gw, egressTier2Body)
 
-	require.Equal(t, http.StatusOK, w.Code, "shadow mode must forward; body: %s", w.Body.String())
-	assert.Equal(t, int64(1), upstreamCalls.Load(), "shadow mode must reach upstream")
+	require.Equal(t, http.StatusForbidden, w.Code, "egress deny must block; body: %s", w.Body.String())
+	assert.Equal(t, EgressReasonTierDestination, providerErrorType(t, w))
+	assert.Equal(t, int64(0), upstreamCalls.Load(), "denied egress must never reach upstream")
 
 	ev := latestEgressEvidence(t, evStore)
-	assert.True(t, ev.ObservationModeOverride, "shadow violations must flag observation mode override")
-	var hasEgressViolation bool
-	for _, sv := range ev.ShadowViolations {
-		if sv.Type == "policy_deny" && firstEgressReason([]string{sv.Detail}) != "" {
-			hasEgressViolation = true
-		}
-	}
-	assert.True(t, hasEgressViolation, "shadow violations must carry the egress reason, got %+v", ev.ShadowViolations)
-
-	// The egress_decision section records what the control decided even
-	// though shadow mode did not enforce it.
+	assertEnforcedDenial(t, ev)
 	require.NotNil(t, ev.EgressDecision)
 	assert.Equal(t, EgressActionDeny, ev.EgressDecision.Decision)
 	assert.True(t, evStore.VerifyRecord(ev))
@@ -252,7 +245,7 @@ func TestGateway_Egress_AgentOverrideDefaultDeny(t *testing.T) {
 	// Org sets no egress, so only the agent layer binds (#266 review round 5:
 	// egress is a logical intersection of the org and agent boundaries):
 	// tier_2 only to ollama, everything else denied by default.
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, nil, "US", &PolicyOverride{
+	gw, upstreamCalls, evStore := setupEgressGateway(t, nil, "US", &PolicyOverride{
 		PIIAction:      "warn",
 		MaxDailyCost:   100,
 		MaxMonthlyCost: 2000,
@@ -286,7 +279,7 @@ func TestGateway_Egress_IntersectionAgentDeniesWithinOrgAllow(t *testing.T) {
 	// Org (euOnlyEgressPolicy): tier 1 → openai/anthropic allowed. Provider
 	// region EU. Agent narrows tier 1 to anthropic only, so openai must be
 	// denied by the AGENT layer despite the org allowing it.
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "EU", &PolicyOverride{
+	gw, upstreamCalls, evStore := setupEgressGateway(t, euOnlyEgressPolicy(), "EU", &PolicyOverride{
 		PIIAction:      "warn",
 		MaxDailyCost:   100,
 		MaxMonthlyCost: 2000,
@@ -312,7 +305,7 @@ func TestGateway_Egress_IntersectionAgentDeniesWithinOrgAllow(t *testing.T) {
 
 func TestGateway_Egress_CombinedDenyReasonsPreferEgressCode(t *testing.T) {
 	// gateway_access runs before gateway_egress; both deny for tier-2 IBAN → US + model not in allowlist.
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US", &PolicyOverride{
+	gw, upstreamCalls, evStore := setupEgressGateway(t, euOnlyEgressPolicy(), "US", &PolicyOverride{
 		PIIAction:      "warn",
 		MaxDailyCost:   100,
 		MaxMonthlyCost: 2000,

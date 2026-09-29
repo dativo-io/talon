@@ -128,7 +128,6 @@ func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRe
 	cfg := &GatewayConfig{
 		Enabled:            true,
 		ListenPrefix:       "/v1/proxy",
-		Mode:               ModeEnforce,
 		Providers:          providers,
 		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn", DailyCost: 100, MonthlyCost: 2000}},
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
@@ -153,7 +152,7 @@ func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRe
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key", []byte("sk-primary-key-1234567890"), acl))
 	require.NoError(t, secStore.Set(context.Background(), "backup-api-key", []byte("sk-backup-key-1234567890"), acl))
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 	return gw, evStore
 }
@@ -520,7 +519,6 @@ func TestGatewayAlias_AnthropicFamilyGovernance(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"anthropic-eu": {Enabled: true, BaseURL: upstream.server.URL, SecretName: "anthropic-eu-key", Region: "EU", APIFamily: "anthropic"},
 		},
@@ -538,7 +536,7 @@ func TestGatewayAlias_AnthropicFamilyGovernance(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-eu-key", []byte("sk-ant-alias-key-123456"),
 		secrets.ACL{Tenants: []string{"test-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 
 	anthropicBody := `{"model":"claude-sonnet-4-20250514","max_tokens":100,"messages":[{"role":"user","content":"Contact jan.kowalski@example.com about the invoice"}]}`
@@ -577,16 +575,15 @@ func TestGatewayAlias_AnthropicFamilyGovernance(t *testing.T) {
 	assert.Equal(t, "claude-sonnet-4-20250514", records[len(records)-1].Execution.ModelUsed)
 }
 
-// Shadow mode must never change runtime behavior: a candidate the gateway
-// policy would deny is still dispatched in shadow mode, with the would-be
-// denial recorded as a shadow violation on the final evidence record.
-func TestGatewayFailover_ShadowMode_CandidatePolicyDoesNotBlock(t *testing.T) {
+// A failover candidate the gateway policy denies is never dispatched (#442
+// removed the posture that dispatched it anyway): the request fails closed
+// with zero backup calls and a final record that carries no posture fields.
+func TestGatewayFailover_CandidatePolicyDeny_ZeroDispatch(t *testing.T) {
 	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
 	backup := newFailoverUpstream(t, http.StatusOK)
 	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "gpt-4o")
-	gw.config.Mode = ModeShadow
-	// Agent model policy denies everything except the primary's model —
-	// in enforce mode the gpt-4o fallback rewrite would be skipped.
+	// Agent model policy denies everything except the primary's model, so
+	// the gpt-4o fallback rewrite is the only candidate and it is denied.
 	failoverAgent(gw).Override.AllowedModels = []string{"gpt-4o-mini"}
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
@@ -594,21 +591,17 @@ func TestGatewayFailover_ShadowMode_CandidatePolicyDoesNotBlock(t *testing.T) {
 
 	w := makeFailoverRequest(gw, failoverTestBody)
 
-	assert.Equal(t, http.StatusOK, w.Code, "shadow mode must not fail closed on a policy-denied candidate")
-	assert.Equal(t, int64(1), backup.calls.Load(), "candidate must be dispatched in shadow mode")
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "a policy-denied candidate must fail closed; body: %s", w.Body.String())
+	assert.Equal(t, int64(0), backup.calls.Load(), "policy-denied candidate must never be dispatched")
 
 	correlationID := correlationIDFromResponse(t, w)
 	_, final := failoverRecords(t, store, correlationID)
 	require.NotNil(t, final)
 	require.NotNil(t, final.Failover)
-	assert.Equal(t, evidence.FailoverRoleFallbackDecision, final.Failover.Role)
-	found := false
-	for _, sv := range final.ShadowViolations {
-		if sv.Type == "policy_deny" && strings.Contains(sv.Detail, "failover candidate") {
-			found = true
-		}
-	}
-	assert.True(t, found, "the would-be candidate denial must be recorded as a shadow violation: %+v", final.ShadowViolations)
+	assert.Equal(t, evidence.FailoverRoleFailClosed, final.Failover.Role)
+	require.Len(t, final.Failover.SkippedCandidates, 1)
+	assert.Equal(t, "gateway_policy", final.Failover.SkippedCandidates[0].Filter)
+	assertNoPostureFields(t, final)
 }
 
 // The primary request and fallback candidates must be evaluated against the
@@ -781,7 +774,6 @@ func TestGatewayConfig_ValidateFallbackChain(t *testing.T) {
 	base := func() *GatewayConfig {
 		return &GatewayConfig{
 			ListenPrefix: "/v1/proxy",
-			Mode:         ModeEnforce,
 			Providers: map[string]ProviderConfig{
 				"openai":    {Enabled: true, BaseURL: "https://api.openai.com", SecretName: "k"},
 				"backup":    {Enabled: true, BaseURL: "https://eu.example.com", SecretName: "k2"},

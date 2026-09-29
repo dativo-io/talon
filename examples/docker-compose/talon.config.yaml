@@ -3,7 +3,6 @@
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
 
   providers:
     openai:
@@ -16,7 +15,7 @@ gateway:
   # demo-user-talon-key with the demo key value at startup.
   organization_policy:
     defaults:
-      pii_action: "warn"
+      pii_action: "redact"
       daily_cost: 100.00
     log_prompts: true
     log_responses: false

@@ -447,16 +447,6 @@
           "type": "string",
           "default": "/v1/proxy"
         },
-        "mode": {
-          "type": "string",
-          "enum": [
-            "enforce",
-            "shadow",
-            "log_only"
-          ],
-          "default": "enforce",
-          "description": "Runtime default when omitted is enforce. Generated starter configs set shadow explicitly for a safe rollout."
-        },
         "dashboard_listen": {
           "type": "string",
           "description": "Optional separate bind address for the gateway dashboard (e.g. 127.0.0.1:9091). When empty, dashboard routes are served on the main API server."

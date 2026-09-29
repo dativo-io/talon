@@ -13,8 +13,7 @@ import (
 
 // Snapshot is the complete dashboard state returned by GET /api/v1/metrics.
 type Snapshot struct {
-	GeneratedAt     time.Time `json:"generated_at"`
-	EnforcementMode string    `json:"enforcement_mode"`
+	GeneratedAt time.Time `json:"generated_at"`
 	// Currency is the ISO-4217 unit of every cost figure in this snapshot,
 	// from the active pricing table (#216). Field/JSON names keep their
 	// legacy _eur suffix for consumer compatibility; Currency is the
@@ -30,7 +29,6 @@ type Snapshot struct {
 	AgentStats        []AgentStat         `json:"agent_stats"`
 	PIIBreakdown      []PIITypeStat       `json:"pii_breakdown"`
 	ToolGovernance    ToolGovernanceStats `json:"tool_governance"`
-	ShadowSummary     *ShadowSummary      `json:"shadow_summary,omitempty"`
 	ModelBreakdown    []ModelStat         `json:"model_breakdown"`
 	ProviderBreakdown []ProviderStat      `json:"provider_breakdown"`
 	BudgetStatus      *BudgetStatus       `json:"budget_status,omitempty"`
@@ -149,20 +147,6 @@ type RiskLevelStat struct {
 	Blocked int    `json:"blocked"`
 }
 
-// ShadowSummary appears only when enforcement mode is "shadow".
-type ShadowSummary struct {
-	WouldHaveBlocked  int                 `json:"would_have_blocked"`
-	WouldHaveRedacted int                 `json:"would_have_redacted"`
-	ViolationsByType  []ViolationTypeStat `json:"violations_by_type"`
-}
-
-// ViolationTypeStat is a shadow violation type count.
-type ViolationTypeStat struct {
-	Type   string `json:"type"`
-	Count  int    `json:"count"`
-	Action string `json:"action"`
-}
-
 // ModelStat is cost and request count per LLM model.
 type ModelStat struct {
 	Model    string  `json:"model"`
@@ -206,28 +190,25 @@ type PlanStats struct {
 
 // GatewayEvent is the input from the gateway for real-time dashboard aggregation.
 type GatewayEvent struct {
-	EvidenceID       string
-	Timestamp        time.Time
-	AgentName        string
-	Model            string
-	PIIDetected      []string
-	PIIAction        string
-	ToolsRequested   []string
-	ToolsFiltered    []string
-	Blocked          bool
-	CostEUR          float64
-	TokensInput      int
-	TokensOutput     int
-	LatencyMS        int64
-	EnforcementMode  string
-	WouldHaveBlocked bool
-	ShadowViolations []string
-	HasError         bool
-	TimedOut         bool
-	CacheHit         bool
-	CostSaved        float64
-	TTFTMS           int64   // time to first token (streaming); 0 when not streaming
-	TPOTMS           float64 // time per output token (streaming); 0 when not applicable
+	EvidenceID     string
+	Timestamp      time.Time
+	AgentName      string
+	Model          string
+	PIIDetected    []string
+	PIIAction      string
+	ToolsRequested []string
+	ToolsFiltered  []string
+	Blocked        bool
+	CostEUR        float64
+	TokensInput    int
+	TokensOutput   int
+	LatencyMS      int64
+	HasError       bool
+	TimedOut       bool
+	CacheHit       bool
+	CostSaved      float64
+	TTFTMS         int64   // time to first token (streaming); 0 when not streaming
+	TPOTMS         float64 // time per output token (streaming); 0 when not applicable
 	// Session/orchestration projection (#199) — attribution only, from the
 	// evidence record's session spine and client-asserted orchestration block.
 	SessionID      string
@@ -272,11 +253,6 @@ type agentAccum struct {
 	violationsByDay map[string]int
 }
 
-type shadowViolationAccum struct {
-	count  int
-	action string
-}
-
 type riskLevelAccum struct {
 	allowed int
 	blocked int
@@ -291,7 +267,6 @@ const maxLatencySamples = 10000
 type Collector struct {
 	mu                  sync.RWMutex
 	startTime           time.Time
-	enforcementMode     string
 	currency            string // ISO-4217 unit of cost figures, from the pricing table (#216)
 	events              chan GatewayEvent
 	done                chan struct{}
@@ -301,7 +276,6 @@ type Collector struct {
 	piiRedactions       int
 	toolFiltered        map[string]int
 	toolRequested       int
-	shadowViolations    map[string]*shadowViolationAccum
 	denialsByReason     map[string]int
 	byRiskLevel         map[string]*riskLevelAccum
 	bulkOperations      int
@@ -465,21 +439,19 @@ func WithPlanStatsFn(fn func(context.Context, string) (PlanStats, error)) Collec
 
 // NewCollector creates a metrics collector. querier may be nil (aggregate
 // metrics will be empty). Starts a background goroutine for event consumption.
-func NewCollector(enforcementMode string, querier evidence.MetricsQuerier, opts ...CollectorOption) *Collector {
+func NewCollector(querier evidence.MetricsQuerier, opts ...CollectorOption) *Collector {
 	c := &Collector{
-		startTime:        time.Now(),
-		enforcementMode:  enforcementMode,
-		events:           make(chan GatewayEvent, 1000),
-		done:             make(chan struct{}),
-		buckets:          make(map[string]*bucket),
-		agentStats:       make(map[string]*agentAccum),
-		piiCounts:        make(map[string]int),
-		toolFiltered:     make(map[string]int),
-		shadowViolations: make(map[string]*shadowViolationAccum),
-		denialsByReason:  make(map[string]int),
-		byRiskLevel:      make(map[string]*riskLevelAccum),
-		anomalousAgents:  make(map[string]bool),
-		metricsQuerier:   querier,
+		startTime:       time.Now(),
+		events:          make(chan GatewayEvent, 1000),
+		done:            make(chan struct{}),
+		buckets:         make(map[string]*bucket),
+		agentStats:      make(map[string]*agentAccum),
+		piiCounts:       make(map[string]int),
+		toolFiltered:    make(map[string]int),
+		denialsByReason: make(map[string]int),
+		byRiskLevel:     make(map[string]*riskLevelAccum),
+		anomalousAgents: make(map[string]bool),
+		metricsQuerier:  querier,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -585,7 +557,6 @@ func (c *Collector) processEvent(e GatewayEvent) {
 	c.updateAgentStats(e)
 	c.updateToolStats(e)
 	c.updateIntentClassification(e)
-	c.updateShadowViolations(e)
 }
 
 func (c *Collector) updateBucket(e GatewayEvent) {
@@ -684,17 +655,6 @@ func (c *Collector) updateIntentClassification(e GatewayEvent) {
 	}
 }
 
-func (c *Collector) updateShadowViolations(e GatewayEvent) {
-	for _, svType := range e.ShadowViolations {
-		sv, ok := c.shadowViolations[svType]
-		if !ok {
-			sv = &shadowViolationAccum{action: "block"}
-			c.shadowViolations[svType] = sv
-		}
-		sv.count++
-	}
-}
-
 // Snapshot builds the complete dashboard state. In-memory data is read under
 // RLock; aggregate metrics (model breakdown, budget, cache) are queried from
 // the evidence store via MetricsQuerier after releasing the lock.
@@ -719,7 +679,6 @@ func (c *Collector) resetInMemoryAggregates() {
 	c.agentStats = make(map[string]*agentAccum)
 	c.piiCounts = make(map[string]int)
 	c.toolFiltered = make(map[string]int)
-	c.shadowViolations = make(map[string]*shadowViolationAccum)
 	c.denialsByReason = make(map[string]int)
 	c.byRiskLevel = make(map[string]*riskLevelAccum)
 	c.anomalousAgents = make(map[string]bool)
@@ -843,7 +802,6 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 	sort.Slice(piiBreakdown, func(i, j int) bool { return piiBreakdown[i].Count > piiBreakdown[j].Count })
 
 	totalFiltered, toolGov := c.buildToolGovernance()
-	shadow := c.buildShadowSummary()
 
 	activeRuns := 0
 	if c.activeRunsFn != nil {
@@ -853,11 +811,10 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 	uptime := formatDuration(time.Since(c.startTime))
 
 	return Snapshot{
-		GeneratedAt:     now,
-		EnforcementMode: c.enforcementMode,
-		Currency:        c.currency,
-		Uptime:          uptime,
-		DroppedEvents:   c.DroppedEvents(),
+		GeneratedAt:   now,
+		Currency:      c.currency,
+		Uptime:        uptime,
+		DroppedEvents: c.DroppedEvents(),
 		Summary: Summary{
 			TotalRequests:   c.totalRequests,
 			BlockedRequests: c.blockedRequests,
@@ -883,7 +840,6 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 		AgentStats:       callers,
 		PIIBreakdown:     piiBreakdown,
 		ToolGovernance:   toolGov,
-		ShadowSummary:    shadow,
 		DenialsByReason:  denialsByReasonSorted(c.denialsByReason),
 	}
 }
@@ -976,33 +932,6 @@ func (c *Collector) buildToolGovernance() (totalFiltered int, stats ToolGovernan
 		BulkOperations:  c.bulkOperations,
 		IrreversibleBlk: c.irreversibleBlocked,
 		AnomalousAgents: anomalous,
-	}
-}
-
-func (c *Collector) buildShadowSummary() *ShadowSummary {
-	if c.enforcementMode != "shadow" || len(c.shadowViolations) == 0 {
-		return nil
-	}
-	var wouldBlock, wouldRedact int
-	violations := make([]ViolationTypeStat, 0, len(c.shadowViolations))
-	for vType, sv := range c.shadowViolations {
-		violations = append(violations, ViolationTypeStat{
-			Type:   vType,
-			Count:  sv.count,
-			Action: sv.action,
-		})
-		switch sv.action {
-		case "redact":
-			wouldRedact += sv.count
-		default:
-			wouldBlock += sv.count
-		}
-	}
-	sort.Slice(violations, func(i, j int) bool { return violations[i].Count > violations[j].Count })
-	return &ShadowSummary{
-		WouldHaveBlocked:  wouldBlock,
-		WouldHaveRedacted: wouldRedact,
-		ViolationsByType:  violations,
 	}
 }
 

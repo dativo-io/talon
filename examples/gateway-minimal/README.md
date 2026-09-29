@@ -1,7 +1,8 @@
 # Gateway Minimal Example
 
 The smallest working Talon gateway. Proxies OpenAI API calls with PII scanning
-and an audit trail. Shadow mode: logs everything, blocks nothing.
+and an audit trail. It declares no blocking rule, so nothing is denied — but
+the policy that *is* declared is enforced: there is no shadow posture (#442).
 
 ## Setup
 
@@ -46,7 +47,6 @@ bin/talon audit list
 ```yaml
 gateway:
   enabled: true
-  mode: "shadow"          # Log only, don't block anything
   providers:
     openai:
       enabled: true
@@ -64,12 +64,15 @@ talon secrets set my-app-talon-key "$(openssl rand -hex 24)"
 
 Your app presents that value as `Authorization: Bearer <value>`.
 
-That's it. No cost limits, no model restrictions, no PII blocking. Shadow mode
-means everything is logged but nothing is blocked. Start here, then add
-enforcement when you've reviewed the evidence.
+That's it. No cost limits, no model restrictions, no PII blocking: the
+organization default `pii_action: warn` records findings in signed evidence
+and lets traffic flow. Whatever you add next is enforced immediately, so check
+the files first — `talon doctor` validates `talon.config.yaml`, `talon
+validate` the agent file — then tighten one rule at a time after reviewing
+the evidence.
 
 ## Next Steps
 
-- Switch to `mode: "enforce"` to start blocking policy violations
+- Set `organization_policy.defaults.pii_action: "redact"` (traffic flows, PII replaced before the provider) or `"block"` (request denied, provider never reached)
 - Add overrides in the agent file (`policies.cost_limits`, `policies.models`) for per-use-case cost limits and model restrictions
 - See `examples/gateway/talon.config.gateway.yaml` for a full config example

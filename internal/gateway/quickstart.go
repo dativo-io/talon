@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/dativo-io/talon/internal/policy"
 )
 
 const (
@@ -26,11 +28,14 @@ type QuickstartOptions struct {
 // OpenAI-compatible proxy quickstart mode. It is intentionally narrow and
 // should not become a general configuration system.
 func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
-	mode := ModeEnforce
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("TALON_QUICKSTART_MODE")), "shadow") {
-		mode = ModeShadow
+	// TALON_QUICKSTART_MODE used to select the removed shadow posture. A
+	// non-empty value is a downgrade attempt and fails closed BEFORE any
+	// listener or provider config exists (#442): an old observe-only setup
+	// must not silently start as an enforcing gateway, and no env var may
+	// select a posture.
+	if legacyMode := strings.TrimSpace(os.Getenv("TALON_QUICKSTART_MODE")); legacyMode != "" {
+		return nil, fmt.Errorf("TALON_QUICKSTART_MODE=%q is a removed posture selector — unset it; %s", legacyMode, policy.LegacyPostureRemovedHint)
 	}
-
 	baseURL := strings.TrimSpace(opts.OpenAIBaseURL)
 	if baseURL == "" {
 		baseURL = strings.TrimSpace(os.Getenv("TALON_QUICKSTART_OPENAI_BASE_URL"))
@@ -64,7 +69,6 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: DefaultListenPrefix,
-		Mode:         mode,
 		Providers: map[string]ProviderConfig{
 			"openai": provider,
 		},

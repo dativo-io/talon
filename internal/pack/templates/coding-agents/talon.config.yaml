@@ -46,10 +46,8 @@ log_format: console
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  # Start in shadow: would-have-denied is recorded in signed evidence while
-  # nothing blocks. Flip to "enforce" once the dashboards look right
-  # (talon enforce --help for the migration flow).
-  mode: "shadow"
+  # Active policy is always enforced: denials below never reach the provider
+  # and are recorded in signed evidence. Tighten rules one at a time.
 
   timeouts:
     # Coding generations are long; the default 120s request timeout hard-cuts

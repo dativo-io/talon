@@ -19,7 +19,7 @@ code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; font-size: 12p
 </style></head><body>
 <h1>Record of Processing Activities</h1>
 <p class="subtitle">AI traffic governed by Dativo Talon — generated from signed runtime evidence and declared facts</p>
-<p class="meta">Generated: 2026-06-11 14:21:54 UTC | Framework: <b>gdpr</b> | Scope: <b>Art. 30</b> | Tenant: <b>default</b></p>
+<p class="meta">Generated: 2026-09-29 09:43:10 UTC | Framework: <b>gdpr</b> | Scope: <b>Art. 30</b> | Tenant: <b>default</b></p>
 
 <h2>1. Controller (Art. 30(1)(a))</h2>
 
@@ -29,7 +29,7 @@ code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; font-size: 12p
 <h2>2. Processing activities observed</h2>
 <p>Each row is one governed agent identity (tenant, agent) observed in the signed evidence store for the selected scope.</p>
 <table><thead><tr><th>Tenant</th><th>Agent</th><th>Evidence records</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>
-<tr><td>default</td><td>gateway</td><td>3</td><td>2026-06-11</td><td>2026-06-11</td></tr>
+<tr><td>default</td><td>gateway</td><td>3</td><td>2026-09-29</td><td>2026-09-29</td></tr>
 </tbody></table>
 <h2>3. Purposes of processing (Art. 30(1)(b))</h2>
 <p>customer support ticket triage; internal AI assistance — declared lawful basis (Art. 6): contract (Art. 6(1)(b))</p>
@@ -55,10 +55,10 @@ code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; font-size: 12p
 <h2>8. Technical and organisational security measures (Art. 30(1)(g), Art. 32)</h2>
 <p>Technical controls applied by Talon to the processing described above. Organisational measures beyond Talon (access policies, training, vendor DPAs) should be documented separately; see the declared safeguards field.</p>
 <table><thead><tr><th>Control</th><th>Description</th><th>Source</th></tr></thead><tbody>
-<tr><td>Evidence integrity</td><td>HMAC-SHA256 signed evidence records; offline verification via talon audit verify</td><td>internal/evidence</td></tr><tr><td>Secrets protection</td><td>AES-256-GCM encrypted vault with per-agent ACLs; every access audited</td><td>internal/secrets</td></tr><tr><td>PII detection</td><td>EU identifier patterns scanned on input and output; redaction/block per policy</td><td>internal/classifier</td></tr><tr><td>Data residency controls</td><td>Tier-based routing and egress rules restricting destinations by region</td><td>internal/llm, internal/gateway</td></tr><tr><td>Tenant isolation</td><td>Per-tenant state, budgets, rate limits, and evidence scoping</td><td>internal/tenant</td></tr><tr><td>Mapped control: GDPR Art. 30</td><td>Processing records via signed evidence export</td><td>internal/evidence/store.go</td></tr><tr><td>Mapped control: GDPR Art. 32</td><td>PII detection and model/data-tier routing</td><td>internal/classifier/pii.go</td></tr><tr><td>Mapped control: GDPR Art. 44-50</td><td>EU data residency routing controls</td><td>internal/policy/rego/routing.rego</td></tr><tr><td>Organisational safeguards (declared)</td><td>Role-based access; vendor DPAs on file; signed evidence retained for audit review</td><td>agent.talon.yaml</td></tr>
+<tr><td>Evidence integrity</td><td>HMAC-SHA256 signed evidence records; offline verification via talon audit verify</td><td>internal/evidence</td></tr><tr><td>Secrets protection</td><td>AES-256-GCM encrypted vault with per-agent ACLs; every access audited</td><td>internal/secrets</td></tr><tr><td>PII detection</td><td>EU identifier patterns scanned on input and output; redaction/block per policy</td><td>internal/classifier</td></tr><tr><td>Data residency controls</td><td>Tier-based routing and egress rules restricting destinations by region</td><td>internal/llm, internal/gateway</td></tr><tr><td>Tenant isolation</td><td>Per-tenant state, budgets, rate limits, and evidence scoping</td><td>internal/tenant</td></tr><tr><td>Mapped control: GDPR Art. 5(1)(c)</td><td>Data minimization via PII redaction before prompt storage</td><td>internal/classifier/pii.go</td></tr><tr><td>Mapped control: GDPR Art. 30</td><td>Processing records via signed evidence export</td><td>internal/evidence/store.go</td></tr><tr><td>Mapped control: GDPR Art. 32</td><td>PII detection and model/data-tier routing</td><td>internal/classifier/pii.go</td></tr><tr><td>Mapped control: GDPR Art. 44-50</td><td>EU data residency routing controls</td><td>internal/policy/rego/routing.rego</td></tr><tr><td>Organisational safeguards (declared)</td><td>Role-based access; vendor DPAs on file; signed evidence retained for audit review</td><td>agent.talon.yaml</td></tr>
 </tbody></table>
 <div class="linkage"><b>Evidence linkage.</b> Built from 3 signed evidence record(s).
-Sample IDs: <code>req_5ae7cb3b</code>, <code>req_631b773b</code>, <code>req_998dafe4</code>.
+Sample IDs: <code>req_2245306b</code>, <code>req_7d3a1ead</code>, <code>req_907b400c</code>.
 Verify offline: <code>talon audit verify --file evidence.signed.json</code>.
 Signed export: <code>evidence.signed.json</code>.</div>
 <p class="claim">This document contains supporting records and control descriptions for GDPR Art. 30, generated from HMAC-signed runtime evidence and operator-declared facts. It is not a completed legal filing, a certification, or a compliance determination. Review with your DPO or counsel. See LIMITATIONS.md.</p>

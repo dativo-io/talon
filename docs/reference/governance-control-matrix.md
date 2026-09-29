@@ -70,8 +70,9 @@ Every record stored through `evidence.Store.Store` must satisfy:
 3. **Model call ⇒ data flow**: any record with `execution.model_used` set
    carries a `data_flow` section saying where the data went (or that it was
    blocked). Exemptions: the graph adapter's `unknown_graph_model`
-   placeholder when no model call was observed, and control-plane
-   `mode_change:` markers (no data egresses on a mode change).
+   placeholder when no model call was observed, and legacy control-plane
+   `mode_change:` markers (no longer written since #442; historical records
+   only — no data egressed on a mode change).
 4. A present `data_flow` section has at least one item.
 
 Enforced in three layers:

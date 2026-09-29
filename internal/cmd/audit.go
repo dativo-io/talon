@@ -79,7 +79,7 @@ func init() {
 	auditExportCmd.Flags().StringVar(&auditTo, "to", "", "End date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTenant, "tenant", "", "Filter by tenant ID")
 	auditExportCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
-	auditExportCmd.Flags().BoolVar(&auditViolationsOnly, "violations-only", false, "Only export records with policy violations or shadow violations")
+	auditExportCmd.Flags().BoolVar(&auditViolationsOnly, "violations-only", false, "Only export records with policy violations (or legacy shadow violations, #442)")
 	auditExportCmd.Flags().StringVar(&auditOutputFile, "output", "", "Write to file instead of stdout")
 	auditExportCmd.Flags().IntVar(&auditExportLimit, "limit", 10000, "Maximum records to export")
 	auditExportCmd.Flags().StringVar(&auditSession, "session", "", "Export only records for this session (session_id)")
@@ -584,7 +584,7 @@ func renderSessionDenials(w io.Writer, sum evidence.SessionSummary) {
 }
 
 // renderSessionInterventions prints the policy-intervention line: PII
-// redactions, tool filtering, shadow-mode violations.
+// redactions, tool filtering, and legacy shadow violations (#442).
 func renderSessionInterventions(w io.Writer, sum evidence.SessionSummary) {
 	parts := []string{}
 	if sum.PIIRedactions > 0 {
@@ -604,7 +604,7 @@ func renderSessionInterventions(w io.Writer, sum evidence.SessionSummary) {
 		parts = append(parts, p)
 	}
 	if sum.ShadowViolations > 0 {
-		parts = append(parts, fmt.Sprintf("shadow violations ×%d", sum.ShadowViolations))
+		parts = append(parts, fmt.Sprintf("legacy shadow violations ×%d", sum.ShadowViolations))
 	}
 	if len(parts) == 0 {
 		return

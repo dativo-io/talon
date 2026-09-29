@@ -73,8 +73,8 @@ Top-level fields, **in serialization order** (this order is significant — see
 | 28 | `compliance` | object | always |
 | 29 | `agent_reasoning` | string | optional |
 | 30 | `agent_verified` | bool | optional |
-| 31 | `observation_mode_override` | bool | optional |
-| 32 | `shadow_violations` | array(object) | optional |
+| 31 | `observation_mode_override` | bool | optional — LEGACY, no longer written since #442; retained at the same position for verification of historical records |
+| 32 | `shadow_violations` | array(object) | optional — LEGACY, no longer written since #442; retained at the same position for verification of historical records |
 | 33 | `status` | string | optional |
 | 34 | `failure_reason` | string | optional |
 | 35 | `signature` | string | always |
@@ -162,9 +162,10 @@ nested fields are:
   `session_budget_exceeded` gateway deny was decided on. Fields: `limit` (the
   agent's `max_session_cost` at evaluation time), `spent` (accumulated
   session spend the deny rule saw), `estimate` (the pre-request estimate added
-  to spend). Present only on session-budget deny records (and their shadow
-  would-have-denied counterparts carry the reason in `shadow_violations`
-  instead). Appended after `orchestration` per the §2 append rule.
+  to spend). Present only on session-budget deny records — every such deny is
+  enforced with zero provider dispatch (#442); historical records from the
+  removed shadow posture carry the reason in the legacy `shadow_violations` (#442)
+  field instead. Appended after `orchestration` per the §2 append rule.
 - `cost_budget` (optional, spec 1.9, #144): the agent/org budget-window
   context a cost-control event was decided on. Fields: `period` (`"daily"` |
   `"monthly"`), `limit` (the BINDING cap — the tightest of the per-agent
@@ -284,6 +285,16 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 `Store.VerifyRecord`, and confirms that mutating a field invalidates the signature.
 
 ## 8. Changelog
+
+- **1.9 (unchanged bytes, #442)** — fields 31 `observation_mode_override` and
+  32 `shadow_violations` are now LEGACY: the live non-enforcing postures that (#442)
+  produced them were removed, so new records never populate them and the
+  `mode_change` / `proxy_shadow_violation` record kinds are no longer written.
+  **Not a breaking change and no version bump:** both fields keep their
+  positions and `omitempty` rules, canonical bytes are identical for every
+  record with and without them, and historical records that carry them verify
+  unchanged with the same verifier (fixtures under
+  `internal/evidence/testdata/legacy_posture/`).
 
 - **1.9** — added optional top-level field `cost_budget` (#144) and the
   optional nested field `failover.retry` (#139, same-provider retry ordinal,

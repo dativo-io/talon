@@ -44,7 +44,6 @@ func TestGovernedSessionDemoConfig(t *testing.T) {
 	cfg, err := gateway.LoadGatewayConfig(filepath.Join(dir, "talon.config.session.yaml"))
 	require.NoError(t, err)
 	require.True(t, cfg.Enabled)
-	require.Equal(t, gateway.ModeEnforce, cfg.Mode)
 	require.Equal(t, "warn", cfg.OrganizationPolicy.Defaults.PIIAction,
 		"org PII floor is warn — each act tightens per agent (monotonic merge, #266)")
 	require.False(t, cfg.OrganizationPolicy.LogPrompts, "real-provider demo must not store prompt bodies")
@@ -94,7 +93,6 @@ func TestShortlistDemoConfig(t *testing.T) {
 	cfg, err := gateway.LoadGatewayConfig(filepath.Join(dir, "talon.config.shortlist.yaml"))
 	require.NoError(t, err)
 	require.True(t, cfg.Enabled)
-	require.Equal(t, gateway.ModeEnforce, cfg.Mode)
 	require.Equal(t, "block", cfg.OrganizationPolicy.Defaults.PIIAction)
 
 	prov, ok := cfg.Provider("openai")

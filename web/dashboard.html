@@ -549,9 +549,8 @@
           });
           var badge = document.getElementById('header-badge');
           if (badge) {
-            var mode = (d.enforcement_mode && String(d.enforcement_mode).trim()) ? String(d.enforcement_mode) : '—';
             var tenant = (d.tenant_id && String(d.tenant_id).trim()) ? String(d.tenant_id) : '—';
-            badge.textContent = mode + ' | tenant: ' + tenant;
+            badge.textContent = 'active policy | tenant: ' + tenant;
           }
           var scope = document.getElementById('scope-card-value');
           if (scope) scope.textContent = 'Tenant scope: ' + ((d.tenant_id && String(d.tenant_id).trim()) ? String(d.tenant_id) : 'all');

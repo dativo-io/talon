@@ -86,8 +86,6 @@ agent:
   type: "mcp_proxy"  # Activates proxy mode
 
 proxy:
-  mode: "intercept"  # intercept | passthrough | shadow
-
   upstream:
     vendor: "zendesk-ai-agent"
     url: "https://zendesk-ai-vendor.com"
@@ -135,14 +133,15 @@ compliance:
 Evidence capture is not configurable per proxy: every proxied call produces a
 signed evidence record (tool, decision, PII findings, data flow) unconditionally.
 
-### Proxy Modes
+### Interception is unconditional
 
-#### 1. Intercept Mode (Recommended)
-
-```yaml
-proxy:
-  mode: "intercept"
-```
+Governed MCP calls are always intercepted. The former `proxy.mode` (#442)
+(`intercept | passthrough | shadow`) selector was removed in #442: a config
+that still sets it fails at load with an error naming the key and the
+non-live alternatives (`talon doctor`, `talon validate`, `talon run --dry-run`).
+How permissive a rollout is follows from the rules you declare — the
+`allowed_tools` list, the `forbidden_tools` globs, the redaction methods —
+not from a runtime posture.
 
 **Behavior:**
 - Every MCP tool call goes through Talon
@@ -156,64 +155,16 @@ proxy:
 Vendor → Talon (policy check) → Upstream API → Talon (redact response) → Vendor
 ```
 
-**Use when:** You need real-time enforcement.
+**Historical records:** deployments that ran the removed `passthrough`/`shadow`
+postures before #442 may hold `proxy_shadow_violation` evidence records with
+`observation_mode_override: true` and `shadow_violations` entries. Those (#442)
+records stay readable, exportable, and verifiable; no new record of that kind
+is written.
 
----
-
-#### 2. Passthrough Mode
-
-```yaml
-proxy:
-  mode: "passthrough"
-```
-
-**Behavior:**
-- Talon logs calls but doesn't block — even explicitly forbidden tools are
-  forwarded, recorded honestly as `proxy_shadow_violation` evidence
-  (`ObservationModeOverride: true` + a `ShadowViolations` entry saying what
-  enforce mode would have done), never as a fake "blocked" record
-- Policy and PII violations recorded the same way, request forwarded
-- Full evidence trail generated
-
-**Flow:**
-```
-Vendor → Talon (log only) → Upstream API → Talon (log response) → Vendor
-```
-
-**Use when:** Testing Talon policies with zero enforcement risk.
-
----
-
-#### 3. Shadow Mode
-
-```yaml
-proxy:
-  mode: "shadow"
-```
-
-**Behavior:**
-- Traffic still flows through Talon (same wire path as intercept)
-- Policy and PII violations are recorded as would-have-denied evidence,
-  then forwarded — nothing policy-evaluated is blocked
-- **Exception:** explicitly `forbidden_tools` are audited and then blocked —
-  destructive operations are never forwarded outside passthrough mode
-
-**Flow:**
-```
-Vendor → Talon (audit, no policy blocking) → Upstream API → Talon → Vendor
-```
-
-**Use when:** Rolling out enforcement — validate policies against live vendor
-traffic before flipping to intercept.
-
-**All modes:** a PII-scanner failure blocks the call fail-closed regardless of
-mode — arguments Talon cannot classify must not reach the upstream tool.
-
-**Mode is fail-closed at every layer (#346):** `mode` defaults to `intercept`
-when unset and both loaders reject values outside
-`intercept | passthrough | shadow` at startup; the handler itself forwards a
-forbidden tool only under explicit `passthrough`. An unset or mistyped mode
-can never silently behave as passthrough.
+**Fail-closed invariants:** a PII-scanner failure blocks the call — arguments
+Talon cannot classify must not reach the upstream tool; a forbidden tool is
+never forwarded; and both loaders reject unknown proxy keys at startup
+(#346), so a mistyped rule can never silently widen the policy.
 
 **Method surface is fail-closed (#356, #367):** both endpoints speak the
 mandatory MCP lifecycle — `initialize` is answered **locally** (tools
@@ -275,7 +226,6 @@ type ProxyServer struct {
 }
 
 type ProxyConfig struct {
-    Mode           string           `yaml:"mode"`           // intercept, passthrough, shadow
     Upstream       UpstreamConfig   `yaml:"upstream"`
     AllowedTools   []ToolMapping    `yaml:"allowed_tools"`
     ForbiddenTools []string         `yaml:"forbidden_tools"`
@@ -569,15 +519,11 @@ config block today.
 
 ### 3. Rate Limiting
 
-The shipped limit is a single global ceiling for the proxy (default 100):
-
-```yaml
-proxy:
-  rate_limits:
-    requests_per_minute: 100
-```
-
-Per-vendor limits and burst allowances are Roadmap items.
+`proxy.rate_limits.requests_per_minute` is parsed (default 100) and a
+`proxy_rate_limits.rego` module exists, but the proxy handler evaluates only
+tool access and PII redaction today (`internal/mcp/proxy.go`) — the value is
+**not enforced**. Rate-limit your vendor at the reverse proxy in front of
+Talon. Enforced per-vendor limits and burst allowances are Roadmap items.
 
 ---
 
@@ -638,10 +584,10 @@ signal).
 ### Phase 1 — shipped
 - ✅ MCP proxy intercept mode
 - ✅ PII redaction (bidirectional: request arguments and upstream responses)
-- ✅ Policy enforcement (OPA/Rego: tool access, rate limit, PII, compliance)
+- ✅ Policy enforcement on tool access (allowed/forbidden tools) and PII (redaction, scanner fail-closed)
 - ✅ Evidence logging (signed, unconditional)
-- ✅ Shadow and passthrough modes (see Proxy Modes above)
 - ✅ Strict config loading — unknown proxy config keys fail closed
+- ❌ Not wired today: the `proxy_rate_limits.rego` and `proxy_compliance.rego` evaluators exist but the proxy handler does not call them — `rate_limits` and `compliance` declarations are parsed and passed as policy data, not enforced
 
 ### Phase 2 — planned
 - [ ] Tool usage analytics

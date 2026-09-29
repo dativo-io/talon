@@ -8,10 +8,11 @@
 
 This guide shows how to add Talon compliance to **existing AI automation**, whether custom-built or third-party SaaS vendors. Talon doesn't replace your existing tools — it adds governance, audit trails, and compliance controls.
 
-**Three integration patterns (all shipped):**
+**Two integration patterns (both shipped):**
 1. **MCP Proxy** (recommended) — Talon sits between the vendor and your data (`talon serve --proxy-config`)
 2. **LLM API Gateway** — the vendor/bot calls its LLM provider *through* Talon (`talon serve --gateway`)
-3. **Shadow Mode** — the MCP proxy in non-blocking audit mode (`proxy.mode: shadow`)
+
+Both enforce the declared policy on every call. There is no non-blocking runtime posture (#442): how permissive a rollout is follows from the rules you declare (which tools are allowed, which PII action applies), not from a mode switch. If a vendor's traffic cannot be routed through Talon at all, Talon cannot govern it — see "What Talon does not do" under Pattern 2.
 
 ---
 
@@ -97,7 +98,6 @@ agent:
   type: "mcp_proxy"
 
 proxy:
-  mode: "intercept"  # intercept | passthrough | shadow
   upstream:
     vendor: "zendesk-ai-agent"
     url: "https://zendesk-ai.example.com/mcp"
@@ -249,74 +249,47 @@ Talon ships **webhook triggers**, not a webhook forwarding proxy: a
 fires — the payload becomes a policy-checked, audited Talon execution.
 
 What Talon does **not** do today: sit between a SaaS webhook and a vendor
-endpoint to log/redact/forward the payload transparently. If your vendor is
-webhook-driven and you cannot reroute its LLM traffic (Pattern 2) or its
-data access (Pattern 1), use Shadow Mode below for visibility, or front the
-vendor with your own relay.
+endpoint to log/redact/forward the payload transparently, or passively poll a
+vendor's own audit logs. If your vendor is webhook-driven and you cannot
+reroute its LLM traffic (Pattern 2) or its data access (Pattern 1), Talon
+cannot see that traffic. Anything you build that reads the vendor's logs
+after the fact is an **external observation integration** you own — it is
+not a Talon runtime mode, produces no Talon evidence, and prevents nothing.
 
----
+### Rolling out a proxied vendor safely
 
-## Pattern 3: Shadow Mode (Audit Without Enforcement)
+There is no shadow posture (#442) — governed MCP calls are always intercepted
+and every denial is real. Control the blast radius through the rules you
+declare instead:
 
-### When to Use
-- First step before full interception — validate Talon policies against
-  live vendor traffic with zero enforcement risk
-- You can route the vendor's MCP traffic through Talon, but aren't ready
-  to let policies block anything yet
+- Start with a **broad `allowed_tools` list** and put only the destructive
+  tools you already know you never want (`user_delete`, `admin_*`) in
+  `forbidden_tools`; they are blocked from the first call.
+- Start with **non-destructive PII methods** (`hash`, `mask_middle`) so the
+  vendor keeps working while the evidence shows what was found.
+- Read the signed evidence between steps, then narrow the allowlist:
 
-### How It Works
-
-Shadow mode is the same MCP proxy as Pattern 1 with one config change —
-traffic still flows through Talon on the same wire path:
-
-```yaml
-proxy:
-  mode: "shadow"
-```
-
-- Policy and PII violations are recorded as **would-have-denied** signed
-  evidence, then forwarded — policy evaluation blocks nothing
-- Explicitly `forbidden_tools` are audited and then **still blocked** —
-  destructive operations are never forwarded outside passthrough mode
-- A working minimal config ships as `examples/mcp-proxy-minimal/proxy.talon.yaml`
-
-#### Run and Review
 ```bash
 talon serve --port 8080 --proxy-config /opt/talon/agents/zendesk-vendor-proxy.talon.yaml
 
 # After a few days of traffic:
 talon audit list --agent zendesk-vendor-proxy --limit 50
-talon audit export --format csv   # review would-have-denied decisions
+talon audit export --format csv
 ```
-
-When the evidence shows the policy is denying the right things, flip
-`mode: "shadow"` to `mode: "intercept"` and restart.
-
-**Benefits:**
-- ✅ Zero enforcement risk while policies are tuned
-- ✅ Full signed evidence trail from day one
-- ✅ Destructive tools blocked even while observing
-- ✅ One-line switch to enforcement
-
-**Limitations:**
-- ❌ Requires the vendor's MCP traffic to route through Talon (like Pattern 1)
-- ❌ Policy violations are recorded, not prevented, until you flip to intercept
-- ❌ If the vendor cannot be rerouted at all, Talon cannot see its traffic —
-  there is no passive "poll the vendor's own audit logs" mode
 
 ---
 
 ## Pattern Comparison Table
 
-| Feature | MCP Proxy (intercept) | LLM API Gateway | Shadow Mode |
-|---------|-----------------------|-----------------|-------------|
-| **Setup Time** | 30 min | 15 min | 30 min (same as MCP proxy) |
-| **What It Governs** | Vendor's tool/data access (MCP) | Vendor's LLM API calls | Same wire as MCP proxy |
-| **Vendor Changes Required** | MCP endpoint config | Base-URL + key config | MCP endpoint config |
-| **Blocks Violations** | ✅ Yes | ✅ Yes (budget/policy denials) | Forbidden tools only |
-| **PII Redaction** | ✅ Before vendor sees it | ✅ Per policy (scan/redact/block) | Recorded, not enforced |
-| **Audit Trail** | ✅ Complete, signed | ✅ Complete, signed | ✅ Complete, signed |
-| **Best For** | Vendors with MCP support | Bots/tools calling LLM APIs | Policy validation before enforcement |
+| Feature | MCP Proxy | LLM API Gateway |
+|---------|-----------|-----------------|
+| **Setup Time** | 30 min | 15 min |
+| **What It Governs** | Vendor's tool/data access (MCP) | Vendor's LLM API calls |
+| **Vendor Changes Required** | MCP endpoint config | Base-URL + key config |
+| **Blocks Violations** | ✅ Yes | ✅ Yes (budget/policy denials) |
+| **PII Redaction** | ✅ Before vendor sees it | ✅ Per policy (scan/redact/block) |
+| **Audit Trail** | ✅ Complete, signed | ✅ Complete, signed |
+| **Best For** | Vendors with MCP support | Bots/tools calling LLM APIs |
 
 ---
 
@@ -334,8 +307,8 @@ compliance_gain: "Full GDPR Article 30 records + PII redaction"
 ### Scenario 2: Intercom Resolution Bot
 ```yaml
 vendor: "Intercom Resolution Bot"
-pattern: "Shadow Mode -> MCP Proxy"
-reason: "Route its data access through Talon; validate policies in shadow, then intercept"
+pattern: "MCP Proxy"
+reason: "Route its data access through Talon; start with a broad tool allowlist, then narrow it from the evidence"
 setup_time: "30 minutes"
 compliance_gain: "Signed audit trail + PII redaction on tool traffic"
 ```
@@ -480,23 +453,24 @@ talon audit list --agent zendesk-vendor-proxy --limit 1
 
 ## Migration Path
 
-### Phase 1: Shadow Mode (Week 1)
-- Route the vendor through Talon with `proxy.mode: shadow`
-- Build a signed audit trail for 1 week
-- Validate policies — would-have-denied decisions land in evidence, nothing
-  policy-evaluated is blocked
-- **Risk:** Low (one endpoint change at the vendor; no enforcement)
-- **Goal:** Prove Talon works, tune policies
+### Phase 1: Staging Pilot (Week 1)
+- Route a staging instance (or one low-stakes vendor) through Talon with a
+  broad `allowed_tools` list and only known-destructive tools forbidden
+- Build a signed audit trail for 1 week; every call is governed from day one
+- Validate the policy from the evidence: which tools were called, what PII
+  was found, what was denied
+- **Risk:** Low (one endpoint change at the vendor; permissive rules)
+- **Goal:** Prove Talon works, tune the allowlist and redaction rules
 
-### Phase 2: Pilot Interception (Week 2)
-- Flip a low-stakes vendor (or a staging instance) to `mode: intercept`
+### Phase 2: Tighten (Week 2)
+- Narrow `allowed_tools` and add redaction rules based on the evidence
 - Monitor for issues (latency, errors, false denials) in the audit trail
-- **Risk:** Low (flip back to shadow is a one-line change)
+- **Risk:** Low (widening a rule again is a one-line change)
 - **Goal:** Verify production readiness
 
 ### Phase 3: Full Rollout (Week 3)
-- Flip all proxied vendors to `mode: intercept`
-- PII redaction and policy enforcement now active on every call
+- Route all proxied vendors through Talon with the tuned policy
+- PII redaction and policy enforcement active on every call
 - **Risk:** Medium (vendor dependency)
 - **Goal:** Full control and evidence coverage of vendor traffic
 
@@ -602,17 +576,17 @@ there is no passive mode that polls the vendor's own audit logs.
 1. **Choose your pattern:**
    - Vendor with MCP support: **MCP Proxy**
    - Bot or tool calling an LLM API you can repoint: **LLM API Gateway**
-   - Not ready to enforce: **Shadow Mode** first
+   - Not ready for strict rules: start with a **broad allowlist** — enforcement is always on, permissiveness is yours to choose
 
 2. **Start with pilot:**
-   - Deploy the proxy in shadow mode for 1 week
-   - Validate policies without impacting the vendor
+   - Deploy the proxy against a staging instance for 1 week
+   - Validate policies from the signed evidence before narrowing them
    - Review audit trails with your compliance officer
 
 3. **Gradual rollout:**
-   - Flip a low-stakes vendor to `mode: intercept`
-   - Monitor for issues (latency, errors, false denials)
-   - Flip the rest after validation
+   - Route a low-stakes vendor through the proxy first (every proxied call is intercepted and enforced)
+   - Monitor for issues (latency, errors, false denials) and tighten `allowed_tools`/`forbidden_tools` rule by rule
+   - Route the rest after validation
 
 4. **Prove compliance:**
    - Generate first GDPR Article 30 report

@@ -74,7 +74,7 @@ func TestAgentsDir_TwoAgentsRouteAndAttribute(t *testing.T) {
 	t.Cleanup(func() { _ = evStore.Close() })
 
 	cfg := &gateway.GatewayConfig{
-		Enabled: true, ListenPrefix: "/v1/proxy", Mode: gateway.ModeEnforce,
+		Enabled: true, ListenPrefix: "/v1/proxy",
 		Providers: map[string]gateway.ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},

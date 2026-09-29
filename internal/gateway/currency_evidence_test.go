@@ -17,7 +17,7 @@ func TestEvidenceCurrencyStamp_AllowedAndSessionDeny(t *testing.T) {
 
 	t.Run("allowed request carries currency and session id", func(t *testing.T) {
 		t.Parallel()
-		evStore, _, handler := newSessionBudgetGateway(t, ModeEnforce, 10)
+		evStore, _, handler := newSessionBudgetGateway(t, 10)
 		rec := sbDo(t, handler, "openai", sbTenantKeyA, "sess-cur-allow")
 		require.Equal(t, http.StatusOK, rec.Code)
 		ev := lastGatewayEvidence(t, evStore, "tenant-a")
@@ -29,7 +29,7 @@ func TestEvidenceCurrencyStamp_AllowedAndSessionDeny(t *testing.T) {
 		t.Parallel()
 		// Cap below the deterministic pre-request estimate (1.0): the very
 		// first request is denied pre-forward.
-		evStore, _, handler := newSessionBudgetGateway(t, ModeEnforce, 0.5)
+		evStore, _, handler := newSessionBudgetGateway(t, 0.5)
 		rec := sbDo(t, handler, "openai", sbTenantKeyA, "sess-cur-deny")
 		require.Equal(t, http.StatusForbidden, rec.Code)
 		require.Contains(t, rec.Body.String(), "session_budget_exceeded")

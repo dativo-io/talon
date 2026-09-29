@@ -518,8 +518,8 @@ func printOpenClawNextSteps(out io.Writer) {
 	fmt.Fprintln(out, "  5. Send a message through OpenClaw, then check the audit trail:")
 	fmt.Fprintln(out, "     talon audit list")
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  The gateway starts in shadow mode (log only, no blocking).")
-	fmt.Fprintln(out, "  Switch to enforce mode in talon.config.yaml when ready.")
+	fmt.Fprintln(out, "  Active policy is always enforced. Review the generated rules with")
+	fmt.Fprintln(out, "  'talon doctor' and 'talon validate' before sending real traffic.")
 }
 
 //nolint:gocyclo // initializeProject branches on pack templates vs legacy, compliance overlay, and file paths

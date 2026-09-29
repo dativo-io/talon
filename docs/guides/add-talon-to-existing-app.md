@@ -42,7 +42,6 @@ Create `talon.config.yaml` with this content (copy-paste as-is):
 ```yaml
 gateway:
   enabled: true
-  mode: "shadow"
   providers:
     openai:
       enabled: true
@@ -59,7 +58,7 @@ Identity lives in `agent.talon.yaml` (#266) — the scaffold binds
 talon secrets set my-app-talon-key "$(openssl rand -hex 24)"
 ```
 
-Shadow mode means Talon logs every request and does not block. You can switch to `enforce` later.
+With no PII action declared, the organization default `pii_action: warn` applies: Talon scans and records every request without changing it, and nothing here blocks yet. Active policy is always enforced (#442), so when you add a rule — `organization_policy.defaults.pii_action: redact` or `block`, a model allowlist, a budget — it applies immediately. Run `talon doctor` after each edit; the loader rejects unknown and removed keys with the key name.
 
 ### 2. Set the vault key and store your OpenAI key
 
@@ -154,6 +153,6 @@ You now have Talon in front of your app. Every LLM call is logged, PII is scanne
 | I want to… | Doc |
 |------------|-----|
 | Cap cost or restrict models for this app | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
-| Switch from shadow to block/redact when PII is found | [Configuration and environment](../reference/configuration.md) (gateway `mode`, `organization_policy`) |
+| Redact or block when PII is found | [Configuration and environment](../reference/configuration.md) (`organization_policy.defaults.pii_action`) |
 | Route another app (e.g. Slack bot) through Talon | [How to add compliance to your Slack bot](slack-bot-integration.md) |
 | Understand what happens to each request | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

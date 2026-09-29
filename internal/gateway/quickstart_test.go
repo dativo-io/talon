@@ -14,9 +14,6 @@ func TestQuickstartConfig_Defaults(t *testing.T) {
 	if !cfg.Enabled {
 		t.Fatal("expected enabled quickstart config")
 	}
-	if cfg.Mode != ModeEnforce {
-		t.Fatalf("mode = %q, want %q", cfg.Mode, ModeEnforce)
-	}
 	if cfg.ListenPrefix != "/v1/proxy" {
 		t.Fatalf("listen prefix = %q", cfg.ListenPrefix)
 	}
@@ -56,16 +53,15 @@ func TestQuickstartIdentityShape(t *testing.T) {
 }
 
 func TestQuickstartConfig_EnvOverrides(t *testing.T) {
-	t.Setenv("TALON_QUICKSTART_MODE", "shadow")
+	// TALON_QUICKSTART_MODE is a removed posture selector and is rejected when
+	// set (see posture_migration_test.go); the remaining env overrides still apply.
+	t.Setenv("TALON_QUICKSTART_MODE", "")
 	t.Setenv("TALON_QUICKSTART_OPENAI_BASE_URL", "http://localhost:4000")
 	t.Setenv("TALON_QUICKSTART_ALLOW_ALL_MODELS", "true")
 
 	cfg, err := QuickstartConfig(QuickstartOptions{})
 	if err != nil {
 		t.Fatalf("QuickstartConfig() error = %v", err)
-	}
-	if cfg.Mode != ModeShadow {
-		t.Fatalf("mode = %q, want %q", cfg.Mode, ModeShadow)
 	}
 	prov, _ := cfg.Provider("openai")
 	if prov.BaseURL != "http://localhost:4000" {
@@ -138,7 +134,6 @@ func TestGatewayAnnotations_UnsafeListenFromConfigNotEnv(t *testing.T) {
 func TestGatewayConfigValidate_UpstreamAuthMode(t *testing.T) {
 	cfg := &GatewayConfig{
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "https://api.openai.com", UpstreamAuthMode: "client_bearer"},
 		},

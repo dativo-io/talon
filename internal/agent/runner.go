@@ -966,33 +966,19 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		return resp, err
 	}
 
-	var observationOverride bool
-	var originalDecision *policy.Decision
 	if !decision.Allowed {
+		// A policy deny is authoritative (#442): there is no observation-only
+		// posture that forwards a denied run to the provider.
 		if r.circuitBreaker != nil {
 			r.circuitBreaker.RecordPolicyDenialAgent(req.TenantID, req.AgentName, circuitThresholds(pol))
 		}
-		if pol.Audit != nil && pol.Audit.ObservationOnly {
-			observationOverride = true
-			originalDecision = decision
-			span.AddEvent("observation_only_override", trace.WithAttributes(
-				attribute.String("policy.action", decision.Action),
-			))
-			log.Info().
-				Str("correlation_id", correlationID).
-				Str("tenant_id", req.TenantID).
-				Str("agent_id", req.AgentName).
-				Str("would_deny_reason", decision.Action).
-				Msg("observation_only: policy would deny, allowing for audit")
-		} else {
-			r.setRunState(correlationID, RunStatusDenied, FailurePolicyDeny)
-			r.recordPolicyDenial(ctx, span, correlationID, req, pol, decision, effectiveTier, effectivePIINames, attachmentScan, complianceInfo)
-			denyReason := decision.Action
-			if len(decision.Reasons) > 0 {
-				denyReason = strings.Join(decision.Reasons, "; ")
-			}
-			return &RunResponse{PolicyAllow: false, DenyReason: denyReason, SessionID: req.SessionID}, nil
+		r.setRunState(correlationID, RunStatusDenied, FailurePolicyDeny)
+		r.recordPolicyDenial(ctx, span, correlationID, req, pol, decision, effectiveTier, effectivePIINames, attachmentScan, complianceInfo)
+		denyReason := decision.Action
+		if len(decision.Reasons) > 0 {
+			denyReason = strings.Join(decision.Reasons, "; ")
 		}
+		return &RunResponse{PolicyAllow: false, DenyReason: denyReason, SessionID: req.SessionID}, nil
 	} else if r.circuitBreaker != nil {
 		r.circuitBreaker.RecordSuccess(req.TenantID, req.AgentName)
 	}
@@ -1195,7 +1181,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	r.setRunState(correlationID, RunStatusRunning, FailureNone)
 	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine, engine,
 		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
-		observationOverride, originalDecision, estimatedCost, b.router, runClassifier, sandboxToken, inputPIIRedacted)
+		estimatedCost, b.router, runClassifier, sandboxToken, inputPIIRedacted)
 	if err != nil {
 		return nil, err
 	}
@@ -1403,11 +1389,10 @@ func (r *Runner) recordEarlyTerminationScanner(ctx context.Context, correlationI
 
 // executeLLMPipeline runs steps 5-9: route provider, call LLM, classify output, generate evidence.
 // policyEval is the per-run OPA engine used for memory governance to avoid data races when concurrent Run() share one Governance.
-// When observationOverride is true, originalDecision holds the policy deny that was overridden for audit-only (shadow) mode.
 // costEstimate is the pre-run cost estimate from Run() (same value used for policy input and plan-review gate).
 //
 //nolint:gocyclo // orchestration flow is inherently branched; splitting would obscure the pipeline
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64, runRouter *llm.Router, piiScanner classifier.Facade, sandboxToken string, inputPIIRedacted bool) (*RunResponse, error) {
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, costEstimate float64, runRouter *llm.Router, piiScanner classifier.Facade, sandboxToken string, inputPIIRedacted bool) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
 	provider, model, degraded, originalModel, routeDecision, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx, routingEngine, req.SovereigntyMode, runRouter)
 	if err != nil {
@@ -1470,9 +1455,6 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		modelRationale = "degraded from primary " + originalModel + " to fallback " + model
 	}
 	policyDec := evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: pol.VersionTag}
-	if observationOverride && originalDecision != nil {
-		policyDec = evidence.PolicyDecision{Allowed: false, Action: originalDecision.Action, Reasons: originalDecision.Reasons, PolicyVersion: pol.VersionTag}
-	}
 
 	// Agentic loop: max_iterations from policy (0 or 1 = single call); tools from registry filtered by allowed_tools
 	maxIterations := 1
@@ -1658,8 +1640,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 							AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
 							ModelRoutingRationale: modelRationale + " (cache hit)", DurationMS: duration.Milliseconds(),
 							SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
-							ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
-							CacheHit: true, CacheEntryID: hit.ID, CacheSourceCorrelationID: hit.SourceCorrelationID, CacheSimilarity: lookupResult.Similarity, CostSaved: costSaved,
+							RoutingDecision: evRouting,
+							CacheHit:        true, CacheEntryID: hit.ID, CacheSourceCorrelationID: hit.SourceCorrelationID, CacheSimilarity: lookupResult.Similarity, CostSaved: costSaved,
 							Cost: 0, Tokens: evidence.TokenUsage{}, OutputResponse: cacheResponseText,
 							DataFlow: buildRunDataFlow(runFlowInputs{
 								TenantID: req.TenantID, InvocationType: req.InvocationType,
@@ -1788,8 +1770,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
 					ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
 					SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
-					ObservationModeOverride: observationOverride,
-					ToolsCalled:             toolsCalled, Cost: cost,
+					ToolsCalled: toolsCalled, Cost: cost,
 					Tokens:          evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
 					RoutingDecision: evRouting,
 					DataFlow: buildRunDataFlow(runFlowInputs{
@@ -2079,8 +2060,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
 				ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
 				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
-				ObservationModeOverride: observationOverride,
-				RoutingDecision:         evRouting,
+				RoutingDecision: evRouting,
 				DataFlow: buildRunDataFlow(runFlowInputs{
 					TenantID: req.TenantID, InvocationType: req.InvocationType,
 					Provider: provider.Name(), Model: model,
@@ -2123,8 +2103,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(),
 				Error:           fmt.Sprintf("single-shot cost %.4f exceeded per-request limit %.4f", cost, pol.Policies.CostLimits.PerRequest),
 				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
-				ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
-				Cost: cost, Tokens: evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
+				RoutingDecision: evRouting,
+				Cost:            cost, Tokens: evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
 				DataFlow: buildRunDataFlow(runFlowInputs{
 					TenantID: req.TenantID, InvocationType: req.InvocationType,
 					Provider: provider.Name(), Model: model,
@@ -2236,13 +2216,12 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					OutputTier:  outputClass.Tier,
 					PIIDetected: append(piiNames, outputEntityNames...),
 				},
-				AttachmentScan:          attScan,
-				ModelUsed:               model,
-				DurationMS:              time.Since(startTime).Milliseconds(),
-				InputPrompt:             req.Prompt,
-				OutputResponse:          llmResp.Content,
-				Compliance:              compliance,
-				ObservationModeOverride: observationOverride,
+				AttachmentScan: attScan,
+				ModelUsed:      model,
+				DurationMS:     time.Since(startTime).Milliseconds(),
+				InputPrompt:    req.Prompt,
+				OutputResponse: llmResp.Content,
+				Compliance:     compliance,
 				DataFlow: buildRunDataFlow(runFlowInputs{
 					TenantID: req.TenantID, InvocationType: req.InvocationType,
 					Provider: provider.Name(), Model: model,
@@ -2334,26 +2313,25 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			InputPIIRedacted: inputPIIRedacted,
 			Scanner:          evidence.NewScannerInfo(piiScanner),
 		},
-		AttachmentScan:          attScan,
-		ModelUsed:               model,
-		OriginalModel:           originalModel,
-		Degraded:                degraded,
-		ModelRoutingRationale:   modelRationale,
-		ToolsCalled:             toolsCalled,
-		Cost:                    cost,
-		Tokens:                  evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
-		DurationMS:              duration.Milliseconds(),
-		SecretsAccessed:         secretsAccessed,
-		MemoryReads:             memReads,
-		MemoryTokens:            memTokens,
-		InputPrompt:             req.Prompt,
-		AgentReasoning:          req.AgentReasoning,
-		AgentVerified:           req.AgentVerified,
-		OutputResponse:          responseContent,
-		AttachmentHashes:        attachmentHashesFromRequest(req),
-		Compliance:              compliance,
-		ObservationModeOverride: observationOverride,
-		RoutingDecision:         evRouting,
+		AttachmentScan:        attScan,
+		ModelUsed:             model,
+		OriginalModel:         originalModel,
+		Degraded:              degraded,
+		ModelRoutingRationale: modelRationale,
+		ToolsCalled:           toolsCalled,
+		Cost:                  cost,
+		Tokens:                evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
+		DurationMS:            duration.Milliseconds(),
+		SecretsAccessed:       secretsAccessed,
+		MemoryReads:           memReads,
+		MemoryTokens:          memTokens,
+		InputPrompt:           req.Prompt,
+		AgentReasoning:        req.AgentReasoning,
+		AgentVerified:         req.AgentVerified,
+		OutputResponse:        responseContent,
+		AttachmentHashes:      attachmentHashesFromRequest(req),
+		Compliance:            compliance,
+		RoutingDecision:       evRouting,
 		DataFlow: buildRunDataFlow(runFlowInputs{
 			TenantID: req.TenantID, InvocationType: req.InvocationType,
 			Provider: provider.Name(), Model: model,
@@ -2690,22 +2668,14 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 	}
 
 	// Automatic JSON Schema validation: validate params against the tool's InputSchema.
+	// Always enforced (#442): the removed schema_validation: shadow|disabled
+	// knobs let schema-invalid arguments execute.
 	if schema := tool.InputSchema(); len(schema) > 0 && string(schema) != "null" {
-		schemaMode := "enforce"
-		if tp := resolveToolPolicy(tc.Name, pol); tp != nil && tp.SchemaValidation != "" {
-			schemaMode = tp.SchemaValidation
-		}
-		if schemaMode != "disabled" {
-			if valErr := tools.ValidateAgainstSchema(schema, params); valErr != nil {
-				if schemaMode == "shadow" {
-					log.Warn().Err(valErr).Str("tool", tc.Name).Str("mode", "shadow").Msg("schema validation failed (shadow)")
-				} else {
-					log.Warn().Err(valErr).Str("tool", tc.Name).Msg("schema validation failed")
-					b, _ := json.Marshal(map[string]string{"error": "schema validation failed: " + valErr.Error()})
-					result.Content = string(b)
-					return result
-				}
-			}
+		if valErr := tools.ValidateAgainstSchema(schema, params); valErr != nil {
+			log.Warn().Err(valErr).Str("tool", tc.Name).Msg("schema validation failed")
+			b, _ := json.Marshal(map[string]string{"error": "schema validation failed: " + valErr.Error()})
+			result.Content = string(b)
+			return result
 		}
 	}
 

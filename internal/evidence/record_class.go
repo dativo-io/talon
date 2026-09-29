@@ -47,16 +47,15 @@ var nonRequestClass = map[string]RecordClass{
 	"llm_failover_decision":    ClassProviderAttempt,
 	"gateway_count_tokens":     ClassProviderAttempt,
 
-	// Per-request would-deny sub-record of one proxied MCP call (#346): a
-	// shadow/passthrough violation is always followed by the call's terminal
-	// record (proxy_tool_call or a block), so counting it as a request would
-	// multiply one call into several.
+	// LEGACY (#442): written by the removed MCP proxy shadow/passthrough
+	// postures; historical rows must keep this class so old traffic counts do
+	// not change. No current writer emits it.
 	"proxy_shadow_violation": ClassProviderAttempt,
 
 	// Operator / control-plane actions.
 	"agent_enabled":        ClassOperatorEvent,
 	"agent_disabled":       ClassOperatorEvent,
-	"mode_change":          ClassOperatorEvent,
+	"mode_change":          ClassOperatorEvent, // LEGACY (#442): written by the removed `talon enforce`; kept for historical rows
 	"plan_review":          ClassOperatorEvent,
 	"plan_dispatch":        ClassOperatorEvent,
 	"plan_dispatch_manual": ClassOperatorEvent,

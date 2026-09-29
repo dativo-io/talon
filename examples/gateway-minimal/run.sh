@@ -15,7 +15,7 @@ fi
 
 echo "Starting Talon gateway (minimal config)..."
 echo "  Config: $SCRIPT_DIR/talon.config.yaml"
-echo "  Mode:   shadow (log only, no blocking)"
+echo "  Policy: enforced; no blocking rule declared (PII action: warn)"
 echo ""
 echo "Point your app at:"
 echo "  OPENAI_BASE_URL=http://localhost:8080/v1/proxy/openai/v1"

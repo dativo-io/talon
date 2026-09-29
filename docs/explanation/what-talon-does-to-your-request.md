@@ -8,7 +8,9 @@ happens to their traffic.
 
 When you send an HTTP request to `POST /v1/proxy/{provider}/v1/chat/completions`,
 Talon runs a 10-step pipeline before returning the response. The request body
-is forwarded to the upstream provider; Talon does not modify it in shadow mode.
+is forwarded to the upstream provider unchanged unless a declared rule action
+(`redact`, tool stripping) modifies it — and never forwarded at all when a rule
+denies it. There is no observe-and-forward posture (#442).
 
 ```
 Client                         Talon Gateway                    LLM Provider
@@ -38,9 +40,9 @@ Client                         Talon Gateway                    LLM Provider
   │  Response (byte-identical*)      │                               │
 ```
 
-*In shadow mode, the response body is byte-identical to what the upstream
-provider returned. In enforce mode with `pii_action: redact`, PII in the
-response may be replaced.
+*With `response_pii_action: allow` or `warn`, the response body is
+byte-identical to what the upstream provider returned. With `redact`, PII in
+the response may be replaced; with `block`, the response is withheld.
 
 ## Step-by-Step Breakdown
 
@@ -71,8 +73,8 @@ non-key path is the explicit synthetic identity injected in-process by
 - **Bytes read:** `Authorization` / `x-api-key` header
 - **Bytes modified:** None
 - **Latency:** <1ms (constant-time comparison per registered agent)
-- **On failure:** 401 `Invalid or missing agent key` — in every mode; an
-  unknown or missing key is never forwarded, shadow mode included.
+- **On failure:** 401 `Invalid or missing agent key` — an unknown or missing
+  key is never forwarded.
 
 ### Step 3: Rate Limit Check
 
@@ -145,9 +147,10 @@ Checks performed:
 - **Bytes read:** Extracted metadata (model, tier, cost estimate)
 - **Bytes modified:** None
 - **Latency:** 1-3ms (compiled Rego evaluation, no I/O)
-- **On denial (enforce mode):** Returns a provider-native error response
-  (e.g., OpenAI-format JSON with appropriate HTTP status)
-- **On denial (shadow mode):** Logs the denial but forwards the request anyway
+- **On denial:** Returns a provider-native error response (e.g., OpenAI-format
+  JSON with appropriate HTTP status) and records the denial in signed evidence.
+  The request is never forwarded — there is no observe-and-forward posture
+  (#442).
 
 ### Step 8: Tool Governance
 
@@ -157,15 +160,16 @@ forbidden; most-specific list for allowed). Tools matching `forbidden_tools` pat
 (including glob patterns like `admin_*`) are filtered out.
 
 - **Bytes read:** Tool/function names from the parsed request
-- **Bytes modified:** In enforce mode, forbidden tools may be stripped from
-  the request body before forwarding
+- **Bytes modified:** Forbidden tools are stripped from the request body
+  before forwarding
 - **Latency:** <1ms
 
-### Step 9: Redact (Enforce Mode Only)
+### Step 9: Redact (when the rule action is `redact`)
 
-If the policy action is `redact`, PII found in step 5 is replaced in the
-request body before forwarding. Replacement preserves JSON structure. In shadow
-mode this step is skipped entirely.
+If the effective PII action is `redact`, PII found in step 5 is replaced in the
+request body before forwarding. Replacement preserves JSON structure. With
+`warn` this step is skipped (findings are recorded, the body is untouched);
+with `block` the request was already denied in step 7.
 
 - **Bytes read:** Original request body + PII locations
 - **Bytes modified:** PII tokens replaced with `[REDACTED:<type>]`
@@ -293,9 +297,10 @@ Overhead contributors, in order:
 
 ## What Talon Does NOT Do
 
-- **Does not modify request bodies in shadow mode.** The upstream provider
-  receives exactly what your client sent. PII is scanned and logged but not
-  altered.
+- **Does not modify request bodies beyond what the declared rules require.**
+  With `pii_action: warn` the upstream provider receives exactly what your
+  client sent; PII is scanned and logged but not altered. Only `redact` and
+  tool stripping change the body, and only `block`/deny withholds it.
 - **Does not buffer streaming responses.** SSE chunks are forwarded to the
   client as they arrive from the provider. There is no full-response buffering
   for streaming requests.

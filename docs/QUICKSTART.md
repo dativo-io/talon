@@ -67,9 +67,14 @@ talon serve --port 8080
 talon agents --url http://localhost:8080
 talon agents --url http://localhost:8080 --json
 
-# Flip gateway enforcement without editing YAML (#368)
-talon serve --gateway --gateway-mode shadow    # or: enforce
+# Check config without live traffic: infrastructure config, agent policy,
+# and a native policy decision with no provider call
+talon doctor
+talon validate
+talon run --dry-run "Your query here"
 ```
+
+Active policy is always enforced — the former `gateway.mode` / `--gateway-mode` posture switch was removed in #442; a config that still sets it fails at load with the key name.
 
 Verify the cold-start path from repo root: `make verify-newcomer`.
 

@@ -21,7 +21,6 @@ test_section_12_http_api() {
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
   providers:
     openai:
       enabled: true

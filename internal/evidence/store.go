@@ -41,40 +41,46 @@ type StoreObserver func(ctx context.Context, ev *Evidence)
 
 // Evidence is the full audit record for a single agent invocation.
 type Evidence struct {
-	ID                      string            `json:"id"`
-	CorrelationID           string            `json:"correlation_id"`
-	SessionID               string            `json:"session_id,omitempty"`
-	Stage                   string            `json:"stage,omitempty"` // "generation", "judge", or "commit"
-	CandidateIndex          int               `json:"candidate_index,omitempty"`
-	JudgeScore              float64           `json:"judge_score,omitempty"`
-	Selected                bool              `json:"selected,omitempty"`
-	Timestamp               time.Time         `json:"timestamp"`
-	TenantID                string            `json:"tenant_id"`
-	AgentID                 string            `json:"agent_id"`
-	Team                    string            `json:"team,omitempty"`
-	InvocationType          string            `json:"invocation_type"`
-	RequestSourceID         string            `json:"request_source_id,omitempty"` // Who triggered: "cli", "cron", "webhook:<name>", or caller-supplied identity (GDPR Art. 30)
-	PolicyDecision          PolicyDecision    `json:"policy_decision"`
-	Classification          Classification    `json:"classification"`
-	AttachmentScan          *AttachmentScan   `json:"attachment_scan,omitempty"`
-	ToolGovernance          *ToolGovernance   `json:"tool_governance,omitempty"`
-	Execution               Execution         `json:"execution"`
-	ModelRoutingRationale   string            `json:"model_routing_rationale,omitempty"` // Why this model was chosen: "primary", "degraded to fallback", etc.
-	SecretsAccessed         []string          `json:"secrets_accessed,omitempty"`
-	UpstreamAuthMode        string            `json:"upstream_auth_mode,omitempty"`       // gateway upstream auth mode: secret | client_bearer
-	UpstreamKeySource       string            `json:"upstream_key_source,omitempty"`      // gateway key source: client | env
-	UpstreamKeyFingerprint  string            `json:"upstream_key_fingerprint,omitempty"` // SHA-256 fingerprint prefix; never the key
-	GatewayAnnotations      []string          `json:"gateway_annotations,omitempty"`      // constrained gateway runtime annotations
-	MemoryWrites            []MemoryWrite     `json:"memory_writes,omitempty"`
-	MemoryReads             []MemoryRead      `json:"memory_reads,omitempty"`
-	AuditTrail              AuditTrail        `json:"audit_trail"`
-	Compliance              Compliance        `json:"compliance"`
-	AgentReasoning          string            `json:"agent_reasoning,omitempty"`
-	AgentVerified           bool              `json:"agent_verified,omitempty"`
-	ObservationModeOverride bool              `json:"observation_mode_override,omitempty"` // True when request was allowed despite policy deny (audit-only shadow mode)
-	ShadowViolations        []ShadowViolation `json:"shadow_violations,omitempty"`         // What enforce mode would have done (populated only in shadow mode)
-	Status                  string            `json:"status,omitempty"`                    // "queued", "running", "completed", "failed", "terminated", "blocked", "denied"; empty = completed (backward-compatible)
-	FailureReason           string            `json:"failure_reason,omitempty"`            // Structured failure classification: cost_exceeded, tool_timeout, llm_error, policy_deny, operator_kill, etc.
+	ID                     string          `json:"id"`
+	CorrelationID          string          `json:"correlation_id"`
+	SessionID              string          `json:"session_id,omitempty"`
+	Stage                  string          `json:"stage,omitempty"` // "generation", "judge", or "commit"
+	CandidateIndex         int             `json:"candidate_index,omitempty"`
+	JudgeScore             float64         `json:"judge_score,omitempty"`
+	Selected               bool            `json:"selected,omitempty"`
+	Timestamp              time.Time       `json:"timestamp"`
+	TenantID               string          `json:"tenant_id"`
+	AgentID                string          `json:"agent_id"`
+	Team                   string          `json:"team,omitempty"`
+	InvocationType         string          `json:"invocation_type"`
+	RequestSourceID        string          `json:"request_source_id,omitempty"` // Who triggered: "cli", "cron", "webhook:<name>", or caller-supplied identity (GDPR Art. 30)
+	PolicyDecision         PolicyDecision  `json:"policy_decision"`
+	Classification         Classification  `json:"classification"`
+	AttachmentScan         *AttachmentScan `json:"attachment_scan,omitempty"`
+	ToolGovernance         *ToolGovernance `json:"tool_governance,omitempty"`
+	Execution              Execution       `json:"execution"`
+	ModelRoutingRationale  string          `json:"model_routing_rationale,omitempty"` // Why this model was chosen: "primary", "degraded to fallback", etc.
+	SecretsAccessed        []string        `json:"secrets_accessed,omitempty"`
+	UpstreamAuthMode       string          `json:"upstream_auth_mode,omitempty"`       // gateway upstream auth mode: secret | client_bearer
+	UpstreamKeySource      string          `json:"upstream_key_source,omitempty"`      // gateway key source: client | env
+	UpstreamKeyFingerprint string          `json:"upstream_key_fingerprint,omitempty"` // SHA-256 fingerprint prefix; never the key
+	GatewayAnnotations     []string        `json:"gateway_annotations,omitempty"`      // constrained gateway runtime annotations
+	MemoryWrites           []MemoryWrite   `json:"memory_writes,omitempty"`
+	MemoryReads            []MemoryRead    `json:"memory_reads,omitempty"`
+	AuditTrail             AuditTrail      `json:"audit_trail"`
+	Compliance             Compliance      `json:"compliance"`
+	AgentReasoning         string          `json:"agent_reasoning,omitempty"`
+	AgentVerified          bool            `json:"agent_verified,omitempty"`
+	// LEGACY (#442): the live shadow/log_only/passthrough/observation_only
+	// postures that populated these two fields were removed and no current
+	// writer sets them. They stay HERE, with these names, tags and this exact
+	// position (signed-field rows 31-32), because the HMAC verifier re-marshals
+	// this struct: deleting or moving them would make every historical record
+	// that carried them unverifiable. Read-only compatibility, not a feature.
+	ObservationModeOverride bool              `json:"observation_mode_override,omitempty"`
+	ShadowViolations        []ShadowViolation `json:"shadow_violations,omitempty"`
+	Status                  string            `json:"status,omitempty"`         // "queued", "running", "completed", "failed", "terminated", "blocked", "denied"; empty = completed (backward-compatible)
+	FailureReason           string            `json:"failure_reason,omitempty"` // Structured failure classification: cost_exceeded, tool_timeout, llm_error, policy_deny, operator_kill, etc.
 	Signature               string            `json:"signature"`
 	RoutingDecision         *RoutingDecision  `json:"routing_decision,omitempty"` // Provider selection and rejected candidates (EU routing)
 	// Semantic cache: set when response was served from cache (Cost=0, CostSaved=estimated LLM cost).
@@ -289,8 +295,9 @@ type RejectedCandidate struct {
 	Reason     string `json:"reason"`
 }
 
-// ShadowViolation records what enforce mode would have done for a request
-// that was allowed through in shadow mode.
+// ShadowViolation is the LEGACY element type of Evidence.ShadowViolations
+// (#442): no current code writes it; it is retained verbatim so historical
+// records keep verifying.
 type ShadowViolation struct {
 	Type   string `json:"type"`   // "pii_block", "rate_limit", "attachment_block", "tool_block", "policy_deny"
 	Detail string `json:"detail"` // Human-readable: "PII detected: EMAIL, IBAN"

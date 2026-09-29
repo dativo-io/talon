@@ -274,7 +274,6 @@ func TestLoadGatewayConfig_Egress(t *testing.T) {
 	content := `
 gateway:
   enabled: true
-  mode: enforce
   providers:
     openai:
       enabled: true
@@ -312,7 +311,6 @@ func TestLoadGatewayConfig_EgressNamedTiers(t *testing.T) {
 	content := `
 gateway:
   enabled: true
-  mode: enforce
   organization_policy:
     constraints:
       egress:
@@ -341,7 +339,6 @@ func TestLoadGatewayConfig_EgressInvalidTierName(t *testing.T) {
 	content := `
 gateway:
   enabled: true
-  mode: enforce
   organization_policy:
     constraints:
       egress:
@@ -361,7 +358,6 @@ func TestLoadGatewayConfig_EgressNormalizesCase(t *testing.T) {
 	content := `
 gateway:
   enabled: true
-  mode: enforce
   providers:
     openai:
       enabled: true
@@ -396,7 +392,6 @@ func TestLoadGatewayConfig_EgressInvalid(t *testing.T) {
 	content := `
 gateway:
   enabled: true
-  mode: enforce
   organization_policy:
     constraints:
       egress:

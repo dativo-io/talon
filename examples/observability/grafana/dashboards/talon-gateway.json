@@ -131,19 +131,9 @@
       "fieldConfig": { "defaults": { "unit": "short" } }
     },
     {
-      "title": "Shadow Violations",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
-      "targets": [{
-        "expr": "rate(talon_talon_shadow_violations_total[5m]) * 60",
-        "legendFormat": "{{violation_type}}"
-      }],
-      "fieldConfig": { "defaults": { "unit": "short" } }
-    },
-    {
       "title": "Tool Governance Decisions",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 44 },
       "targets": [{
         "expr": "rate(talon_talon_tools_governance_total[5m]) * 60",
         "legendFormat": "{{tool}} ({{action}})"

@@ -115,6 +115,82 @@ proxy:
 	}
 }
 
+// TestLoadProxyConfig_RejectsLegacyMode pins the #442 breaking change: the
+// removed proxy.mode posture selector fails the load with the migration
+// hint, whatever value it carries — a stale "shadow" or "passthrough" config
+// must never start as if it were enforcing, and must never start at all.
+func TestLoadProxyConfig_RejectsLegacyMode(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	body := `
+  upstream: { url: https://example.com }
+  allowed_tools: [{ name: foo }]
+`
+	cases := []struct {
+		name  string
+		yaml  string
+		value string
+	}{
+		{"intercept", "proxy:\n  mode: intercept\n" + body, "intercept"},
+		{"passthrough", "proxy:\n  mode: passthrough\n" + body, "passthrough"},
+		{"shadow", "proxy:\n  mode: shadow\n" + body, "shadow"},
+		{"yaml alias", "posture: &posture\n  mode: shadow\nproxy:\n  <<: *posture\n" + body, "shadow"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(dir, "legacy.yaml")
+			require.NoError(t, os.WriteFile(p, []byte(tc.yaml), 0o600))
+			_, err := LoadProxyConfig(ctx, p)
+			require.Error(t, err, "legacy proxy.mode must be rejected")
+			assert.Contains(t, err.Error(), "proxy.mode")
+			assert.Contains(t, err.Error(), tc.value)
+			assert.Contains(t, err.Error(), "#442")
+		})
+	}
+}
+
+// TestLoadProxyConfig_FullDocument pins the strict loader against a complete
+// document: forbidden tools, rate limits, PII redaction rules and compliance
+// all round-trip (coverage moved from the retired policy.LoadProxyPolicy).
+func TestLoadProxyConfig_FullDocument(t *testing.T) {
+	ctx := context.Background()
+	p := filepath.Join(t.TempDir(), "full.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(`
+agent:
+  name: "vendor-proxy"
+  type: "mcp_proxy"
+proxy:
+  upstream:
+    url: "https://vendor.example.com"
+    vendor: "zendesk-ai"
+  allowed_tools:
+    - name: "ticket_search"
+  forbidden_tools:
+    - "user_delete"
+  rate_limits:
+    requests_per_minute: 50
+pii_handling:
+  redaction_rules:
+    - field: "email"
+      method: "hash"
+    - field: "ssn"
+      method: "redact_full"
+compliance:
+  frameworks: ["gdpr", "nis2"]
+  data_residency: "eu-only"
+`), 0o600))
+
+	cfg, err := LoadProxyConfig(ctx, p)
+	require.NoError(t, err)
+	assert.Equal(t, "vendor-proxy", cfg.Agent.Name)
+	assert.Equal(t, "zendesk-ai", cfg.Proxy.Upstream.Vendor)
+	assert.Len(t, cfg.Proxy.ForbiddenTools, 1)
+	assert.Equal(t, 50, cfg.Proxy.RateLimits.RequestsPerMinute)
+	assert.Len(t, cfg.PIIHandling.RedactionRules, 2)
+	assert.Equal(t, "eu-only", cfg.Compliance.DataResidency)
+}
+
 // TestLoadProxyConfig_ShippedExamples pins the shipped example configs to the
 // real schema (#340): the examples are the first thing an evaluator runs, and
 // the strict loader now guarantees any drift fails this test instead of

@@ -22,6 +22,7 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/sovereignty"
 	"github.com/dativo-io/talon/internal/testutil"
@@ -51,7 +52,6 @@ sovereignty:
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: enforce
   providers:
     openai:
       enabled: true
@@ -102,7 +102,9 @@ gateway:
 	}, secStore, "")
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(gwCfg, gateway.NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gwPolicy, err := policy.NewGatewayEngine(context.Background())
+	require.NoError(t, err)
+	gw, err := gateway.NewGateway(gwCfg, gateway.NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, gwPolicy, nil)
 	require.NoError(t, err)
 
 	r := chi.NewRouter()

@@ -15,7 +15,6 @@
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "enforce"
 
   providers:
     # customer-support's PREFERRED provider: a local model (in-region, cheap).

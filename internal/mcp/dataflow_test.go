@@ -47,7 +47,6 @@ func proxyFlowHandler(t *testing.T, upstreamURL string, withRedactionRule bool) 
 	cfg := &policy.ProxyPolicyConfig{
 		Agent: policy.ProxyAgentConfig{Name: "flow-proxy", Type: "mcp_proxy"},
 		Proxy: policy.ProxyConfig{
-			Mode: "intercept",
 			Upstream: policy.UpstreamConfig{
 				Vendor: "testvendor",
 				URL:    upstreamURL,

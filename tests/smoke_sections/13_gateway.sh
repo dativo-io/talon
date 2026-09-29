@@ -36,7 +36,6 @@ test_section_13_gateway() {
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
   providers:
     openai:
       enabled: true

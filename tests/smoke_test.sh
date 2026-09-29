@@ -47,8 +47,6 @@
 #   hermetic llama stand-in by default, TALON_SMOKE_OLLAMA_URL opts into real Ollama).
 #
 # QA notes (from brief):
-# - Section 16 (Shadow mode): Evidence shadow signal is in shadow_violations or
-#   observation_mode_override (docs/explanation/what-talon-does-to-your-request.md Step 7).
 # - Section 10/18 (Tamper test): Evidence DB is TALON_DATA_DIR/evidence.db; corrupt
 #   evidence_json (e.g. REPLACE tenant_id) then run talon audit verify.
 # - Section 22 (Cache): Governed semantic cache; enables cache in talon.config.yaml, runs
@@ -483,7 +481,7 @@ for _section_file in \
   01_binary.sh 02_init.sh 03_validate.sh 04_secrets.sh 05_dry_run.sh \
   06_live_run.sh 07_pii.sh 08_attachments.sh 09_cost.sh 10_audit.sh \
   11_memory.sh 12_http_api.sh 13_gateway.sh 14_deny.sh 15_multi_tenant.sh \
-  16_shadow.sh 17_config_provider.sh 18_compliance_export.sh 19_cicd.sh \
+  17_config_provider.sh 18_compliance_export.sh 19_cicd.sh \
   20_edge_cases.sh 21_doctor_report_enforce.sh 22_cache.sh \
   23_dashboard_metrics.sh 24_plan_dispatch.sh 25_sessions.sh \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
@@ -558,7 +556,6 @@ main() {
   run_section "13_gateway" test_section_13_gateway
   run_section "14_deny" test_section_14_deny
   run_section "15_multi_tenant" test_section_15_multi_tenant
-  run_section "16_shadow" test_section_16_shadow
   run_section "17_config_provider" test_section_17_config_provider
   run_section "18_compliance_export" test_section_18_compliance_export
   run_section "19_cicd" test_section_19_cicd

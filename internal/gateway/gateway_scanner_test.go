@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func latestGatewayEvidence(t *testing.T, evStore *evidence.Store) evidence.Evide
 
 func TestExternalScannerFailClosed_EnforceBlocksRequest(t *testing.T) {
 	upstreamHit := false
-	gw, _, evStore := setupGatewayWithClassifier(t, "block", ModeEnforce,
+	gw, _, evStore := setupGatewayWithClassifier(t, "block",
 		func(w http.ResponseWriter, _ *http.Request) {
 			upstreamHit = true
 			_, _ = w.Write([]byte(`{}`))
@@ -112,18 +113,21 @@ func TestExternalScannerFailClosed_TimeoutBlocks(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	gw, _, _ := setupGatewayWithClassifier(t, "block", ModeEnforce,
+	gw, _, _ := setupGatewayWithClassifier(t, "block",
 		func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) }, a)
 
 	w := makeGatewayRequest(gw, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
 	assert.Equal(t, http.StatusBadGateway, w.Code, "scanner timeout must block fail-closed")
 }
 
-func TestExternalScannerFailClosed_ShadowRecordsViolationAndForwards(t *testing.T) {
-	upstreamHit := false
-	gw, _, evStore := setupGatewayWithClassifier(t, "block", ModeShadow,
+// A scanner outage fails closed for every request (#442 removed the posture
+// that forwarded unclassified requests): 502 with the machine code, zero
+// provider dispatch, and a denied record without posture fields.
+func TestExternalScannerFailClosed_ZeroDispatchAndNoPostureFields(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	gw, _, evStore := setupGatewayWithClassifier(t, "block",
 		func(w http.ResponseWriter, _ *http.Request) {
-			upstreamHit = true
+			upstreamCalls.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{}}`))
 		},
@@ -131,22 +135,18 @@ func TestExternalScannerFailClosed_ShadowRecordsViolationAndForwards(t *testing.
 
 	w := makeGatewayRequest(gw, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
 
-	assert.Equal(t, http.StatusOK, w.Code, "shadow mode never blocks")
-	assert.True(t, upstreamHit, "shadow mode forwards despite scanner failure")
+	assert.Equal(t, http.StatusBadGateway, w.Code, "scanner outage must fail closed; body: %s", w.Body.String())
+	assert.Equal(t, "scanner_unavailable", providerErrorType(t, w))
+	assert.Equal(t, int64(0), upstreamCalls.Load(), "an unclassified request must never reach the provider")
 
 	ev := latestGatewayEvidence(t, evStore)
-	found := false
-	for _, sv := range ev.ShadowViolations {
-		if sv.Type == "scanner_unavailable" {
-			found = true
-		}
-	}
-	assert.True(t, found, "shadow evidence must record the would-be scanner block, got %+v", ev.ShadowViolations)
+	assertEnforcedDenial(t, &ev)
+	assert.Contains(t, ev.PolicyDecision.Reasons, "scanner unavailable")
 }
 
 func TestExternalScanner_DetectionDrivesPIIBlock(t *testing.T) {
 	upstreamHit := false
-	gw, _, evStore := setupGatewayWithClassifier(t, "block", ModeEnforce,
+	gw, _, evStore := setupGatewayWithClassifier(t, "block",
 		func(w http.ResponseWriter, _ *http.Request) {
 			upstreamHit = true
 			_, _ = w.Write([]byte(`{}`))
@@ -168,7 +168,7 @@ func TestExternalScanner_DetectionDrivesPIIBlock(t *testing.T) {
 
 func TestExternalScanner_RedactionFlowsThroughAdapter(t *testing.T) {
 	var forwardedBody []byte
-	gw, _, _ := setupGatewayWithClassifier(t, "redact", ModeEnforce,
+	gw, _, _ := setupGatewayWithClassifier(t, "redact",
 		func(w http.ResponseWriter, r *http.Request) {
 			forwardedBody, _ = io.ReadAll(r.Body)
 			w.Header().Set("Content-Type", "application/json")
@@ -224,7 +224,7 @@ func chatUpstreamWithContent(content string) http.HandlerFunc {
 func TestExternalScanner_ResponseBlock_NoUpstream200AndEvidenceDenied(t *testing.T) {
 	// Upstream answers 200 with PII in the content; action block must NOT
 	// surface the upstream 200 and evidence must record a denial.
-	gw, _, evStore := setupGatewayWithClassifier(t, "block", ModeEnforce,
+	gw, _, evStore := setupGatewayWithClassifier(t, "block",
 		chatUpstreamWithContent("reach me at "+scannerTestEmail),
 		emailDetectingExternalScanner(t))
 
@@ -244,7 +244,7 @@ func TestExternalScanner_ResponseBlock_NoUpstream200AndEvidenceDenied(t *testing
 
 func TestExternalScannerFailClosed_ResponseScanFailure502AndEvidenceDenied(t *testing.T) {
 	const marker = "RESPONSE-ONLY-MARKER"
-	gw, _, evStore := setupGatewayWithClassifier(t, "block", ModeEnforce,
+	gw, _, evStore := setupGatewayWithClassifier(t, "block",
 		chatUpstreamWithContent("content with "+marker),
 		failOnMarkerScanner(t, marker))
 
@@ -261,25 +261,25 @@ func TestExternalScannerFailClosed_ResponseScanFailure502AndEvidenceDenied(t *te
 		"response-path scanner failures record the typed adapter kind")
 }
 
-func TestExternalScanner_ShadowResponsePII_ForwardsAndRecordsViolation(t *testing.T) {
+// Response PII under action block is withheld from the client (#442 removed
+// the posture that forwarded it unmodified): 451 with the machine code, the
+// PII absent from the body, and a denied record without posture fields.
+func TestExternalScanner_ResponsePIIBlock_WithheldAndNoPostureFields(t *testing.T) {
 	responseContent := "reach me at " + scannerTestEmail
-	gw, _, evStore := setupGatewayWithClassifier(t, "block", ModeShadow,
+	gw, _, evStore := setupGatewayWithClassifier(t, "block",
 		chatUpstreamWithContent(responseContent),
 		emailDetectingExternalScanner(t))
 
 	w := makeGatewayRequest(gw, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"clean prompt"}]}`)
 
-	assert.Equal(t, http.StatusOK, w.Code, "shadow never blocks")
-	assert.Contains(t, w.Body.String(), scannerTestEmail, "shadow forwards the original response unmodified")
+	assert.Equal(t, http.StatusUnavailableForLegalReasons, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, "pii_policy_violation", providerErrorType(t, w))
+	assert.NotContains(t, w.Body.String(), scannerTestEmail, "blocked response body must be withheld")
 
 	ev := latestGatewayEvidence(t, evStore)
-	found := false
-	for _, sv := range ev.ShadowViolations {
-		if sv.Type == "response_pii" {
-			found = true
-		}
-	}
-	assert.True(t, found, "shadow evidence must record the would-be response block, got %+v", ev.ShadowViolations)
+	assertEnforcedDenial(t, &ev)
+	assert.Contains(t, ev.PolicyDecision.Reasons, "output_pii_blocked")
+	assert.True(t, ev.Classification.OutputPIIDetected)
 }
 
 // ibanDetectingExternalScanner reports IBAN_CODE (built-in sensitivity 2)
@@ -304,7 +304,7 @@ func TestExternalScanner_OutputTierReflectsResponseContent(t *testing.T) {
 	// Clean tier-0 prompt; the RESPONSE leaks an IBAN (sensitivity 2).
 	// Evidence must record output_tier 2, not a copy of the input tier.
 	const iban = "DE89370400440532013000"
-	gw, _, evStore := setupGatewayWithClassifier(t, "block", ModeEnforce,
+	gw, _, evStore := setupGatewayWithClassifier(t, "block",
 		chatUpstreamWithContent("wire the funds to "+iban),
 		ibanDetectingExternalScanner(t, iban))
 
@@ -355,7 +355,7 @@ func detectThenFailScanner(t *testing.T) *adapter.HTTPAdapter {
 
 func TestExternalScannerFailClosed_VerifyScanFailureIsTruthful(t *testing.T) {
 	upstreamHit := false
-	gw, _, evStore := setupGatewayWithClassifier(t, "redact", ModeEnforce,
+	gw, _, evStore := setupGatewayWithClassifier(t, "redact",
 		func(w http.ResponseWriter, _ *http.Request) {
 			upstreamHit = true
 			_, _ = w.Write([]byte(`{}`))

@@ -32,7 +32,6 @@ Unsupported paths return `404` with a partial-compatibility message.
 |---|---|
 | `OPENAI_API_KEY` | Upstream fallback when the client bearer is absent. |
 | `TALON_QUICKSTART_OPENAI_BASE_URL` | Upstream OpenAI-compatible base URL. |
-| `TALON_QUICKSTART_MODE` | Set to `shadow` to opt into shadow mode; any other value uses default `enforce`. |
 | `TALON_QUICKSTART_ALLOW_ALL_MODELS` | `1/true` clears quickstart model allowlist. |
 
 ## Auth model
@@ -45,10 +44,10 @@ Quickstart uses upstream BYOK as a scoped exception:
 
 ## Governance defaults
 
-- Enforcement mode: `enforce`.
+- Policy is always enforced. The former `TALON_QUICKSTART_MODE` selector was removed in #442: a non-empty value makes `talon serve --proxy-quickstart` fail at startup with migration guidance rather than silently starting an enforcing gateway; unset it.
 - PII default action: `redact`.
 - Default model allowlist: `gpt-4o-mini`, `gpt-4o` (use `TALON_QUICKSTART_ALLOW_ALL_MODELS=1` to disable for local-only experiments).
-- Evidence includes `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and optional `gateway_annotations` (e.g. `quickstart_mode`, `quickstart_shadow_mode`, `quickstart_model_allowlist_disabled`, `quickstart_unsafe_listen`).
+- Evidence includes `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and optional `gateway_annotations` (e.g. `quickstart_mode`, `quickstart_model_allowlist_disabled`, `quickstart_unsafe_listen`). The `quickstart_shadow_mode` annotation is legacy: it is no longer written since #442 and appears only on historical records, which remain verifiable.
 
 ## Live operational feed
 

@@ -1,4 +1,6 @@
-// Package mcp implements the MCP proxy for vendor integration (intercept, passthrough, shadow).
+// Package mcp implements the MCP proxy for vendor integration. Governed calls
+// are always intercepted and enforced (#442): forbidden tools, policy denials
+// and PII denials never reach the upstream.
 package mcp
 
 import (
@@ -59,18 +61,6 @@ func NewProxyHandler(
 	cls classifier.Facade,
 	secretsStore UpstreamSecretGetter,
 ) *ProxyHandler {
-	// Defense in depth for #346: the loaders default/validate mode, but a
-	// handler constructed directly (tests, future callers) must never run
-	// with an empty OR unknown mode — empty used to fail open as passthrough,
-	// and an unrecognized value must get the strictest semantics, not
-	// shadow's forward-with-record.
-	if cfg != nil {
-		switch cfg.Proxy.Mode {
-		case policy.ProxyModeIntercept, policy.ProxyModePassthrough, policy.ProxyModeShadow:
-		default:
-			cfg.Proxy.Mode = policy.ProxyModeIntercept
-		}
-	}
 	timeout := 30 * time.Second
 	return &ProxyHandler{
 		config:        cfg,
@@ -260,7 +250,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// rejected with evidence, mirroring the native /mcp server's -32601.
 		// Forwarding ungoverned methods (resources/read, prompts/get) would
 		// open an unscanned, unaudited data lane through the governance proxy.
-		h.recordEvidence(ctx, inv, "proxy_method_rejected", req.Method, "unsupported_method:"+req.Method, nil, nil)
+		h.recordEvidence(ctx, inv, "proxy_method_rejected", req.Method, "unsupported_method:"+req.Method, nil)
 		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{
 			Code:    codeMethodNotFound,
 			Message: "method not found: " + req.Method + " (the proxy governs initialize, tools/list, and tools/call only)",
@@ -298,24 +288,13 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		}
 	}
 
-	// Forbidden check (#346, fail-closed): explicitly forbidden tools are
-	// forwarded ONLY under explicit passthrough mode — intercept, shadow, and
-	// any unexpected mode value block. Evidence must say what actually
-	// happened: a block records proxy_tool_blocked; a passthrough forward
-	// records a shadow violation on an allowed record, never a fake "blocked".
+	// Forbidden check (fail-closed): an explicitly forbidden tool is blocked
+	// before any policy evaluation and never reaches the upstream.
 	for _, f := range h.config.Proxy.ForbiddenTools {
 		if f == toolName || (strings.HasSuffix(f, "*") && strings.HasPrefix(toolName, strings.TrimSuffix(f, "*"))) {
 			span.SetAttributes(attribute.String("proxy.blocked", "forbidden"))
-			if h.config.Proxy.Mode != policy.ProxyModePassthrough {
-				h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, "forbidden_tools", nil, nil)
-				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "tool not allowed by policy", Data: talonErrData(TalonCodeToolForbidden)}}
-			}
-			h.recordEvidence(ctx, inv, "proxy_shadow_violation", toolName, "forbidden_tools", nil, &evidence.ShadowViolation{
-				Type:   "tool_block",
-				Detail: "forbidden tool " + toolName + " forwarded in passthrough mode",
-				Action: "block",
-			})
-			break
+			h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, "forbidden_tools", nil)
+			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "tool not allowed by policy", Data: talonErrData(TalonCodeToolForbidden)}}
 		}
 	}
 
@@ -333,18 +312,8 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 	}
 	if !decision.Allowed {
 		denyReason := strings.Join(decision.Reasons, "; ")
-		if h.config.Proxy.Mode == policy.ProxyModeIntercept {
-			h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, denyReason, nil, nil)
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: denyReason, Data: talonErrData(TalonCodePolicyDenied)}}
-		}
-		// shadow/passthrough (#346): the deny is recorded as a would-have-
-		// denied shadow violation — previously these modes produced no
-		// evidence of the deny at all.
-		h.recordEvidence(ctx, inv, "proxy_shadow_violation", toolName, denyReason, nil, &evidence.ShadowViolation{
-			Type:   "policy_deny",
-			Detail: denyReason,
-			Action: "block",
-		})
+		h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, denyReason, nil)
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: denyReason, Data: talonErrData(TalonCodePolicyDenied)}}
 	}
 
 	// PII scan on arguments. A scanner failure blocks the call fail-closed:
@@ -356,7 +325,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		if scanErr != nil {
 			flow.requestBlocked = true
 			flow.scannerFailure = scannerFailureKind(scanErr)
-			h.recordEvidence(ctx, inv, "proxy_pii_scan_error", toolName, "scanner_unavailable", &flow, nil)
+			h.recordEvidence(ctx, inv, "proxy_pii_scan_error", toolName, "scanner_unavailable", &flow)
 			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Request blocked: PII scanner unavailable (fail-closed)", Data: talonErrData(TalonCodeScannerUnavailable)}}
 		}
 		if result != nil && len(result.Entities) > 0 {
@@ -368,38 +337,22 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			}
 			piiDecision, piiErr := h.proxyEngine.EvaluateProxyPII(ctx, proxyInput)
 			if piiErr != nil {
-				if h.config.Proxy.Mode == policy.ProxyModeIntercept {
-					flow.requestBlocked = true
-					h.recordEvidence(ctx, inv, "proxy_pii_eval_error", toolName, piiErr.Error(), &flow, nil)
-					return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII policy evaluation failed (fail-closed)", Data: talonErrData(TalonCodePIIBlocked)}}
-				}
-				// shadow/passthrough (#346): enforce mode would block
-				// fail-closed on an eval error — record it, then continue.
-				h.recordEvidence(ctx, inv, "proxy_shadow_violation", toolName, "pii_eval_error: "+piiErr.Error(), &flow, &evidence.ShadowViolation{
-					Type:   "pii_block",
-					Detail: "PII policy evaluation failed: " + piiErr.Error(),
-					Action: "block",
-				})
+				// Fail closed: arguments whose PII verdict Talon cannot
+				// compute must not reach the upstream tool.
+				flow.requestBlocked = true
+				h.recordEvidence(ctx, inv, "proxy_pii_eval_error", toolName, piiErr.Error(), &flow)
+				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII policy evaluation failed (fail-closed)", Data: talonErrData(TalonCodePIIBlocked)}}
 			}
 			if piiDecision != nil && !piiDecision.Allowed {
-				if h.config.Proxy.Mode == policy.ProxyModeIntercept {
-					flow.requestBlocked = true
-					h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "pii_detected_in_request", &flow, nil)
-					return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII detected in request", Data: talonErrData(TalonCodePIIBlocked)}}
-				}
-				// shadow/passthrough (#346): record the would-have-denied PII
-				// decision, then continue to redaction as before.
-				h.recordEvidence(ctx, inv, "proxy_shadow_violation", toolName, "pii_detected_in_request", &flow, &evidence.ShadowViolation{
-					Type:   "pii_block",
-					Detail: "PII detected in request: " + strings.Join(proxyInput.DetectedPII, ", "),
-					Action: "block",
-				})
+				flow.requestBlocked = true
+				h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "pii_detected_in_request", &flow)
+				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII detected in request", Data: talonErrData(TalonCodePIIBlocked)}}
 			}
 			redactedArgs, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 			if redactErr != nil {
 				flow.requestBlocked = true
 				flow.scannerFailure = scannerFailureKind(redactErr)
-				h.recordEvidence(ctx, inv, "proxy_pii_scan_error", toolName, "scanner_unavailable", &flow, nil)
+				h.recordEvidence(ctx, inv, "proxy_pii_scan_error", toolName, "scanner_unavailable", &flow)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Request blocked: PII redaction failed (fail-closed)", Data: talonErrData(TalonCodeScannerUnavailable)}}
 			}
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
@@ -413,7 +366,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 					flow.scannerFailure = scannerFailureKind(verifyErr)
 					code = TalonCodeScannerUnavailable
 				}
-				h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, reason, &flow, nil)
+				h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, reason, &flow)
 				return &jsonrpcResponse{
 					JSONRPC: jsonrpcVersion,
 					ID:      req.ID,
@@ -427,7 +380,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			if redactedArgs != argStr {
 				if !json.Valid([]byte(redactedArgs)) {
 					flow.requestBlocked = true
-					h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "request_redaction_invalid_json", &flow, nil)
+					h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "request_redaction_invalid_json", &flow)
 					return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII redaction produced invalid JSON (fail-closed)", Data: talonErrData(TalonCodePIIBlocked)}}
 				}
 				params.Arguments = json.RawMessage(redactedArgs)
@@ -464,17 +417,17 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			// Vault failure (#358): fail-closed, generic message to the
 			// vendor (gateway parity — no vault detail leaks), evidence
 			// carries the typed reason.
-			h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "secret retrieval error", &flow, nil)
+			h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "secret retrieval error", &flow)
 			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Service configuration error", Data: talonErrData(TalonCodeUpstreamError)}}
 		}
-		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_error: "+err.Error(), &flow, nil)
+		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_error: "+err.Error(), &flow)
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
 	}
 	defer upstreamResp.Body.Close()
 	var out jsonrpcResponse
 	if err := json.NewDecoder(upstreamResp.Body).Decode(&out); err != nil {
 		// A response arrived, so egress happened — the flow item is truthful.
-		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_response_invalid", &flow, nil)
+		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_response_invalid", &flow)
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid", Data: talonErrData(TalonCodeUpstreamError)}}
 	}
 	out.ID = req.ID
@@ -482,7 +435,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		// The vendor answered with a JSON-RPC error: the call executed and
 		// failed — record it as such, never as a clean allowed completion.
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName,
-			fmt.Sprintf("upstream_jsonrpc_error: %d %s", out.Error.Code, out.Error.Message), &flow, nil)
+			fmt.Sprintf("upstream_jsonrpc_error: %d %s", out.Error.Code, out.Error.Message), &flow)
 		return &out
 	}
 
@@ -495,7 +448,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		if scanErr != nil {
 			flow.responseBlocked = true
 			flow.scannerFailure = scannerFailureKind(scanErr)
-			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_scanner_unavailable", &flow, nil)
+			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_scanner_unavailable", &flow)
 			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Tool result blocked: PII scanner unavailable (fail-closed)", Data: talonErrData(TalonCodeScannerUnavailable)}}
 		}
 		if cls != nil && cls.HasPII {
@@ -516,7 +469,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			if redactErr != nil {
 				flow.responseBlocked = true
 				flow.scannerFailure = scannerFailureKind(redactErr)
-				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_scanner_unavailable", &flow, nil)
+				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_scanner_unavailable", &flow)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Tool result blocked: PII redaction failed (fail-closed)", Data: talonErrData(TalonCodeScannerUnavailable)}}
 			}
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
@@ -530,7 +483,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 					flow.scannerFailure = scannerFailureKind(verifyErr)
 					code = TalonCodeScannerUnavailable
 				}
-				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, reason, &flow, nil)
+				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, reason, &flow)
 				return &jsonrpcResponse{
 					JSONRPC: jsonrpcVersion,
 					ID:      req.ID,
@@ -544,16 +497,16 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			var redactedResult interface{}
 			if err := json.Unmarshal([]byte(redacted), &redactedResult); err != nil {
 				flow.responseBlocked = true
-				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_redaction_invalid_json", &flow, nil)
+				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_redaction_invalid_json", &flow)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII redaction of tool result produced invalid JSON (fail-closed)", Data: talonErrData(TalonCodePIIBlocked)}}
 			}
 			out.Result = redactedResult
-			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_pii_redacted", &flow, nil)
+			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_pii_redacted", &flow)
 		} else {
-			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "", &flow, nil)
+			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "", &flow)
 		}
 	} else {
-		h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "", &flow, nil)
+		h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "", &flow)
 	}
 
 	return &out
@@ -850,10 +803,7 @@ func (h *ProxyHandler) upstreamEndpointHost() string {
 // reflect what actually happened, not the event label: the output fail-closed
 // branches (scanner unavailable, residual PII, invalid redaction JSON) record
 // eventType proxy_tool_call with a blocked flow, and evidence must say denied
-// for those. A shadow violation is an ALLOWED record — the call was forwarded
-// — with the would-have-denied verdict carried in ShadowViolations +
-// ObservationModeOverride (#346), matching the gateway's shadow vocabulary.
-// An upstream error is likewise ALLOWED (policy permitted the call; the
+// for those. An upstream error is an ALLOWED record (policy permitted the call; the
 // vendor failed): counting it as a deny would inflate the attention queue's
 // denial rate on vendor outages — the failure lives in Status/FailureReason.
 func proxyRecordAllowed(eventType, reason string, flow *proxyFlowState) bool {
@@ -861,7 +811,6 @@ func proxyRecordAllowed(eventType, reason string, flow *proxyFlowState) bool {
 		return false
 	}
 	return eventType == "proxy_tool_call" ||
-		eventType == "proxy_shadow_violation" ||
 		eventType == "proxy_upstream_error"
 }
 
@@ -894,7 +843,7 @@ func (h *ProxyHandler) attachProxyFlow(ev *evidence.Evidence, inv *proxyInvocati
 	}
 }
 
-func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation, eventType, toolName, reason string, flow *proxyFlowState, sv *evidence.ShadowViolation) {
+func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation, eventType, toolName, reason string, flow *proxyFlowState) {
 	if h.evidenceStore == nil {
 		return
 	}
@@ -925,9 +874,8 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation,
 	}
 	// Execution.Error only on records that actually denied/failed: session
 	// summaries count any non-empty Execution.Error as a session error, and
-	// allowed records (shadow violations, output_pii_redacted notes) now
-	// join sessions via SessionID — their reason already lives in
-	// PolicyDecision.Reasons.
+	// allowed records (output_pii_redacted notes) join sessions via
+	// SessionID — their reason already lives in PolicyDecision.Reasons.
 	if !allowed {
 		ev.Execution.Error = reason
 	}
@@ -938,10 +886,6 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation,
 		ev.Execution.Error = reason
 		ev.Status = "failed"
 		ev.FailureReason = "upstream_error"
-	}
-	if sv != nil {
-		ev.ObservationModeOverride = true
-		ev.ShadowViolations = []evidence.ShadowViolation{*sv}
 	}
 	// Upstream auth evidence (#358): mode-only, exact gateway parity in
 	// secret mode (fingerprint/source stay client_bearer-only vocabulary).
@@ -962,7 +906,7 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation,
 		}
 		ev.Classification.Scanner = scannerInfo
 	}
-	ev.Explanations = explanation.BuildFromFacts(proxyExplanationFacts(eventType, reason, toolName, allowed))
+	ev.Explanations = explanation.BuildFromFacts(proxyExplanationFacts(eventType, reason, toolName))
 	_ = h.evidenceStore.Store(ctx, ev)
 }
 
@@ -1030,7 +974,7 @@ func entityTypeSet(entities []classifier.PIIEntity) []string {
 	return out
 }
 
-func proxyExplanationFacts(eventType, reason, toolName string, allowed bool) []explanation.Fact {
+func proxyExplanationFacts(eventType, reason, toolName string) []explanation.Fact {
 	trigger := strings.TrimSpace(reason)
 	if trigger == "" {
 		trigger = strings.TrimSpace(toolName)
@@ -1042,18 +986,6 @@ func proxyExplanationFacts(eventType, reason, toolName string, allowed bool) []e
 			Decision: explanation.DecisionDeny,
 			Stage:    explanation.StageToolExecution,
 			Trigger:  trigger,
-		}}
-	case "proxy_shadow_violation":
-		// The call was forwarded (allowed); the would-have-denied verdict
-		// lives in ShadowViolations. Gateway precedent: shadow evidence
-		// explains as allowed, with the trigger naming what enforce would
-		// have denied.
-		return []explanation.Fact{{
-			Code:     explanation.CodePolicyAllowed,
-			Decision: explanation.DecisionAllow,
-			Stage:    explanation.StageToolExecution,
-			Trigger:  trigger,
-			Fix:      "Observation mode forwarded a call enforce mode would deny; set proxy.mode: intercept to enforce.",
 		}}
 	case "proxy_pii_eval_error":
 		return []explanation.Fact{{
@@ -1070,20 +1002,12 @@ func proxyExplanationFacts(eventType, reason, toolName string, allowed bool) []e
 			Trigger:  trigger,
 		}}
 	case "proxy_pii_request_detected":
-		if !allowed {
-			return []explanation.Fact{{
-				Code:     explanation.CodePolicyDeniedPIIInput,
-				Decision: explanation.DecisionDeny,
-				Stage:    explanation.StagePolicyEvaluation,
-				Trigger:  trigger,
-			}}
-		}
+		// Always a deny: every writer of this event blocks the request.
 		return []explanation.Fact{{
-			Code:     explanation.CodePolicyAllowed,
-			Decision: explanation.DecisionAllow,
+			Code:     explanation.CodePolicyDeniedPIIInput,
+			Decision: explanation.DecisionDeny,
 			Stage:    explanation.StagePolicyEvaluation,
-			Trigger:  "pii_detected_in_request",
-			Fix:      "Review request arguments for sensitive values; forwarding was allowed in current policy mode.",
+			Trigger:  trigger,
 		}}
 	default:
 		if reason == "output_pii_redacted" {

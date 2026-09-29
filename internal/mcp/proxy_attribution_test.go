@@ -38,14 +38,13 @@ func attribUpstream(t *testing.T, hit *bool) *httptest.Server {
 	return srv
 }
 
-// attribHandler builds a proxy with the given mode and forbidden list. The
+// attribHandler builds a proxy with the given forbidden list. The
 // classifier stays nil so allowed calls produce exactly one evidence record.
-func attribHandler(t *testing.T, mode, upstreamURL string, forbidden []string) (*ProxyHandler, *evidence.Store) {
+func attribHandler(t *testing.T, upstreamURL string, forbidden []string) (*ProxyHandler, *evidence.Store) {
 	t.Helper()
 	cfg := &policy.ProxyPolicyConfig{
 		Agent: policy.ProxyAgentConfig{Name: "vendor-proxy-agent", Type: "mcp_proxy"},
 		Proxy: policy.ProxyConfig{
-			Mode:           mode,
 			Upstream:       policy.UpstreamConfig{URL: upstreamURL, Vendor: "testvendor"},
 			AllowedTools:   []policy.ToolMapping{{Name: "crm_lookup"}},
 			ForbiddenTools: forbidden,
@@ -88,109 +87,61 @@ func listRecords(t *testing.T, store *evidence.Store, tenant string) []evidence.
 	return records
 }
 
-// TestProxyUnsetMode_ForbiddenBlocked pins the #346 fail-open: a handler
-// constructed with an unset mode (bypassing the loaders) must still block
-// forbidden tools — empty mode used to silently behave as passthrough while
-// evidence claimed the call was blocked.
-func TestProxyUnsetMode_ForbiddenBlocked(t *testing.T) {
+// TestProxyForbiddenTool_Blocked_ZeroUpstream pins the #442 contract on the
+// forbidden list: an explicitly forbidden tool is blocked with
+// TALON_TOOL_FORBIDDEN, never reaches the upstream, and yields exactly one
+// honest deny record — no observation-posture vocabulary survives.
+func TestProxyForbiddenTool_Blocked_ZeroUpstream(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	h, store := attribHandler(t, "" /* unset */, up.URL, []string{"user_delete"})
+	h, store := attribHandler(t, up.URL, []string{"user_delete"})
 
 	_, resp := attribCall(t, h, context.Background(), nil, "user_delete")
-	require.NotNil(t, resp.Error, "forbidden tool must be blocked with unset mode")
+	require.NotNil(t, resp.Error, "forbidden tool must be blocked")
 	assert.Contains(t, resp.Error.Message, "tool not allowed by policy")
-	assert.False(t, hit, "forbidden tool must never reach the upstream outside explicit passthrough")
+	assert.Equal(t, TalonCodeToolForbidden, talonCodeOf(t, resp.Error))
+	assert.False(t, hit, "forbidden tool must never reach the upstream")
 
 	records := listRecords(t, store, "default")
-	require.Len(t, records, 1)
-	assert.Equal(t, "proxy_tool_blocked", records[0].InvocationType)
-	assert.False(t, records[0].PolicyDecision.Allowed)
+	require.Len(t, records, 1, "one blocked call = exactly one record")
+	r := records[0]
+	assert.Equal(t, "proxy_tool_blocked", r.InvocationType)
+	assert.False(t, r.PolicyDecision.Allowed)
+	assert.False(t, r.ObservationModeOverride, "no observation posture exists to override")
+	assert.Empty(t, r.ShadowViolations, "denials are enforced, never recorded as would-have-denied")
 }
 
-// TestProxyLoader_ModeDefaultAndValidation pins the #346 loader contract:
-// unset mode defaults to intercept; unknown values are rejected.
-func TestProxyLoader_ModeDefaultAndValidation(t *testing.T) {
-	cfg := &policy.ProxyPolicyConfig{}
-	cfg.Proxy.Upstream.URL = "http://example.com/mcp"
-	cfg.Proxy.AllowedTools = []policy.ToolMapping{{Name: "t"}}
-	require.NoError(t, validateAndApplyDefaults(cfg))
-	assert.Equal(t, policy.ProxyModeIntercept, cfg.Proxy.Mode, "unset mode must default to intercept")
-
-	cfg.Proxy.Mode = "intercpt" // typo must fail loudly, not fail open
-	err := validateAndApplyDefaults(cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `proxy.mode "intercpt" is invalid`)
-}
-
-// TestProxyPassthrough_ForbiddenForwarded_HonestEvidence pins the #346
-// evidence-honesty fix: explicit passthrough forwards a forbidden tool, and
-// the record says so — an ALLOWED shadow-violation record, not a fake
-// "blocked" one.
-func TestProxyPassthrough_ForbiddenForwarded_HonestEvidence(t *testing.T) {
+// TestProxyPolicyDeny_Blocked_ZeroUpstream pins the #442 contract on the
+// tool-access policy: a tool outside allowed_tools is blocked with
+// TALON_POLICY_DENIED and never reaches the upstream.
+func TestProxyPolicyDeny_Blocked_ZeroUpstream(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	h, store := attribHandler(t, policy.ProxyModePassthrough, up.URL, []string{"user_delete"})
-
-	_, resp := attribCall(t, h, context.Background(), nil, "user_delete")
-	require.Nil(t, resp.Error, "passthrough forwards forbidden tools")
-	assert.True(t, hit)
-
-	records := listRecords(t, store, "default")
-	svTypes := map[string]*evidence.Evidence{}
-	for i := range records {
-		if records[i].InvocationType == "proxy_shadow_violation" {
-			require.Len(t, records[i].ShadowViolations, 1)
-			svTypes[records[i].ShadowViolations[0].Type] = &records[i]
-		}
-		assert.NotEqual(t, "proxy_tool_blocked", records[i].InvocationType,
-			"a forwarded call must not be recorded as blocked")
-	}
-	// user_delete is both explicitly forbidden AND absent from allowed_tools,
-	// so passthrough must record BOTH would-have-denied verdicts (#346): the
-	// forbidden-tool match and the tool-access policy deny.
-	require.Contains(t, svTypes, "tool_block", "passthrough must record the forbidden-tool would-deny")
-	require.Contains(t, svTypes, "policy_deny", "passthrough must record the policy would-deny")
-	for _, sv := range svTypes {
-		assert.True(t, sv.PolicyDecision.Allowed, "the call was forwarded; the deny verdict lives in ShadowViolations")
-		assert.True(t, sv.ObservationModeOverride)
-	}
-}
-
-// TestProxyShadow_PolicyDeny_RecordsWouldDeny pins the #346 gap where shadow
-// mode produced no evidence at all for a policy deny: the deny must land as a
-// would-have-denied shadow violation while the call is forwarded.
-func TestProxyShadow_PolicyDeny_RecordsWouldDeny(t *testing.T) {
-	hit := false
-	up := attribUpstream(t, &hit)
-	h, store := attribHandler(t, policy.ProxyModeShadow, up.URL, nil)
+	h, store := attribHandler(t, up.URL, nil)
 
 	// not_in_allowlist is not in AllowedTools -> tool-access policy denies it.
 	_, resp := attribCall(t, h, context.Background(), nil, "not_in_allowlist")
-	require.Nil(t, resp.Error, "shadow mode forwards policy denials")
-	assert.True(t, hit)
+	require.NotNil(t, resp.Error, "policy-denied tool must be blocked")
+	assert.Equal(t, TalonCodePolicyDenied, talonCodeOf(t, resp.Error))
+	assert.False(t, hit, "policy-denied tool must never reach the upstream")
 
 	records := listRecords(t, store, "default")
-	var found bool
-	for _, rec := range records {
-		if rec.InvocationType == "proxy_shadow_violation" {
-			found = true
-			require.Len(t, rec.ShadowViolations, 1)
-			assert.Equal(t, "policy_deny", rec.ShadowViolations[0].Type)
-		}
-	}
-	assert.True(t, found, "shadow mode must record the would-have-denied policy decision")
+	require.Len(t, records, 1, "one blocked call = exactly one record")
+	r := records[0]
+	assert.Equal(t, "proxy_tool_blocked", r.InvocationType)
+	assert.False(t, r.PolicyDecision.Allowed)
+	require.NotEmpty(t, r.PolicyDecision.Reasons, "deny records must name their reason")
+	assert.False(t, r.ObservationModeOverride)
+	assert.Empty(t, r.ShadowViolations)
 }
 
-// TestProxyEvidence_AuthenticatedAttribution pins #350: records carry the
-// authenticated agent, the asserted session, and ONE correlation ID across
-// all records of the request — never the hardcoded "mcp-proxy".
+// TestProxyEvidence_AuthenticatedAttribution pins #350: the record carries
+// the authenticated agent, the asserted session, and the inbound
+// correlation ID — never the hardcoded "mcp-proxy".
 func TestProxyEvidence_AuthenticatedAttribution(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	// Passthrough + forbidden produces two records for one call (shadow
-	// violation + final proxy_tool_call), exercising correlation reuse.
-	h, store := attribHandler(t, policy.ProxyModePassthrough, up.URL, []string{"user_delete"})
+	h, store := attribHandler(t, up.URL, nil)
 
 	ctx := requestctx.SetTenantID(context.Background(), "acme")
 	ctx = requestctx.SetAgentIdentity(ctx, requestctx.AgentIdentity{
@@ -199,20 +150,22 @@ func TestProxyEvidence_AuthenticatedAttribution(t *testing.T) {
 	rec, resp := attribCall(t, h, ctx, map[string]string{
 		"X-Talon-Session-ID": "sess-demo-1",
 		"X-Correlation-ID":   "corr-demo-1",
-	}, "user_delete")
+	}, "crm_lookup")
 	require.Nil(t, resp.Error)
+	assert.True(t, hit, "an allowed call reaches the upstream")
 	assert.Equal(t, "corr-demo-1", rec.Header().Get("X-Correlation-ID"), "resolved correlation is echoed")
 	assert.Equal(t, "sess-demo-1", rec.Header().Get("X-Talon-Session-ID"), "asserted session is echoed")
 
 	records := listRecords(t, store, "acme")
-	require.GreaterOrEqual(t, len(records), 2, "one call in passthrough with a forbidden tool yields at least two records")
-	for _, r := range records {
-		assert.Equal(t, "coding-assistant", r.AgentID, "evidence must carry the authenticated agent")
-		assert.Equal(t, "acme", r.TenantID)
-		assert.Equal(t, "coding", r.Team)
-		assert.Equal(t, "sess-demo-1", r.SessionID)
-		assert.Equal(t, "corr-demo-1", r.CorrelationID, "every record of one call shares the inbound correlation ID")
-	}
+	require.Len(t, records, 1, "one allowed call yields exactly one record")
+	r := records[0]
+	assert.Equal(t, "proxy_tool_call", r.InvocationType)
+	assert.True(t, r.PolicyDecision.Allowed)
+	assert.Equal(t, "coding-assistant", r.AgentID, "evidence must carry the authenticated agent")
+	assert.Equal(t, "acme", r.TenantID)
+	assert.Equal(t, "coding", r.Team)
+	assert.Equal(t, "sess-demo-1", r.SessionID)
+	assert.Equal(t, "corr-demo-1", r.CorrelationID, "the record carries the inbound correlation ID")
 }
 
 // TestProxyEvidence_NoIdentity_FallsBackToConfigAgent pins the admin/dev-open
@@ -221,7 +174,7 @@ func TestProxyEvidence_AuthenticatedAttribution(t *testing.T) {
 func TestProxyEvidence_NoIdentity_FallsBackToConfigAgent(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	h, store := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+	h, store := attribHandler(t, up.URL, nil)
 
 	_, resp := attribCall(t, h, context.Background(), nil, "crm_lookup")
 	require.Nil(t, resp.Error)
@@ -239,7 +192,7 @@ func TestProxyEvidence_NoIdentity_FallsBackToConfigAgent(t *testing.T) {
 func TestProxyEvidence_BlockedCarriesPolicyDeniedTool(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	h, store := attribHandler(t, policy.ProxyModeIntercept, up.URL, []string{"user_delete"})
+	h, store := attribHandler(t, up.URL, []string{"user_delete"})
 
 	_, resp := attribCall(t, h, context.Background(), nil, "user_delete")
 	require.NotNil(t, resp.Error)
@@ -260,7 +213,7 @@ func TestProxyEvidence_BlockedCarriesPolicyDeniedTool(t *testing.T) {
 func TestProxyEvidence_OrchestrationBlockEmission(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	h, store := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+	h, store := attribHandler(t, up.URL, nil)
 
 	_, resp := attribCall(t, h, context.Background(), map[string]string{
 		"X-Talon-Session-ID":      "sess-orch-1",
@@ -282,7 +235,7 @@ func TestProxyEvidence_OrchestrationBlockEmission(t *testing.T) {
 
 	// A bare session (no identity headers) must NOT emit the block —
 	// the session_id column alone carries it (gateway emission rule).
-	h2, store2 := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+	h2, store2 := attribHandler(t, up.URL, nil)
 	_, resp = attribCall(t, h2, context.Background(), map[string]string{"X-Talon-Session-ID": "sess-bare"}, "crm_lookup")
 	require.Nil(t, resp.Error)
 	recs2 := listRecords(t, store2, "default")
@@ -297,61 +250,98 @@ func TestProxyEvidence_OrchestrationBlockEmission(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-// TestProxyShadow_PIIWouldDeny_RecordsShadowViolation pins the #346 gap on
-// the PII gate: in shadow mode a PII policy deny (detected PII with no
-// redaction rule) is recorded as a would-have-denied shadow violation while
-// the (redacted) call is forwarded — and the allowed records carry no
-// Execution.Error, so session summaries do not count them as errors.
-func TestProxyShadow_PIIWouldDeny_RecordsShadowViolation(t *testing.T) {
-	hit := false
-	up := attribUpstream(t, &hit)
+// piiDenyHandler builds a proxy with the given classifier and NO redaction
+// rules, so rego proxy_pii_redaction denies any detected PII.
+func piiDenyHandler(t *testing.T, upstreamURL string, cls classifier.Facade) (*ProxyHandler, *evidence.Store) {
+	t.Helper()
 	cfg := &policy.ProxyPolicyConfig{
 		Agent: policy.ProxyAgentConfig{Name: "vendor-proxy-agent", Type: "mcp_proxy"},
 		Proxy: policy.ProxyConfig{
-			Mode:         policy.ProxyModeShadow,
-			Upstream:     policy.UpstreamConfig{URL: up.URL, Vendor: "testvendor"},
+			Upstream:     policy.UpstreamConfig{URL: upstreamURL, Vendor: "testvendor"},
 			AllowedTools: []policy.ToolMapping{{Name: "crm_lookup"}},
 		},
-		// No redaction rules: rego proxy_pii_redaction denies any detected PII.
 	}
 	engine, err := policy.NewProxyEngine(context.Background(), cfg)
 	require.NoError(t, err)
 	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
+	return NewProxyHandler(cfg, engine, store, cls, nil), store
+}
+
+// TestProxyPIIDeny_Blocked_ZeroUpstream pins the #442 contract on the PII
+// gate: a PII policy deny (detected PII with no redaction rule) blocks with
+// TALON_PII_BLOCKED, never reaches the upstream, and yields exactly ONE deny
+// record carrying the request-side classification (#357 fold).
+func TestProxyPIIDeny_Blocked_ZeroUpstream(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
+	h, store := piiDenyHandler(t, up.URL, classifier.MustNewScanner())
 
 	_, resp := attribCallArgs(t, h, context.Background(), map[string]string{"X-Talon-Session-ID": "sess-pii-1"}, "crm_lookup",
 		map[string]string{"email": "jane.doe@example.com"})
-	require.Nil(t, resp.Error, "shadow mode forwards the PII would-deny")
-	assert.True(t, hit)
+	require.NotNil(t, resp.Error, "PII policy deny must block")
+	assert.Equal(t, TalonCodePIIBlocked, talonCodeOf(t, resp.Error))
+	assert.False(t, hit, "PII-denied arguments must never reach the upstream")
 
 	records := listRecords(t, store, "default")
-	// #357: exactly TWO records — the shadow violation (non-request class)
-	// and the terminal proxy_tool_call. The old separate allowed PII "note"
-	// is folded into the terminal record.
-	require.Len(t, records, 2, "shadow PII call = shadow violation + ONE terminal record")
-	var sv, terminal *evidence.Evidence
-	for i := range records {
-		switch records[i].InvocationType {
-		case "proxy_shadow_violation":
-			sv = &records[i]
-		case "proxy_tool_call":
-			terminal = &records[i]
-		}
-		if records[i].PolicyDecision.Allowed {
-			assert.Empty(t, records[i].Execution.Error,
-				"allowed records must not carry Execution.Error (session summaries count it as an error)")
-		}
+	require.Len(t, records, 1, "one blocked call = exactly one record")
+	r := records[0]
+	assert.Equal(t, "proxy_pii_request_detected", r.InvocationType)
+	assert.False(t, r.PolicyDecision.Allowed)
+	assert.Equal(t, "sess-pii-1", r.SessionID)
+	assert.Contains(t, r.Classification.PIIDetected, "email")
+	assert.False(t, r.ObservationModeOverride)
+	assert.Empty(t, r.ShadowViolations)
+	primary, ok := explanation.Primary(r.Explanations)
+	require.True(t, ok)
+	assert.Equal(t, explanation.CodePolicyDeniedPIIInput, primary.Code)
+}
+
+// engineBreakingClassifier wraps a real scanner and, once PII is detected,
+// runs a hook. Tool access is evaluated BEFORE the argument scan and the PII
+// policy AFTER it, so the hook is the one deterministic seam that can fail
+// exactly the PII evaluation (OPA's context cancellation is asynchronous).
+type engineBreakingClassifier struct {
+	classifier.Facade
+	onDetected func()
+}
+
+func (c *engineBreakingClassifier) Analyze(ctx context.Context, text string) (*classifier.Classification, error) {
+	res, err := c.Facade.Analyze(ctx, text)
+	if err == nil && res != nil && len(res.Entities) > 0 {
+		c.onDetected()
 	}
-	require.NotNil(t, sv, "shadow mode must record the PII would-deny")
-	require.Len(t, sv.ShadowViolations, 1)
-	assert.Equal(t, "pii_block", sv.ShadowViolations[0].Type)
-	assert.True(t, sv.ObservationModeOverride)
-	assert.Equal(t, "sess-pii-1", sv.SessionID)
-	require.NotNil(t, terminal, "the terminal record must exist")
-	assert.Contains(t, terminal.Classification.PIIDetected, "email",
-		"#357 fold: request-side PII classification rides on the terminal record")
+	return res, err
+}
+
+// TestProxyPIIEvalError_Blocked_ZeroUpstream pins the previously untested
+// fail-closed branch: a PII policy evaluation ERROR blocks with
+// TALON_PII_BLOCKED and a proxy_pii_eval_error record, and the upstream is
+// never reached (#442: no posture forwards on an evaluation failure).
+func TestProxyPIIEvalError_Blocked_ZeroUpstream(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
+	cls := &engineBreakingClassifier{Facade: classifier.MustNewScanner()}
+	h, store := piiDenyHandler(t, up.URL, cls)
+	// A zero-value engine has no prepared queries, so EvaluateProxyPII errors.
+	cls.onDetected = func() { h.proxyEngine = &policy.ProxyEngine{} }
+
+	_, resp := attribCallArgs(t, h, context.Background(), nil, "crm_lookup",
+		map[string]string{"email": "jane.doe@example.com"})
+	require.NotNil(t, resp.Error, "PII evaluation error must block fail-closed")
+	assert.Contains(t, resp.Error.Message, "PII policy evaluation failed")
+	assert.Equal(t, TalonCodePIIBlocked, talonCodeOf(t, resp.Error))
+	assert.False(t, hit, "arguments with an unknown PII verdict must never reach the upstream")
+
+	records := listRecords(t, store, "default")
+	require.Len(t, records, 1, "one blocked call = exactly one record")
+	r := records[0]
+	assert.Equal(t, "proxy_pii_eval_error", r.InvocationType)
+	assert.False(t, r.PolicyDecision.Allowed)
+	assert.NotEmpty(t, r.Execution.Error)
+	assert.False(t, r.ObservationModeOverride)
+	assert.Empty(t, r.ShadowViolations)
 }
 
 // TestProxyPIIAllowed_OneRequestClassRecord pins the #357 fold directly:
@@ -364,7 +354,6 @@ func TestProxyPIIAllowed_OneRequestClassRecord(t *testing.T) {
 	cfg := &policy.ProxyPolicyConfig{
 		Agent: policy.ProxyAgentConfig{Name: "vendor-proxy-agent", Type: "mcp_proxy"},
 		Proxy: policy.ProxyConfig{
-			Mode:         policy.ProxyModeIntercept,
 			Upstream:     policy.UpstreamConfig{URL: up.URL, Vendor: "testvendor"},
 			AllowedTools: []policy.ToolMapping{{Name: "crm_lookup"}},
 		},
@@ -401,7 +390,6 @@ func TestProxyUpstreamError_RecordsTrail(t *testing.T) {
 	cfg := &policy.ProxyPolicyConfig{
 		Agent: policy.ProxyAgentConfig{Name: "vendor-proxy-agent", Type: "mcp_proxy"},
 		Proxy: policy.ProxyConfig{
-			Mode: policy.ProxyModeIntercept,
 			// Closed port: the upstream request fails.
 			Upstream:     policy.UpstreamConfig{URL: "http://127.0.0.1:1", Vendor: "testvendor"},
 			AllowedTools: []policy.ToolMapping{{Name: "crm_lookup"}},
@@ -444,7 +432,6 @@ func upstreamErrorHandler(t *testing.T, upstream http.HandlerFunc) (*ProxyHandle
 	cfg := &policy.ProxyPolicyConfig{
 		Agent: policy.ProxyAgentConfig{Name: "vendor-proxy-agent", Type: "mcp_proxy"},
 		Proxy: policy.ProxyConfig{
-			Mode:         policy.ProxyModeIntercept,
 			Upstream:     policy.UpstreamConfig{URL: srv.URL, Vendor: "testvendor"},
 			AllowedTools: []policy.ToolMapping{{Name: "crm_lookup"}},
 		},
@@ -510,24 +497,21 @@ func TestProxyUpstreamJSONRPCError_RecordsFailure(t *testing.T) {
 }
 
 // TestProxyEvidence_GeneratedCorrelationSharedAcrossRecords pins the #350
-// correlation contract for the no-header case: one generated request-scoped
-// ID is shared by every record of the call.
+// correlation contract for the no-header case: the request-scoped generated
+// ID is the one on the record AND the one echoed to the caller.
 func TestProxyEvidence_GeneratedCorrelationSharedAcrossRecords(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	// Passthrough + forbidden yields multiple records for one call.
-	h, store := attribHandler(t, policy.ProxyModePassthrough, up.URL, []string{"user_delete"})
+	h, store := attribHandler(t, up.URL, nil)
 
-	rec, resp := attribCall(t, h, context.Background(), nil, "user_delete")
+	rec, resp := attribCall(t, h, context.Background(), nil, "crm_lookup")
 	require.Nil(t, resp.Error)
+	assert.True(t, hit)
 
 	records := listRecords(t, store, "default")
-	require.GreaterOrEqual(t, len(records), 2)
+	require.Len(t, records, 1, "one allowed call yields exactly one record")
 	corr := records[0].CorrelationID
 	assert.True(t, strings.HasPrefix(corr, "mcp_proxy_"), "generated correlation keeps the mcp_proxy_ prefix")
-	for _, r := range records {
-		assert.Equal(t, corr, r.CorrelationID, "all records of one call share the generated correlation ID")
-	}
 	assert.Equal(t, corr, rec.Header().Get("X-Correlation-ID"), "generated correlation is echoed to the caller")
 }
 
@@ -535,9 +519,7 @@ func TestProxyEvidence_GeneratedCorrelationSharedAcrossRecords(t *testing.T) {
 // tools/list and tools/call only; any other MCP method (resources/read,
 // prompts/get, initialize, ...) is rejected with -32601 and an attributed
 // deny record — never forwarded ungoverned, mirroring the native /mcp
-// server. The contract is mode-INDEPENDENT: passthrough and shadow reject
-// exactly like intercept ("in every mode" is the documented surface, and
-// "passthrough forwards everything" must never grow to cover methods).
+// server.
 // talonCodeOf extracts error.data.talon_code from a decoded response (#369).
 func talonCodeOf(t *testing.T, e *rpcError) string {
 	t.Helper()
@@ -550,51 +532,47 @@ func talonCodeOf(t *testing.T, e *rpcError) string {
 
 func TestProxyUnknownMethod_RejectedFailClosed(t *testing.T) {
 	methods := []string{"resources/read", "prompts/get", "logging/setLevel"}
-	for _, mode := range []string{policy.ProxyModeIntercept, policy.ProxyModePassthrough, policy.ProxyModeShadow} {
-		t.Run(mode, func(t *testing.T) {
-			hit := false
-			up := attribUpstream(t, &hit)
-			h, store := attribHandler(t, mode, up.URL, nil)
+	hit := false
+	up := attribUpstream(t, &hit)
+	h, store := attribHandler(t, up.URL, nil)
 
-			for _, method := range methods {
-				body, _ := json.Marshal(map[string]interface{}{
-					"jsonrpc": "2.0", "id": 7, "method": method,
-					"params": map[string]interface{}{"uri": "file:///etc/passwd"},
-				})
-				req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
-				rec := httptest.NewRecorder()
-				h.ServeHTTP(rec, req)
-				var resp jsonrpcResponse
-				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-				require.NotNil(t, resp.Error, "method %s must be rejected in mode %s", method, mode)
-				assert.Equal(t, codeMethodNotFound, resp.Error.Code)
-				assert.Contains(t, resp.Error.Message, method)
-				assert.Equal(t, TalonCodeMethodNotAllowed, talonCodeOf(t, resp.Error),
-					"rejections carry the stable #369 code, not just prose")
-			}
-			assert.False(t, hit, "ungoverned methods must never reach the upstream (mode %s)", mode)
-
-			records := listRecords(t, store, "default")
-			require.Len(t, records, len(methods), "each rejection is the request's terminal record")
-			gotReasons := make([]string, 0, len(records))
-			for _, r := range records {
-				assert.Equal(t, "proxy_method_rejected", r.InvocationType)
-				assert.False(t, r.PolicyDecision.Allowed)
-				assert.Equal(t, "vendor-proxy-agent", r.AgentID, "rejections carry full #350 attribution")
-				require.NotEmpty(t, r.PolicyDecision.Reasons, "deny records must name their reason")
-				gotReasons = append(gotReasons, r.PolicyDecision.Reasons[0])
-				primary, ok := explanation.Primary(r.Explanations)
-				require.True(t, ok)
-				assert.Equal(t, explanation.CodePolicyDeniedTool, primary.Code)
-			}
-			wantReasons := make([]string, 0, len(methods))
-			for _, m := range methods {
-				wantReasons = append(wantReasons, "unsupported_method:"+m)
-			}
-			assert.ElementsMatch(t, wantReasons, gotReasons,
-				"every rejection reason names the rejected method")
+	for _, method := range methods {
+		body, _ := json.Marshal(map[string]interface{}{
+			"jsonrpc": "2.0", "id": 7, "method": method,
+			"params": map[string]interface{}{"uri": "file:///etc/passwd"},
 		})
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var resp jsonrpcResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		require.NotNil(t, resp.Error, "method %s must be rejected", method)
+		assert.Equal(t, codeMethodNotFound, resp.Error.Code)
+		assert.Contains(t, resp.Error.Message, method)
+		assert.Equal(t, TalonCodeMethodNotAllowed, talonCodeOf(t, resp.Error),
+			"rejections carry the stable #369 code, not just prose")
 	}
+	assert.False(t, hit, "ungoverned methods must never reach the upstream")
+
+	records := listRecords(t, store, "default")
+	require.Len(t, records, len(methods), "each rejection is the request's terminal record")
+	gotReasons := make([]string, 0, len(records))
+	for _, r := range records {
+		assert.Equal(t, "proxy_method_rejected", r.InvocationType)
+		assert.False(t, r.PolicyDecision.Allowed)
+		assert.Equal(t, "vendor-proxy-agent", r.AgentID, "rejections carry full #350 attribution")
+		require.NotEmpty(t, r.PolicyDecision.Reasons, "deny records must name their reason")
+		gotReasons = append(gotReasons, r.PolicyDecision.Reasons[0])
+		primary, ok := explanation.Primary(r.Explanations)
+		require.True(t, ok)
+		assert.Equal(t, explanation.CodePolicyDeniedTool, primary.Code)
+	}
+	wantReasons := make([]string, 0, len(methods))
+	for _, m := range methods {
+		wantReasons = append(wantReasons, "unsupported_method:"+m)
+	}
+	assert.ElementsMatch(t, wantReasons, gotReasons,
+		"every rejection reason names the rejected method")
 }
 
 // TestProxyMCPHandshake pins #367: the mandatory MCP lifecycle completes
@@ -604,7 +582,7 @@ func TestProxyUnknownMethod_RejectedFailClosed(t *testing.T) {
 func TestProxyMCPHandshake(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	h, _ := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+	h, _ := attribHandler(t, up.URL, nil)
 
 	// 1. initialize — answered locally.
 	initBody, _ := json.Marshal(map[string]interface{}{
@@ -686,7 +664,7 @@ func TestNativeMCPHandshake(t *testing.T) {
 func TestNotificationsGetNoResponse(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	proxy, _ := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+	proxy, _ := attribHandler(t, up.URL, nil)
 	native := &Handler{}
 
 	for name, h := range map[string]http.Handler{"proxy": proxy, "native": native} {
@@ -719,7 +697,7 @@ func TestNotificationsGetNoResponse(t *testing.T) {
 func TestProxyDenialCodes(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	h, _ := attribHandler(t, policy.ProxyModeIntercept, up.URL, []string{"user_delete"})
+	h, _ := attribHandler(t, up.URL, []string{"user_delete"})
 
 	_, resp := attribCall(t, h, context.Background(), nil, "user_delete")
 	assert.Equal(t, TalonCodeToolForbidden, talonCodeOf(t, resp.Error))
@@ -734,7 +712,7 @@ func TestProxyDenialCodes(t *testing.T) {
 func TestProxyInvalidAttributionHeader_Rejected400(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	h, store := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+	h, store := attribHandler(t, up.URL, nil)
 
 	rec, _ := attribCall(t, h, context.Background(), map[string]string{
 		"X-Talon-Session-ID": strings.Repeat("a", evidence.OrchHeaderMaxLen+1),

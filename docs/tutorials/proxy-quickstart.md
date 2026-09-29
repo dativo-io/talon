@@ -57,7 +57,7 @@ Look for:
 
 ## Behavior notes
 
-- Enforcement mode defaults to `enforce` (shadow optional via `TALON_QUICKSTART_MODE=shadow`).
+- Policy is always enforced; the former `TALON_QUICKSTART_MODE=shadow` opt-in was removed in #442 and a non-empty value is rejected at startup with migration guidance.
 - PII default action is `redact`.
 - Key source precedence: client bearer > `OPENAI_API_KEY` > 401.
 - Partial OpenAI compatibility: only chat completions and responses create endpoints are supported at host root.

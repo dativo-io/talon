@@ -65,7 +65,7 @@ func TestEventsIntegration_BackfillMatchesEvidenceProjection(t *testing.T) {
 
 	projected := SnapshotFromEvidenceRecords(list, now)
 
-	collector := NewCollector("enforce", store, WithTenantID("acme"))
+	collector := NewCollector(store, WithTenantID("acme"))
 	t.Cleanup(collector.Close)
 	require.NoError(t, collector.BackfillFromStore(ctx, store))
 	snap := collector.Snapshot(ctx)

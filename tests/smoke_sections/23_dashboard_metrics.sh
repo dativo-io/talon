@@ -73,7 +73,6 @@ AGEOF
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "enforce"
   providers:
     openai:
       enabled: true
@@ -146,8 +145,8 @@ CACHEEOF
   assert_pass "GET /api/v1/metrics returns valid JSON" jq -e '.' <<< "$snap_before" &>/dev/null
   assert_pass "metrics snapshot has summary.total_requests" \
     jq -e '.summary.total_requests >= 0' <<< "$snap_before" &>/dev/null
-  assert_pass "metrics snapshot has enforcement_mode" \
-    jq -e '.enforcement_mode' <<< "$snap_before" &>/dev/null
+  assert_pass "metrics snapshot exposes no selectable posture (#442)" \
+    jq -e 'has("enforcement_mode") | not' <<< "$snap_before" &>/dev/null  # #442: no enforcement_mode field
   assert_pass "metrics snapshot has uptime" \
     jq -e '.uptime' <<< "$snap_before" &>/dev/null
   assert_pass "metrics snapshot has generated_at" \

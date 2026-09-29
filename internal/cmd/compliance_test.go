@@ -255,7 +255,6 @@ func TestComplianceSovereignty_MergesGatewaySovereignty(t *testing.T) {
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
   providers:
     ollama:
       enabled: true
@@ -311,7 +310,6 @@ func TestComplianceSovereignty_ExcludedDeclaredProvider(t *testing.T) {
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
   providers:
     openai:
       enabled: true

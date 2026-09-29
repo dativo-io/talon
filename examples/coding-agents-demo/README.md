@@ -159,7 +159,7 @@ pricing is visible in evidence.
 
 ## Files
 
-- `docker-compose.yml` — Talon (enforce mode) + dual-wire mock; vault seeded
+- `docker-compose.yml` — Talon + dual-wire mock; vault seeded
   with fake keys inside the container.
 - `talon.config.yaml` — one `claude-code` agent, `max_session_cost: 0.02`,
   `response_pii_action: allow` (the honest streaming default — see

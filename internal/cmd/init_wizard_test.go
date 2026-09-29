@@ -743,7 +743,6 @@ func TestBuildConfigs_OpenClawPack_EnablesGateway(t *testing.T) {
 	require.NotNil(t, infraCfg.Gateway, "openclaw pack must generate gateway block")
 	assert.True(t, infraCfg.Gateway.Enabled, "gateway must be enabled so talon serve --gateway starts")
 	assert.Equal(t, "/v1/proxy", infraCfg.Gateway.ListenPrefix)
-	assert.Equal(t, "shadow", infraCfg.Gateway.Mode)
 	// Identity lives in the agent policy (#266): the wizard binds the traffic
 	// key there; the gateway block carries only the organization baseline.
 	require.NotNil(t, agentCfg.Agent.Key, "wizard must bind the agent traffic key")

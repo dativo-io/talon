@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 )
 
 // OpenAICompatibleResponse is the minimal chat completions response for tests.
@@ -140,4 +141,20 @@ func NewNERMockServer(t interface {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// NewCountingOpenAICompatibleServer is NewOpenAICompatibleServer with an
+// upstream call counter. Preventive-control tests assert the counter is zero
+// after a denial: a denial response alone does not prove the provider was
+// never reached (AGENTS.md "Preventive-control proof").
+func NewCountingOpenAICompatibleServer(content string, inputTokens, outputTokens int) (*httptest.Server, *atomic.Int64) {
+	inner := NewOpenAICompatibleServer(content, inputTokens, outputTokens)
+	var calls atomic.Int64
+	outer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		inner.Config.Handler.ServeHTTP(w, r)
+	}))
+	// Closing the outer server is what callers do; tie the inner lifetime to it.
+	outer.Config.RegisterOnShutdown(inner.Close)
+	return outer, &calls
 }

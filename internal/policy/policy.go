@@ -563,8 +563,6 @@ type ToolPIIPolicy struct {
 
 	// Argument value policy (Gap T9): block specific argument values by name.
 	ForbiddenArgumentValues map[string][]string `yaml:"forbidden_argument_values,omitempty" json:"forbidden_argument_values,omitempty"`
-
-	SchemaValidation string `yaml:"schema_validation,omitempty" json:"schema_validation,omitempty"` // "enforce" (default), "shadow", or "disabled"
 }
 
 // ToolIdempotencyConfig defines per-tool idempotency for side-effecting tools (e.g. send email, charge card).
@@ -648,13 +646,11 @@ type TimeRestrictionsConfig struct {
 }
 
 // AuditConfig controls evidence logging detail.
-// When ObservationOnly is true, policy denials are logged but not enforced (shadow mode for governance visibility).
 type AuditConfig struct {
 	LogLevel         string `yaml:"log_level,omitempty" json:"log_level,omitempty"`
 	RetentionDays    int    `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
 	IncludePrompts   bool   `yaml:"include_prompts,omitempty" json:"include_prompts,omitempty"`
 	IncludeResponses bool   `yaml:"include_responses,omitempty" json:"include_responses,omitempty"`
-	ObservationOnly  bool   `yaml:"observation_only,omitempty" json:"observation_only,omitempty"` // If true, never deny; record would-have-denied in evidence
 	// IncludeOriginalPrompts controls whether the prompt version store persists the
 	// original (pre-redaction) prompt text.  Default false: when input PII redaction
 	// is active, the redacted prompt is stored instead — aligning with GDPR Art. 5(1)(c)

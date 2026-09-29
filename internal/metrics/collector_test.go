@@ -54,11 +54,11 @@ func (m *mockQuerier) AvgTPOT(_ context.Context, _, _ string, _, _ time.Time) (f
 	return 0, nil
 }
 
-func newTestCollector(mode string, querier *mockQuerier, opts ...CollectorOption) *Collector {
+func newTestCollector(querier *mockQuerier, opts ...CollectorOption) *Collector {
 	if querier == nil {
-		return NewCollector(mode, nil, opts...)
+		return NewCollector(nil, opts...)
 	}
-	return NewCollector(mode, querier, opts...)
+	return NewCollector(querier, opts...)
 }
 
 func waitForProcessing(c *Collector) {
@@ -66,18 +66,17 @@ func waitForProcessing(c *Collector) {
 }
 
 func TestNewCollectorDefaults(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	snap := c.Snapshot(context.Background())
-	assert.Equal(t, "enforce", snap.EnforcementMode)
 	assert.Equal(t, 0, snap.Summary.TotalRequests)
 	assert.Equal(t, 0, snap.Summary.BlockedRequests)
 	assert.NotEmpty(t, snap.Uptime)
 }
 
 func TestRecordSingleEvent(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	c.Record(GatewayEvent{
@@ -99,7 +98,7 @@ func TestRecordSingleEvent(t *testing.T) {
 }
 
 func TestStreamingMetricsAggregation(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	c.Record(GatewayEvent{Timestamp: time.Now(), TTFTMS: 100, TPOTMS: 0.5})
@@ -114,7 +113,7 @@ func TestStreamingMetricsAggregation(t *testing.T) {
 }
 
 func TestBlockedRequests(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	c.Record(GatewayEvent{Timestamp: time.Now(), Blocked: true})
@@ -127,7 +126,7 @@ func TestBlockedRequests(t *testing.T) {
 }
 
 func TestErrorRate(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	for i := 0; i < 10; i++ {
@@ -141,7 +140,7 @@ func TestErrorRate(t *testing.T) {
 }
 
 func TestCallerStats(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	c.Record(GatewayEvent{Timestamp: time.Now(), AgentName: "app-1", CostEUR: 0.1, LatencyMS: 100})
@@ -158,7 +157,7 @@ func TestCallerStats(t *testing.T) {
 }
 
 func TestPIIBreakdown(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	c.Record(GatewayEvent{Timestamp: time.Now(), PIIDetected: []string{"email", "iban"}})
@@ -172,7 +171,7 @@ func TestPIIBreakdown(t *testing.T) {
 }
 
 func TestToolGovernance(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	c.Record(GatewayEvent{
@@ -189,42 +188,8 @@ func TestToolGovernance(t *testing.T) {
 	assert.Equal(t, "exec_cmd", snap.ToolGovernance.TopFiltered[0].Tool)
 }
 
-func TestShadowModeSummary(t *testing.T) {
-	c := newTestCollector("shadow", nil)
-	defer c.Close()
-
-	c.Record(GatewayEvent{
-		Timestamp:        time.Now(),
-		ShadowViolations: []string{"pii_block", "rate_limit"},
-	})
-	c.Record(GatewayEvent{
-		Timestamp:        time.Now(),
-		ShadowViolations: []string{"pii_block"},
-	})
-	waitForProcessing(c)
-
-	snap := c.Snapshot(context.Background())
-	require.NotNil(t, snap.ShadowSummary)
-	assert.Equal(t, 3, snap.ShadowSummary.WouldHaveBlocked)
-	require.Len(t, snap.ShadowSummary.ViolationsByType, 2)
-}
-
-func TestShadowSummaryNilInEnforceMode(t *testing.T) {
-	c := newTestCollector("enforce", nil)
-	defer c.Close()
-
-	c.Record(GatewayEvent{
-		Timestamp:        time.Now(),
-		ShadowViolations: []string{"pii_block"},
-	})
-	waitForProcessing(c)
-
-	snap := c.Snapshot(context.Background())
-	assert.Nil(t, snap.ShadowSummary)
-}
-
 func TestP99Latency(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	for i := 0; i < 100; i++ {
@@ -238,7 +203,7 @@ func TestP99Latency(t *testing.T) {
 }
 
 func TestActiveRunsFn(t *testing.T) {
-	c := newTestCollector("enforce", nil, WithActiveRunsFn(func() int { return 5 }))
+	c := newTestCollector(nil, WithActiveRunsFn(func() int { return 5 }))
 	defer c.Close()
 
 	snap := c.Snapshot(context.Background())
@@ -249,7 +214,7 @@ func TestMetricsQuerierModelBreakdown(t *testing.T) {
 	q := &mockQuerier{
 		costByModel: map[string]float64{"gpt-4o": 1.5, "claude-3": 0.8},
 	}
-	c := newTestCollector("enforce", q)
+	c := newTestCollector(q)
 	defer c.Close()
 
 	snap := c.Snapshot(context.Background())
@@ -262,7 +227,7 @@ func TestMetricsQuerierProviderBreakdown(t *testing.T) {
 	q := &mockQuerier{
 		costByProvider: map[string]float64{"openai": 1.5, "anthropic": 0.8},
 	}
-	c := newTestCollector("enforce", q)
+	c := newTestCollector(q)
 	defer c.Close()
 
 	snap := c.Snapshot(context.Background())
@@ -273,7 +238,7 @@ func TestMetricsQuerierProviderBreakdown(t *testing.T) {
 
 func TestMetricsQuerierBudget(t *testing.T) {
 	q := &mockQuerier{costTotal: 5.0}
-	c := newTestCollector("enforce", q, WithBudgetLimits(10.0, 100.0))
+	c := newTestCollector(q, WithBudgetLimits(10.0, 100.0))
 	defer c.Close()
 
 	snap := c.Snapshot(context.Background())
@@ -290,7 +255,7 @@ func TestMetricsQuerierBudget(t *testing.T) {
 func TestBudgetLimitsFn_FollowsLiveSource(t *testing.T) {
 	q := &mockQuerier{costTotal: 5.0}
 	daily, monthly := 10.0, 100.0
-	c := newTestCollector("enforce", q, WithBudgetLimitsFn(func() (float64, float64) {
+	c := newTestCollector(q, WithBudgetLimitsFn(func() (float64, float64) {
 		return daily, monthly
 	}))
 	defer c.Close()
@@ -323,7 +288,7 @@ func TestScopeFn_OneCallPerSnapshot(t *testing.T) {
 	q := &mockQuerier{costTotal: 5.0}
 	calls := 0
 	scope := Scope{TenantID: "acme", BudgetDaily: 10, BudgetMonthly: 100}
-	c := newTestCollector("enforce", q, WithScopeFn(func() Scope {
+	c := newTestCollector(q, WithScopeFn(func() Scope {
 		calls++
 		return scope
 	}))
@@ -346,7 +311,7 @@ func TestScopeFn_OneCallPerSnapshot(t *testing.T) {
 
 func TestMetricsQuerierCache(t *testing.T) {
 	q := &mockQuerier{cacheHits: 15, cacheSaved: 0.75}
-	c := newTestCollector("enforce", q)
+	c := newTestCollector(q)
 	defer c.Close()
 
 	c.Record(GatewayEvent{Timestamp: time.Now(), AgentName: "test-caller"})
@@ -362,7 +327,7 @@ func TestMetricsQuerierCache(t *testing.T) {
 
 func TestNoBudgetWithoutLimits(t *testing.T) {
 	q := &mockQuerier{costTotal: 5.0}
-	c := newTestCollector("enforce", q)
+	c := newTestCollector(q)
 	defer c.Close()
 
 	snap := c.Snapshot(context.Background())
@@ -370,7 +335,7 @@ func TestNoBudgetWithoutLimits(t *testing.T) {
 }
 
 func TestPlanStatsCallback(t *testing.T) {
-	c := newTestCollector("enforce", nil, WithPlanStatsFn(func(_ context.Context, _ string) (PlanStats, error) {
+	c := newTestCollector(nil, WithPlanStatsFn(func(_ context.Context, _ string) (PlanStats, error) {
 		return PlanStats{
 			Pending:          2,
 			Approved:         5,
@@ -400,7 +365,7 @@ func TestPlanStatsCallback(t *testing.T) {
 }
 
 func TestCollectorDroppedEventsBackpressure(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	// Stop consumer loop to force channel saturation deterministically.
 	c.Close()
 
@@ -435,7 +400,7 @@ func TestCollectorDroppedEvents_ReconcileRestoresParity(t *testing.T) {
 			},
 		},
 	}
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	// Initial drift: only one event is in collector.
@@ -454,7 +419,7 @@ func TestCollectorDroppedEvents_ReconcileRestoresParity(t *testing.T) {
 }
 
 func TestPIITimelineAndCostTimeline(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	// Use a time within the last 24h so buildInMemorySnapshot includes these buckets
@@ -487,7 +452,7 @@ func TestPIITimelineAndCostTimeline(t *testing.T) {
 }
 
 func TestRiskLevelStats(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	c.Record(GatewayEvent{
@@ -518,7 +483,7 @@ func TestRiskLevelStats(t *testing.T) {
 }
 
 func TestBulkAndIrreversibleAndAnomalous(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	c.Record(GatewayEvent{Timestamp: time.Now(), IsBulk: true, AgentID: "bot-1"})
@@ -534,7 +499,7 @@ func TestBulkAndIrreversibleAndAnomalous(t *testing.T) {
 }
 
 func TestTimelineGroups5MinBuckets(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	// Use a time within the last 24h so buildInMemorySnapshot includes these buckets
@@ -619,7 +584,7 @@ func assertSnapshotCrossChecks(t *testing.T, snap Snapshot) {
 }
 
 func TestSnapshotCrossChecks(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	now := time.Now()
@@ -664,7 +629,7 @@ func TestSnapshotCrossChecks(t *testing.T) {
 }
 
 func TestCollector_TaskSuccess_Classified(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	now := time.Now().UTC()
@@ -685,7 +650,7 @@ func TestCollector_TaskSuccess_Classified(t *testing.T) {
 }
 
 func TestCollector_SuccessRate_Calculated(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	now := time.Now().UTC()
@@ -703,7 +668,7 @@ func TestCollector_SuccessRate_Calculated(t *testing.T) {
 }
 
 func TestCollector_CostPerSuccess_Calculated(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	now := time.Now().UTC()
@@ -719,7 +684,7 @@ func TestCollector_CostPerSuccess_Calculated(t *testing.T) {
 }
 
 func TestCollector_CostPerSuccess_ZeroSuccesses(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	now := time.Now().UTC()
@@ -734,7 +699,7 @@ func TestCollector_CostPerSuccess_ZeroSuccesses(t *testing.T) {
 }
 
 func TestCollector_ViolationTrend_SevenDays(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
@@ -753,7 +718,7 @@ func TestCollector_ViolationTrend_SevenDays(t *testing.T) {
 }
 
 func TestCollector_ViolationTrend_EmptyDays(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
@@ -771,7 +736,7 @@ func TestCollector_ViolationTrend_EmptyDays(t *testing.T) {
 }
 
 func TestCollector_TimeoutDetection(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	c.Record(GatewayEvent{
@@ -792,7 +757,7 @@ func TestCollector_TimeoutDetection(t *testing.T) {
 }
 
 func TestCollector_BackwardCompat_ExistingFields(t *testing.T) {
-	c := newTestCollector("enforce", nil)
+	c := newTestCollector(nil)
 	defer c.Close()
 
 	c.Record(GatewayEvent{

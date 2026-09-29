@@ -47,7 +47,6 @@ func proxyTestServer(t *testing.T, upstreamBody string) (baseURL string, talonAP
 	gwCfg := &gateway.GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         gateway.ModeEnforce,
 		Providers: map[string]gateway.ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: mockUpstream.URL},
 		},

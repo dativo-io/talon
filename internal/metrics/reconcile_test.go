@@ -35,7 +35,7 @@ func TestReconcileFromStore_ConvergesAfterDrop(t *testing.T) {
 			makeEvidence("ev-3", now.Add(-30*time.Second)),
 		},
 	}
-	c := NewCollector("enforce", nil)
+	c := NewCollector(nil)
 	defer c.Close()
 
 	// Simulate drift/missed events: collector only saw the first record.
@@ -63,7 +63,7 @@ func TestReconcileFromStore_IsIdempotentAcrossRepeatedRuns(t *testing.T) {
 			makeEvidence("ev-b", now.Add(-1*time.Minute)),
 		},
 	}
-	c := NewCollector("enforce", nil)
+	c := NewCollector(nil)
 	defer c.Close()
 
 	recoveredFirst, err := c.ReconcileFromStore(context.Background(), store, 10*time.Minute, 1000)
@@ -88,7 +88,7 @@ func TestReconcileFromStore_DoesNotDoubleCountObservedEvidence(t *testing.T) {
 			makeEvidence("ev-obs-1", now.Add(-1*time.Minute)),
 		},
 	}
-	c := NewCollector("enforce", nil)
+	c := NewCollector(nil)
 	defer c.Close()
 
 	// Simulate live store observer path before periodic reconciliation.

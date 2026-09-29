@@ -118,8 +118,7 @@ type ResolvedIdentity struct {
 	PolicyDigest string // agent policy canonical content hash (#266 review r4)
 	Tags         []string
 	// Enabled is the operational on/off switch (#268): false denies NEW work
-	// after resolution — a hard platform boundary in EVERY gateway mode
-	// (shadow/log_only do not bypass an operator kill switch).
+	// after resolution — a hard platform boundary.
 	Enabled bool
 
 	AcceptClientMetadata *bool

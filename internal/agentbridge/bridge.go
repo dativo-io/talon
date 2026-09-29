@@ -1,6 +1,6 @@
 // Package agentbridge is the ONE policy.Policy → gateway.LoadedAgent adapter
 // (#266). It exists as its own package (rather than living in internal/cmd)
-// because gateway startup, `talon doctor`, and `talon enforce enable` must
+// because gateway startup, `talon doctor`, and the gateway identity preflight must
 // all construct the IDENTICAL identity — including the agent's policy
 // override, whose semantic validation happens at registry build. A doctor
 // preflight built from a reduced identity blessed gateways that could not

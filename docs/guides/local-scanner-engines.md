@@ -176,7 +176,9 @@ guidance:
 
 Raise the gateway `request_timeout` accordingly — it must cover request scan
 + upstream call + response scan + verify. There are no retries by design; a
-scan that misses its deadline blocks (enforce) or logs (shadow/warn).
+scan that misses its deadline is a hard failure for gating actions (`redact`/`block`
+return 502 `scanner_unavailable`; the provider is never reached) and a logged
+warning for `warn`, which never gates.
 
 Two levers for constrained hosts (small VPS class):
 
@@ -238,11 +240,16 @@ make test-smoke
 not recall — recall is model-dependent, which is exactly why the hermetic
 scenario exists.)
 
-## Shadow-mode rollout
+## Rolling out a scanner safely
 
-Test recall without blocking traffic: set the gateway to `mode: shadow` and
-watch evidence for `scanner_unavailable` shadow violations and detection
-quality, then switch to enforce.
+There is no shadow posture (#442): whatever action a rule declares is what
+happens. Test recall without blocking traffic by choosing non-gating actions
+first — `pii_action: warn` (findings land in evidence, traffic flows) or
+`redact` (traffic flows with placeholders) — and read
+`classification.scanner` in the evidence for engine identity, scan duration,
+and `scanner_unavailable` failures. For native agents, `talon run --dry-run`
+evaluates policy against a prompt with no provider call. Switch to `block`
+once detection quality and timeouts look right.
 
 ## Air-gapped deployments
 

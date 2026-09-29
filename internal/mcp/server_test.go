@@ -173,6 +173,31 @@ func TestHandler_ToolsCall_PolicyDenied(t *testing.T) {
 	assert.Equal(t, codeServerError, resp.Error.Code)
 }
 
+// TestHandler_ToolsCall_PolicyDenied_ZeroExecute proves the native /mcp
+// preventive contract (#442): a policy-denied tools/call never invokes the
+// tool. The denial response alone is not the proof; the invocation count is.
+func TestHandler_ToolsCall_PolicyDenied_ZeroExecute(t *testing.T) {
+	denied := &capturingTool{name: "denied_tool"}
+	h, store := newServerHandlerForFlow(t, []string{"only_this"}, denied)
+
+	resp := serverToolsCall(t, h, "denied_tool", `{"q":"hello"}`)
+	require.NotNil(t, resp.Error, "policy deny must surface as a JSON-RPC error")
+	assert.Equal(t, codeServerError, resp.Error.Code)
+	assert.Equal(t, 0, denied.executions(), "a policy-denied tool must never execute")
+
+	ev := latestServerEvidence(t, store)
+	assert.False(t, ev.PolicyDecision.Allowed)
+	assert.Equal(t, "deny", ev.PolicyDecision.Action)
+
+	// Control: the same tool type executes exactly once when policy allows it,
+	// so the zero above is a real prevention, not a broken fixture.
+	allowed := &capturingTool{name: "capture"}
+	h2, _ := newServerHandlerForFlow(t, []string{"capture"}, allowed)
+	resp = serverToolsCall(t, h2, "capture", `{"q":"hello"}`)
+	require.Nil(t, resp.Error)
+	assert.Equal(t, 1, allowed.executions())
+}
+
 func TestHandler_ToolsCall_ToolNotFound(t *testing.T) {
 	dir := t.TempDir()
 	store, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)

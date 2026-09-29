@@ -46,41 +46,40 @@ func NewGenerator(store *Store) *Generator {
 // Callers populate this struct at the end of the agent pipeline; the
 // Generator hashes prompts/responses, signs the record, and persists it.
 type GenerateParams struct {
-	CorrelationID           string // Unique trace identifier for this invocation
-	SessionID               string // Optional lifecycle session identifier
-	Stage                   string // "generation", "judge", or "commit"
-	CandidateIndex          int
-	JudgeScore              float64
-	Selected                bool
-	TenantID                string           // Tenant scope
-	AgentID                 string           // Agent that was invoked
-	InvocationType          string           // "manual", "scheduled", or "webhook:<name>"
-	RequestSourceID         string           // Who triggered (CLI user, webhook name, cron) — for GDPR Art. 30
-	PolicyDecision          PolicyDecision   // OPA evaluation result
-	Classification          Classification   // PII detection on input and output
-	AttachmentScan          *AttachmentScan  // nil when no attachments were provided
-	ModelUsed               string           // LLM model that was called (empty on deny/dry-run)
-	OriginalModel           string           // Primary model when degraded (empty when not degraded)
-	Degraded                bool             // True when cost degradation used fallback model
-	ModelRoutingRationale   string           // Why this model was chosen (e.g. "primary", "degraded to fallback")
-	ToolsCalled             []string         // MCP tools invoked during execution
-	Cost                    float64          // Estimated cost
-	Tokens                  TokenUsage       // Input/output token counts
-	MemoryTokens            int              // Tokens injected from memory context
-	DurationMS              int64            // Wall-clock duration of the full pipeline
-	Error                   string           // Non-empty on LLM or tool errors
-	SecretsAccessed         []string         // Vault secret names accessed during this run
-	MemoryWrites            []MemoryWrite    // Soul directory writes (if any)
-	MemoryReads             []MemoryRead     // Memory entries injected into the LLM prompt
-	InputPrompt             string           // Raw user prompt (hashed in evidence, not stored verbatim)
-	OutputResponse          string           // LLM response text (hashed in evidence)
-	AttachmentHashes        []string         // SHA256 hex of each attachment content (optional); same prompt+same attachments → same InputHash
-	Compliance              Compliance       // Applicable compliance frameworks and data location
-	AgentReasoning          string           // Optional agent-provided rationale (e.g. X-Talon-Reasoning)
-	AgentVerified           bool             // Optional per-agent signature verification result
-	ObservationModeOverride bool             // True when allowed despite policy deny (shadow/observation-only mode)
-	RoutingDecision         *RoutingDecision // Provider selection and rejected candidates (EU routing)
-	DataFlow                *DataFlow        // Data movement to destinations (digests only); nil when nothing egressed
+	CorrelationID         string // Unique trace identifier for this invocation
+	SessionID             string // Optional lifecycle session identifier
+	Stage                 string // "generation", "judge", or "commit"
+	CandidateIndex        int
+	JudgeScore            float64
+	Selected              bool
+	TenantID              string           // Tenant scope
+	AgentID               string           // Agent that was invoked
+	InvocationType        string           // "manual", "scheduled", or "webhook:<name>"
+	RequestSourceID       string           // Who triggered (CLI user, webhook name, cron) — for GDPR Art. 30
+	PolicyDecision        PolicyDecision   // OPA evaluation result
+	Classification        Classification   // PII detection on input and output
+	AttachmentScan        *AttachmentScan  // nil when no attachments were provided
+	ModelUsed             string           // LLM model that was called (empty on deny/dry-run)
+	OriginalModel         string           // Primary model when degraded (empty when not degraded)
+	Degraded              bool             // True when cost degradation used fallback model
+	ModelRoutingRationale string           // Why this model was chosen (e.g. "primary", "degraded to fallback")
+	ToolsCalled           []string         // MCP tools invoked during execution
+	Cost                  float64          // Estimated cost
+	Tokens                TokenUsage       // Input/output token counts
+	MemoryTokens          int              // Tokens injected from memory context
+	DurationMS            int64            // Wall-clock duration of the full pipeline
+	Error                 string           // Non-empty on LLM or tool errors
+	SecretsAccessed       []string         // Vault secret names accessed during this run
+	MemoryWrites          []MemoryWrite    // Soul directory writes (if any)
+	MemoryReads           []MemoryRead     // Memory entries injected into the LLM prompt
+	InputPrompt           string           // Raw user prompt (hashed in evidence, not stored verbatim)
+	OutputResponse        string           // LLM response text (hashed in evidence)
+	AttachmentHashes      []string         // SHA256 hex of each attachment content (optional); same prompt+same attachments → same InputHash
+	Compliance            Compliance       // Applicable compliance frameworks and data location
+	AgentReasoning        string           // Optional agent-provided rationale (e.g. X-Talon-Reasoning)
+	AgentVerified         bool             // Optional per-agent signature verification result
+	RoutingDecision       *RoutingDecision // Provider selection and rejected candidates (EU routing)
+	DataFlow              *DataFlow        // Data movement to destinations (digests only); nil when nothing egressed
 	// Semantic cache: set on cache hit (Cost=0, CostSaved=estimated equivalent LLM cost).
 	CacheHit     bool   // True when response was served from cache
 	CacheEntryID string // Cache entry ID for audit correlation
@@ -201,23 +200,22 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 		params.SessionID = sessionIDFromContext(ctx)
 	}
 	ev := &Evidence{
-		ID:                      "req_" + uuid.New().String()[:8],
-		CorrelationID:           params.CorrelationID,
-		SessionID:               params.SessionID,
-		Stage:                   params.Stage,
-		CandidateIndex:          params.CandidateIndex,
-		JudgeScore:              params.JudgeScore,
-		Selected:                params.Selected,
-		Timestamp:               time.Now(),
-		TenantID:                params.TenantID,
-		AgentID:                 params.AgentID,
-		InvocationType:          params.InvocationType,
-		RequestSourceID:         params.RequestSourceID,
-		PolicyDecision:          params.PolicyDecision,
-		Classification:          params.Classification,
-		AttachmentScan:          params.AttachmentScan,
-		ModelRoutingRationale:   params.ModelRoutingRationale,
-		ObservationModeOverride: params.ObservationModeOverride,
+		ID:                    "req_" + uuid.New().String()[:8],
+		CorrelationID:         params.CorrelationID,
+		SessionID:             params.SessionID,
+		Stage:                 params.Stage,
+		CandidateIndex:        params.CandidateIndex,
+		JudgeScore:            params.JudgeScore,
+		Selected:              params.Selected,
+		Timestamp:             time.Now(),
+		TenantID:              params.TenantID,
+		AgentID:               params.AgentID,
+		InvocationType:        params.InvocationType,
+		RequestSourceID:       params.RequestSourceID,
+		PolicyDecision:        params.PolicyDecision,
+		Classification:        params.Classification,
+		AttachmentScan:        params.AttachmentScan,
+		ModelRoutingRationale: params.ModelRoutingRationale,
 		Execution: Execution{
 			ModelUsed:     params.ModelUsed,
 			OriginalModel: params.OriginalModel,

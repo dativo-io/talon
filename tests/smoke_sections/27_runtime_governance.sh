@@ -44,7 +44,6 @@ test_section_27_runtime_governance() {
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "enforce"
   providers:
     openai:
       enabled: true

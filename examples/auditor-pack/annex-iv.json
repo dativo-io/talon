@@ -1,7 +1,7 @@
 {
   "title": "EU AI Act Annex IV — Technical Documentation Pack",
   "subtitle": "Deployment-governance records produced by Dativo Talon from signed runtime evidence and declared facts",
-  "generated_at": "2026-06-11T14:21:54.501392Z",
+  "generated_at": "2026-09-29T09:43:10.894434148Z",
   "framework": "eu-ai-act",
   "article": "Annex IV",
   "tenant_id": "default",
@@ -116,7 +116,7 @@
             "0"
           ],
           [
-            "Shadow-mode records (controls evaluated, not enforced)",
+            "Legacy shadow-mode records (removed posture, historical only)",
             "0"
           ]
         ]
@@ -124,7 +124,7 @@
     },
     {
       "heading": "9. Post-market monitoring (Annex IV s.9, Art. 72)",
-      "body": "Talon's evidence store provides continuous post-deployment records: every governed request is signed at write time and retained per the configured retention policy, supporting the post-market monitoring plan (Art. 72). Scope covered: 3 records from 2026-06-11 to 2026-06-11."
+      "body": "Talon's evidence store provides continuous post-deployment records: every governed request is signed at write time and retained per the configured retention policy, supporting the post-market monitoring plan (Art. 72). Scope covered: 3 records from 2026-09-29 to 2026-09-29."
     },
     {
       "heading": "Items to complete outside Talon",
@@ -158,9 +158,9 @@
   "evidence_linkage": {
     "evidence_count": 3,
     "sample_evidence_ids": [
-      "req_5ae7cb3b",
-      "req_631b773b",
-      "req_998dafe4"
+      "req_2245306b",
+      "req_7d3a1ead",
+      "req_907b400c"
     ],
     "verify_command": "talon audit verify --file evidence.signed.json",
     "signed_export_ref": "evidence.signed.json"
