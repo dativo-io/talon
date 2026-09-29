@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-11T14:21:54.495367Z",
+  "generated_at": "2026-09-29T09:43:10.891291971Z",
   "framework": "",
   "tenant_id": "default",
   "evidence_count": 3,
@@ -7,6 +7,12 @@
   "pii_record_count": 2,
   "total_cost_eur": 0.005,
   "mappings": [
+    {
+      "framework": "gdpr",
+      "article": "Art. 5(1)(c)",
+      "control": "Data minimization via PII redaction before prompt storage",
+      "source": "internal/classifier/pii.go"
+    },
     {
       "framework": "gdpr",
       "article": "Art. 30",
@@ -24,6 +30,12 @@
       "article": "Art. 44-50",
       "control": "EU data residency routing controls",
       "source": "internal/policy/rego/routing.rego"
+    },
+    {
+      "framework": "eu-ai-act",
+      "article": "Art. 9",
+      "control": "Risk management via embedded policy engine enforcement",
+      "source": "internal/policy/engine.go"
     },
     {
       "framework": "eu-ai-act",
@@ -51,6 +63,18 @@
     },
     {
       "framework": "dora",
+      "article": "Art. 6",
+      "control": "ICT risk management via policy-as-code cost and resource limits",
+      "source": "internal/policy/engine.go"
+    },
+    {
+      "framework": "dora",
+      "article": "Art. 7",
+      "control": "Reliable ICT systems: error-driven, sovereignty-filtered provider fallback chains with signed failed-attempt and fallback-decision evidence",
+      "source": "internal/failover/failover.go"
+    },
+    {
+      "framework": "dora",
       "article": "Art. 11",
       "control": "ICT incident traceability with signed audit trail",
       "source": "internal/evidence/store.go"
@@ -69,9 +93,9 @@
     }
   ],
   "sample_evidence_ids": [
-    "req_5ae7cb3b",
-    "req_631b773b",
-    "req_998dafe4"
+    "req_2245306b",
+    "req_7d3a1ead",
+    "req_907b400c"
   ],
   "data_destinations": [
     {

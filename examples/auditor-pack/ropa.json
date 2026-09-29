@@ -1,7 +1,7 @@
 {
   "title": "Record of Processing Activities",
   "subtitle": "AI traffic governed by Dativo Talon — generated from signed runtime evidence and declared facts",
-  "generated_at": "2026-06-11T14:21:54.498329Z",
+  "generated_at": "2026-09-29T09:43:10.893056196Z",
   "framework": "gdpr",
   "article": "Art. 30",
   "tenant_id": "default",
@@ -49,8 +49,8 @@
             "default",
             "gateway",
             "3",
-            "2026-06-11",
-            "2026-06-11"
+            "2026-09-29",
+            "2026-09-29"
           ]
         ]
       }
@@ -165,6 +165,11 @@
             "internal/tenant"
           ],
           [
+            "Mapped control: GDPR Art. 5(1)(c)",
+            "Data minimization via PII redaction before prompt storage",
+            "internal/classifier/pii.go"
+          ],
+          [
             "Mapped control: GDPR Art. 30",
             "Processing records via signed evidence export",
             "internal/evidence/store.go"
@@ -191,9 +196,9 @@
   "evidence_linkage": {
     "evidence_count": 3,
     "sample_evidence_ids": [
-      "req_5ae7cb3b",
-      "req_631b773b",
-      "req_998dafe4"
+      "req_2245306b",
+      "req_7d3a1ead",
+      "req_907b400c"
     ],
     "verify_command": "talon audit verify --file evidence.signed.json",
     "signed_export_ref": "evidence.signed.json"
