@@ -58,7 +58,7 @@ Look for:
 ## Behavior notes
 
 - Policy is always enforced; the former `TALON_QUICKSTART_MODE=shadow` opt-in was removed in #442 and a non-empty value is rejected at startup with migration guidance.
-- PII default action is `redact`.
+- PII default action is `redact` on the request path and `warn` on the response path: streaming responses are delivered immediately and observed after delivery (post-delivery observation in evidence, never buffering).
 - Key source precedence: client bearer > `OPENAI_API_KEY` > 401.
 - Partial OpenAI compatibility: only chat completions and responses create endpoints are supported at host root.
 

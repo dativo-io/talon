@@ -48,6 +48,22 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
+// Flush propagates streaming flushes. Embedding the http.ResponseWriter
+// interface promotes only Header/Write/WriteHeader, so without this method
+// every handler behind the middleware lost http.Flusher and each SSE
+// response (gateway streams, dashboard event feeds) was silently held in
+// the net/http buffer until it filled or the response ended (#476).
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the underlying writer to http.ResponseController.
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}
+
 // routePattern returns the chi route pattern (e.g. "/v1/triggers/{name}") when
 // available, otherwise the request path.
 func routePattern(r *http.Request) string {

@@ -440,14 +440,14 @@ policies:
     redact_pii: false      # redaction mangles code
 ```
 
-Streaming-honest response posture is set at the **organization baseline** — `allow` is deliberate, because any other response action buffers the entire SSE stream (LIMITATIONS.md §7), and a per-agent downgrade to `allow` is not expressible:
+The response action is set at the **organization baseline**. `warn` streams normally — the SSE stream is delivered as it arrives and scanned after delivery, so response PII is observed and recorded, never recalled — while `redact`/`block` are preventive and buffer the entire SSE stream before release (LIMITATIONS.md §7). A per-agent downgrade to `allow` is not expressible:
 
 ```yaml
 gateway:
   organization_policy:
     defaults:
       pii_action: "warn"
-      response_pii_action: "allow"
+      response_pii_action: "warn"
 ```
 
 Credential recognizers go in the same `agent.talon.yaml` (high-precision only — PEM blocks, prefixed API keys; Talon is not a secret scanner, keep gitleaks/trufflehog in pre-commit):

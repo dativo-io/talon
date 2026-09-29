@@ -74,9 +74,12 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 		},
 		OrganizationPolicy: OrganizationPolicy{
 			Defaults: OrgDefaults{
-				PIIAction:   "redact",
-				DailyCost:   50,
-				MonthlyCost: 500,
+				PIIAction: "redact",
+				// Responses stream normally and are observed after delivery
+				// (#476); inheriting redact would buffer every SSE stream.
+				ResponsePIIAction: "warn",
+				DailyCost:         50,
+				MonthlyCost:       500,
 			},
 			LogPrompts:   false,
 			LogResponses: false,

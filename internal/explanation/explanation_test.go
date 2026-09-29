@@ -129,3 +129,31 @@ func TestExplanation_StageCanonicalizationAndWhitelist(t *testing.T) {
 	assert.True(t, IsKnownStage(StageExecution))
 	assert.False(t, IsKnownStage("unknown_stage"))
 }
+
+// #476: response PII that was delivered (warn) or redacted before release
+// has its own codes; only a withheld response is a denial. The
+// output-validation stage sorts first, so these become the primary item.
+func TestExplanation_OutputPIIDispositionCodes(t *testing.T) {
+	for _, tc := range []struct {
+		code, decision string
+	}{
+		{CodePolicyObservedPIIOutput, DecisionAllow},
+		{CodePolicyRedactedPIIOutput, DecisionModify},
+		{CodePolicyDeniedPIIOutput, DecisionDeny},
+	} {
+		items := BuildFromFacts([]Fact{
+			{Code: CodePolicyAllowed, Decision: DecisionAllow, Stage: StagePolicyEvaluation},
+			{Code: tc.code, Decision: tc.decision, Stage: StageOutputValidation, Trigger: "email"},
+		})
+		primary, ok := Primary(items)
+		assert.True(t, ok)
+		assert.Equal(t, tc.code, primary.Code)
+		assert.Equal(t, tc.decision, primary.Decision)
+		assert.NotEmpty(t, primary.Reason)
+		assert.Equal(t, ReasonText(tc.code), primary.Reason)
+	}
+	assert.NotContains(t, ReasonText(CodePolicyObservedPIIOutput), "blocked")
+	assert.Contains(t, ReasonText(CodePolicyObservedPIIOutput), "after delivery")
+	assert.NotEmpty(t, FixFor(CodePolicyObservedPIIOutput))
+	assert.Empty(t, ReasonText("NOPE"))
+}

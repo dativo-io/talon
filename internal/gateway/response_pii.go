@@ -11,6 +11,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/classifier/adapter"
+	"github.com/dativo-io/talon/internal/evidence"
 )
 
 // ResponsePIIScanResult captures what the response PII scanner found.
@@ -33,6 +34,30 @@ type ResponsePIIScanResult struct {
 	// output_pii_blocked | output_residual_pii_after_redaction |
 	// output_scanner_unavailable.
 	BlockReason string
+	// Action is the configured response_pii_action the scan ran under
+	// (warn | redact | block); empty when no response scan ran.
+	Action string
+	// Enforcement, Streamed, Status, IncompleteReason, BytesObserved and
+	// CaptureLimit are the response_scan evidence facts (#476): whether the
+	// scan could still change what the client received, and whether it
+	// covered the whole model output. See evidence.ResponseScan.
+	Enforcement      string
+	Streamed         bool
+	Status           string
+	IncompleteReason string
+	BytesObserved    int64
+	CaptureLimit     int64
+}
+
+// newResponseScanResult seeds a result for a response scan that is about to
+// run under action: warn observes (never alters bytes), redact and block are
+// preventive (the response is held until the verdict).
+func newResponseScanResult(action string, streamed bool) *ResponsePIIScanResult {
+	enforcement := evidence.ResponseScanEnforcementPreventive
+	if action == "warn" {
+		enforcement = evidence.ResponseScanEnforcementObservation
+	}
+	return &ResponsePIIScanResult{Action: action, Enforcement: enforcement, Streamed: streamed, Status: evidence.ResponseScanStatusComplete}
 }
 
 // responseCapture wraps an http.ResponseWriter to capture the response body
@@ -77,23 +102,26 @@ func (rc *responseCapture) flushTo(w http.ResponseWriter) {
 //
 //nolint:gocyclo // action dispatch + fail-closed scanner-error branches are kept together
 func scanResponseForPII(ctx context.Context, apiFamily string, body []byte, action string, scanner classifier.Facade) ([]byte, *ResponsePIIScanResult) {
-	result := &ResponsePIIScanResult{}
 	if scanner == nil || action == "allow" || action == "" {
-		return body, result
+		return body, &ResponsePIIScanResult{}
 	}
+	result := newResponseScanResult(action, false)
 
 	contentText := extractResponseContentText(body)
 	if contentText == "" {
+		result.markIncomplete(evidence.ResponseScanIncompleteNoTextContent)
 		return body, result
 	}
 
 	cls, scanErr := scanner.Analyze(ctx, contentText)
 	if scanErr != nil {
 		// The scan gates egress for block/redact: fail closed. warn never
-		// gates, so the response passes with a logged warning.
+		// gates, so the response passes and the observation is recorded as
+		// incomplete rather than clean.
+		result.markIncomplete(evidence.ResponseScanIncompleteScannerUnavailable)
+		result.ScannerFailure = scannerFailureKind(scanErr)
 		if action == "block" || action == "redact" {
 			result.Blocked = true
-			result.ScannerFailure = scannerFailureKind(scanErr)
 			result.BlockReason = "output_scanner_unavailable"
 			log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked")
 			return scannerUnavailableBody(apiFamily), result
@@ -109,13 +137,7 @@ func scanResponseForPII(ctx context.Context, apiFamily string, body []byte, acti
 	result.Entities = classifier.MergeEntitySpans(contentText, cls.Entities)
 	result.Entities = applyDefaultFieldPath(result.Entities, "response.content")
 	result.Tier = cls.Tier
-	types := make(map[string]bool)
-	for _, e := range cls.Entities {
-		types[e.Type] = true
-	}
-	for t := range types {
-		result.PIITypes = append(result.PIITypes, t)
-	}
+	result.PIITypes = uniqueSortedEntityTypes(cls.Entities)
 
 	switch action {
 	case "redact":
@@ -475,16 +497,20 @@ func isStreamingRequest(body []byte) bool {
 	return ok && v
 }
 
-// handleStreamingPIIScan implements scan-first PII handling for buffered SSE
-// streams. The entire response is already buffered in capture, so we extract
-// content, scan for PII, then decide what to forward:
+// handleStreamingPIIScan implements the PREVENTIVE streaming response
+// controls (redact, block). The entire SSE stream was held in capture — the
+// client has received nothing yet — so the verdict is known before release:
 //
-//   - allow / no scanner: forward original buffered events as-is.
 //   - No PII found: forward original (zero latency penalty for clean responses).
-//   - warn + PII: forward original, log findings for evidence.
 //   - redact + PII + completedJSON: redact content, re-wrap in SSE, forward redacted.
 //   - redact + PII + delta-only: build synthetic response from accumulated deltas, redact, forward.
 //   - block + PII: return JSON error, discard original stream.
+//   - scanner failure: fail closed (502), nothing of the buffered stream is released.
+//
+// Holding the stream is what makes these actions preventive, and it is why
+// they cost time-to-first-token. The observational `warn` action never
+// comes here: it streams immediately and scans after delivery (#476, see
+// observeStreamedResponse).
 //
 //nolint:gocyclo // streaming policy branches are explicit to preserve fail-closed semantics
 func handleStreamingPIIScan(
@@ -501,6 +527,7 @@ func handleStreamingPIIScan(
 		forwardBufferedSSE(w, capture)
 		return nil
 	}
+	result := newResponseScanResult(action, true)
 
 	completedJSON := extractCompletedResponseFromSSE(raw)
 	contentText := ""
@@ -511,48 +538,35 @@ func handleStreamingPIIScan(
 		contentText = accumulateSSEContent(raw)
 	}
 	if contentText == "" {
+		result.markIncomplete(evidence.ResponseScanIncompleteNoTextContent)
 		forwardBufferedSSE(w, capture)
-		return nil
+		return result
 	}
 
 	cls, scanErr := scanner.Analyze(ctx, contentText)
 	if scanErr != nil {
-		if action == "block" || action == "redact" {
-			forwardScannerUnavailableResponse(w, apiFamily)
-			log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked_stream")
-			return &ResponsePIIScanResult{Blocked: true, ScannerFailure: scannerFailureKind(scanErr), BlockReason: "output_scanner_unavailable"}
-		}
-		log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_warn_stream")
-		forwardBufferedSSE(w, capture)
-		return &ResponsePIIScanResult{}
+		// Preventive actions fail closed: the held stream is discarded and
+		// the client gets the provider-native 502, never the unscanned bytes.
+		result.markIncomplete(evidence.ResponseScanIncompleteScannerUnavailable)
+		result.ScannerFailure = scannerFailureKind(scanErr)
+		result.Blocked = true
+		result.BlockReason = "output_scanner_unavailable"
+		forwardScannerUnavailableResponse(w, apiFamily)
+		log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked_stream")
+		return result
 	}
 	if cls == nil || !cls.HasPII {
 		forwardBufferedSSE(w, capture)
-		return &ResponsePIIScanResult{PIIDetected: false}
+		return result
 	}
 
-	types := make(map[string]bool)
-	for _, e := range cls.Entities {
-		types[e.Type] = true
-	}
-	var piiTypes []string
-	for t := range types {
-		piiTypes = append(piiTypes, t)
-	}
-	result := &ResponsePIIScanResult{
-		PIIDetected: true,
-		PIITypes:    piiTypes,
-		Entities:    classifier.MergeEntitySpans(contentText, cls.Entities),
-		Tier:        cls.Tier,
-	}
+	piiTypes := uniqueSortedEntityTypes(cls.Entities)
+	result.PIIDetected = true
+	result.PIITypes = piiTypes
+	result.Entities = classifier.MergeEntitySpans(contentText, cls.Entities)
+	result.Tier = cls.Tier
 
 	switch action {
-	case "warn":
-		forwardBufferedSSE(w, capture)
-		log.Warn().
-			Strs("pii_types", piiTypes).
-			Msg("response_pii_detected_warn_stream")
-
 	case "redact":
 		if completedJSON != nil {
 			redacted, redactErr := redactResponseContentFields(ctx, completedJSON, scanner)

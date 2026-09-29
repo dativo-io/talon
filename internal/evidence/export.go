@@ -90,6 +90,14 @@ type ExportRecord struct {
 	OrchParentAgentID string `json:"orch_parent_agent_id,omitempty"`
 	OrchClient        string `json:"orch_client,omitempty"`
 	OrchSessionSource string `json:"orch_session_source,omitempty"`
+	// Response-scan facts (trailing, backward-compatible, #476): how the
+	// response PII control was applied and whether the scan was complete, so
+	// a post-delivery observation is never exported as prevention.
+	ResponseScanAction           string `json:"response_scan_action,omitempty"`
+	ResponseScanEnforcement      string `json:"response_scan_enforcement,omitempty"`
+	ResponseScanStatus           string `json:"response_scan_status,omitempty"`
+	ResponseScanIncompleteReason string `json:"response_scan_incomplete_reason,omitempty"`
+	OutputPIIDetected            bool   `json:"output_pii_detected,omitempty"`
 }
 
 // ExportMetadata wraps JSON export with context about the export run.
@@ -203,6 +211,13 @@ func ToExportRecord(e *Evidence) ExportRecord {
 		rec.ToolContentHasPII = tc.HasPII
 		rec.ToolContentEntityTypes = tc.EntityTypes
 		rec.ToolContentEntityCount = tc.EntityCount
+	}
+	rec.OutputPIIDetected = e.Classification.OutputPIIDetected
+	if rs := e.Classification.ResponseScan; rs != nil {
+		rec.ResponseScanAction = rs.Action
+		rec.ResponseScanEnforcement = rs.Enforcement
+		rec.ResponseScanStatus = rs.Status
+		rec.ResponseScanIncompleteReason = rs.IncompleteReason
 	}
 	if o := e.Orchestration; o != nil {
 		rec.OrchAgentID = o.AgentID

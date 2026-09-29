@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.9 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.10 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -112,12 +112,27 @@ nested fields are:
   (detector identity, e.g. `talon-regex` or the configured external engine
   name), `type` (`regex` | `presidio` | `http` | `llm`), and optional
   `version`, `scan_duration_ms`, and `failure` (adapter failure kind —
-  `timeout`/`transport`/`status`/`decode`/`validation` — when a scanner
-  failure drove a fail-closed block). Entity types only; never raw PII text
-  or raw engine errors. The optional `tool_content` object (spec 1.5, #212)
-  records the observation-only PII scan of tool-related request content
-  (`scanned`, `has_pii`, `entity_types`, `entity_count`); detection is
-  evidence-only and never influences allow/deny or redaction in this version.
+  `timeout`/`transport`/`status`/`decode`/`validation` — when a scan failed:
+  a fail-closed block for preventive actions, an incomplete observation for
+  `warn`). Entity types only; never raw PII text or raw engine errors. The
+  optional `tool_content` object (spec 1.5, #212) records the
+  observation-only PII scan of tool-related request content (`scanned`,
+  `has_pii`, `entity_types`, `entity_count`); detection is evidence-only and
+  never influences allow/deny or redaction in this version. The optional
+  `response_scan` object (spec 1.10, #476), appended after `tool_content`,
+  states how the response-side PII control was applied: `action`
+  (`warn` | `redact` | `block`), `enforcement`
+  (`post_delivery_observation` — a streamed response delivered as it arrived
+  and scanned afterwards; `observation` — a non-streaming response scanned
+  before the write but never altered; `preventive` — held until the verdict
+  and possibly redacted or withheld), optional `streamed` (bool), `status`
+  (`complete` | `incomplete`), optional `incomplete_reason`
+  (`capture_limit_exceeded` | `upstream_error` | `client_cancelled` |
+  `scanner_unavailable` | `no_text_content`), and optional `bytes_observed` /
+  `capture_limit` (numbers, streamed observations only). It is omitted when
+  no response scan ran (`allow`). `output_pii_detected` / `output_pii_types`
+  keep describing what was found; with `status: incomplete` their absence
+  means "not fully observed", never "clean".
 - `execution`: `model_used` (string), `cost` (number), `tokens` (object),
   `duration_ms` (number), plus optional fields. `tokens` carries `input` and
   `output` always, plus optional `cache_read` / `cache_write` prompt-cache
@@ -285,6 +300,17 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 `Store.VerifyRecord`, and confirms that mutating a field invalidates the signature.
 
 ## 8. Changelog
+
+- **1.10** — added optional nested field `classification.response_scan` (#476):
+  how the response-side PII control was applied (`action`, `enforcement`,
+  `streamed`, `status`, `incomplete_reason`, `bytes_observed`,
+  `capture_limit`), so a post-delivery observation of a streamed `warn`
+  response is machine-distinguishable from a preventive redaction or block,
+  and an incomplete observation from a clean scan. Appended after
+  `tool_content` per the §2 append rule. Additive and backward-compatible:
+  records that omit the field keep identical canonical bytes and verify
+  unchanged (fixtures under `internal/evidence/testdata/pre_response_scan/`);
+  use a 1.10 verifier for records that carry it.
 
 - **1.9 (unchanged bytes, #442)** — fields 31 `observation_mode_override` and
   32 `shadow_violations` are now LEGACY: the live non-enforcing postures that (#442)

@@ -35,7 +35,7 @@ Each record contains these sections:
 | **Identity** | `id`, `session_id`, `correlation_id`, `timestamp`, `tenant_id`, `agent_id` | Who, when, which tenant; `session_id` links requests in the same lifecycle session |
 | **Policy Decision** | `allowed`, `action`, `reasons`, `policy_version` | What the policy engine decided |
 | **Deterministic Explanations** | `explanations[]` (`code`, `decision`, `stage`, `reason`, `trigger`, `fix`, `policy_ref`, `version_identity`) | Human-readable, reproducible rationale attached to every record |
-| **Classification** | `input_tier`, `output_tier`, `pii_detected`, `pii_redacted`, `output_pii_detected` | What PII was found |
+| **Classification** | `input_tier`, `output_tier`, `pii_detected`, `pii_redacted`, `output_pii_detected`, `response_scan` (how the response control was applied: post-delivery observation vs preventive, complete vs incomplete) | What PII was found, and whether the response finding was observed or prevented |
 | **Execution** | `model_used`, `cost`, `tokens`, `duration_ms`, `tools_called`, `error` | What the LLM did |
 | **Audit Trail** | `input_hash`, `output_hash` | SHA-256 content hashes for forensics |
 | **Compliance** | `frameworks`, `data_location` | Which regulations apply |

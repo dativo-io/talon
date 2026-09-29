@@ -163,16 +163,16 @@ Rate limits are enforced per agent identity. The `per_agent_requests_per_min` fi
 
 ### Response PII scanning
 
-Talon scans LLM responses **before** returning them to the client, including streaming (SSE) responses. Configure the baseline via `defaults.response_pii_action` in `gateway.organization_policy`; per agent, use the `data_classification` output booleans in the agent file (`output_scan` alone → warn; + `redact_output` → redact; + `block_on_pii` → block):
+Talon scans LLM responses, including streaming (SSE) responses. Configure the baseline via `defaults.response_pii_action` in `gateway.organization_policy`; per agent, use the `data_classification` output booleans in the agent file (`output_scan` alone → warn; + `redact_output` → redact; + `block_on_pii` → block):
 
-| Action | Behaviour |
-|--------|-----------|
-| `allow` | No scanning |
-| `warn` | Log PII detection to evidence, forward unchanged **(default)** |
-| `redact` | Replace PII in the response with `[REDACTED]` (works for both streaming and non-streaming) |
-| `block` | Reject the response with HTTP 451 and a policy violation error |
+| Action | Streaming | Behaviour |
+|--------|-----------|-----------|
+| `allow` | streams normally | No response scan |
+| `warn` **(default)** | streams normally | Forward unchanged; scan **after** delivery and record the finding in evidence (observation — cannot recall delivered PII) |
+| `redact` | buffers the whole stream before release (preventive) | Replace PII in the response with `[REDACTED]` before the client sees it |
+| `block` | buffers the whole stream before deciding (preventive) | Withhold the response with HTTP 451 and a policy violation error |
 
-The default is `warn` because LLM-generated content is not company data — the primary compliance value is the audit trail. Escalate to `redact` or `block` if your environment requires active response filtering.
+The default is `warn` because LLM-generated content is not company data — the primary compliance value is the audit trail. Escalate to `redact` or `block` if your environment requires active response filtering, accepting the streaming latency that prevention costs.
 
 Test it with a prompt that asks the model to generate a German IBAN:
 

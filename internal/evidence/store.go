@@ -348,6 +348,13 @@ type Classification struct {
 	// redaction. Additive omitempty per spec §2 append rule (spec 1.5);
 	// absent on older records and when scan_tool_content is off.
 	ToolContent *ToolContentScan `json:"tool_content,omitempty"`
+	// ResponseScan states how the response-side PII control was applied:
+	// post-delivery observation (streamed warn), pre-write observation
+	// (non-streaming warn) or preventive (redact/block), and whether the
+	// scan covered the whole response (#476). Additive omitempty per spec §2
+	// append rule (spec 1.10); absent on older records and when the response
+	// action is allow.
+	ResponseScan *ResponseScan `json:"response_scan,omitempty"`
 }
 
 // ToolContentScan is the evidence-only PII observation over tool-related

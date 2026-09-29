@@ -241,16 +241,18 @@ talon audit list --agent openclaw-gateway --limit 5
 
 #### Response PII scanning
 
-Talon scans LLM responses before returning them to the client. This works for both streaming (SSE) and non-streaming responses — the gateway buffers the stream, scans the completed response, then forwards the original or redacted version.
+Talon scans LLM responses for both streaming (SSE) and non-streaming responses. What the scan can do depends on the action: `warn` observes, `redact`/`block` prevent — and only prevention has to hold a stream back (#476).
 
-The default `response_pii_action` is **`warn`** because LLM-generated content is not company data. The real DLP boundary is the request path (where company data enters the LLM). Response scanning provides an audit trail that satisfies EU AI Act Art. 14 (human oversight) without breaking UX.
+The default `response_pii_action` is **`warn`** because LLM-generated content is not company data. The real DLP boundary is the request path (where company data enters the LLM). Response scanning provides an audit trail (supporting evidence for EU AI Act Art. 14 human oversight) without breaking UX.
 
-| Action | Behaviour |
-|--------|-----------|
-| `allow` | No scanning |
-| `warn` | Log PII to evidence, forward unchanged **(default)** |
-| `redact` | Replace PII with `[REDACTED]` in the response (streaming and non-streaming) |
-| `block` | Reject the response with HTTP 451 |
+| Action | Streaming | Behaviour |
+|--------|-----------|-----------|
+| `allow` | streams normally | No response scan |
+| `warn` **(default)** | streams normally | Response delivered unchanged; the stream is scanned **after** delivery (post-delivery observation, bounded capture) and the finding is recorded in signed evidence. Cannot recall PII already delivered. |
+| `redact` | preventive — buffers the whole stream before release | Replace PII with `[REDACTED]` before the client sees the response |
+| `block` | preventive — buffers the whole stream before deciding | Withhold the response with HTTP 451 |
+
+Evidence records which of these happened (`classification.response_scan`: `enforcement: post_delivery_observation | observation | preventive`, `status: complete | incomplete` plus a reason), so an observed finding is never rendered as a redaction.
 
 Escalation ladder when needed: `warn` → `redact` → `block`. Configure the baseline in `gateway.organization_policy.defaults.response_pii_action`; per agent, set the `data_classification` output booleans in the agent file (`output_scan` alone scans without changing the action; + `redact_output` → redact; + `block_on_pii` → block). The merge is monotonic — an agent may only tighten the baseline. The baseline level falls back to `defaults.pii_action` when unset, and an agent's input PII action never cascades to its response action.
 
@@ -339,7 +341,7 @@ For a complete incident response workflow, see the [Incident Response Playbook](
 |---|---|---|
 | PII in file attachments (PDF, CSV, etc.) | Attachment scanning with PII detection | `attachment_policy.action: warn` (default), escalate to `strip` or `block` |
 | Prompt injection via file attachment | Attachment injection scanning | `attachment_policy.injection_action: warn` (default), escalate to `strip` or `block` |
-| LLM returns PII in response | Response-path PII scanning (streaming + non-streaming) | `response_pii_action: warn` (default), escalate to `redact` or `block` |
+| LLM returns PII in response | Response-path PII scanning (streaming + non-streaming): `warn` observes after delivery, `redact`/`block` prevent (and buffer streams) | `response_pii_action: warn` (default), escalate to `redact` or `block` |
 | Agent sends forbidden tools in request | Gateway tool governance (filter/block) | `forbidden_tools: ["delete_*", "admin_*"]` strips tools before the LLM sees them |
 | Agent calls destructive tool | Destructive operation detection | `tool_access.rego` blocks `delete`, `drop`, `remove` patterns |
 | Runaway cost accumulation | Per-agent cost caps | `policies.cost_limits.daily` / `.monthly` in the agent file |

@@ -41,8 +41,10 @@ Client                         Talon Gateway                    LLM Provider
 ```
 
 *With `response_pii_action: allow` or `warn`, the response body is
-byte-identical to what the upstream provider returned. With `redact`, PII in
-the response may be replaced; with `block`, the response is withheld.
+byte-identical to what the upstream provider returned (under `warn` a stream
+is delivered as it arrives and scanned after delivery). With `redact`, PII in
+the response may be replaced; with `block`, the response is withheld — both
+hold a stream until the verdict.
 
 ## Step-by-Step Breakdown
 
@@ -203,19 +205,29 @@ For non-streaming responses, the LLM-generated content is extracted from the
 response JSON (e.g., `choices[].message.content` for OpenAI) and scanned for
 PII using the same recognizers as step 5.
 
-For streaming responses, content is accumulated from SSE delta chunks and
-scanned after the stream completes.
+For streaming responses the action decides *when* the scan can run (#476):
 
-Actions on PII detection in response (configurable):
-- `allow` — log only
-- `warn` — log with elevated severity
-- `redact` — rewrite response with PII replaced (non-streaming: JSON rewrite;
-  streaming: buffer, redact, re-emit as SSE)
-- `block` — return `503 Unavailable For Legal Reasons`
+| Action | Streaming delivery | Scan | May alter client bytes | Preventive |
+|---|---|---|---|---|
+| `allow` | immediate | none | no | no |
+| `warn` | immediate — every SSE event is flushed to the client as it arrives | after the stream terminates, over a bounded capture (4 MiB of raw SSE) | no | no — **post-delivery observation** |
+| `redact` | buffered until the verdict | before release | yes | yes |
+| `block` | buffered until the verdict | before release | yes (withheld, HTTP 451) | yes |
+
+Under `warn` the scan is observation: it cannot recall PII the client already
+received. The signed record states this (`classification.response_scan` with
+`enforcement: post_delivery_observation`), and any gap — capture bound
+exceeded, upstream failure, idle abort, client cancel, scanner failure — is
+recorded as `status: incomplete` with a reason rather than as a clean scan. A
+scanner failure after delivery never turns the already delivered stream into
+an error; for `redact`/`block` it stays fail-closed (HTTP 502, nothing of the
+buffered stream is released).
 
 - **Bytes read:** Response body content
-- **Bytes modified:** Only if `pii_action: redact` or `block`
-- **Latency:** 2-5ms (non-streaming); streaming scan happens after final chunk
+- **Bytes modified:** Only if `response_pii_action: redact` or `block`
+- **Latency:** 2-5ms (non-streaming); `warn` adds nothing to time-to-first-token
+  (the scan runs after the last chunk); `redact`/`block` delay the first byte
+  until generation completes
 
 ### Step 12: Evidence Generation and Cost Tracking
 

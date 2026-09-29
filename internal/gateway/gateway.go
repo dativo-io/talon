@@ -940,13 +940,28 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = context.WithValue(ctx, gatewayUpstreamAuthMode, upstreamAuthMode)
 	}
 
-	// Response-side PII action comes straight from the effective policy.
+	// Response-side PII action comes straight from the effective policy. The
+	// four actions have different delivery semantics (#476):
+	//
+	//   allow   no response scan; streams pass straight through
+	//   warn    observation only: a stream is delivered as it arrives and
+	//           scanned after it terminates (post-delivery observation); a
+	//           non-streaming body is scanned before the write but never
+	//           altered
+	//   redact  preventive: the response is held until the verdict and
+	//           rewritten — a stream is buffered before release
+	//   block   preventive: the response is held and withheld on PII — a
+	//           stream is buffered before the decision
+	//
+	// Only the preventive actions may delay or change what the client gets.
 	responsePIIAction := eff.ResponsePIIAction
 	isStreaming := isStreamingRequest(forwardBody)
 
 	var tokenUsage TokenUsage
 	var responsePII *ResponsePIIScanResult
 	needsResponseScan := responsePIIAction != "allow" && responsePIIAction != ""
+	observeStream := isStreaming && responsePIIAction == "warn"
+	preventiveStream := isStreaming && (responsePIIAction == "redact" || responsePIIAction == "block")
 	var forwardErr error
 	cacheStored := false
 
@@ -1120,10 +1135,25 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			capture.flushTo(w)
 		}
 
-	case needsResponseScan && isStreaming:
-		// Streaming + PII scan: buffer the entire SSE stream, extract text,
-		// scan for PII. If clean, forward the original buffered events. If
-		// PII found, return the redacted content wrapped in SSE format.
+	case observeStream:
+		// Streaming + warn: deliver the stream as it arrives (the observing
+		// writer forwards every write and flush to the client first) and
+		// scan the bounded capture only after the stream has terminated.
+		// This is post-delivery observation, not prevention: it cannot
+		// change or recall a byte, and it must not — so it never blocks
+		// after delivery, never rewrites the stream, and records any gap
+		// (truncation, cancel, capture bound, scanner failure) as an
+		// incomplete observation rather than a clean scan (#476).
+		obs := newObservingStreamWriter(w)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, obs, fwdParams, route, agent, extracted.Model, originalAuthorization, retryS, recordAttempt, checkCandidate)
+		responsePII = observeStreamedResponse(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), obs, responsePIIAction, g.classifier, forwardErr, ctx)
+
+	case preventiveStream:
+		// Streaming + redact/block (preventive): buffer the entire SSE
+		// stream, extract text, scan for PII. If clean, forward the original
+		// buffered events. If PII found, return the redacted content wrapped
+		// in SSE format, or withhold it. Buffering is the price of prevention:
+		// time-to-first-token becomes total generation time (documented).
 		// A forward error (upstream death, idle abort) goes through the SAME
 		// scan: the truncated buffer may already contain PII-bearing deltas,
 		// and flushing it raw would bypass the enforced response control
@@ -1133,12 +1163,22 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		capture := &responseCapture{ResponseWriter: w}
 		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, agent, extracted.Model, originalAuthorization, retryS, recordAttempt, checkCandidate)
 		responsePII = handleStreamingPIIScan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), w, capture, wire, responsePIIAction, g.classifier)
+		// A scan over a truncated stream covered only what arrived.
+		markStreamIncomplete(responsePII, forwardErr, ctx)
 
 	default:
 		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, agent, extracted.Model, originalAuthorization, retryS, recordAttempt, checkCandidate)
 	}
 
 	durationMS := time.Since(start).Milliseconds()
+
+	// From here on the provider has been reached (or definitively not): the
+	// evidence write, session accounting and metrics are local bookkeeping of
+	// what already happened and must not be dropped because the client went
+	// away mid-stream. A cancelled stream records an incomplete observation
+	// instead of no record at all (#476). Values (trace span, identity) are
+	// kept; only the client's cancellation is detached.
+	ctx = context.WithoutCancel(ctx)
 
 	// Provider/model actually used (may differ from the route when failover
 	// dispatched a fallback candidate). Evidence must record the truth.
@@ -1374,7 +1414,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agen
 		RetryAttempt:      retryAttemptFromContext(ctx),
 		Stage:             stageFromContext(ctx),
 		CandidateIndex:    candidateIndexFromContext(ctx),
-		ExplanationFacts:  buildGatewayExplanationFacts(allowed, reasons, outputPIIDetected, outputPIITypes, stageFromContext(ctx)),
+		ExplanationFacts:  buildGatewayExplanationFacts(allowed, reasons, responsePII),
 		DataFlow:          dataFlow,
 		EgressDecision:    egressDecision,
 		Orchestration:     orchestrationFromContext(ctx),
@@ -1395,6 +1435,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agen
 	params.TTFTMS = ttftMS
 	params.TPOTMS = tpotMS
 	params.Scanner = g.buildScannerEvidence(ctx, reasons, responsePII)
+	params.ResponseScan = responseScanEvidence(responsePII)
 	for _, opt := range opts {
 		opt(&params)
 	}
@@ -1459,21 +1500,24 @@ func resolveExecutionError(explicit string, reasons []string) string {
 	return ""
 }
 
-func buildGatewayExplanationFacts(allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, _ string) []explanation.Fact {
+// buildGatewayExplanationFacts renders the policy-evaluation facts plus, when
+// response PII was detected, one output-validation fact that says what
+// actually happened to the response: withheld (deny), redacted before
+// release (modify) or observed with the response delivered unchanged
+// (allow). A warn observation must never be explained as a denial (#476).
+func buildGatewayExplanationFacts(allowed bool, reasons []string, responsePII *ResponsePIIScanResult) []explanation.Fact {
 	facts := explanation.BuildLegacyFacts(allowed, decisionAction(allowed), reasons, explanation.StagePolicyEvaluation, "", "")
-	if outputPIIDetected {
-		trigger := "output_pii_detected"
-		if len(outputPIITypes) > 0 {
-			trigger = strings.Join(outputPIITypes, ",")
-		}
-		facts = append(facts, explanation.Fact{
-			Code:     explanation.CodePolicyDeniedPIIOutput,
-			Decision: explanation.DecisionDeny,
-			Stage:    explanation.StageOutputValidation,
-			Trigger:  trigger,
-		})
+	if responsePII == nil || !responsePII.PIIDetected {
+		return facts
 	}
-	return facts
+	disposition := outputPIIObserved
+	switch {
+	case responsePII.Blocked:
+		disposition = outputPIIBlocked
+	case responsePII.Redacted:
+		disposition = outputPIIRedacted
+	}
+	return append(facts, outputPIIFact(responsePII.PIITypes, disposition, "", ""))
 }
 
 func decisionAction(allowed bool) string {

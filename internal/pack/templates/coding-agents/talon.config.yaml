@@ -79,10 +79,11 @@ gateway:
   organization_policy:
     defaults:
       pii_action: "warn" # input scan: evidence + warning, code keeps flowing
-      # allow is the honest streaming default: any other value buffers the
-      # ENTIRE SSE stream (no visible tokens until generation completes).
-      # When streaming-safe warn ships, move to it (see LIMITATIONS.md).
-      response_pii_action: "allow"
+      # warn streams normally: the SSE stream is delivered as it arrives and
+      # scanned AFTER delivery (post-delivery observation, recorded in signed
+      # evidence). It cannot recall PII already delivered. redact/block are
+      # preventive and buffer the whole stream before release (#476).
+      response_pii_action: "warn"
       daily_cost: 100.00
       monthly_cost: 1000.00
     log_prompts: true
