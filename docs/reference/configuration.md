@@ -334,6 +334,10 @@ compliance:
 
 ---
 
+### Action catalog and approvals (`agent.talon.yaml`)
+
+Governed consequential actions (#458) are declared per AI use case: `actions.definitions` (JSON Schema input, reviewer projection, http destination) and `policies.approvals` (`expires_after`, `rules` with `actions` and `approver_groups`); `capabilities.forbidden_tools` is the DENY source. Full contract and endpoints: [Action Gateway](action-gateway.md). The catalog is compiled at `talon serve` start; a change takes effect at the next start.
+
 ### Gateway block
 
 When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml` configures the LLM API proxy. Active policy is always enforced: how permissive the gateway is follows from the rule actions you declare (`pii_action: warn|redact|block`, allowlists, budgets, egress), not from a runtime posture.
@@ -666,6 +670,37 @@ an EU or local provider).
 | `block` | buffered: the whole stream is held until the decision | before release | yes (withheld, HTTP 451) | yes |
 
 Signed evidence records which of these happened in `classification.response_scan`: `action`, `enforcement` (`post_delivery_observation` for a streamed `warn`, `observation` for a non-streaming `warn`, `preventive` for `redact`/`block`), `status` (`complete` | `incomplete`) and, when incomplete, `incomplete_reason` (`capture_limit_exceeded`, `upstream_error`, `client_cancelled`, `scanner_unavailable`, `no_text_content`), plus `bytes_observed` / `capture_limit` for streamed observations. An incomplete observation is never a clean scan: `output_pii_detected: false` only means "none found in what was observed". A scanner failure after delivery leaves the delivered stream untouched and marks the observation incomplete; under `redact`/`block` scanner failure stays fail-closed (HTTP 502). Non-streaming responses are always scanned before the write.
+
+### OpenShell delegated boundary (`gateway.openshell`)
+
+Optional (#482). When enabled, `talon serve --gateway` additionally serves NVIDIA OpenShell's supervisor-middleware gRPC contract (pinned to OpenShell v0.1.2) so OpenShell can ask Talon to decide model requests its sandbox network policy admits, **before** OpenShell injects the provider credential. Talon does not dispatch, retry or fall back on this path and never sees the provider key. Full guide: [docs/integration/openshell.md](../integration/openshell.md).
+
+```yaml
+gateway:
+  openshell:
+    enabled: true
+    listen: "0.0.0.0:50051"          # reachable from the OpenShell gateway AND every sandbox supervisor
+    tls:
+      cert_file: /etc/talon/openshell-middleware.pem
+      key_file:  /etc/talon/openshell-middleware-key.pem
+    # allow_insecure_transport: true  # plaintext h2c for local fixtures only; OpenShell sends no caller token → everything denied
+    identity:
+      issuer:   "openshell-gateway:<gateway_id>"           # exact iss claim of the supervisor's extension JWT
+      audience: "urn:openshell:extension:middleware:talon"  # exact registration audience
+      jwks_url: "https://<openshell-gateway>/.well-known/jwks.json"  # exactly one of jwks_url | jwks_file
+    middleware_name: talon            # default talon; must equal the gateway.toml registration name
+    max_payload_bytes: 4194304        # default and ceiling 4 MiB
+    request_timeout: 10s              # advertised in the manifest; 10ms–30s
+```
+
+| Key | Required | Notes |
+|---|---|---|
+| `listen` | yes | gRPC bind address |
+| `tls.cert_file` / `tls.key_file` | yes unless `allow_insecure_transport` | HTTPS with ALPN h2 |
+| `identity.issuer`, `identity.audience` | yes | exact-match trust anchors; caller tokens with any other value are rejected before evaluation |
+| `identity.jwks_url` or `identity.jwks_file` | exactly one | Ed25519 (OKP) keys; the URL must be https (loopback http allowed) |
+
+Destination → provider mapping uses the **host** of each enabled provider's `base_url`; a host with no match is denied with `destination_not_governed`. Sandbox identities are bound to use cases in the agent file (`agent.workload_identity.bindings`), never here.
 
 ### Gateway dashboard
 

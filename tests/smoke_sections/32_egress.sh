@@ -66,7 +66,7 @@ test_section_32_egress() {
   smoke_write_egress_config "$dir/talon.egress.bad.yaml"
   sed -i.bak 's/default_action: allow/default_action: maybe/' "$dir/talon.egress.bad.yaml" 2>/dev/null || true
   local bad_log="$dir/gateway_egress_bad.log"
-  run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.egress.bad.yaml" >"$bad_log" 2>&1 &
+  run_talon_bg serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.egress.bad.yaml" >"$bad_log" 2>&1
   local bad_pid=$!
   sleep 3
   if kill -0 "$bad_pid" 2>/dev/null; then
@@ -91,7 +91,7 @@ test_section_32_egress() {
   smoke_write_egress_config "$dir/talon.egress.yaml"
   TALON_GATEWAY_PID=""
   local gw_log="$dir/gateway_egress_serve.log"
-  run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.egress.yaml" >"$gw_log" 2>&1 &
+  run_talon_bg serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.egress.yaml" >"$gw_log" 2>&1
   TALON_GATEWAY_PID=$!
   if ! smoke_wait_health "$gateway_base_url" 10 1; then
     log_failure "egress gateway server did not start on port ${gateway_port}" "pid=$TALON_GATEWAY_PID"
@@ -162,7 +162,7 @@ test_section_32_egress() {
   # fail to start with migration guidance, never run as observe-only.
   smoke_write_egress_config "$dir/talon.egress.shadow.yaml" "shadow"
   local gw_shadow_log="$dir/gateway_egress_shadow.log"
-  run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.egress.shadow.yaml" >"$gw_shadow_log" 2>&1 &
+  run_talon_bg serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.egress.shadow.yaml" >"$gw_shadow_log" 2>&1
   local legacy_pid=$!
   local waited=0 legacy_exited=0
   while (( waited < 20 )); do

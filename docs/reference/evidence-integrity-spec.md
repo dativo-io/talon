@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.10 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.12 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -94,6 +94,9 @@ Top-level fields, **in serialization order** (this order is significant — see
 | 49 | `orchestration` | object | optional |
 | 50 | `session_budget` | object | optional |
 | 51 | `cost_budget` | object | optional |
+| 52 | `workload_identity` | object | optional |
+| 53 | `enforcement` | object | optional |
+| 54 | `action_lifecycle` | object | optional |
 
 Nested objects (`policy_decision`, `classification`, `execution`, `audit_trail`,
 `compliance`, and the optional objects) follow the same encoding rules recursively; their
@@ -194,6 +197,63 @@ nested fields are:
   crossing per budget window (record class `operator_event`, so it never
   counts as request traffic). Appended after `session_budget` per the §2
   append rule; pre-1.9 record signatures remain valid.
+- `workload_identity` (optional, spec 1.11, #457/#482): the outcome of
+  verified workload-identity federation at ingress. Fields: `status`
+  (`verified` | `failed` | `absent` | `asserted` — `asserted` marks
+  imported/asserted identity facts Talon never verified), `runtime`
+  (configured verification source, e.g. `openshell`), `auth_method`
+  (`jwt_eddsa`), `issuer`, `subject`, `principal_id`, `audience`, `binding`
+  (`agent_config` — the principal → use-case binding came from the agent's
+  own trusted configuration), `failure_code` (stable
+  `workload_identity_*` code), `verified_at` (RFC 3339). Safe facts only:
+  never the raw credential, signature or key material. Appended after
+  `cost_budget` per the §2 append rule.
+- `enforcement` (optional, spec 1.11, #146/#482): who owned the
+  prevention/observation boundary for this record. Fields: `mechanism`
+  (`intercept` | `delegate` | `verify`), `boundary` (`talon` |
+  `external_runtime`), `decision_authority` (`talon` | `external_runtime`),
+  `provenance` (`talon_enforced` | `external_runtime_enforced` |
+  `external_runtime_verified` | `client_asserted`), `observed` (bool — true
+  only when Talon itself observed the enforcement outcome; false on a
+  delegated pre-execution decision and on an imported fact), optional
+  `runtime` object (`type`, `id`, `policy_ref`, `reference`, `request_id`
+  — safe references to the external runtime, never tokens), and optional
+  `receipt` object (`kind`, `digest`, `verified`, `detail`) describing an
+  externally produced fact Talon consumed; `verified` is true only when
+  Talon cryptographically verified the receipt itself. **Absent means the
+  legacy default:** Talon intercepted on its own gateway/MCP boundary
+  (`talon_enforced`). A valid Talon signature proves Talon recorded the
+  claim, not that an external runtime enforced it. Appended after
+  `workload_identity`.
+- `action_lifecycle` (optional, spec 1.12, #458): one transition of a
+  governed action operation (invocation type `action_lifecycle`, record
+  class `action_event`). Every record of one operation shares the
+  operation's resource id as `correlation_id`. Fields: `event`
+  (`operation_established` | `operation_conflict` | `approval_requested` |
+  `approval_decided` | `attempt_claimed` | `attempt_dispatched` |
+  `attempt_completed` | `authorization_refused`), `sequence` (operation-
+  local, gap-free, 1 = establishing record), the exact identity
+  (`operation_id`, `operation_ref`, `action`, `digest`, `schema_digest`,
+  `policy_digest`, `binding_profile`, `execution_profile`,
+  `destination_id`, `identity_source`), the separate state axes (`verdict`,
+  `matched_rule_id`, `operation_status`, `approval_id`, `approval_status`,
+  `approver_groups`, `approval_expires_at`), the authenticated reviewer
+  (`reviewer_principal`, `reviewer_group`, `decision_reason` — never a
+  display name from a request), and attempt facts (`attempt_id`,
+  `attempt_ordinal`, `attempt_status`, `idempotency_key`,
+  `dispatch_boundary`, `dispatch_observed`, `result_provenance` =
+  `observed` | `unknown` | `not_dispatched`, `outcome_code`, `outcome_ref`,
+  `refusal_code`). These answer distinct questions on purpose: who decided
+  (verdict), whether a human decided (approval axis), whether Talon wrote
+  the downstream request (`dispatch_observed`), and how the result is
+  known (`result_provenance`); none of them is the enforcement-boundary
+  `enforcement.observed` flag. Raw arguments never appear; the digest and
+  the reviewer projection are the permanent record. Beyond per-record
+  signatures, `talon audit verify --operation <id>` checks lifecycle
+  consistency (order, sequence, constant digests, approval before claim,
+  claim before dispatch before completion, at most one effect) so
+  individually valid records cannot describe an impossible lifecycle.
+  Appended after `enforcement`.
 
 ## 3. Canonical serialization
 
@@ -301,6 +361,22 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 
 ## 8. Changelog
 
+- **1.12** — added optional top-level field `action_lifecycle` (#458),
+  appended after `enforcement`, plus invocation type `action_lifecycle`
+  (record class `action_event`): the per-transition signed record of one
+  governed action operation, with a lifecycle verifier over the chain.
+  Additive and backward-compatible per the append rule.
+- **1.11** — added optional top-level fields `workload_identity` (#457) and
+  `enforcement` (#146), appended after `cost_budget`, for the OpenShell
+  reference composition (#482): verified external workload identity facts,
+  and who owned the prevention boundary (`talon` vs `external_runtime`,
+  `intercept`/`delegate`/`verify`, `observed`, safe runtime references,
+  unverified receipts). Added invocation type `external_runtime_event`
+  (record class `external_event`) for imported containment facts. Additive
+  and backward-compatible: records that omit the fields keep identical
+  canonical bytes and verify unchanged; a pre-1.11 verifier drops the
+  unknown members on parse and therefore cannot verify records that carry
+  them — use a 1.11 verifier for new records.
 - **1.10** — added optional nested field `classification.response_scan` (#476):
   how the response-side PII control was applied (`action`, `enforcement`,
   `streamed`, `status`, `incomplete_reason`, `bytes_observed`,

@@ -34,6 +34,12 @@ type GatewayConfig struct {
 	RateLimits          RateLimitsConfig           `yaml:"rate_limits" json:"rate_limits"`
 	Timeouts            TimeoutsConfig             `yaml:"timeouts" json:"timeouts"`
 	NetworkInterception *NetworkInterceptionConfig `yaml:"network_interception,omitempty" json:"network_interception,omitempty"`
+	// OpenShell configures the delegated model-governance boundary for an
+	// NVIDIA OpenShell deployment (#482): Talon serves OpenShell's
+	// supervisor-middleware gRPC contract and decides model requests the
+	// sandbox supervisor admits, before OpenShell injects the provider
+	// credential. Off when absent.
+	OpenShell *OpenShellConfig `yaml:"openshell,omitempty" json:"openshell,omitempty"`
 	// DashboardListen is the optional separate bind address for the gateway
 	// dashboard (e.g. "127.0.0.1:9091"). When empty, routes are served on the
 	// main API server. Binding to localhost prevents accidental exposure.
@@ -693,6 +699,11 @@ func (c *GatewayConfig) Validate() error {
 	if c.ListenPrefix == "" {
 		return fmt.Errorf("gateway listen_prefix is required")
 	}
+	if c.OpenShell != nil {
+		if err := c.OpenShell.validate(); err != nil {
+			return fmt.Errorf("gateway openshell: %w", err)
+		}
+	}
 	switch c.OrganizationPolicy.ScanToolContent {
 	case "", ScanToolContentEvidenceOnly, ScanToolContentOff:
 	default:
@@ -878,4 +889,116 @@ func (c *GatewayConfig) ParseTimeouts() (ParsedTimeouts, error) {
 func (c *GatewayConfig) Provider(name string) (ProviderConfig, bool) {
 	p, ok := c.Providers[name]
 	return p, ok
+}
+
+// OpenShellConfig is the operator configuration for the OpenShell delegated
+// boundary (#482). Talon is the middleware SERVICE: OpenShell's gateway
+// registers it statically, calls Describe at startup, and every sandbox
+// supervisor calls EvaluateHttpRequest for admitted traffic to the
+// destinations the OpenShell policy binds Talon to.
+//
+// Trust anchors live HERE (server config), never in agent files: the
+// issuer and audience Talon expects on the supervisor's short-lived
+// extension JWT and where its Ed25519 JWKS comes from. Agent files bind
+// verified subjects to use cases (agent.workload_identity.bindings).
+type OpenShellConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Listen is the gRPC bind address (e.g. "127.0.0.1:50051"). It must be
+	// reachable from the OpenShell gateway AND every sandbox supervisor.
+	Listen string `yaml:"listen" json:"listen"`
+	// TLS serves the endpoint over HTTPS/h2 (OpenShell registration uses
+	// an https:// grpc_endpoint and can pin tls_ca_cert_path).
+	TLS OpenShellTLSConfig `yaml:"tls" json:"tls"`
+	// AllowInsecureTransport serves plaintext h2c instead of TLS. OpenShell
+	// sends NO extension token over an insecure registration, so every
+	// request then fails workload-identity verification and is denied —
+	// this exists for local fixtures only and logs a startup warning.
+	AllowInsecureTransport bool `yaml:"allow_insecure_transport,omitempty" json:"allow_insecure_transport,omitempty"`
+	// Identity is how the supervisor's caller token is verified.
+	Identity OpenShellIdentityConfig `yaml:"identity" json:"identity"`
+	// MiddlewareName is the manifest name OpenShell registers Talon under
+	// (default "talon"); it must match the gateway.toml registration name.
+	MiddlewareName string `yaml:"middleware_name,omitempty" json:"middleware_name,omitempty"`
+	// MaxPayloadBytes bounds the request body Talon will evaluate (default
+	// 4 MiB, OpenShell's own ceiling). Larger bodies are denied.
+	MaxPayloadBytes int64 `yaml:"max_payload_bytes,omitempty" json:"max_payload_bytes,omitempty"`
+	// RequestTimeout is the per-request budget advertised in the manifest
+	// (OpenShell accepts 10ms–30s; default 10s).
+	RequestTimeout string `yaml:"request_timeout,omitempty" json:"request_timeout,omitempty"`
+}
+
+// OpenShellTLSConfig points at the serving certificate.
+type OpenShellTLSConfig struct {
+	CertFile string `yaml:"cert_file,omitempty" json:"cert_file,omitempty"`
+	KeyFile  string `yaml:"key_file,omitempty" json:"key_file,omitempty"`
+}
+
+// OpenShellIdentityConfig holds the trust anchors for the supervisor's
+// extension JWT (typ openshell-ext+jwt, alg EdDSA).
+type OpenShellIdentityConfig struct {
+	// Issuer is the exact expected iss claim: "openshell-gateway:<gateway_id>".
+	Issuer string `yaml:"issuer" json:"issuer"`
+	// Audience is the exact expected aud claim: the audience configured on
+	// the OpenShell registration (default form
+	// "urn:openshell:extension:middleware:<name>").
+	Audience string `yaml:"audience" json:"audience"`
+	// JWKSURL fetches the gateway's published Ed25519 JWKS
+	// (<gateway>/.well-known/jwks.json); JWKSFile reads a static copy.
+	// Exactly one is required.
+	JWKSURL  string `yaml:"jwks_url,omitempty" json:"jwks_url,omitempty"`
+	JWKSFile string `yaml:"jwks_file,omitempty" json:"jwks_file,omitempty"`
+}
+
+// Defaults for the OpenShell boundary.
+const (
+	DefaultOpenShellMiddlewareName  = "talon"
+	DefaultOpenShellMaxPayloadBytes = int64(4 * 1024 * 1024)
+	DefaultOpenShellRequestTimeout  = "10s"
+)
+
+func (o *OpenShellConfig) validate() error {
+	if !o.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(o.Listen) == "" {
+		return fmt.Errorf("listen is required")
+	}
+	if !o.AllowInsecureTransport && (o.TLS.CertFile == "" || o.TLS.KeyFile == "") {
+		return fmt.Errorf("tls.cert_file and tls.key_file are required (or set allow_insecure_transport: true for local fixtures only)")
+	}
+	if strings.TrimSpace(o.Identity.Issuer) == "" || strings.TrimSpace(o.Identity.Audience) == "" {
+		return fmt.Errorf("identity.issuer and identity.audience are required")
+	}
+	if (o.Identity.JWKSURL == "") == (o.Identity.JWKSFile == "") {
+		return fmt.Errorf("identity: exactly one of jwks_url or jwks_file is required")
+	}
+	if o.Identity.JWKSURL != "" && !strings.HasPrefix(o.Identity.JWKSURL, "https://") && !strings.HasPrefix(o.Identity.JWKSURL, "http://127.0.0.1") && !strings.HasPrefix(o.Identity.JWKSURL, "http://localhost") {
+		return fmt.Errorf("identity.jwks_url must use https (plaintext is allowed only on loopback)")
+	}
+	if o.MiddlewareName == "" {
+		o.MiddlewareName = DefaultOpenShellMiddlewareName
+	}
+	if o.MaxPayloadBytes == 0 {
+		o.MaxPayloadBytes = DefaultOpenShellMaxPayloadBytes
+	}
+	if o.MaxPayloadBytes < 0 || o.MaxPayloadBytes > DefaultOpenShellMaxPayloadBytes {
+		return fmt.Errorf("max_payload_bytes must be between 1 and %d", DefaultOpenShellMaxPayloadBytes)
+	}
+	if o.RequestTimeout == "" {
+		o.RequestTimeout = DefaultOpenShellRequestTimeout
+	}
+	d, err := time.ParseDuration(o.RequestTimeout)
+	if err != nil || d < 10*time.Millisecond || d > 30*time.Second {
+		return fmt.Errorf("request_timeout must be a duration between 10ms and 30s")
+	}
+	return nil
+}
+
+// RequestTimeoutDuration returns the validated manifest timeout.
+func (o *OpenShellConfig) RequestTimeoutDuration() time.Duration {
+	d, err := time.ParseDuration(o.RequestTimeout)
+	if err != nil {
+		return 10 * time.Second
+	}
+	return d
 }

@@ -15,23 +15,26 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 )
 
 var (
-	auditTenant         string
-	auditAgent          string
-	auditLimit          int // list: max records to show
-	auditExportLimit    int // export: max records to export
-	auditExportFmt      string
-	auditFrom           string
-	auditTo             string
-	auditViolationsOnly bool
-	auditOutputFile     string
-	auditVerifyFile     string
-	auditVerifyFailover bool
-	auditSession        string
+	auditTenant          string
+	auditAgent           string
+	auditLimit           int // list: max records to show
+	auditExportLimit     int // export: max records to export
+	auditExportFmt       string
+	auditFrom            string
+	auditTo              string
+	auditViolationsOnly  bool
+	auditOutputFile      string
+	auditVerifyFile      string
+	auditVerifyFailover  bool
+	auditVerifyOperation string
+	auditVerifyTenant    string
+	auditSession         string
 )
 
 var auditCmd = &cobra.Command{
@@ -73,6 +76,8 @@ func init() {
 
 	auditVerifyCmd.Flags().StringVar(&auditVerifyFile, "file", "", "Verify all records from a signed export file")
 	auditVerifyCmd.Flags().StringVar(&auditSession, "session", "", "Verify every record in a session (session_id)")
+	auditVerifyCmd.Flags().StringVar(&auditVerifyOperation, "operation", "", "Verify one governed action operation's full lifecycle (operation_id): every record's signature AND lifecycle consistency (#458)")
+	auditVerifyCmd.Flags().StringVar(&auditVerifyTenant, "tenant", "", "Tenant scope for --operation when the operation_id exists in more than one tenant")
 	auditVerifyCmd.Flags().BoolVar(&auditVerifyFailover, "failover", false, "Verify provider fallback chains: with a correlation ID argument verifies that chain; without, verifies all failover evidence")
 	auditExportCmd.Flags().StringVar(&auditExportFmt, "format", "csv", "Output format: csv, json, ndjson, signed-json, signed-ndjson, or html")
 	auditExportCmd.Flags().StringVar(&auditFrom, "from", "", "Start date (YYYY-MM-DD)")
@@ -191,6 +196,12 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("use either --failover or --file, not both")
 		}
 		return auditVerifyFailoverChains(ctx, store, args)
+	}
+	if auditVerifyOperation != "" {
+		if auditVerifyFile != "" || auditSession != "" || len(args) > 0 {
+			return fmt.Errorf("--operation cannot be combined with --file, --session or an evidence ID")
+		}
+		return auditVerifyOperationLifecycle(ctx, store, auditVerifyOperation, auditVerifyTenant, cmd.OutOrStdout())
 	}
 
 	if auditSession != "" {
@@ -1170,6 +1181,49 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 	if len(ev.GatewayAnnotations) > 0 {
 		fmt.Fprintf(w, "Gateway Annotations: %s\n", strings.Join(ev.GatewayAnnotations, ", "))
 	}
+	if wi := ev.WorkloadIdentity; wi != nil {
+		fmt.Fprintf(w, "Workload Identity: %s", wi.Status)
+		if wi.Runtime != "" {
+			fmt.Fprintf(w, " | runtime=%s", wi.Runtime)
+		}
+		if wi.Subject != "" {
+			fmt.Fprintf(w, " | subject=%s", wi.Subject)
+		}
+		if wi.Issuer != "" {
+			fmt.Fprintf(w, " | issuer=%s", wi.Issuer)
+		}
+		if wi.AuthMethod != "" {
+			fmt.Fprintf(w, " | method=%s", wi.AuthMethod)
+		}
+		if wi.Binding != "" {
+			fmt.Fprintf(w, " | binding=%s", wi.Binding)
+		}
+		if wi.FailureCode != "" {
+			fmt.Fprintf(w, " | failure=%s", wi.FailureCode)
+		}
+		fmt.Fprintln(w)
+	}
+	if e := ev.Enforcement; e != nil {
+		fmt.Fprintf(w, "Enforcement: %s | mechanism=%s | boundary=%s | decided_by=%s | observed=%t", e.Provenance, e.Mechanism, e.Boundary, e.DecisionAuthority, e.Observed)
+		if r := e.Runtime; r != nil {
+			fmt.Fprintf(w, " | runtime=%s", r.Type)
+			if r.ID != "" {
+				fmt.Fprintf(w, "(%s)", r.ID)
+			}
+			if r.PolicyRef != "" {
+				fmt.Fprintf(w, " | runtime_policy=%s", r.PolicyRef)
+			}
+			if r.Reference != "" {
+				fmt.Fprintf(w, " | runtime_ref=%s", r.Reference)
+			}
+		}
+		if rc := e.Receipt; rc != nil {
+			fmt.Fprintf(w, " | receipt=%s verified=%t", rc.Kind, rc.Verified)
+		}
+		fmt.Fprintln(w)
+	} else if ev.InvocationType == "gateway" || ev.InvocationType == "gateway_count_tokens" {
+		fmt.Fprintln(w, "Enforcement: talon_enforced | mechanism=intercept | boundary=talon | decided_by=talon | observed=true (default)")
+	}
 	if o := ev.Orchestration; o != nil {
 		fmt.Fprintln(w, "Orchestration (client-asserted)")
 		if o.AgentID != "" {
@@ -1251,4 +1305,74 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		}
 	}
 	fmt.Fprintln(w, sep)
+}
+
+// auditVerifyOperationLifecycle verifies a governed action operation
+// (#458): every lifecycle record's HMAC and the lifecycle's consistency
+// (order, sequence, constant digests, approval before claim, claim before
+// dispatch before completion, at most one effect). Exit is non-zero when
+// the lifecycle is invalid; an incomplete (non-terminal) lifecycle is
+// reported and exits zero.
+func auditVerifyOperationLifecycle(ctx context.Context, store *evidence.Store, operationID, tenant string, out io.Writer) error {
+	repo, err := action.NewRepository(ctx, store.DB())
+	if err != nil {
+		return err
+	}
+	ops, err := repo.FindByOperationID(ctx, operationID)
+	if err != nil {
+		return fmt.Errorf("looking up operation: %w", err)
+	}
+	if tenant != "" {
+		filtered := ops[:0]
+		for _, op := range ops {
+			if op.TenantID == tenant {
+				filtered = append(filtered, op)
+			}
+		}
+		ops = filtered
+	}
+	switch {
+	case len(ops) == 0:
+		return fmt.Errorf("no operation with operation_id %q", operationID)
+	case len(ops) > 1:
+		return fmt.Errorf("operation_id %q exists in %d tenants; pass --tenant", operationID, len(ops))
+	}
+	op := ops[0]
+	records, err := store.ListByCorrelationID(ctx, op.Ref)
+	if err != nil {
+		return fmt.Errorf("listing lifecycle records: %w", err)
+	}
+	f := action.VerifyLifecycle(records, store.VerifyRecord)
+	fmt.Fprintf(out, "Operation %s (%s/%s, action %s, ref %s)\n", op.OperationID, op.TenantID, op.AgentID, op.Action, op.Ref)
+	fmt.Fprintf(out, "  Stored status: %s | attempts: %d | digest: %s\n", op.Status, op.AttemptCount, op.Digest)
+	for _, r := range records {
+		if r.ActionLifecycle == nil {
+			continue
+		}
+		l := r.ActionLifecycle
+		mark := "✓"
+		if !store.VerifyRecord(r) {
+			mark = "✗"
+		}
+		extra := ""
+		switch l.Event {
+		case evidence.ActionEventApprovalDecided:
+			extra = fmt.Sprintf(" approval=%s by %s (%s)", l.ApprovalStatus, l.ReviewerPrincipal, l.ReviewerGroup)
+		case evidence.ActionEventAttemptClaimed, evidence.ActionEventAttemptDispatched:
+			extra = fmt.Sprintf(" attempt=%s#%d", l.AttemptID, l.AttemptOrdinal)
+		case evidence.ActionEventAttemptCompleted:
+			extra = fmt.Sprintf(" attempt=%s#%d status=%s result=%s dispatch_observed=%t", l.AttemptID, l.AttemptOrdinal, l.AttemptStatus, l.ResultProvenance, l.DispatchObserved)
+		case evidence.ActionEventAuthorizationRefused, evidence.ActionEventOperationConflict:
+			extra = " code=" + l.RefusalCode
+		}
+		fmt.Fprintf(out, "  %s #%d %-24s %s op_status=%s%s\n", mark, l.Sequence, l.Event, r.ID, l.OperationStatus, extra)
+	}
+	fmt.Fprintf(out, "Lifecycle: %s\n", strings.ToUpper(f.Verdict))
+	for _, d := range f.Details {
+		fmt.Fprintf(out, "  - %s\n", d)
+	}
+	if f.Verdict == action.LifecycleInvalid {
+		return fmt.Errorf("lifecycle verification failed for operation %s", operationID)
+	}
+	return nil
 }

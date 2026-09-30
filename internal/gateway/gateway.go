@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -404,377 +403,33 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = r.Body.Close()
 
-	// Step 3: Extract
-	extracted, err := ExtractForProvider(wire, body)
-	if err != nil {
-		RecordGatewayRequest(ctx, agent.Name, "", route.Provider, "error")
-		RecordGatewayError(ctx, "extract_request")
-		WriteProviderError(w, wire, http.StatusBadRequest, "Invalid request body")
+	// Steps 3–7: the shared pre-dispatch decision (extract, attachments,
+	// PII, provider/sovereignty eligibility, budget/session admission,
+	// compiled policy, tool governance, redaction). ONE implementation for
+	// this HTTP path and the delegated external-runtime path (#432/#482).
+	outcome := g.decidePreDispatch(ctx, decisionInput{
+		Wire: wire, Provider: route.Provider, Agent: agent, Eff: eff, Body: body,
+		SessionID: sessionID, SessionSource: sessionSource, IsCountTokens: isCountTokens, CorrelationID: correlationID,
+	})
+	ctx = outcome.Ctx
+	if outcome.SessReservation != nil {
+		// The deferred release covers every non-settling exit (deny, tool
+		// block, upstream failure, panic); a successful settle in
+		// trackSessionUsage consumes the reservation first, making it a no-op.
+		defer g.releaseSessionReservation(outcome.SessReservation)
+	}
+	if outcome.Deny != nil {
+		g.writeDeny(ctx, w, wire, route, agent, start, correlationID, outcome.Deny)
 		return
 	}
-
-	// Step 3b: Scan attachments (base64-encoded file blocks)
-	attPolicy := eff.Attachment
-	var attSummary *AttachmentsScanSummary
-	if attPolicy.Action != "allow" {
-		attSummary = ScanRequestAttachments(ctx, body, wire,
-			g.attExtractor, g.classifier, g.attInjScanner, attPolicy)
-	}
-	if attSummary != nil && attSummary.BlockRequest {
-		durationMS := time.Since(start).Milliseconds()
-		WriteProviderError(w, wire, http.StatusBadRequest,
-			"Request blocked: attachment violates policy")
-		// The request is blocked either way; the scan only enriches
-		// evidence, so a scanner failure degrades to nil classification.
-		attCls, _ := g.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text)
-		persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text,
-			attCls, nil, 0, 0, "", false,
-			[]string{"attachment policy block"}, false, nil, attSummary, nil, false, "", 0, 0, false, 0, 0, 0)
-		if err != nil {
-			g.handleEvidenceWriteFailure(ctx, err)
-			return
-		}
-		g.emitMetrics(ctx, agent, route.Provider, extracted.Model, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
-		return
-	}
-	if attSummary != nil && attSummary.ModifiedBody != nil {
-		body = attSummary.ModifiedBody
-	}
-
-	// Step 4: Scan PII. A scanner failure is fail-closed: a request Talon
-	// cannot classify must not reach the provider. (Historical note: the
-	// removed shadow/log_only postures used to forward such requests
-	// unclassified; #442.) Continuation of the original comment:
-	// returning 502 — only enforce fails closed (#266 review round 5).
-	scanStart := time.Now()
-	classification, scanErr := g.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text)
-	ctx = withScanDuration(ctx, time.Since(scanStart))
-	if scanErr != nil {
-		durationMS := time.Since(start).Milliseconds()
-		RecordGatewayError(ctx, "scanner_unavailable")
-		WriteProviderError(w, wire, http.StatusBadGateway, "scanner_unavailable: Request blocked: PII scanner unavailable (fail-closed)")
-		persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, nil, nil, 0, durationMS, "", false, []string{"scanner unavailable"}, false, nil, attSummary, nil, false, "", 0, 0, false, 0, 0, 0, func(p *RecordGatewayEvidenceParams) {
-			if p.Scanner != nil {
-				p.Scanner.Failure = scannerFailureKind(scanErr)
-			}
-		})
-		if err != nil {
-			g.handleEvidenceWriteFailure(ctx, err)
-			return
-		}
-		g.emitMetrics(ctx, agent, route.Provider, extracted.Model, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
-		return
-	}
-
-	// Step 5: Classify (tier from PII)
-	tier := classification.Tier
-	if tier > 2 {
-		tier = 2
-	}
-
-	// Observation-only tool-content scan (#212): tool_use inputs, tool_result
-	// outputs and function-call arguments are scanned for evidence, never for
-	// enforcement — tool blocks cannot be redacted yet, so acting on this
-	// signal would fail-close every redact-mode deployment on agentic traffic.
-	var toolContentScan *evidence.ToolContentScan
-	if g.config.OrganizationPolicy.ScanToolContent != ScanToolContentOff && extracted.ToolText != "" {
-		tc, tcErr := g.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.ToolText)
-		if tcErr != nil {
-			// Evidence-only scan: a scanner error must not fail-close the
-			// request; the record says the content went out unscanned.
-			toolContentScan = &evidence.ToolContentScan{Scanned: false}
-			log.Warn().Str("agent", agent.Name).Err(tcErr).Msg("tool_content_scan_failed")
-		} else {
-			toolContentScan = &evidence.ToolContentScan{
-				Scanned:     true,
-				HasPII:      tc.HasPII,
-				EntityTypes: uniqueEntityTypes(tc.Entities),
-				EntityCount: len(tc.Entities),
-			}
-		}
-	}
-
-	// Agent allowed for this provider? One resolver-backed check covers the
-	// agent's own allowlist AND the organization hard constraint (#266). The
-	// signed record names WHICH layer denied — never blame the agent for an
-	// organization rule (#279 review).
-	if denySrc := eff.ProviderDenySource(route.Provider); denySrc != "" {
-		durationMS := time.Since(start).Milliseconds()
-		clientMsg := "provider_not_allowed: Provider not allowed for this agent (agent allowlist)"
-		if denySrc == DenySourceOrgProviderAllowlist {
-			clientMsg = "provider_not_allowed: Provider not allowed by organization policy"
-		}
-		WriteProviderError(w, wire, http.StatusForbidden, clientMsg)
-		persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed: " + denySrc}, false, nil, attSummary, nil, false, "", 0, 0, false, 0, 0, 0)
-		if err != nil {
-			g.handleEvidenceWriteFailure(ctx, err)
-			return
-		}
-		g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
-		return
-	}
-
-	if g.denySovereigntyExcluded(w, ctx, agent, route, start, correlationID, extracted, classification, attSummary) {
-		return
-	}
-
-	// Step 6: Evaluate policy
-	piiAction := eff.PIIAction
-	if piiAction == "block" && classification.HasPII {
-		durationMS := time.Since(start).Milliseconds()
-		WriteProviderError(w, wire, http.StatusBadRequest, "pii_policy_violation: Request contains PII that is not allowed")
-		persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, []string{"PII block"}, false, nil, attSummary, nil, false, "", 0, 0, false, 0, 0, 0)
-		if err != nil {
-			g.handleEvidenceWriteFailure(ctx, err)
-			return
-		}
-		g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
-		return
-	}
-
-	// Estimated cost for policy (use default token estimate if we don't have real tokens yet)
-	estTokensIn, estTokensOut := 500, 500
-	estimatedCost := g.costEstimate(route.Provider, extracted.Model, Usage{Input: estTokensIn, Output: estTokensOut}).Amount
-	if isCountTokens {
-		estimatedCost = 0 // free endpoint: a nonzero estimate would leak into budget input and deny evidence (#218)
-	}
-	dailyCost, monthlyCost, budgetUnavailable := g.agentCostTotals(ctx, agent)
-	if budgetUnavailable {
-		// Every evidence record for this request carries the governance-gap
-		// annotation (read via ctx by recordEvidence).
-		ctx = withBudgetUnavailable(ctx)
-	}
-	// Utilization must be measured against the same effective caps enforcement
-	// uses (default overlaid by per-agent override, bounded by the org ceiling
-	// #287), or the dashboard reports a different denominator than the runtime
-	// actually gates on (#216). Skip utilization/alerts when the spend read
-	// failed — a "0%" reading would be a lie; the request carries an
-	// agent_budget_unavailable annotation instead.
-	dailyCap, monthlyCap := eff.BindingDailyCap(), eff.BindingMonthlyCap()
-	if dailyCap > 0 && !budgetUnavailable {
-		RecordBudgetUtilization(ctx, agent.TenantID, "daily", (dailyCost/dailyCap)*100)
-		g.noteBudgetThresholds(ctx, agent, route.Provider, correlationID, "daily", dailyCost, dailyCap)
-	}
-	if monthlyCap > 0 && !budgetUnavailable {
-		RecordBudgetUtilization(ctx, agent.TenantID, "monthly", (monthlyCost/monthlyCap)*100)
-		g.noteBudgetThresholds(ctx, agent, route.Provider, correlationID, "monthly", monthlyCost, monthlyCap)
-	}
-	destinationRegion := g.providerRegion(route.Provider)
-	// Same-provider retry policy for this request (#139), resolved once from
-	// the effective policy (org defaults.retry replaced by the agent's
-	// retries block).
-	retryS := retrySettings{
-		MaxAttempts:    eff.RetryMaxAttempts,
-		InitialBackoff: eff.RetryInitialBackoff,
-		MaxBackoff:     eff.RetryMaxBackoff,
-	}
-	// Session-cap admission (#144): reserve this request's estimate BEFORE
-	// policy evaluation so concurrent requests serialize against reserved +
-	// settled spend. The deferred release covers every non-settling exit
-	// (deny, tool block, upstream failure, panic); a successful settle in
-	// trackSessionUsage consumes the reservation first, making it a no-op.
-	sessView, sessReservation := g.reserveSessionBudget(ctx, agent, sessionID, sessionSource, estimatedCost)
-	if sessReservation != nil {
-		defer g.releaseSessionReservation(sessReservation)
-	}
-	policyInput, sessionBudgetUnavailable := g.buildPolicyInputForRequest(ctx, agent, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, sessView)
-	{
-		allowed, reasons, policyErr := g.policy.EvaluateGateway(ctx, policyInput)
-		if policyErr != nil {
-			durationMS := time.Since(start).Milliseconds()
-			WriteProviderError(w, wire, http.StatusInternalServerError, "Policy evaluation failed")
-			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"policy evaluation error"}, false, nil, attSummary, nil, false, "", 0, 0, false, 0, 0, 0)
-			if err != nil {
-				g.handleEvidenceWriteFailure(ctx, err)
-				return
-			}
-			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
-			return
-		}
-		if !allowed && policyErr == nil {
-			durationMS := time.Since(start).Milliseconds()
-			egressReason := firstEgressReason(reasons)
-			if egressReason != "" {
-				log.Warn().
-					Str("correlation_id", correlationID).
-					Str("tenant_id", agent.TenantID).
-					Str("agent_id", agent.Name).
-					Int("data_tier", tier).
-					Str("destination", route.Provider).
-					Str("region", destinationRegion).
-					Str("reason", egressReason).
-					Msg("gateway_egress_denied")
-			}
-			WriteProviderError(w, wire, http.StatusForbidden, preferredDenyReason(reasons))
-			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
-				p.SessionBudget = sessionBudgetDetail(reasons, policyInput, estimatedCost)
-				// Budget hard stop (#144): the deny record explicitly
-				// carries the window/limit/spend it was decided on.
-				p.CostBudget = costBudgetDetail(reasons, dailyCost, monthlyCost, dailyCap, monthlyCap, estimatedCost)
-				if sessionBudgetUnavailable {
-					p.GatewayAnnotations = append(p.GatewayAnnotations, "session_budget_unavailable")
-				}
-			})
-			if err != nil {
-				g.handleEvidenceWriteFailure(ctx, err)
-				return
-			}
-			// Cost hard stops notify the org webhook — strictly after the
-			// signed deny record committed (#144). Non-cost denials
-			// (PII, egress, tools) are not cost events.
-			if code := costDenyReasonCode(reasons); code != "" {
-				costEv := CostEvent{
-					Event:         "budget_denied",
-					TenantID:      agent.TenantID,
-					Agent:         agent.Name,
-					EstimatedCost: estimatedCost,
-					Currency:      g.pricingCurrency,
-					ReasonCode:    code,
-					EvidenceID:    persisted.ID,
-					Timestamp:     persisted.Timestamp.UTC(),
-				}
-				if cb := persisted.CostBudget; cb != nil {
-					costEv.Period, costEv.Limit, costEv.Spent = cb.Period, cb.Limit, cb.Spent
-				}
-				g.postCostEvent(costEv)
-			}
-			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
-			return
-		}
-	}
-
-	// Step 6b: Tool governance — filter or block forbidden tools before the LLM sees them.
-	// Tool governance comes from the effective policy (baseline union provider union agent).
-	var toolResult *ToolGovernanceResult
-	forwardBody := body
-	if len(extracted.ToolNames) > 0 && hasToolGovernance(&eff) {
-		tr := evaluateToolPolicyFor(extracted.ToolNames, &eff)
-		toolResult = &tr
-		if len(tr.Removed) > 0 {
-			switch eff.ToolPolicyAction {
-			case "block":
-				durationMS := time.Since(start).Milliseconds()
-				log.Warn().
-					Str("agent", agent.Name).
-					Strs("forbidden", tr.Removed).
-					Msg("gateway_tool_blocked")
-				WriteProviderError(w, wire, http.StatusForbidden,
-					fmt.Sprintf("tool_policy_violation: Request contains forbidden tools: %v", tr.Removed))
-				persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text,
-					classification, nil, 0, 0, "", false, []string{"tool governance block"}, false, nil, attSummary, toolResult, false, "", 0, 0, false, 0, 0, estimatedCost)
-				if err != nil {
-					g.handleEvidenceWriteFailure(ctx, err)
-					return
-				}
-				g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
-				return
-			default:
-				filtered, filterErr := FilterRequestBodyTools(wire, forwardBody, tr.Kept)
-				if filterErr != nil {
-					durationMS := time.Since(start).Milliseconds()
-					log.Error().Err(filterErr).
-						Str("agent", agent.Name).
-						Strs("forbidden", tr.Removed).
-						Msg("gateway_tool_filter_failed")
-					WriteProviderError(w, wire, http.StatusInternalServerError,
-						"Failed to filter forbidden tools from request")
-					persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text,
-						classification, nil, 0, 0, "", false, []string{"tool filter error"}, false, nil, attSummary, toolResult, false, "", 0, 0, false, 0, 0, estimatedCost)
-					if err != nil {
-						g.handleEvidenceWriteFailure(ctx, err)
-						return
-					}
-					g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
-					return
-				}
-				forwardBody = filtered
-				log.Info().
-					Str("agent", agent.Name).
-					Strs("removed", tr.Removed).
-					Strs("kept", tr.Kept).
-					Msg("gateway_tools_filtered")
-			}
-		}
-	}
-
-	inputPIIRedacted := false
-	// Step 7: Redact (if policy says redact and PII found).
-	// Redaction failure is fail-closed: the request is known to contain PII,
-	// so forwarding it unredacted is never acceptable.
-	if piiAction == "redact" && classification.HasPII {
-		redacted, redactErr := RedactRequestBody(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), wire, forwardBody, g.classifier)
-		if redactErr != nil {
-			durationMS := time.Since(start).Milliseconds()
-			RecordGatewayError(ctx, "scanner_unavailable")
-			WriteProviderError(w, wire, http.StatusBadGateway, "scanner_unavailable: Request blocked: PII redaction failed (fail-closed)")
-			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction failed"}, false, nil, attSummary, toolResult, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
-				if p.Scanner != nil {
-					p.Scanner.Failure = scannerFailureKind(redactErr)
-				}
-			})
-			if err != nil {
-				g.handleEvidenceWriteFailure(ctx, err)
-				return
-			}
-			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
-			return
-		}
-		forwardBody = redacted
-		inputPIIRedacted = true
-	}
-	// Fail closed if redacted request text still contains recognized PII.
-	if inputPIIRedacted && g.classifier != nil {
-		redactedExtracted, extractErr := ExtractForProvider(wire, forwardBody)
-		if extractErr != nil {
-			durationMS := time.Since(start).Milliseconds()
-			WriteProviderError(w, wire, http.StatusBadRequest, "Request blocked: unable to verify redacted payload")
-			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction verification failed"}, false, nil, attSummary, toolResult, false, "", 0, 0, false, 0, 0, estimatedCost)
-			if err != nil {
-				g.handleEvidenceWriteFailure(ctx, err)
-				return
-			}
-			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
-			return
-		}
-		if verifyErr := g.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedExtracted.Text); verifyErr != nil {
-			durationMS := time.Since(start).Milliseconds()
-			// Residual PII (policy outcome) and an unverifiable scan (engine
-			// failure) are different facts: status, message, evidence reason,
-			// and scanner failure kind must each say which one happened.
-			residual := errors.Is(verifyErr, classifier.ErrPIIDetected)
-			types := strings.Join(classifier.ResidualTypes(verifyErr), ", ")
-			// The machine-code prefix travels into the provider-native
-			// error.type (#209): a residual block is a policy outcome (never
-			// retriable as-is), a failed verification is infrastructure
-			// (retriable once the engine is back) — SDK clients must be able
-			// to branch on that, consistent with the response path.
-			msg := "pii_policy_violation: Request blocked: recognized PII remains after redaction"
-			status := http.StatusBadRequest
-			reason := "request residual pii after redaction"
-			if !residual {
-				msg = "scanner_unavailable: Request blocked: redaction could not be verified (fail-closed)"
-				status = http.StatusBadGateway
-				reason = "request redaction verification failed: scanner unavailable"
-				RecordGatewayError(ctx, "scanner_unavailable")
-				log.Warn().Err(verifyErr).Str("agent", agent.Name).Msg("request_redaction_verification_scanner_unavailable")
-			}
-			if types != "" {
-				msg += " (types: " + types + ")"
-			}
-			WriteProviderError(w, wire, status, msg)
-			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{reason}, false, nil, attSummary, toolResult, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
-				if !residual && p.Scanner != nil {
-					p.Scanner.Failure = scannerFailureKind(verifyErr)
-				}
-			})
-			if err != nil {
-				g.handleEvidenceWriteFailure(ctx, err)
-				return
-			}
-			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
-			return
-		}
-	}
+	dec := outcome.Allow
+	extracted, classification, tier := dec.Extracted, dec.Classification, dec.Tier
+	attSummary, toolContentScan, toolResult := dec.AttSummary, dec.ToolContentScan, dec.ToolResult
+	forwardBody, inputPIIRedacted, piiAction := dec.ForwardBody, dec.InputPIIRedacted, dec.PIIAction
+	estimatedCost, estTokensIn, estTokensOut := dec.EstimatedCost, dec.EstTokensIn, dec.EstTokensOut
+	dailyCost, monthlyCost := dec.DailyCost, dec.MonthlyCost
+	sessionBudgetUnavailable, sessView, retryS := dec.SessionBudgetUnavailable, dec.SessView, dec.RetryS
+	sessReservation := outcome.SessReservation
 
 	// Step 7b: Apply the provider's Responses API store mode. Default is
 	// "preserve" — an explicit client store:false is a data-retention decision
@@ -1305,7 +960,9 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agen
 		cacheReadTokens, cacheWriteTokens = usage.CacheRead, usage.CacheWrite
 	}
 	secretsAccessed := []string{}
-	if prov, ok := g.config.Provider(provider); ok && prov.SecretName != "" {
+	// On the delegated path the runtime injects the provider credential and
+	// Talon never touches the vault binding — the record must not say it did.
+	if prov, ok := g.config.Provider(provider); ok && prov.SecretName != "" && upstreamAuthModeFromContext(ctx) != UpstreamAuthModeExternalRuntime {
 		secretsAccessed = append(secretsAccessed, prov.SecretName)
 	}
 	piiDetected := []string{}

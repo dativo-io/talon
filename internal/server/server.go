@@ -36,6 +36,9 @@ type Server struct {
 	mcpServer            http.Handler // native MCP at POST /mcp
 	mcpProxy             http.Handler // optional MCP proxy at POST /mcp/proxy
 	gateway              http.Handler // optional LLM API gateway at /v1/proxy/*
+	actionServices       ActionServiceResolver
+	approvalOwners       ApprovalOwnerResolver
+	approvers            ApproverResolver
 	tenantManager        *tenant.Manager
 	webhookHandler       *trigger.WebhookHandler
 	planReviewStore      *agent.PlanReviewStore
@@ -337,6 +340,21 @@ func (s *Server) Routes() http.Handler {
 
 	// Webhooks (no auth; signature validation can be added later)
 	r.Post("/v1/triggers/{name}", s.webhookHandler.HandleWebhook)
+
+	// Action Gateway (#429/#458): runtime operations under the agent key;
+	// reviewer decisions under the approver credential only (the handler
+	// authenticates; no admin/dev-open fallback).
+	if s.actionServices != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(TenantKeyMiddleware(s.agentKeys, s.adminKey))
+			r.Use(RateLimitMiddleware(s.tenantManager))
+			r.Post("/v1/action-operations", s.handleActionEstablish)
+			r.Get("/v1/action-operations/{operation_id}", s.handleActionGet)
+			r.Post("/v1/action-operations/{operation_id}/attempts", s.handleActionAttempt)
+			r.Get("/v1/approvals/{approval_id}", s.handleApprovalGet)
+		})
+		r.Post("/v1/approvals/{approval_id}/decisions", s.handleApprovalDecision)
+	}
 
 	// LLM API Gateway (agent-key identification via the identity registry; no Talon auth middleware)
 	if s.gateway != nil {

@@ -66,6 +66,18 @@ type LoadedAgent struct {
 	// Override is the agent's explicit policy override — exactly one override
 	// layer over the organization baseline.
 	Override *PolicyOverride
+	// WorkloadBindings lists the verified external principals that resolve
+	// to this agent (#457/#482): (runtime, exact verified subject). A
+	// subject binds to at most one agent per installation.
+	WorkloadBindings []WorkloadBinding
+}
+
+// WorkloadBinding is one verified-principal → agent binding from trusted
+// agent configuration. Runtime names the configured verification source
+// (e.g. "openshell"); Subject is the exact subject that source presents.
+type WorkloadBinding struct {
+	Runtime string
+	Subject string
 }
 
 // PolicyOverride is the canonical per-agent policy override. It is the ONLY
@@ -124,6 +136,8 @@ type ResolvedIdentity struct {
 	AcceptClientMetadata *bool
 	Override             *PolicyOverride
 
+	// workloadBindings are copied from the loaded agent for projections.
+	workloadBindings []WorkloadBinding
 	// key is the resolved traffic key material. Unexported: it exists only
 	// so projections can hand the server middleware a key → identity map; it
 	// is never persisted or logged. keyDigest is the SHA-256 of key, used for
@@ -179,7 +193,12 @@ func NewQuickstartIdentity() *ResolvedIdentity {
 // swaps whole registries atomically; nothing mutates one in place.
 type IdentityRegistry struct {
 	identities []*ResolvedIdentity
+	// byWorkload indexes verified (runtime, subject) bindings → identity
+	// (#457/#482). Built once with the registry; exact-match lookup only.
+	byWorkload map[workloadKey]*ResolvedIdentity
 }
+
+type workloadKey struct{ runtime, subject string }
 
 // PriorKey is a previously-resolved identity's key material plus the context
 // needed to decide whether reusing it is SAFE (#269 review round 5): reuse
@@ -232,8 +251,9 @@ func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *sec
 //     bearer first, so a collision would silently elevate that agent's
 //     traffic to operator authority — fail startup instead.
 func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault *secrets.SecretStore, adminKey string, opts BuildOptions) (*IdentityRegistry, error) {
-	reg := &IdentityRegistry{identities: make([]*ResolvedIdentity, 0, len(agents))}
+	reg := &IdentityRegistry{identities: make([]*ResolvedIdentity, 0, len(agents)), byWorkload: make(map[workloadKey]*ResolvedIdentity)}
 	byName := make(map[string]string, len(agents))   // name → path
+	byWorkload := make(map[workloadKey]string)       // binding → agent name (dup check)
 	byKey := make(map[string]string, len(agents))    // raw key → agent name (build-time dup check only)
 	bySecret := make(map[string]string, len(agents)) // secret name → agent name
 
@@ -286,8 +306,12 @@ func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault 
 			return nil, err
 		}
 		byKey[keyMaterial] = a.Name
+		bindings, err := validateWorkloadBindings(a, byWorkload)
+		if err != nil {
+			return nil, err
+		}
 
-		reg.identities = append(reg.identities, &ResolvedIdentity{
+		id := &ResolvedIdentity{
 			Name:                 a.Name,
 			TenantID:             tenantID,
 			Team:                 a.Team,
@@ -297,12 +321,64 @@ func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault 
 			Enabled:              a.Enabled == nil || *a.Enabled,
 			AcceptClientMetadata: cloneBoolPtr(a.AcceptClientMetadata),
 			Override:             a.Override.clone(),
+			workloadBindings:     bindings,
 			key:                  []byte(keyMaterial),
 			keyDigest:            sha256.Sum256([]byte(keyMaterial)),
 			keySecretName:        a.KeySecretName,
-		})
+		}
+		reg.identities = append(reg.identities, id)
+		for _, b := range bindings {
+			reg.byWorkload[workloadKey{b.Runtime, b.Subject}] = id
+		}
 	}
 	return reg, nil
+}
+
+// validateWorkloadBindings checks one agent's verified-principal bindings
+// (#457/#482) fail-closed: runtime and subject are required, subjects are
+// bounded, and a (runtime, subject) pair binds to exactly one agent per
+// installation — otherwise a verified sandbox could resolve to two use
+// cases with different policies.
+func validateWorkloadBindings(a *LoadedAgent, byWorkload map[workloadKey]string) ([]WorkloadBinding, error) {
+	out := make([]WorkloadBinding, 0, len(a.WorkloadBindings))
+	for i, b := range a.WorkloadBindings {
+		runtime := strings.TrimSpace(b.Runtime)
+		subject := strings.TrimSpace(b.Subject)
+		if runtime == "" || subject == "" {
+			return nil, fmt.Errorf("agent %q (%s): workload_identity.bindings[%d]: runtime and subject are required", a.Name, a.Path, i)
+		}
+		if len(subject) > 512 {
+			return nil, fmt.Errorf("agent %q (%s): workload_identity.bindings[%d]: subject exceeds 512 bytes", a.Name, a.Path, i)
+		}
+		k := workloadKey{runtime, subject}
+		if prev, dup := byWorkload[k]; dup && prev != a.Name {
+			return nil, fmt.Errorf("agents %q and %q both bind %s subject %q — a verified workload principal resolves to exactly one AI use case", prev, a.Name, runtime, subject)
+		}
+		byWorkload[k] = a.Name
+		out = append(out, WorkloadBinding{Runtime: runtime, Subject: subject})
+	}
+	return out, nil
+}
+
+// ResolveWorkload resolves a VERIFIED (runtime, subject) pair to the agent
+// bound to it in trusted configuration (#457/#482). The caller must have
+// verified the subject cryptographically before calling; this is an exact
+// lookup, never a pattern match, and unknown subjects fail closed.
+func (r *IdentityRegistry) ResolveWorkload(runtime, subject string) (*ResolvedIdentity, bool) {
+	if r == nil || runtime == "" || subject == "" {
+		return nil, false
+	}
+	id, ok := r.byWorkload[workloadKey{runtime, subject}]
+	return id, ok
+}
+
+// WorkloadBindings returns a copy of the identity's verified-principal
+// bindings for projections.
+func (id *ResolvedIdentity) WorkloadBindings() []WorkloadBinding {
+	if id == nil {
+		return nil
+	}
+	return append([]WorkloadBinding(nil), id.workloadBindings...)
 }
 
 // checkKeyCollisions fails closed when a resolved key duplicates another agent's

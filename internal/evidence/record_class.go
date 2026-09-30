@@ -34,6 +34,12 @@ const (
 	// ClassToolEvent is a tool/cache maintenance record (cache eviction /
 	// erasure) — not agent traffic.
 	ClassToolEvent RecordClass = "tool_event"
+	// ClassExternalEvent is a containment fact an external runtime produced
+	// and Talon imported (#482): never a Talon decision, never traffic.
+	ClassExternalEvent RecordClass = "external_event"
+	// ClassActionEvent is one governed-action lifecycle transition (#458):
+	// authorization/attempt state, never LLM request traffic.
+	ClassActionEvent RecordClass = "action_event"
 )
 
 // nonRequestClass is the closed registry of invocation types that are NOT
@@ -42,10 +48,12 @@ const (
 // (gateway/agent failover, cmd lifecycle, agentcatalog reload, cache events).
 var nonRequestClass = map[string]RecordClass{
 	// Provider sub-attempts of a single request.
-	"gateway_failover_attempt": ClassProviderAttempt,
-	"llm_failover_attempt":     ClassProviderAttempt,
-	"llm_failover_decision":    ClassProviderAttempt,
-	"gateway_count_tokens":     ClassProviderAttempt,
+	"gateway_failover_attempt":         ClassProviderAttempt,
+	"llm_failover_attempt":             ClassProviderAttempt,
+	"llm_failover_decision":            ClassProviderAttempt,
+	"gateway_count_tokens":             ClassProviderAttempt,
+	InvocationTypeExternalRuntimeEvent: ClassExternalEvent,
+	InvocationTypeActionLifecycle:      ClassActionEvent,
 
 	// LEGACY (#442): written by the removed MCP proxy shadow/passthrough
 	// postures; historical rows must keep this class so old traffic counts do

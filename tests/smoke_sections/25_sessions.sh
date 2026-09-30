@@ -37,15 +37,28 @@ test_section_25_sessions() {
   local sess_id
   sess_id="$(echo "$list_out" | awk '/^sess_/ {print $1; exit}')"
   if [[ -n "$sess_id" ]]; then
+    # Default output is human-readable; --json is the machine contract
+    # (internal/cmd/session.go sessionDetail: {session{id,status,…}, summary}).
     local show_out show_exit
     show_out="$(run_talon session show "$sess_id" 2>&1)"
     show_exit=$?
-    if [[ $show_exit -eq 0 ]] && echo "$show_out" | jq -e '.id and .status' &>/dev/null; then
-      assert_pass "talon session show <id> exits 0 with valid JSON (id, status)" true
+    if [[ $show_exit -eq 0 ]] && grep -q "$sess_id" <<< "$show_out"; then
+      assert_pass "talon session show <id> exits 0 with human-readable detail" true
     else
-      log_failure "talon session show should return valid JSON with id and status" "exit=$show_exit"
+      log_failure "talon session show <id> should exit 0 and name the session" "exit=$show_exit"
       dump_diag_kv "session show" "sess_id=$sess_id" "exit=$show_exit"
       dump_diag_json "session show output" "$show_out"
+    fi
+    local show_json show_json_exit
+    show_json="$(run_talon session show "$sess_id" --json 2>/dev/null)"
+    show_json_exit=$?
+    if [[ $show_json_exit -eq 0 ]] && jq -e --arg id "$sess_id" \
+        '.session.id == $id and (.session.status | type == "string") and (.summary | type == "object")' <<< "$show_json" &>/dev/null; then
+      assert_pass "talon session show <id> --json returns the session detail contract (session.id, session.status, summary)" true
+    else
+      log_failure "talon session show --json should return the session detail JSON contract" "exit=$show_json_exit"
+      dump_diag_kv "session show --json" "sess_id=$sess_id" "exit=$show_json_exit"
+      dump_diag_json "session show --json output" "$show_json"
     fi
   else
     echo "  -  no session id in list output (skip session show)"

@@ -22,7 +22,9 @@ test_section_17_config_provider() {
   local info_out; info_out="$(run_talon provider info openai 2>/dev/null)"; true
   assert_pass "provider info shows Jurisdiction" grep -qi 'Jurisdiction' <<< "$info_out"
   assert_pass "talon provider allowed exits 0" run_talon provider allowed
-  assert_pass "talon provider test exits 0 when key valid" run_talon provider test 2>/dev/null || true
+  # `talon provider test` never existed as a product command (provider
+  # subcommands: list | info | allowed); connectivity is covered by the live
+  # run/gateway sections, so no assertion replaces it here.
   cd "$REPO_ROOT" || true
 }
 

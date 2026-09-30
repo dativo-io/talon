@@ -26,6 +26,28 @@
           }
         },
         "accept_client_metadata": {"type": "boolean", "description": "Record client-asserted orchestration identity (session/subagent headers) in evidence for this agent's gateway traffic. Default true; recording only, never a policy input."},
+        "workload_identity": {
+          "type": "object",
+          "description": "Verified external workload principals bound to this use case (#457/#482). A runtime presents a signed identity, Talon verifies it against the runtime's configured trust anchors (server config, never here), and only a subject listed in bindings resolves to this agent. Caller metadata can never select a use case.",
+          "required": ["bindings"],
+          "additionalProperties": false,
+          "properties": {
+            "bindings": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": {
+                "type": "object",
+                "required": ["runtime", "subject"],
+                "additionalProperties": false,
+                "properties": {
+                  "runtime": {"type": "string", "enum": ["openshell"], "description": "Configured verification source. v1: openshell (gateway-signed supervisor identity, verified via gateway.openshell in talon.config.yaml)."},
+                  "subject": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Exact verified subject. OpenShell: spiffe://openshell/sandbox/<sandbox_id>."}
+                }
+              }
+            }
+          }
+        },
         "use_case": {
           "type": "object",
           "description": "Optional AI use-case operating record (#382): purpose, organizational context and accountable owners. Attribution for humans reading the fleet — the Talon key authenticates the presenter of traffic; nothing here authenticates the named owners, and none of it is a policy input.",
@@ -186,10 +208,70 @@
         }
       }
     },
+    "actions": {
+      "type": "object",
+      "description": "Trusted action catalog (#427/#458): governed side-effecting actions a runtime may attempt. Callers invoke catalogued actions by name with arguments only; they can never define schema, review projection, destination or execution mode. Binding = complete normalized arguments; execution = talon_forwarded to the declared destination.",
+      "required": ["definitions"],
+      "additionalProperties": false,
+      "properties": {
+        "definitions": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 256,
+          "propertyNames": {"pattern": "^[a-z][a-z0-9_]{0,63}$"},
+          "additionalProperties": {
+            "type": "object",
+            "required": ["input_schema", "destination"],
+            "additionalProperties": false,
+            "properties": {
+              "description": {"type": "string", "maxLength": 512},
+              "input_schema": {"type": "object", "description": "JSON Schema for the arguments; must describe an object."},
+              "review": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"fields": {"type": "array", "items": {"type": "string"}, "maxItems": 64}}
+              },
+              "destination": {
+                "type": "object",
+                "required": ["type", "url"],
+                "additionalProperties": false,
+                "properties": {
+                  "type": {"type": "string", "enum": ["http"]},
+                  "url": {"type": "string", "minLength": 1, "maxLength": 2048},
+                  "method": {"type": "string", "enum": ["POST", "PUT", "PATCH", "DELETE"]}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "policies": {
       "type": "object",
       "required": ["cost_limits"],
       "properties": {
+        "approvals": {
+          "type": "object",
+          "description": "Action-approval rules (#425/#458): catalogued actions that require a human decision and the approver groups allowed to decide. DENY (capabilities.forbidden_tools) > REQUIRE_APPROVAL > ALLOW.",
+          "additionalProperties": false,
+          "properties": {
+            "expires_after": {"type": "string", "pattern": "^[0-9]+(ms|s|m|h)$", "description": "Approval lifetime (pending decision and first-attempt usability). Default 1h."},
+            "rules": {
+              "type": "object",
+              "maxProperties": 256,
+              "propertyNames": {"pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
+              "additionalProperties": {
+                "type": "object",
+                "required": ["actions", "approver_groups"],
+                "additionalProperties": false,
+                "properties": {
+                  "actions": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}\\*?$"}},
+                  "approver_groups": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 64}}
+                }
+              }
+            }
+          }
+        },
         "cost_limits": {
           "type": "object",
           "properties": {

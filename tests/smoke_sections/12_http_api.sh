@@ -39,7 +39,7 @@ GWEOF
   fi
   TALON_SERVE_PID=""
   local serve_log_12="$dir/serve_section12.log"
-  run_talon serve --config "$dir/talon.config.yaml" --port 8080 --gateway --gateway-config "$dir/talon.config.yaml" >"$serve_log_12" 2>&1 &
+  run_talon_bg serve --config "$dir/talon.config.yaml" --port 8080 --gateway --gateway-config "$dir/talon.config.yaml" >"$serve_log_12" 2>&1
   TALON_SERVE_PID=$!
   if ! smoke_wait_health "http://127.0.0.1:8080" 10 1; then
     local s12_pid_state="running"

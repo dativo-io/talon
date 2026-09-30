@@ -1,0 +1,5 @@
+# Pinned OpenShell wire contract (upstream tag v0.1.2, proto package
+# openshell.middleware.v1). Regenerate with scripts/openshell-proto-gen.sh.
+version: v2
+modules:
+  - path: v0.1.2

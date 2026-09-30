@@ -1,0 +1,12 @@
+# Generates Go types for the pinned OpenShell v0.1.2 wire contract.
+# Run via scripts/openshell-proto-gen.sh (buf executed as a Go tool; no
+# protoc install required). Generated code is checked in.
+version: v2
+plugins:
+  - local: ["go", "run", "google.golang.org/protobuf/cmd/protoc-gen-go"]
+    out: gen
+    opt:
+      - paths=import
+      - module=github.com/dativo-io/talon/internal/openshell/proto/gen
+      - Mextension.proto=github.com/dativo-io/talon/internal/openshell/proto/gen/extensionv1
+      - Msupervisor_middleware.proto=github.com/dativo-io/talon/internal/openshell/proto/gen/middlewarev1

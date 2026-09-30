@@ -31,6 +31,7 @@ import (
 	"github.com/dativo-io/talon/internal/mcp"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/metrics"
+	"github.com/dativo-io/talon/internal/openshell"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/pricing"
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
@@ -137,6 +138,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	var openshellServer *openshell.Server
 	var preloadedGatewayCfg *gateway.GatewayConfig
 	if serveGateway {
 		preloadedGatewayCfg, err = gateway.LoadGatewayConfig(serveGatewayConfig)
@@ -547,6 +549,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	evidenceGen := evidence.NewGenerator(evidenceStore)
 
+	// Action Gateway (#458): built from the startup runtime generation.
+	actionGW, err := buildActionGateway(ctx, runtimeHolder.Current(), evidenceStore, cfg.EvidenceDBPath())
+	if err != nil {
+		return fmt.Errorf("initializing action gateway: %w", err)
+	}
+	if actionGW != nil && actionGW.approvers != nil {
+		defer actionGW.approvers.Close()
+	}
 	opts := []server.Option{
 		server.WithPlanReviewStore(planReviewStore),
 		server.WithMemoryStore(memStore),
@@ -556,6 +566,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 		// agent runs, matching the `talon run` CLI (previously the server
 		// silently skipped compliance routing — the SovereigntyMode fix).
 		server.WithSovereigntyMode(cfg.EffectiveSovereigntyMode()),
+	}
+	if actionGW != nil {
+		opts = append(opts, server.WithActionGateway(actionGW.resolver(), actionGW.ownerResolver(), actionGW.approvers))
+	}
+	opts = append(opts, []server.Option{
 		server.WithActiveRunTracker(activeRunTracker),
 		server.WithRunRegistry(runRegistry),
 		server.WithOverrideStore(overrideStore),
@@ -568,7 +583,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		server.WithComplianceDeclarations(func(ctx context.Context) compliance.Declarations {
 			return loadComplianceDeclarations(ctx, policyPath, io.Discard)
 		}),
-	}
+	}...)
 	if serveDashboard {
 		opts = append(opts, server.WithDashboard(web.DashboardHTML))
 	}
@@ -680,6 +695,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 			gatewayHandler = gw
 			gatewayCfgForMode = gatewayCfg
 			opts = append(opts, server.WithGateway(gatewayHandler))
+			// OpenShell delegated boundary (#482): Talon serves OpenShell's
+			// supervisor-middleware contract over the SAME gateway instance,
+			// so a delegated decision consumes the same compiled policy,
+			// registry generation, evidence store and accounting as /v1/proxy.
+			if oc := gatewayCfg.OpenShell; oc != nil && oc.Enabled {
+				svc, err := openshell.NewService(gw, *oc, resolvedVersion())
+				if err != nil {
+					return fmt.Errorf("initializing openshell middleware: %w", err)
+				}
+				openshellServer, err = openshell.NewServer(*oc, svc.Handler())
+				if err != nil {
+					return fmt.Errorf("initializing openshell listener: %w", err)
+				}
+			}
 			// Dashboard budget view reads per-agent caps through the same
 			// effective-policy computation enforcement uses (#266), against
 			// the CURRENT registry snapshot (#289).
@@ -889,6 +918,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Bool("gateway_dashboard", metricsCollector != nil).
 		Bool("mcp_proxy", proxyHandler != nil).
 		Bool("gateway", gatewayHandler != nil).
+		Bool("openshell_middleware", openshellServer != nil).
 		Msg("talon_serve_started")
 
 	errCh := make(chan error, 1)
@@ -897,6 +927,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 			errCh <- err
 		}
 	}()
+	if openshellServer != nil {
+		go func() {
+			if err := openshellServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("openshell middleware listener: %w", err)
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -907,6 +944,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if openshellServer != nil {
+		if err := openshellServer.Shutdown(shutdownCtx); err != nil {
+			log.Warn().Err(err).Msg("openshell_middleware_shutdown")
+		}
+	}
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}

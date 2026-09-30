@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -126,6 +127,18 @@ type Evidence struct {
 	// record, or the binding limit/spend/estimate a budget_exceeded deny saw.
 	// Appended after session_budget per the spec §2 append rule.
 	CostBudget *CostBudget `json:"cost_budget,omitempty"`
+	// WorkloadIdentity records verified workload-identity federation at
+	// ingress (#457, spec 1.11): verification outcome and safe principal
+	// facts, never the raw credential. Appended after cost_budget per the
+	// spec §2 append rule.
+	WorkloadIdentity *WorkloadIdentity `json:"workload_identity,omitempty"`
+	// Enforcement records who owned the prevention/observation boundary
+	// (#146 external-enforcement provenance, spec 1.11). Absent = Talon
+	// intercepted on its own boundary. Appended after workload_identity.
+	Enforcement *Enforcement `json:"enforcement,omitempty"`
+	// ActionLifecycle carries one governed-action lifecycle transition
+	// (#458, spec 1.12). Appended after enforcement.
+	ActionLifecycle *ActionLifecycle `json:"action_lifecycle,omitempty"`
 }
 
 // SessionBudget is the structured detail of a session-budget deny (#198).
@@ -506,7 +519,15 @@ func addColumnIfNotExists(db *sql.DB, table, column, colType string) {
 
 // NewStore creates an evidence store with HMAC signing.
 func NewStore(dbPath string, signingKey string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	// WAL + busy timeout match the sibling stores on this file; immediate
+	// transactions make every BeginTx take the write lock up front so
+	// concurrent action-lifecycle transactions (#458) queue instead of
+	// failing with SQLITE_BUSY on a deferred upgrade.
+	dsn := dbPath
+	if !strings.Contains(dbPath, "?") && dbPath != ":memory:" {
+		dsn = dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
+	}
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening evidence database: %w", err)
 	}
@@ -639,6 +660,28 @@ func (s *Store) notifyStored(ctx context.Context, ev *Evidence) {
 
 // Store saves evidence with an HMAC signature.
 func (s *Store) Store(ctx context.Context, ev *Evidence) error {
+	return s.storeWith(ctx, s.db, ev)
+}
+
+// StoreTx signs and inserts ev inside tx so a state transition and its
+// evidence commit atomically (#146/#458). The caller owns commit/rollback;
+// health/metrics/observer side effects fire only on success of the
+// insert, so a rolled-back transaction is still visible as a write
+// failure to the caller.
+func (s *Store) StoreTx(ctx context.Context, tx *sql.Tx, ev *Evidence) error {
+	return s.storeWith(ctx, tx, ev)
+}
+
+// DB exposes the underlying handle for repositories that live in the
+// evidence database and must commit state atomically with evidence rows
+// (internal/action). Callers must not use it to write evidence directly.
+func (s *Store) DB() *sql.DB { return s.db }
+
+type sqlExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func (s *Store) storeWith(ctx context.Context, exec sqlExecer, ev *Evidence) error {
 	ctx, span := tracer.Start(ctx, "evidence.store",
 		trace.WithAttributes(
 			attribute.String("evidence.id", ev.ID),
@@ -695,7 +738,7 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 	query := `INSERT INTO evidence (id, correlation_id, timestamp, tenant_id, agent_id, invocation_type, evidence_json, signature, session_id, stage, candidate_index, judge_score, selected, plan_id, graph_run_id)
 	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err = s.db.ExecContext(ctx, query,
+	_, err = exec.ExecContext(ctx, query,
 		ev.ID, ev.CorrelationID, ev.Timestamp, ev.TenantID, ev.AgentID,
 		ev.InvocationType, string(evidenceJSONWithSig), signature, ev.SessionID, ev.Stage,
 		ev.CandidateIndex, ev.JudgeScore, ev.Selected, ev.PlanID, ev.GraphRunID,

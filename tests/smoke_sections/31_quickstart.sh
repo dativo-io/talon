@@ -4,16 +4,10 @@
 
 test_section_31_quickstart() {
   local section="31_quickstart"
-  local quick_port="8081"
+  local quick_port; quick_port="$(smoke_free_port)"   # quickstart needs no fixed port
   local quick_base="http://127.0.0.1:${quick_port}"
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
-
-  if ! wait_port_free "$quick_port" 60 5; then
-    log_failure "quickstart section could not acquire port ${quick_port}" "port remained busy"
-    cd "$REPO_ROOT" || true
-    return 0
-  fi
 
   run_talon init --scaffold --name smoke-quickstart &>/dev/null; true
 
@@ -49,20 +43,14 @@ PY
   mock_pid=$!
 
   local qs_log="$dir/quickstart_serve.log"
-  OPENAI_API_KEY="" TALON_QUICKSTART_OPENAI_BASE_URL="http://127.0.0.1:${mock_port}" \
-    run_talon serve --proxy-quickstart --port "$quick_port" >"$qs_log" 2>&1 &
-  TALON_GATEWAY_PID=$!
-  if ! smoke_wait_health "$quick_base" 10 1; then
-    log_failure "quickstart server did not start" "url=${quick_base}/health"
-    dump_diag_file "quickstart serve log" "$qs_log"
+  if ! OPENAI_API_KEY="" TALON_QUICKSTART_OPENAI_BASE_URL="http://127.0.0.1:${mock_port}" \
+    start_owned_talon_server "quickstart server" "$qs_log" "$quick_port" serve --proxy-quickstart --port "$quick_port"; then
     kill "$mock_pid" 2>/dev/null || true
     wait "$mock_pid" 2>/dev/null || true
-    kill "$TALON_GATEWAY_PID" 2>/dev/null || true
-    wait "$TALON_GATEWAY_PID" 2>/dev/null || true
-    TALON_GATEWAY_PID=""
     cd "$REPO_ROOT" || true
     return 0
   fi
+  TALON_GATEWAY_PID="$SMOKE_SERVER_PID"
 
   assert_pass "quickstart banner includes base URL" grep -q "openai_base_url" "$qs_log"
   assert_pass "quickstart banner includes pii default redact" grep -q "pii_default" "$qs_log"
@@ -103,8 +91,7 @@ PY
   assert_fail "proxy quickstart is mutually exclusive with gateway flag" run_talon serve --proxy-quickstart --gateway --port 18090
   assert_fail "proxy quickstart non-loopback host fails without unsafe-listen" run_talon serve --proxy-quickstart --host 0.0.0.0 --port 18091
 
-  kill "$TALON_GATEWAY_PID" 2>/dev/null || true
-  wait "$TALON_GATEWAY_PID" 2>/dev/null || true
+  stop_owned_talon_server "$TALON_GATEWAY_PID" "$quick_port" || true
   TALON_GATEWAY_PID=""
   kill "$mock_pid" 2>/dev/null || true
   wait "$mock_pid" 2>/dev/null || true

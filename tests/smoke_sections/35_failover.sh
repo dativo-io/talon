@@ -11,19 +11,10 @@
 #   B) eu_strict with a US-only backup -> request fails closed (no dispatch to
 #      the US provider), recorded as a successful governance outcome.
 # -----------------------------------------------------------------------------
-# Backgrounding serve through the run_talon wrapper leaves $! pointing at a
-# wrapper subshell; killing it orphans the talon child, which keeps the port
-# and starves scenario B (and later sections). Stop by PID first, then kill
-# any talon serve still listening on the port.
+# Servers are started with run_talon_bg (exact talon PID) and stopped with
+# stop_talon_pid: terminate the owned process, reap it, wait for the port.
 smoke_stop_gateway_35() {
-  local pid="$1" port="$2" waited=0
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-  while is_port_in_use "$port" && [[ $waited -lt 15 ]]; do
-    pkill -f "talon serve --port ${port}" 2>/dev/null || true
-    sleep 1
-    ((waited += 1))
-  done
+  stop_owned_talon_server "$1" "$2" || true
 }
 
 test_section_35_failover() {
@@ -82,15 +73,12 @@ GWEOF
 
   # --- Scenario A: transparent failover to the backup provider ---
   local gw_log_a="$dir/gateway_failover_a.log"
-  env TALON_DATA_DIR="$TALON_DATA_DIR" talon serve --port "$gateway_port" --gateway --gateway-config "$gw_cfg_a" >"$gw_log_a" 2>&1 &
-  local fo_pid_a=$!
-  if ! smoke_wait_health "$gateway_base_url" 10 1; then
-    log_failure "failover gateway (A) did not start on port ${gateway_port}" "pid=$fo_pid_a"
-    dump_diag_file "section 35 serve log (A)" "$gw_log_a"
-    smoke_stop_gateway_35 "$fo_pid_a" "$gateway_port"
+  if ! start_owned_talon_server "failover gateway (A)" "$gw_log_a" "$gateway_port" \
+      serve --port "$gateway_port" --gateway --gateway-config "$gw_cfg_a"; then
     cd "$REPO_ROOT" || true
     return 0
   fi
+  local fo_pid_a="$SMOKE_SERVER_PID"
 
   local fo_headers="/tmp/talon_fo_headers.txt"
   local fo_body="/tmp/talon_fo_resp.json"
@@ -147,15 +135,12 @@ SOVEOF
     return 0
   fi
   local gw_log_b="$dir/gateway_failover_b.log"
-  env TALON_DATA_DIR="$TALON_DATA_DIR" talon serve --port "$gateway_port" --gateway --gateway-config "$gw_cfg_b" >"$gw_log_b" 2>&1 &
-  local fo_pid_b=$!
-  if ! smoke_wait_health "$gateway_base_url" 10 1; then
-    log_failure "failover gateway (B) did not start on port ${gateway_port}" "pid=$fo_pid_b"
-    dump_diag_file "section 35 serve log (B)" "$gw_log_b"
-    smoke_stop_gateway_35 "$fo_pid_b" "$gateway_port"
+  if ! start_owned_talon_server "failover gateway (B)" "$gw_log_b" "$gateway_port" \
+      serve --port "$gateway_port" --gateway --gateway-config "$gw_cfg_b"; then
     cd "$REPO_ROOT" || true
     return 0
   fi
+  local fo_pid_b="$SMOKE_SERVER_PID"
 
   local fo_headers_b="/tmp/talon_fo_headers_b.txt"
   local fo_body_b="/tmp/talon_fo_resp_b.json"

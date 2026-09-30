@@ -217,7 +217,7 @@ GWEOF
   # --- Scenario A: dead engine endpoint -> serve refuses to start ---
   smoke36_scanner_config "$dir/talon.config.yaml" "http://127.0.0.1:${SMOKE36_DEAD_PORT}/v1" "$SMOKE36_MODEL"
   local dead_log="$dir/serve_dead_engine.log"
-  env TALON_DATA_DIR="$TALON_DATA_DIR" talon serve --port "$gateway_port" --gateway --gateway-config "$gw_cfg" >"$dead_log" 2>&1 &
+  run_talon_bg serve --port "$gateway_port" --gateway --gateway-config "$gw_cfg" >"$dead_log" 2>&1
   local dead_pid=$! waited=0
   while kill -0 "$dead_pid" 2>/dev/null && [[ $waited -lt 20 ]]; do
     sleep 1
@@ -256,7 +256,7 @@ GWEOF
   # --- Scenario B: detection + redaction through the llm engine ---
   smoke36_scanner_config "$dir/talon.config.yaml" "http://127.0.0.1:${SMOKE36_ENGINE_PORT}/v1" "$SMOKE36_MODEL"
   local gw_log="$dir/gateway_scanner.log"
-  env TALON_DATA_DIR="$TALON_DATA_DIR" talon serve --port "$gateway_port" --gateway --gateway-config "$gw_cfg" >"$gw_log" 2>&1 &
+  run_talon_bg serve --port "$gateway_port" --gateway --gateway-config "$gw_cfg" >"$gw_log" 2>&1
   local gw_pid=$!
   if ! smoke_wait_health "$gateway_base_url" 15 1; then
     log_failure "gateway with llm scanner did not start" "pid=$gw_pid"
@@ -323,7 +323,7 @@ GWEOF
       sed -i.bak 's/timeout: "30s"/timeout: "120s"/' "$dir/talon.config.yaml" && rm -f "$dir/talon.config.yaml.bak"
       if wait_port_free "$gateway_port" 60 5; then
         local gw_log_d="$dir/gateway_ollama.log"
-        env TALON_DATA_DIR="$TALON_DATA_DIR" talon serve --port "$gateway_port" --gateway --gateway-config "$gw_cfg" >"$gw_log_d" 2>&1 &
+        run_talon_bg serve --port "$gateway_port" --gateway --gateway-config "$gw_cfg" >"$gw_log_d" 2>&1
         local gw_pid_d=$!
         if smoke_wait_health "$gateway_base_url" 20 1; then
           local code_d
