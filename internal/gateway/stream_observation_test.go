@@ -497,6 +497,8 @@ func TestGateway_StreamingWarn_AllWireFamilies(t *testing.T) {
 			assert.Equal(t, int64(len(tc.head+tc.tail)), ev.Classification.ResponseScan.BytesObserved)
 			assert.Equal(t, "POLICY_OBSERVED_PII_OUTPUT", ev.Explanations[0].Code)
 			assert.Equal(t, "allow", ev.Explanations[0].Decision)
+			assert.Equal(t, "Response PII observed; the response was not modified.", ev.Explanations[0].Reason,
+				"the generic explanation is timing-neutral; post-delivery timing is the enforcement fact")
 			assert.True(t, ev.Classification.ResponsePIIObserved(ev.DataFlow))
 			assert.False(t, ev.Classification.ResponsePIIRedacted(ev.DataFlow))
 			assert.Positive(t, ev.Execution.Tokens.Output, "usage accounting still comes from the stream")
@@ -679,6 +681,51 @@ func TestGateway_StreamingWarn_ClientCancelIsIncomplete(t *testing.T) {
 	assert.True(t, ev.Classification.OutputPIIDetected, "the delivered partial was still observed")
 }
 
+// markStreamIncomplete classifies by the strongest runtime fact: a cancelled
+// request context means the client went away, whatever error shape the
+// downstream write surfaced; a live client context with a forward error is an
+// upstream/transport fact. First cause wins on an already-incomplete result.
+func TestMarkStreamIncomplete_Classification(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	live := context.Background()
+
+	cases := []struct {
+		name       string
+		forwardErr error
+		clientCtx  context.Context
+		wantStatus string
+		wantReason string
+	}{
+		{"cancelled ctx + context.Canceled", context.Canceled, cancelled, evidence.ResponseScanStatusIncomplete, evidence.ResponseScanIncompleteClientCancelled},
+		{"cancelled ctx + closed pipe", io.ErrClosedPipe, cancelled, evidence.ResponseScanStatusIncomplete, evidence.ResponseScanIncompleteClientCancelled},
+		{"cancelled ctx + broken pipe text", fmt.Errorf("write tcp 127.0.0.1:1->127.0.0.1:2: write: broken pipe"), cancelled, evidence.ResponseScanStatusIncomplete, evidence.ResponseScanIncompleteClientCancelled},
+		{"live ctx + upstream transport error", io.ErrUnexpectedEOF, live, evidence.ResponseScanStatusIncomplete, evidence.ResponseScanIncompleteUpstreamError},
+		{"live ctx + idle timeout", &gatewayTimeoutError{msg: "stream idle timeout: no data from provider"}, live, evidence.ResponseScanStatusIncomplete, evidence.ResponseScanIncompleteUpstreamError},
+		{"nil client ctx + error", io.ErrClosedPipe, nil, evidence.ResponseScanStatusIncomplete, evidence.ResponseScanIncompleteUpstreamError},
+		{"no forward error", nil, cancelled, evidence.ResponseScanStatusComplete, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := &ResponsePIIScanResult{Status: evidence.ResponseScanStatusComplete}
+			markStreamIncomplete(result, tc.forwardErr, tc.clientCtx)
+			assert.Equal(t, tc.wantStatus, result.Status)
+			assert.Equal(t, tc.wantReason, result.IncompleteReason)
+		})
+	}
+
+	t.Run("nil result is a no-op", func(t *testing.T) {
+		markStreamIncomplete(nil, io.ErrClosedPipe, cancelled)
+	})
+	t.Run("first cause wins", func(t *testing.T) {
+		result := &ResponsePIIScanResult{Status: evidence.ResponseScanStatusComplete}
+		result.markIncomplete(evidence.ResponseScanIncompleteCaptureLimitExceeded)
+		markStreamIncomplete(result, io.ErrClosedPipe, cancelled)
+		assert.Equal(t, evidence.ResponseScanIncompleteCaptureLimitExceeded, result.IncompleteReason,
+			"a later gap must not overwrite the first recorded cause")
+	})
+}
+
 // Past the capture bound the client keeps streaming untouched; the capture
 // stops growing, what was captured is still scanned, and the record can
 // never read as a complete clean scan.
@@ -831,6 +878,12 @@ func TestGateway_NonStreaming_ResponseScanFacts(t *testing.T) {
 			assert.Equal(t, evidence.ResponseScanStatusComplete, ev.Classification.ResponseScan.Status)
 			assert.Equal(t, tc.code, ev.Explanations[0].Code)
 			assert.Equal(t, tc.decision, ev.Explanations[0].Decision)
+			if tc.action == "warn" {
+				// Non-streaming warn is scanned before the write: no projection
+				// may claim post-delivery observation for it.
+				assert.Equal(t, "Response PII observed; the response was not modified.", ev.Explanations[0].Reason)
+				assert.NotContains(t, ev.Explanations[0].Reason, "after delivery")
+			}
 			assert.Equal(t, tc.redactedFlag, ev.Classification.ResponsePIIRedacted(ev.DataFlow))
 			assert.True(t, evStore.VerifyRecord(ev))
 		})

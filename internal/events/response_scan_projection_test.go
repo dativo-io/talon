@@ -54,6 +54,10 @@ func TestFromEvidence_ResponseScanProjection(t *testing.T) {
 			assert.Equal(t, tc.wantCode, out.ReasonCode)
 			assert.True(t, out.Allowed)
 			assert.NotContains(t, out.ReasonText, "blocked", "an allowed record must not read as blocked")
+			if tc.wantCode == explanation.CodePolicyObservedPIIOutput {
+				assert.Equal(t, "Response PII observed; the response was not modified.", out.ReasonText)
+				assert.NotContains(t, out.ReasonText, "after delivery", "timing is a response_scan fact, not part of the generic explanation")
+			}
 		})
 	}
 

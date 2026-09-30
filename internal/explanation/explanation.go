@@ -11,9 +11,12 @@ const (
 	CodePolicyDenied          = "POLICY_DENIED"
 	CodePolicyDeniedPIIInput  = "POLICY_DENIED_PII_INPUT"
 	CodePolicyDeniedPIIOutput = "POLICY_DENIED_PII_OUTPUT"
-	// CodePolicyObservedPIIOutput: response PII was detected but the response
-	// had already been delivered (or the action never alters it) — a warn
-	// observation, never a denial (#476).
+	// CodePolicyObservedPIIOutput: response PII was detected under warn and
+	// the response was delivered unchanged — an observation, never a denial
+	// (#476). The wording is timing-neutral on purpose: whether the scan ran
+	// after delivery (streamed) or before the write (non-streaming) is a
+	// signed fact in classification.response_scan.enforcement, not in the
+	// generic explanation.
 	CodePolicyObservedPIIOutput = "POLICY_OBSERVED_PII_OUTPUT"
 	// CodePolicyRedactedPIIOutput: response PII was redacted before release.
 	CodePolicyRedactedPIIOutput = "POLICY_REDACTED_PII_OUTPUT"
@@ -229,7 +232,7 @@ var reasonByCode = map[string]string{
 	CodePolicyDenied:            "Request blocked by policy.",
 	CodePolicyDeniedPIIInput:    "Request blocked because input PII was detected.",
 	CodePolicyDeniedPIIOutput:   "Request blocked because output PII was detected.",
-	CodePolicyObservedPIIOutput: "Response PII observed after delivery; the response was not modified.",
+	CodePolicyObservedPIIOutput: "Response PII observed; the response was not modified.",
 	CodePolicyRedactedPIIOutput: "Response PII was redacted before release.",
 	CodePolicyDeniedCost:        "Request blocked by cost policy limits.",
 	CodePolicyDeniedEgress:      "Request blocked because the destination is not allowed for this data classification.",

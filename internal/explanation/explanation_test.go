@@ -153,7 +153,10 @@ func TestExplanation_OutputPIIDispositionCodes(t *testing.T) {
 		assert.Equal(t, ReasonText(tc.code), primary.Reason)
 	}
 	assert.NotContains(t, ReasonText(CodePolicyObservedPIIOutput), "blocked")
-	assert.Contains(t, ReasonText(CodePolicyObservedPIIOutput), "after delivery")
+	// Timing-neutral: the same code explains a streamed (post-delivery) and a
+	// non-streaming (pre-write) warn; timing lives in response_scan.enforcement.
+	assert.Equal(t, "Response PII observed; the response was not modified.", ReasonText(CodePolicyObservedPIIOutput))
+	assert.NotContains(t, ReasonText(CodePolicyObservedPIIOutput), "after delivery")
 	assert.NotEmpty(t, FixFor(CodePolicyObservedPIIOutput))
 	assert.Empty(t, ReasonText("NOPE"))
 }

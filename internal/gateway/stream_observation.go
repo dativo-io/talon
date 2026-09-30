@@ -3,7 +3,6 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -178,12 +177,16 @@ func observeStreamedResponse(ctx context.Context, obs *observingStreamWriter, ac
 // markStreamIncomplete records a stream that did not terminate normally on a
 // response-scan result (nil-safe). Client cancellation and upstream failure
 // are distinguished because they mean different things to an operator: the
-// first is the caller's choice, the second is a provider/transport fact.
+// first is the caller's choice, the second is a provider/transport fact. A
+// cancelled request context is the strongest available fact that the client
+// went away: a real disconnect may surface as a closed pipe or connection
+// reset on the downstream write rather than a wrapped context.Canceled, so
+// the classification does not depend on the error's shape.
 func markStreamIncomplete(result *ResponsePIIScanResult, forwardErr error, clientCtx context.Context) {
 	if result == nil || forwardErr == nil {
 		return
 	}
-	if clientCtx != nil && clientCtx.Err() != nil && errors.Is(forwardErr, context.Canceled) {
+	if clientCtx != nil && clientCtx.Err() != nil {
 		result.markIncomplete(evidence.ResponseScanIncompleteClientCancelled)
 		return
 	}
