@@ -16,7 +16,7 @@ test_section_23_dashboard_metrics() {
   if ! wait_port_free "$dashboard_port" 180 10; then
     log_failure "dashboard metrics section could not acquire port ${dashboard_port}" "port remained busy"
     dump_diag_kv "port ${dashboard_port} in use" \
-      "lsof=$(lsof -nP -iTCP:${dashboard_port} -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')" \
+      "lsof=$(lsof -nP -iTCP:"${dashboard_port}" -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')" \
       "TALON_SERVE_PID=${TALON_SERVE_PID:-}" \
       "TALON_GATEWAY_PID=${TALON_GATEWAY_PID:-}"
     cd "$REPO_ROOT" || true

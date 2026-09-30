@@ -30,15 +30,7 @@ type actionGateway struct {
 }
 
 func buildActionGateway(ctx context.Context, snap *agentcatalog.RuntimeSnapshot, evStore *evidence.Store, approverDBPath, vaultKey string) (*actionGateway, error) {
-	if snap == nil {
-		return nil, nil
-	}
-	var withCatalog []*agentcatalog.RuntimeAgent
-	for _, ra := range snap.List() {
-		if ra.Policy != nil && ra.Policy.Actions != nil && len(ra.Policy.Actions.Definitions) > 0 {
-			withCatalog = append(withCatalog, ra)
-		}
-	}
+	withCatalog := agentsWithCatalog(snap)
 	if len(withCatalog) == 0 {
 		return nil, nil
 	}
@@ -55,29 +47,11 @@ func buildActionGateway(ctx context.Context, snap *agentcatalog.RuntimeSnapshot,
 	}
 	ag := &actionGateway{services: map[string]*action.Service{}, repo: repo}
 	for _, ra := range withCatalog {
-		cat, err := action.CompileCatalog(ra.Policy.Actions)
-		if err != nil {
-			return nil, fmt.Errorf("agent %q (%s): %w", ra.Name, ra.Path, err)
-		}
-		ap, err := action.CompileApprovalPolicy(ra.Policy)
-		if err != nil {
-			return nil, fmt.Errorf("agent %q (%s): %w", ra.Name, ra.Path, err)
-		}
-		tenant := strings.TrimSpace(ra.TenantID)
-		if tenant == "" {
-			tenant = "default"
-		}
-		svc, err := action.NewService(tenant, ra.Name, cat, ap, repo, evStore, dispatcher, cryptor)
+		tenant, svc, err := buildActionService(ctx, ra, repo, evStore, dispatcher, cryptor)
 		if err != nil {
 			return nil, err
 		}
-		if n, err := svc.RecoverInterrupted(ctx); err != nil {
-			return nil, fmt.Errorf("agent %q: recovering interrupted attempts: %w", ra.Name, err)
-		} else if n > 0 {
-			log.Warn().Str("agent", ra.Name).Int("attempts", n).Msg("action_attempts_recovered_after_restart")
-		}
 		ag.services[tenant+"\x00"+ra.Name] = svc
-		log.Info().Str("agent", ra.Name).Str("tenant", tenant).Strs("actions", cat.Names()).Msg("action_catalog_active")
 	}
 	store, err := approver.NewStore(approverDBPath)
 	if err != nil {
@@ -85,6 +59,48 @@ func buildActionGateway(ctx context.Context, snap *agentcatalog.RuntimeSnapshot,
 	}
 	ag.approvers = store
 	return ag, nil
+}
+
+// agentsWithCatalog lists the runtime agents that declare an action catalog.
+func agentsWithCatalog(snap *agentcatalog.RuntimeSnapshot) []*agentcatalog.RuntimeAgent {
+	if snap == nil {
+		return nil
+	}
+	var out []*agentcatalog.RuntimeAgent
+	for _, ra := range snap.List() {
+		if ra.Policy != nil && ra.Policy.Actions != nil && len(ra.Policy.Actions.Definitions) > 0 {
+			out = append(out, ra)
+		}
+	}
+	return out
+}
+
+// buildActionService compiles one agent's catalog and approval policy and
+// recovers attempts interrupted by a previous crash.
+func buildActionService(ctx context.Context, ra *agentcatalog.RuntimeAgent, repo *action.Repository, evStore *evidence.Store, dispatcher action.Dispatcher, cryptor *action.PayloadCryptor) (string, *action.Service, error) {
+	cat, err := action.CompileCatalog(ra.Policy.Actions)
+	if err != nil {
+		return "", nil, fmt.Errorf("agent %q (%s): %w", ra.Name, ra.Path, err)
+	}
+	ap, err := action.CompileApprovalPolicy(ra.Policy)
+	if err != nil {
+		return "", nil, fmt.Errorf("agent %q (%s): %w", ra.Name, ra.Path, err)
+	}
+	tenant := strings.TrimSpace(ra.TenantID)
+	if tenant == "" {
+		tenant = "default"
+	}
+	svc, err := action.NewService(tenant, ra.Name, cat, ap, repo, evStore, dispatcher, cryptor)
+	if err != nil {
+		return "", nil, err
+	}
+	if n, err := svc.RecoverInterrupted(ctx); err != nil {
+		return "", nil, fmt.Errorf("agent %q: recovering interrupted attempts: %w", ra.Name, err)
+	} else if n > 0 {
+		log.Warn().Str("agent", ra.Name).Int("attempts", n).Msg("action_attempts_recovered_after_restart")
+	}
+	log.Info().Str("agent", ra.Name).Str("tenant", tenant).Strs("actions", cat.Names()).Msg("action_catalog_active")
+	return tenant, svc, nil
 }
 
 func (ag *actionGateway) resolver() server.ActionServiceResolver {

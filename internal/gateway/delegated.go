@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/url"
@@ -101,77 +102,16 @@ type DelegatedDecision struct {
 func (g *Gateway) EvaluateDelegated(ctx context.Context, req DelegatedRequest) DelegatedDecision {
 	start := time.Now()
 	correlationID := "gw_" + uuid.New().String()[:12]
-	registry := g.registry.Current()
 
-	// Identity first: without a verified principal bound to a use case
-	// there is no policy to evaluate and no tenant to attribute to. Like an
-	// unknown agent key on the HTTP path, this denies with a metric and a
-	// structured log but no tenant-scoped record.
-	if req.Principal == nil {
-		code := req.IdentityFailure
-		if code == "" {
-			code = workload.FailureMissing
-		}
-		RecordGatewayError(ctx, code)
-		log.Warn().Str("runtime", req.Runtime).Str("host", req.Host).Str("failure", code).Msg("delegated_identity_rejected")
-		return DelegatedDecision{
-			Code: CodeWorkloadIdentityRequired, Status: http.StatusUnauthorized,
-			Message: CodeWorkloadIdentityRequired + ": verified workload identity required (" + code + ")",
-		}
+	agent, refused := g.resolveDelegatedAgent(ctx, req)
+	if refused != nil {
+		return *refused
 	}
-	agent, ok := registry.ResolveWorkload(req.Runtime, req.Principal.Subject)
-	if !ok {
-		RecordGatewayError(ctx, CodeWorkloadIdentityUnbound)
-		log.Warn().Str("runtime", req.Runtime).Str("subject", req.Principal.Subject).Msg("delegated_identity_unbound")
-		return DelegatedDecision{
-			Code: CodeWorkloadIdentityUnbound, Status: http.StatusForbidden,
-			Message: CodeWorkloadIdentityUnbound + ": verified workload principal is not bound to any Talon AI use case",
-		}
-	}
-
-	sessionID := strings.TrimSpace(req.SessionID)
-	sessionSource := "client_asserted"
-	if sessionID == "" {
-		sessionID = "sess_" + correlationID
-		sessionSource = "synthetic"
-	} else if _, err := evidence.ValidateOrchValue("session_id", sessionID); err != nil {
-		sessionID = "sess_" + correlationID
-		sessionSource = "synthetic"
-	}
+	sessionID, sessionSource := delegatedSession(correlationID, req.SessionID)
 	ctx = context.WithValue(ctx, gatewaySessionIDKey, sessionID)
 	ctx = context.WithValue(ctx, gatewaySessionSourceKey, sessionSource)
 	ctx = context.WithValue(ctx, gatewayUpstreamAuthMode, UpstreamAuthModeExternalRuntime)
-
-	identityFact := &evidence.WorkloadIdentity{
-		Status:      evidence.WorkloadIdentityVerified,
-		Runtime:     req.Runtime,
-		AuthMethod:  req.Principal.AuthMethod,
-		Issuer:      req.Principal.Issuer,
-		Subject:     req.Principal.Subject,
-		PrincipalID: req.Principal.PrincipalID,
-		Audience:    req.Principal.Audience,
-		Binding:     evidence.WorkloadIdentityBindingAgentConfig,
-		VerifiedAt:  req.Principal.VerifiedAt.UTC().Format(time.RFC3339),
-	}
-	// What this record can prove: Talon decided, and returned the verdict
-	// through the configured runtime hook. Whether the runtime honored it
-	// is EXPECTED under its contract, never observed here (#146 literal).
-	enforcement := &evidence.Enforcement{
-		Mechanism:           evidence.MechanismDelegate,
-		Boundary:            evidence.BoundaryExternalRuntime,
-		DecisionAuthority:   evidence.BoundaryTalon,
-		Provenance:          evidence.ProvenanceDelegatedExpected,
-		DecisionReturnedVia: req.Runtime + "_middleware",
-		Runtime: &evidence.ExternalRuntimeRef{
-			Type: req.Runtime, ID: req.RuntimeID, PolicyRef: req.PolicyRef,
-			Reference: req.Reference, RequestID: req.RequestID,
-		},
-	}
-	provenanceOpt := func(p *RecordGatewayEvidenceParams) {
-		p.WorkloadIdentity = identityFact
-		p.Enforcement = enforcement
-		p.GatewayAnnotations = append(p.GatewayAnnotations, "delegated_dispatch")
-	}
+	provenanceOpt := delegatedProvenance(req)
 
 	// Destination → configured provider. A host Talon has no provider for
 	// is not governed here; the runtime bound Talon to it by mistake, so
@@ -184,21 +124,10 @@ func (g *Gateway) EvaluateDelegated(ctx context.Context, req DelegatedRequest) D
 		}
 		return g.delegatedDeny(ctx, correlationID, agent, req.Host, start, d, provenanceOpt)
 	}
+	if d := preDecisionBlocker(agent, req.Method); d != nil {
+		return g.delegatedDeny(ctx, correlationID, agent, providerName, start, d, provenanceOpt)
+	}
 	wire := g.config.providerAPIFamily(providerName)
-
-	// Operational kill switch (#268): attributed denial, zero dispatch.
-	if !agent.Enabled {
-		d := &decisionDeny{
-			Status: http.StatusForbidden, Message: CodeAgentDisabled + ": agent \"" + agent.Name + "\" is disabled by its Talon agent config (enabled: false)",
-			Reasons: []string{"agent disabled (enabled: false in agent config)"},
-		}
-		return g.delegatedDeny(ctx, correlationID, agent, providerName, start, d, provenanceOpt)
-	}
-	if req.Method != "" && !strings.EqualFold(req.Method, http.MethodPost) {
-		d := &decisionDeny{Status: http.StatusMethodNotAllowed, Message: "method_not_allowed: Method not allowed", Reasons: []string{"delegated method not allowed"}}
-		return g.delegatedDeny(ctx, correlationID, agent, providerName, start, d, provenanceOpt)
-	}
-
 	prov, _ := g.config.Provider(providerName)
 	eff := ResolveEffectivePolicy(g.config.OrganizationPolicy, prov, agent.Override)
 	isCountTokens := wire == "anthropic" && strings.HasSuffix(req.Path, "/count_tokens")
@@ -214,12 +143,107 @@ func (g *Gateway) EvaluateDelegated(ctx context.Context, req DelegatedRequest) D
 		}
 		return g.delegatedDeny(ctx, correlationID, agent, providerName, start, outcome.Deny, provenanceOpt)
 	}
+	return g.delegatedAllow(ctx, correlationID, agent, providerName, start, req, outcome, isCountTokens, sessionID, sessionSource, provenanceOpt)
+}
+
+// resolveDelegatedAgent turns the verified principal into the bound agent.
+// Without a verified principal bound to a use case there is no policy to
+// evaluate and no tenant to attribute to: like an unknown agent key on the
+// HTTP path this denies with a metric and a structured log, no record.
+func (g *Gateway) resolveDelegatedAgent(ctx context.Context, req DelegatedRequest) (*ResolvedIdentity, *DelegatedDecision) {
+	if req.Principal == nil {
+		code := req.IdentityFailure
+		if code == "" {
+			code = workload.FailureMissing
+		}
+		RecordGatewayError(ctx, code)
+		log.Warn().Str("runtime", req.Runtime).Str("host", req.Host).Str("failure", code).Msg("delegated_identity_rejected")
+		return nil, &DelegatedDecision{
+			Code: CodeWorkloadIdentityRequired, Status: http.StatusUnauthorized,
+			Message: CodeWorkloadIdentityRequired + ": verified workload identity required (" + code + ")",
+		}
+	}
+	agent, ok := g.registry.Current().ResolveWorkload(req.Runtime, req.Principal.Subject)
+	if !ok {
+		RecordGatewayError(ctx, CodeWorkloadIdentityUnbound)
+		log.Warn().Str("runtime", req.Runtime).Str("subject", req.Principal.Subject).Msg("delegated_identity_unbound")
+		return nil, &DelegatedDecision{
+			Code: CodeWorkloadIdentityUnbound, Status: http.StatusForbidden,
+			Message: CodeWorkloadIdentityUnbound + ": verified workload principal is not bound to any Talon AI use case",
+		}
+	}
+	return agent, nil
+}
+
+// delegatedSession derives the evidence session spine from the
+// client-asserted id (attribution only) or a synthetic one.
+func delegatedSession(correlationID, asserted string) (sessionID, source string) {
+	sessionID = strings.TrimSpace(asserted)
+	if sessionID == "" {
+		return "sess_" + correlationID, "synthetic"
+	}
+	if _, err := evidence.ValidateOrchValue("session_id", sessionID); err != nil {
+		return "sess_" + correlationID, "synthetic"
+	}
+	return sessionID, "client_asserted"
+}
+
+// delegatedProvenance builds the evidence option carrying the verified
+// identity and the literal enforcement provenance: Talon decided and
+// RETURNED the verdict through the runtime hook; enforcement is expected
+// under the runtime's contract, never observed here (#146).
+func delegatedProvenance(req DelegatedRequest) func(*RecordGatewayEvidenceParams) {
+	identityFact := &evidence.WorkloadIdentity{
+		Status:      evidence.WorkloadIdentityVerified,
+		Runtime:     req.Runtime,
+		AuthMethod:  req.Principal.AuthMethod,
+		Issuer:      req.Principal.Issuer,
+		Subject:     req.Principal.Subject,
+		PrincipalID: req.Principal.PrincipalID,
+		Audience:    req.Principal.Audience,
+		Binding:     evidence.WorkloadIdentityBindingAgentConfig,
+		VerifiedAt:  req.Principal.VerifiedAt.UTC().Format(time.RFC3339),
+	}
+	enforcement := &evidence.Enforcement{
+		Mechanism:           evidence.MechanismDelegate,
+		Boundary:            evidence.BoundaryExternalRuntime,
+		DecisionAuthority:   evidence.BoundaryTalon,
+		Provenance:          evidence.ProvenanceDelegatedExpected,
+		DecisionReturnedVia: req.Runtime + "_middleware",
+		Runtime: &evidence.ExternalRuntimeRef{
+			Type: req.Runtime, ID: req.RuntimeID, PolicyRef: req.PolicyRef,
+			Reference: req.Reference, RequestID: req.RequestID,
+		},
+	}
+	return func(p *RecordGatewayEvidenceParams) {
+		p.WorkloadIdentity = identityFact
+		p.Enforcement = enforcement
+		p.GatewayAnnotations = append(p.GatewayAnnotations, "delegated_dispatch")
+	}
+}
+
+// preDecisionBlocker covers the platform gates evaluated before policy:
+// the operational kill switch (#268) and the method contract.
+func preDecisionBlocker(agent *ResolvedIdentity, method string) *decisionDeny {
+	if !agent.Enabled {
+		return &decisionDeny{
+			Status: http.StatusForbidden, Message: CodeAgentDisabled + ": agent \"" + agent.Name + "\" is disabled by its Talon agent config (enabled: false)",
+			Reasons: []string{"agent disabled (enabled: false in agent config)"},
+		}
+	}
+	if method != "" && !strings.EqualFold(method, http.MethodPost) {
+		return &decisionDeny{Status: http.StatusMethodNotAllowed, Message: "method_not_allowed: Method not allowed", Reasons: []string{"delegated method not allowed"}}
+	}
+	return nil
+}
+
+// delegatedAllow records the allowed decision. The provider is reached by
+// the runtime, not by Talon: token usage is unobserved on this path, so
+// the record carries the pre-request estimate exactly as a usage-less
+// gateway record does. An allow that cannot be recorded is not an allow.
+func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agent *ResolvedIdentity, providerName string, start time.Time, req DelegatedRequest, outcome decisionOutcome, isCountTokens bool, sessionID, sessionSource string, provenanceOpt func(*RecordGatewayEvidenceParams)) DelegatedDecision {
 	dec := outcome.Allow
 	durationMS := time.Since(start).Milliseconds()
-
-	// The provider is reached by the runtime, not by Talon: token usage is
-	// unobserved on this path, so the record carries the pre-request
-	// estimate exactly as a usage-less gateway record does.
 	persisted, err := g.recordEvidence(ctx, correlationID, agent, providerName, dec.Extracted.Model, start, dec.Extracted.Text,
 		dec.Classification, nil, dec.EstimatedCost, durationMS, "", true, nil, dec.InputPIIRedacted, nil, dec.AttSummary, dec.ToolResult,
 		false, "", 0, 0, false, 0, 0, dec.EstimatedCost, provenanceOpt, func(p *RecordGatewayEvidenceParams) {
@@ -232,8 +256,6 @@ func (g *Gateway) EvaluateDelegated(ctx context.Context, req DelegatedRequest) D
 			}
 		})
 	if err != nil {
-		// An allow that cannot be recorded is not an allow: the runtime must
-		// not forward traffic Talon has no signed record of.
 		if outcome.SessReservation != nil {
 			g.releaseSessionReservation(outcome.SessReservation)
 		}
@@ -249,10 +271,8 @@ func (g *Gateway) EvaluateDelegated(ctx context.Context, req DelegatedRequest) D
 		g.releaseSessionReservation(outcome.SessReservation)
 	}
 	g.emitMetrics(ctx, agent, providerName, dec.Extracted.Model, dec.Classification, dec.ToolResult, nil, dec.EstimatedCost, durationMS, false, false, dec.PIIAction, false, 0, 0, 0, persisted)
-
-	bodyChanged := string(dec.ForwardBody) != string(req.Body)
 	return DelegatedDecision{
-		Allowed: true, Status: http.StatusOK, Body: dec.ForwardBody, BodyChanged: bodyChanged, Redacted: dec.InputPIIRedacted,
+		Allowed: true, Status: http.StatusOK, Body: dec.ForwardBody, BodyChanged: !bytes.Equal(dec.ForwardBody, req.Body), Redacted: dec.InputPIIRedacted,
 		PIITypes: piiTypesOf(dec.Classification), EvidenceID: persisted.ID, Agent: agent.Name, Provider: providerName, Model: dec.Extracted.Model,
 	}
 }
@@ -299,7 +319,8 @@ func (c *GatewayConfig) providerForHost(host string) (string, bool) {
 		return "", false
 	}
 	var found string
-	for name, p := range c.Providers {
+	for name := range c.Providers {
+		p := c.Providers[name]
 		if !p.Enabled || p.BaseURL == "" {
 			continue
 		}

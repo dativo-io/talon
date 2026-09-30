@@ -43,7 +43,7 @@ const (
 	// RuntimeType is the runtime name used in agent bindings and evidence.
 	RuntimeType = "openshell"
 	// ExtensionTokenType is the JOSE typ of the supervisor's caller token.
-	ExtensionTokenType = "openshell-ext+jwt"
+	ExtensionTokenType = "openshell-ext+jwt" //nolint:gosec // G101: a JOSE type label, not a credential
 	// procedure paths (gRPC full method names).
 	procDescribe       = "/openshell.middleware.v1.SupervisorMiddleware/Describe"
 	procValidateConfig = "/openshell.middleware.v1.SupervisorMiddleware/ValidateConfig"
@@ -79,6 +79,8 @@ type Service struct {
 	verifier *workload.JWTVerifier
 	cfg      gateway.OpenShellConfig
 	version  string
+	// maxPayload is the validated, non-negative manifest bound.
+	maxPayload uint64
 }
 
 // NewService wires the adapter. The verifier's key set comes from the
@@ -100,13 +102,18 @@ func NewService(decider Decider, cfg gateway.OpenShellConfig, talonVersion strin
 	if cfg.MiddlewareName == "" {
 		cfg.MiddlewareName = gateway.DefaultOpenShellMiddlewareName
 	}
-	if cfg.MaxPayloadBytes <= 0 {
+	if cfg.MaxPayloadBytes == 0 {
 		cfg.MaxPayloadBytes = gateway.DefaultOpenShellMaxPayloadBytes
 	}
+	// Fail closed on a negative or oversized bound before any conversion.
+	if cfg.MaxPayloadBytes < 0 || cfg.MaxPayloadBytes > gateway.DefaultOpenShellMaxPayloadBytes {
+		return nil, fmt.Errorf("openshell max_payload_bytes must be between 1 and %d", gateway.DefaultOpenShellMaxPayloadBytes)
+	}
 	return &Service{
-		decider: decider,
-		cfg:     cfg,
-		version: talonVersion,
+		decider:    decider,
+		cfg:        cfg,
+		version:    talonVersion,
+		maxPayload: uint64(cfg.MaxPayloadBytes),
 		verifier: &workload.JWTVerifier{
 			Issuer:      cfg.Identity.Issuer,
 			Audience:    cfg.Identity.Audience,
@@ -136,7 +143,7 @@ func (s *Service) describe(_ context.Context, _ *connect.Request[middlewarev1.Mi
 		Bindings: []*middlewarev1.MiddlewareBinding{{
 			Operation:       middlewarev1.SupervisorMiddlewareOperation_SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_REQUEST,
 			Phase:           middlewarev1.SupervisorMiddlewarePhase_SUPERVISOR_MIDDLEWARE_PHASE_PRE_CREDENTIALS,
-			MaxPayloadBytes: uint64(s.cfg.MaxPayloadBytes),
+			MaxPayloadBytes: s.maxPayload,
 			RequestTimeout:  durationpb.New(s.cfg.RequestTimeoutDuration()),
 		}},
 		Extension: &extensionv1.PeerMetadata{
@@ -228,7 +235,7 @@ func (s *Service) evaluateHTTPRequest(ctx context.Context, req *connect.Request[
 // authenticate verifies the supervisor's extension token and cross-checks
 // it against the request context. It returns either a principal or a
 // stable failure code; both outcomes are attribution-safe.
-func (s *Service) authenticate(h http.Header, rc *middlewarev1.RequestContext) (*workload.Principal, string) {
+func (s *Service) authenticate(h http.Header, rc *middlewarev1.RequestContext) (principal *workload.Principal, failureCode string) {
 	auth := h.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
 		return nil, workload.FailureMissing

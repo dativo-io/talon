@@ -141,24 +141,7 @@ func compileDefinition(name string, cfg policy.ActionDefinitionConfig) (*Definit
 	if !actionNameRe.MatchString(name) {
 		return nil, fmt.Errorf("invalid action name (want ^[a-z][a-z0-9_]{0,63}$)")
 	}
-	if len(cfg.InputSchema) == 0 {
-		return nil, fmt.Errorf("input_schema is required")
-	}
-	if t, _ := cfg.InputSchema["type"].(string); t != "object" {
-		return nil, fmt.Errorf("input_schema.type must be \"object\"")
-	}
-	if ap, ok := cfg.InputSchema["additionalProperties"].(bool); !ok || ap {
-		return nil, fmt.Errorf("input_schema.additionalProperties must be false: every argument field of a governed action is a declared, classified property")
-	}
-	rawSchema, err := json.Marshal(cfg.InputSchema)
-	if err != nil {
-		return nil, fmt.Errorf("input_schema: %w", err)
-	}
-	canonSchema, err := Canonicalize(rawSchema)
-	if err != nil {
-		return nil, fmt.Errorf("input_schema: %w", err)
-	}
-	compiled, err := compileSchema(name, canonSchema)
+	canonSchema, compiled, err := compileInputSchema(name, cfg.InputSchema)
 	if err != nil {
 		return nil, err
 	}
@@ -167,35 +150,9 @@ func compileDefinition(name string, cfg policy.ActionDefinitionConfig) (*Definit
 	if err != nil {
 		return nil, err
 	}
-	if strings.ToLower(cfg.Destination.Type) != "http" {
-		return nil, fmt.Errorf("destination.type must be http")
-	}
-	u, err := url.Parse(cfg.Destination.URL)
-	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
-		return nil, fmt.Errorf("destination.url must be an absolute http(s) URL")
-	}
-	if u.Scheme == "http" && !isLoopback(u.Hostname()) {
-		return nil, fmt.Errorf("destination.url: plaintext http is allowed only for loopback destinations")
-	}
-	if u.User != nil {
-		return nil, fmt.Errorf("destination.url must not embed credentials")
-	}
-	method := strings.ToUpper(strings.TrimSpace(cfg.Destination.Method))
-	if method == "" {
-		method = "POST"
-	}
-	var success []int
-	if cfg.Destination.Success != nil {
-		if len(cfg.Destination.Success.StatusCodes) == 0 {
-			return nil, fmt.Errorf("destination.success.status_codes must not be empty when declared")
-		}
-		for _, c := range cfg.Destination.Success.StatusCodes {
-			if c < 200 || c > 299 {
-				return nil, fmt.Errorf("destination.success.status_codes: %d is not a 2xx status", c)
-			}
-			success = append(success, c)
-		}
-		sort.Ints(success)
+	destination, err := compileDestination(cfg.Destination)
+	if err != nil {
+		return nil, err
 	}
 	def := &Definition{
 		Name:             name,
@@ -204,8 +161,8 @@ func compileDefinition(name string, cfg policy.ActionDefinitionConfig) (*Definit
 		SchemaDigest:     Digest(canonSchema),
 		Properties:       props,
 		Review:           review,
-		Destination:      Destination{Type: "http", URL: u.String(), Method: method, SuccessStatusCodes: success},
-		DestinationID:    "http:" + method + " " + u.String(),
+		Destination:      destination,
+		DestinationID:    "http:" + destination.Method + " " + destination.URL,
 		ExecutionProfile: ExecutionProfileTalonForwarded,
 		BindingProfile:   BindingProfileWholePayloadV1,
 		schema:           compiled,
@@ -214,17 +171,84 @@ func compileDefinition(name string, cfg policy.ActionDefinitionConfig) (*Definit
 		ProjectionVersionV1,
 		"shown=" + strings.Join(review.Shown, ","), "masked=" + strings.Join(review.Masked, ","), "non_material=" + strings.Join(review.NonMaterial, ","),
 	}, "\n")))
-	successStr := make([]string, len(success))
-	for i, c := range success {
+	def.DefinitionDigest = definitionIdentity(def)
+	return def, nil
+}
+
+// compileInputSchema enforces the closed-object contract and compiles the
+// canonical schema offline.
+func compileInputSchema(name string, schema map[string]any) ([]byte, *jsonschema.Schema, error) {
+	if len(schema) == 0 {
+		return nil, nil, fmt.Errorf("input_schema is required")
+	}
+	if t, _ := schema["type"].(string); t != "object" {
+		return nil, nil, fmt.Errorf("input_schema.type must be \"object\"")
+	}
+	if ap, ok := schema["additionalProperties"].(bool); !ok || ap {
+		return nil, nil, fmt.Errorf("input_schema.additionalProperties must be false: every argument field of a governed action is a declared, classified property")
+	}
+	rawSchema, err := json.Marshal(schema)
+	if err != nil {
+		return nil, nil, fmt.Errorf("input_schema: %w", err)
+	}
+	canonSchema, err := Canonicalize(rawSchema)
+	if err != nil {
+		return nil, nil, fmt.Errorf("input_schema: %w", err)
+	}
+	compiled, err := compileSchema(name, canonSchema)
+	if err != nil {
+		return nil, nil, err
+	}
+	return canonSchema, compiled, nil
+}
+
+// compileDestination validates the http destination and its trusted
+// success contract.
+func compileDestination(cfg policy.ActionDestinationConfig) (Destination, error) {
+	if !strings.EqualFold(cfg.Type, "http") {
+		return Destination{}, fmt.Errorf("destination.type must be http")
+	}
+	u, err := url.Parse(cfg.URL)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return Destination{}, fmt.Errorf("destination.url must be an absolute http(s) URL")
+	}
+	if u.Scheme == "http" && !isLoopback(u.Hostname()) {
+		return Destination{}, fmt.Errorf("destination.url: plaintext http is allowed only for loopback destinations")
+	}
+	if u.User != nil {
+		return Destination{}, fmt.Errorf("destination.url must not embed credentials")
+	}
+	method := strings.ToUpper(strings.TrimSpace(cfg.Method))
+	if method == "" {
+		method = "POST"
+	}
+	var success []int
+	if cfg.Success != nil {
+		if len(cfg.Success.StatusCodes) == 0 {
+			return Destination{}, fmt.Errorf("destination.success.status_codes must not be empty when declared")
+		}
+		for _, c := range cfg.Success.StatusCodes {
+			if c < 200 || c > 299 {
+				return Destination{}, fmt.Errorf("destination.success.status_codes: %d is not a 2xx status", c)
+			}
+			success = append(success, c)
+		}
+		sort.Ints(success)
+	}
+	return Destination{Type: "http", URL: u.String(), Method: method, SuccessStatusCodes: success}, nil
+}
+
+// definitionIdentity digests everything a reviewer or a claim relies on.
+func definitionIdentity(def *Definition) string {
+	successStr := make([]string, len(def.Destination.SuccessStatusCodes))
+	for i, c := range def.Destination.SuccessStatusCodes {
 		successStr[i] = fmt.Sprint(c)
 	}
-	identity := strings.Join([]string{
-		"name=" + name, "schema=" + def.SchemaDigest, "projection=" + def.ProjectionDigest,
+	return Digest([]byte(strings.Join([]string{
+		"name=" + def.Name, "schema=" + def.SchemaDigest, "projection=" + def.ProjectionDigest,
 		"destination=" + def.DestinationID, "success=" + strings.Join(successStr, ","),
 		"profile=" + def.ExecutionProfile, "binding=" + def.BindingProfile,
-	}, "\n")
-	def.DefinitionDigest = Digest([]byte(identity))
-	return def, nil
+	}, "\n")))
 }
 
 // compileSchema compiles one schema document with draft 2020-12 semantics

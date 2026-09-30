@@ -34,7 +34,7 @@ func TestPrincipal_Lifecycle(t *testing.T) {
 
 	// Raw credential is stored nowhere.
 	var n int
-	require.NoError(t, store.db.QueryRow(`SELECT COUNT(*) FROM approver_credentials WHERE verifier = ? OR verifier LIKE ?`, secret, "%"+secret+"%").Scan(&n))
+	require.NoError(t, store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM approver_credentials WHERE verifier = ? OR verifier LIKE ?`, secret, "%"+secret+"%").Scan(&n))
 	require.Zero(t, n)
 
 	// Wrong secret / unknown id / tampered token.

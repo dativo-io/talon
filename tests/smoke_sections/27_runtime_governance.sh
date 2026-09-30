@@ -23,7 +23,7 @@ test_section_27_runtime_governance() {
   if ! wait_port_free "$gov_port" 180 10; then
     log_failure "runtime governance section could not acquire port ${gov_port}" "port remained busy"
     dump_diag_kv "port ${gov_port} in use" \
-      "lsof=$(lsof -nP -iTCP:${gov_port} -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')"
+      "lsof=$(lsof -nP -iTCP:"${gov_port}" -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')"
     cd "$REPO_ROOT" || true
     return 0
   fi

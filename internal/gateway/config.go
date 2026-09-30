@@ -960,21 +960,40 @@ func (o *OpenShellConfig) validate() error {
 	if !o.Enabled {
 		return nil
 	}
+	if err := o.validateTransport(); err != nil {
+		return err
+	}
+	if err := o.Identity.validate(); err != nil {
+		return err
+	}
+	return o.applyBounds()
+}
+
+func (o *OpenShellConfig) validateTransport() error {
 	if strings.TrimSpace(o.Listen) == "" {
 		return fmt.Errorf("listen is required")
 	}
 	if !o.AllowInsecureTransport && (o.TLS.CertFile == "" || o.TLS.KeyFile == "") {
 		return fmt.Errorf("tls.cert_file and tls.key_file are required (or set allow_insecure_transport: true for local fixtures only)")
 	}
-	if strings.TrimSpace(o.Identity.Issuer) == "" || strings.TrimSpace(o.Identity.Audience) == "" {
+	return nil
+}
+
+func (i *OpenShellIdentityConfig) validate() error {
+	if strings.TrimSpace(i.Issuer) == "" || strings.TrimSpace(i.Audience) == "" {
 		return fmt.Errorf("identity.issuer and identity.audience are required")
 	}
-	if (o.Identity.JWKSURL == "") == (o.Identity.JWKSFile == "") {
+	if (i.JWKSURL == "") == (i.JWKSFile == "") {
 		return fmt.Errorf("identity: exactly one of jwks_url or jwks_file is required")
 	}
-	if o.Identity.JWKSURL != "" && !strings.HasPrefix(o.Identity.JWKSURL, "https://") && !strings.HasPrefix(o.Identity.JWKSURL, "http://127.0.0.1") && !strings.HasPrefix(o.Identity.JWKSURL, "http://localhost") {
+	if i.JWKSURL != "" && !strings.HasPrefix(i.JWKSURL, "https://") && !strings.HasPrefix(i.JWKSURL, "http://127.0.0.1") && !strings.HasPrefix(i.JWKSURL, "http://localhost") {
 		return fmt.Errorf("identity.jwks_url must use https (plaintext is allowed only on loopback)")
 	}
+	return nil
+}
+
+// applyBounds fills defaults and fails closed on out-of-range values.
+func (o *OpenShellConfig) applyBounds() error {
 	if o.MiddlewareName == "" {
 		o.MiddlewareName = DefaultOpenShellMiddlewareName
 	}

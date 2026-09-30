@@ -929,7 +929,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}()
 	if openshellServer != nil {
 		go func() {
-			if err := openshellServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := openshellServer.ListenAndServe(ctx); err != nil && err != http.ErrServerClosed {
 				errCh <- fmt.Errorf("openshell middleware listener: %w", err)
 			}
 		}()

@@ -191,37 +191,23 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	if auditVerifyFailover {
-		if auditVerifyFile != "" {
-			return fmt.Errorf("use either --failover or --file, not both")
-		}
+	if err := auditVerifyModeConflict(args); err != nil {
+		return err
+	}
+	switch {
+	case auditVerifyFailover:
 		return auditVerifyFailoverChains(ctx, store, args)
-	}
-	if auditVerifyOperation != "" {
-		if auditVerifyFile != "" || auditSession != "" || len(args) > 0 {
-			return fmt.Errorf("--operation cannot be combined with --file, --session or an evidence ID")
-		}
+	case auditVerifyOperation != "":
 		return auditVerifyOperationLifecycle(ctx, store, auditVerifyOperation, auditVerifyTenant, cmd.OutOrStdout())
-	}
-
-	if auditSession != "" {
-		if auditVerifyFile != "" || len(args) > 0 {
-			return fmt.Errorf("use either --session, --file, or an evidence ID, not more than one")
-		}
+	case auditSession != "":
 		return auditVerifySession(ctx, store, auditSession)
-	}
-
-	if auditVerifyFile != "" {
-		if len(args) > 0 {
-			return fmt.Errorf("use either evidence ID or --file, not both")
-		}
+	case auditVerifyFile != "":
 		return auditVerifyFromFile(store, auditVerifyFile)
 	}
 	if len(args) == 0 {
 		return fmt.Errorf("evidence id is required when --file is not provided")
 	}
 	evidenceID := args[0]
-
 	ev, err := store.Get(ctx, evidenceID)
 	if err != nil {
 		return fmt.Errorf("verifying evidence: %w", err)
@@ -230,6 +216,24 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 	renderVerifyResult(os.Stdout, evidenceID, valid, ev)
 	if !valid {
 		return fmt.Errorf("signature verification failed for %s", evidenceID)
+	}
+	return nil
+}
+
+// auditVerifyModeConflict rejects combinations of the mutually exclusive
+// verify modes (--failover, --operation, --session, --file, evidence id).
+func auditVerifyModeConflict(args []string) error {
+	modes := 0
+	for _, on := range []bool{auditVerifyFailover, auditVerifyOperation != "", auditSession != "", auditVerifyFile != ""} {
+		if on {
+			modes++
+		}
+	}
+	if modes > 1 {
+		return fmt.Errorf("use only one of --failover, --operation, --session or --file")
+	}
+	if len(args) > 0 && (auditVerifyOperation != "" || auditSession != "" || auditVerifyFile != "") {
+		return fmt.Errorf("an evidence ID cannot be combined with --operation, --session or --file")
 	}
 	return nil
 }
@@ -1310,20 +1314,43 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 	fmt.Fprintln(w, sep)
 }
 
-// auditVerifyOperationLifecycle verifies a governed action operation
-// (#458): every lifecycle record's HMAC and the lifecycle's consistency
-// (order, sequence, constant digests, approval before claim, claim before
-// dispatch before completion, at most one effect). Exit is non-zero when
-// the lifecycle is invalid; an incomplete (non-terminal) lifecycle is
-// reported and exits zero.
 func auditVerifyOperationLifecycle(ctx context.Context, store *evidence.Store, operationID, tenant string, out io.Writer) error {
 	repo, err := action.NewRepository(ctx, store.DB())
 	if err != nil {
 		return err
 	}
+	op, err := selectOperation(ctx, repo, operationID, tenant)
+	if err != nil {
+		return err
+	}
+	records, err := store.ListByCorrelationID(ctx, op.Ref)
+	if err != nil {
+		return fmt.Errorf("listing lifecycle records: %w", err)
+	}
+	f := action.VerifyLifecycle(records, store.VerifyRecord)
+	fmt.Fprintf(out, "Operation %s (%s/%s, action %s, ref %s)\n", op.OperationID, op.TenantID, op.AgentID, op.Action, op.Ref)
+	fmt.Fprintf(out, "  Stored status: %s | attempts: %d | digest: %s\n", op.Status, op.AttemptCount, op.Digest)
+	for _, r := range records {
+		if r.ActionLifecycle != nil {
+			renderLifecycleRecord(out, r, store.VerifyRecord(r))
+		}
+	}
+	fmt.Fprintf(out, "Lifecycle: %s\n", strings.ToUpper(f.Verdict))
+	for _, d := range f.Details {
+		fmt.Fprintf(out, "  - %s\n", d)
+	}
+	if f.Verdict == action.LifecycleInvalid {
+		return fmt.Errorf("lifecycle verification failed for operation %s", operationID)
+	}
+	return nil
+}
+
+// selectOperation resolves an external operation id, requiring --tenant
+// when it exists in more than one tenant.
+func selectOperation(ctx context.Context, repo *action.Repository, operationID, tenant string) (*action.Operation, error) {
 	ops, err := repo.FindByOperationID(ctx, operationID)
 	if err != nil {
-		return fmt.Errorf("looking up operation: %w", err)
+		return nil, fmt.Errorf("looking up operation: %w", err)
 	}
 	if tenant != "" {
 		filtered := ops[:0]
@@ -1336,49 +1363,34 @@ func auditVerifyOperationLifecycle(ctx context.Context, store *evidence.Store, o
 	}
 	switch {
 	case len(ops) == 0:
-		return fmt.Errorf("no operation with operation_id %q", operationID)
+		return nil, fmt.Errorf("no operation with operation_id %q", operationID)
 	case len(ops) > 1:
-		return fmt.Errorf("operation_id %q exists in %d tenants; pass --tenant", operationID, len(ops))
+		return nil, fmt.Errorf("operation_id %q exists in %d tenants; pass --tenant", operationID, len(ops))
 	}
-	op := ops[0]
-	records, err := store.ListByCorrelationID(ctx, op.Ref)
-	if err != nil {
-		return fmt.Errorf("listing lifecycle records: %w", err)
+	return ops[0], nil
+}
+
+// renderLifecycleRecord prints one lifecycle record line (never raw
+// arguments: only identities, statuses and observation facts).
+func renderLifecycleRecord(out io.Writer, r *evidence.Evidence, sigOK bool) {
+	l := r.ActionLifecycle
+	mark := "✓"
+	if !sigOK {
+		mark = "✗"
 	}
-	f := action.VerifyLifecycle(records, store.VerifyRecord)
-	fmt.Fprintf(out, "Operation %s (%s/%s, action %s, ref %s)\n", op.OperationID, op.TenantID, op.AgentID, op.Action, op.Ref)
-	fmt.Fprintf(out, "  Stored status: %s | attempts: %d | digest: %s\n", op.Status, op.AttemptCount, op.Digest)
-	for _, r := range records {
-		if r.ActionLifecycle == nil {
-			continue
+	extra := ""
+	switch l.Event {
+	case evidence.ActionEventApprovalDecided:
+		extra = fmt.Sprintf(" approval=%s by %s (%s)", l.ApprovalStatus, l.ReviewerPrincipal, l.ReviewerGroup)
+	case evidence.ActionEventAttemptClaimed, evidence.ActionEventAttemptArmed:
+		extra = fmt.Sprintf(" attempt=%s#%d", l.AttemptID, l.AttemptOrdinal)
+	case evidence.ActionEventAttemptCompleted:
+		extra = fmt.Sprintf(" attempt=%s#%d status=%s result=%s request_written=%t response_observed=%t", l.AttemptID, l.AttemptOrdinal, l.AttemptStatus, l.ResultProvenance, l.RequestWritten, l.ResponseObserved)
+		if l.HTTPStatus > 0 {
+			extra += fmt.Sprintf(" http=%d", l.HTTPStatus)
 		}
-		l := r.ActionLifecycle
-		mark := "✓"
-		if !store.VerifyRecord(r) {
-			mark = "✗"
-		}
-		extra := ""
-		switch l.Event {
-		case evidence.ActionEventApprovalDecided:
-			extra = fmt.Sprintf(" approval=%s by %s (%s)", l.ApprovalStatus, l.ReviewerPrincipal, l.ReviewerGroup)
-		case evidence.ActionEventAttemptClaimed, evidence.ActionEventAttemptArmed:
-			extra = fmt.Sprintf(" attempt=%s#%d", l.AttemptID, l.AttemptOrdinal)
-		case evidence.ActionEventAttemptCompleted:
-			extra = fmt.Sprintf(" attempt=%s#%d status=%s result=%s request_written=%t response_observed=%t", l.AttemptID, l.AttemptOrdinal, l.AttemptStatus, l.ResultProvenance, l.RequestWritten, l.ResponseObserved)
-			if l.HTTPStatus > 0 {
-				extra += fmt.Sprintf(" http=%d", l.HTTPStatus)
-			}
-		case evidence.ActionEventAuthorizationRefused, evidence.ActionEventOperationConflict:
-			extra = " code=" + l.RefusalCode
-		}
-		fmt.Fprintf(out, "  %s #%d %-24s %s op_status=%s%s\n", mark, l.Sequence, l.Event, r.ID, l.OperationStatus, extra)
+	case evidence.ActionEventAuthorizationRefused, evidence.ActionEventOperationConflict:
+		extra = " code=" + l.RefusalCode
 	}
-	fmt.Fprintf(out, "Lifecycle: %s\n", strings.ToUpper(f.Verdict))
-	for _, d := range f.Details {
-		fmt.Fprintf(out, "  - %s\n", d)
-	}
-	if f.Verdict == action.LifecycleInvalid {
-		return fmt.Errorf("lifecycle verification failed for operation %s", operationID)
-	}
-	return nil
+	fmt.Fprintf(out, "  %s #%d %-24s %s op_status=%s%s\n", mark, l.Sequence, l.Event, r.ID, l.OperationStatus, extra)
 }

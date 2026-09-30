@@ -430,7 +430,8 @@ func TestOutcome_TruthTable(t *testing.T) {
 
 func TestOutcome_PreConnectFailureIsRetryable(t *testing.T) {
 	h := newHarness(t)
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	lc := net.ListenConfig{}
+	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	addr := l.Addr().String()
 	_ = l.Close()
@@ -699,7 +700,7 @@ func TestPayload_SealedAtRest(t *testing.T) {
 // IBAN literal.
 func plaintextProbe(t *testing.T, h *harness, table string) string {
 	t.Helper()
-	rows, err := h.store.DB().Query(`PRAGMA table_info(` + table + `)`)
+	rows, err := h.store.DB().QueryContext(context.Background(), `PRAGMA table_info(`+table+`)`)
 	require.NoError(t, err)
 	defer rows.Close()
 	var clauses []string

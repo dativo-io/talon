@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"bytes"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -55,9 +56,9 @@ func TestProvenanceFields_AppendRuleAndRoundTrip(t *testing.T) {
 
 	// Field order: the two objects are the last members of the record.
 	raw, _ := json.Marshal(got)
-	wi := strings.Index(string(raw), `"workload_identity"`)
-	en := strings.Index(string(raw), `"enforcement"`)
-	cb := strings.Index(string(raw), `"cost_budget"`)
+	wi := bytes.Index(raw, []byte(`"workload_identity"`))
+	en := bytes.Index(raw, []byte(`"enforcement"`))
+	cb := bytes.Index(raw, []byte(`"cost_budget"`))
 	require.Greater(t, wi, 0)
 	require.Greater(t, en, wi)
 	require.Equal(t, -1, cb, "omitted when nil")

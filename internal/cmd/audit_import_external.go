@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -83,10 +84,6 @@ func runAuditImportExternal(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("reading export: %w", err)
 	}
-	issuer := importExternalIssuer
-	if issuer == "" {
-		issuer = openshell.RuntimeType
-	}
 	var store *evidence.Store
 	if !importExternalDryRun {
 		store, err = evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
@@ -95,8 +92,22 @@ func runAuditImportExternal(cmd *cobra.Command, _ []string) error {
 		}
 		defer store.Close()
 	}
-	written, unbound := 0, 0
-	out := cmd.OutOrStdout()
+	issuer := importExternalIssuer
+	if issuer == "" {
+		issuer = openshell.RuntimeType
+	}
+	written, unbound, err := importContainmentEvents(ctx, cmd.OutOrStdout(), store, events, bindings, issuer)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "External runtime import (%s): %d denial(s) in export, %d imported, %d unbound, %d non-denial line(s) skipped\n",
+		importExternalRuntime, len(events), written, unbound, skipped)
+	return nil
+}
+
+// importContainmentEvents attributes each denial through the sandbox
+// binding and writes (or, in dry-run, previews) its signed record.
+func importContainmentEvents(ctx context.Context, out io.Writer, store *evidence.Store, events []*openshell.ContainmentEvent, bindings map[string]openshell.ImportedAgent, issuer string) (written, unbound int, err error) {
 	for _, ev := range events {
 		agent, ok := bindings[openshell.RuntimeType+"\x00"+"spiffe://openshell/sandbox/"+ev.SandboxID]
 		if !ok || ev.SandboxID == "" {
@@ -105,19 +116,17 @@ func runAuditImportExternal(cmd *cobra.Command, _ []string) error {
 			continue
 		}
 		rec := openshell.ContainmentRecord(ev, agent, issuer, operatorID(), time.Now())
-		if importExternalDryRun {
+		if store == nil {
 			fmt.Fprintf(out, "  would-import  agent=%s tenant=%s dst=%s:%d process=%s\n", agent.Name, agent.TenantID, ev.DstHost, ev.DstPort, ev.ProcessName)
 			continue
 		}
 		if err := store.Store(ctx, rec); err != nil {
-			return fmt.Errorf("storing record: %w", err)
+			return written, unbound, fmt.Errorf("storing record: %w", err)
 		}
 		written++
 		fmt.Fprintf(out, "  imported  %s  agent=%s dst=%s:%d  enforcement=external_asserted receipt=unverified\n", rec.ID, agent.Name, ev.DstHost, ev.DstPort)
 	}
-	fmt.Fprintf(out, "External runtime import (%s): %d denial(s) in export, %d imported, %d unbound, %d non-denial line(s) skipped\n",
-		importExternalRuntime, len(events), written, unbound, skipped)
-	return nil
+	return written, unbound, nil
 }
 
 // loadWorkloadBindings indexes (runtime, subject) → agent from the SAME

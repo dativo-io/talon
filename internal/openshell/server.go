@@ -1,6 +1,7 @@
 package openshell
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -56,9 +57,11 @@ func NewServer(cfg gateway.OpenShellConfig, h http.Handler) (*Server, error) {
 	return s, nil
 }
 
-// ListenAndServe blocks until the listener stops.
-func (s *Server) ListenAndServe() error {
-	ln, err := net.Listen("tcp", s.listen)
+// ListenAndServe blocks until the listener stops. ctx bounds the listen
+// setup (bind), not the serving lifetime — use Shutdown for that.
+func (s *Server) ListenAndServe(ctx context.Context) error {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "tcp", s.listen)
 	if err != nil {
 		return err
 	}
@@ -71,12 +74,6 @@ func (s *Server) ListenAndServe() error {
 }
 
 // Shutdown stops the listener gracefully.
-func (s *Server) Shutdown(ctx interface {
-	Deadline() (time.Time, bool)
-	Done() <-chan struct{}
-	Err() error
-	Value(any) any
-},
-) error {
+func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }

@@ -69,7 +69,6 @@ CACHEEOF
   local list_out; list_out="$(run_talon cache list 2>/dev/null)"; true
   assert_pass "talon cache list non-empty or shows default" test -n "$list_out"
   # Audit should show cache hit for recent run
-  local audit_list; audit_list="$(run_talon audit list --limit 3 2>/dev/null)"; true
   assert_pass "talon audit list after cache run exits 0" run_talon audit list --limit 3
   # costs and report may show cache savings
   assert_pass "talon costs exits 0 after cache runs" run_talon costs

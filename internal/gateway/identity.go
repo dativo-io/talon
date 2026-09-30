@@ -259,25 +259,14 @@ func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault 
 
 	for i := range agents {
 		a := &agents[i]
-		if strings.TrimSpace(a.Name) == "" {
-			return nil, fmt.Errorf("agent config %s: agent.name is required", a.Path)
+		keyed, err := registerAgentNames(a, byName, bySecret, opts.AllowUnkeyed)
+		if err != nil {
+			return nil, err
 		}
-		if prev, dup := byName[a.Name]; dup {
-			return nil, fmt.Errorf("duplicate agent name %q: defined in both %s and %s — agent names are unique per installation", a.Name, prev, a.Path)
+		if !keyed {
+			// Native-only agent: never enters the gateway registry.
+			continue
 		}
-		byName[a.Name] = a.Path
-
-		if a.KeySecretName == "" {
-			if opts.AllowUnkeyed {
-				// Native-only agent: never enters the gateway registry.
-				continue
-			}
-			return nil, fmt.Errorf("agent %q (%s): agent.key.secret_name is required for gateway-loaded agents — bind the traffic key via `talon secrets set <name> <key>` and reference it, or run the agent natively only", a.Name, a.Path)
-		}
-		if prev, dup := bySecret[a.KeySecretName]; dup {
-			return nil, fmt.Errorf("agents %q and %q both bind vault secret %q — one active key per agent, one agent per key", prev, a.Name, a.KeySecretName)
-		}
-		bySecret[a.KeySecretName] = a.Name
 
 		tenantID := strings.TrimSpace(a.TenantID)
 		if tenantID == "" {
@@ -379,6 +368,30 @@ func (id *ResolvedIdentity) WorkloadBindings() []WorkloadBinding {
 		return nil
 	}
 	return append([]WorkloadBinding(nil), id.workloadBindings...)
+}
+
+// registerAgentNames validates the agent's name and key binding against
+// the registry-wide uniqueness maps. keyed=false means the agent has no
+// key binding and unkeyed agents are allowed (native-only serve).
+func registerAgentNames(a *LoadedAgent, byName, bySecret map[string]string, allowUnkeyed bool) (keyed bool, err error) {
+	if strings.TrimSpace(a.Name) == "" {
+		return false, fmt.Errorf("agent config %s: agent.name is required", a.Path)
+	}
+	if prev, dup := byName[a.Name]; dup {
+		return false, fmt.Errorf("duplicate agent name %q: defined in both %s and %s — agent names are unique per installation", a.Name, prev, a.Path)
+	}
+	byName[a.Name] = a.Path
+	if a.KeySecretName == "" {
+		if allowUnkeyed {
+			return false, nil
+		}
+		return false, fmt.Errorf("agent %q (%s): agent.key.secret_name is required for gateway-loaded agents — bind the traffic key via `talon secrets set <name> <key>` and reference it, or run the agent natively only", a.Name, a.Path)
+	}
+	if prev, dup := bySecret[a.KeySecretName]; dup {
+		return false, fmt.Errorf("agents %q and %q both bind vault secret %q — one active key per agent, one agent per key", prev, a.Name, a.KeySecretName)
+	}
+	bySecret[a.KeySecretName] = a.Name
+	return true, nil
 }
 
 // checkKeyCollisions fails closed when a resolved key duplicates another agent's

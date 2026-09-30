@@ -34,10 +34,10 @@ const (
 	// IssuerLocal marks principals issued by this Talon deployment.
 	IssuerLocal = "local"
 	// AuthMethodLocalCredential is the credential scheme of this package.
-	AuthMethodLocalCredential = "local_credential"
+	AuthMethodLocalCredential = "local_credential" //nolint:gosec // G101: scheme name, not a credential
 	// tokenPrefix is shared with the legacy scheme so operators can tell
 	// the two apart only by shape: v2 = prefix + credential id + "." + secret.
-	tokenPrefix = "talon_appr_"
+	tokenPrefix = "talon_appr_" //nolint:gosec // G101: token format prefix, not a credential
 )
 
 var (

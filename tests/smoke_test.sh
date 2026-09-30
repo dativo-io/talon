@@ -411,22 +411,47 @@ run_talon_bg() {
 }
 
 # stop_talon_pid <pid> [port] [max_wait_sec]: terminate exactly the owned
-# process, reap it, and wait (bounded) until the port it held is free.
-# Escalates to SIGKILL on the SAME pid only if TERM did not release the port.
+# process with a BOUNDED lifecycle — never a blocking wait on a process that
+# ignores SIGTERM:
+#   verify ownership → TERM exact PID → bounded poll for exit (and port
+#   release) → KILL the same PID when the deadline passes → reap → verify
+#   the port is released.
 stop_talon_pid() {
   local pid="$1" port="${2:-}" max_wait="${3:-15}" waited=0
   [[ -n "$pid" ]] || return 0
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-  [[ -n "$port" ]] || return 0
-  while is_port_in_use "$port" && [[ $waited -lt $max_wait ]]; do
-    if [[ $waited -eq 5 ]] && kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-    fi
-    sleep 1
+  if ! smoke_owns_pid "$pid"; then
+    echo "  !  refusing to stop pid $pid: not started by this smoke run"
+    return 1
+  fi
+  kill -TERM "$pid" 2>/dev/null || true
+  # Bounded poll (250 ms steps): process exit is the primary signal, the
+  # port release the secondary one.
+  local ticks=$((max_wait * 4))
+  while kill -0 "$pid" 2>/dev/null && [[ $waited -lt $ticks ]]; do
+    sleep 0.25
     ((waited += 1))
   done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "  -  pid $pid ignored SIGTERM for ${max_wait}s; sending SIGKILL to the same pid"
+    kill -KILL "$pid" 2>/dev/null || true
+    waited=0
+    while kill -0 "$pid" 2>/dev/null && [[ $waited -lt 20 ]]; do
+      sleep 0.25
+      ((waited += 1))
+    done
+  fi
+  # Reap only after the process is gone (or KILLed): this cannot block.
+  wait "$pid" 2>/dev/null || true
+  [[ -n "$port" ]] || return 0
+  waited=0
+  while is_port_in_use "$port" && [[ $waited -lt 20 ]]; do
+    sleep 0.25
+    ((waited += 1))
+  done
+  if is_port_in_use "$port"; then
+    echo "  !  port $port still held after stopping pid $pid: $(smoke_port_owner "$port")"
+    return 1
+  fi
   return 0
 }
 
@@ -506,15 +531,10 @@ start_owned_talon_server() {
   return 0
 }
 
-# stop_owned_talon_server <pid> <port>: TERM the exact PID, bounded wait,
-# KILL the same PID only if the port is still held, reap, confirm release.
+# stop_owned_talon_server <pid> <port>: bounded stop of the exact owned PID
+# (TERM → poll → KILL same pid → reap) and confirmation the port is released.
 stop_owned_talon_server() {
   stop_talon_pid "$1" "$2" 20
-  if [[ -n "${2:-}" ]] && is_port_in_use "$2"; then
-    echo "  !  port $2 still held after stopping pid $1: $(smoke_port_owner "$2")"
-    return 1
-  fi
-  return 0
 }
 
 # smoke_lifecycle_selftest <n>: start/stop an owned server n times on
@@ -551,6 +571,14 @@ smoke_lifecycle_selftest() {
   echo "lifecycle self-test: cycles=$n failures=$fails"
   rm -rf "$dir"
   [[ $fails -eq 0 ]]
+}
+
+# smoke_owns_pid <pid>: true when this run started the pid (registry) or
+# when no registry exists yet (bootstrap before prerequisites).
+smoke_owns_pid() {
+  local pid="$1"
+  [[ -n "$SMOKE_BG_PIDS_FILE" && -f "$SMOKE_BG_PIDS_FILE" ]] || return 0
+  grep -qx "$pid" "$SMOKE_BG_PIDS_FILE" 2>/dev/null
 }
 
 # reap_bg_pids: terminate any registered background talon process that is

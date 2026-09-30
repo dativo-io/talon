@@ -55,48 +55,81 @@ func (v *JWTVerifier) Verify(token string) (*Principal, error) {
 	if v == nil || v.Keys == nil {
 		return nil, failf(FailureKeySourceUnavailable, "verifier not configured")
 	}
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return nil, failf(FailureMissing, "no token presented")
-	}
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, failf(FailureMalformed, "compact JWS must have 3 segments")
-	}
-	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	parts, hdr, err := parseCompact(token)
 	if err != nil {
-		return nil, failf(FailureMalformed, "header: %v", err)
+		return nil, err
 	}
-	var hdr joseHeader
-	if err := json.Unmarshal(headerJSON, &hdr); err != nil {
-		return nil, failf(FailureMalformed, "header json: %v", err)
+	if err := v.checkHeader(hdr); err != nil {
+		return nil, err
 	}
-	if hdr.Alg != "EdDSA" {
-		return nil, failf(FailureAlgUnsupported, "alg %q (only EdDSA is accepted)", hdr.Alg)
-	}
-	if v.Type != "" && hdr.Typ != v.Type {
-		return nil, failf(FailureTypeMismatch, "typ %q, expected %q", hdr.Typ, v.Type)
-	}
-	if hdr.Kid == "" {
-		return nil, failf(FailureKeyUnknown, "header carries no kid")
-	}
-	pub, ok, err := v.Keys.Key(hdr.Kid)
-	if err != nil {
-		return nil, &VerificationError{Code: FailureKeySourceUnavailable, Err: err}
-	}
-	if !ok {
-		return nil, failf(FailureKeyUnknown, "kid %q not in key set", hdr.Kid)
-	}
-	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return nil, failf(FailureMalformed, "signature: %v", err)
-	}
-	if len(pub) != ed25519.PublicKeySize || !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
-		return nil, failf(FailureSignatureInvalid, "signature does not verify under kid %q", hdr.Kid)
+	if err := v.verifySignature(parts, hdr.Kid); err != nil {
+		return nil, err
 	}
 	// Only after the signature is good do we look at claims: nothing below
 	// is trusted until then.
-	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	claims, err := decodeClaims(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	return v.principalFromClaims(claims)
+}
+
+// parseCompact splits a compact JWS and decodes its JOSE header.
+func parseCompact(token string) ([]string, joseHeader, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, joseHeader{}, failf(FailureMissing, "no token presented")
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, joseHeader{}, failf(FailureMalformed, "compact JWS must have 3 segments")
+	}
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, joseHeader{}, failf(FailureMalformed, "header: %v", err)
+	}
+	var hdr joseHeader
+	if err := json.Unmarshal(headerJSON, &hdr); err != nil {
+		return nil, joseHeader{}, failf(FailureMalformed, "header json: %v", err)
+	}
+	return parts, hdr, nil
+}
+
+// checkHeader enforces the algorithm, type and key-id requirements.
+func (v *JWTVerifier) checkHeader(hdr joseHeader) error {
+	if hdr.Alg != "EdDSA" {
+		return failf(FailureAlgUnsupported, "alg %q (only EdDSA is accepted)", hdr.Alg)
+	}
+	if v.Type != "" && hdr.Typ != v.Type {
+		return failf(FailureTypeMismatch, "typ %q, expected %q", hdr.Typ, v.Type)
+	}
+	if hdr.Kid == "" {
+		return failf(FailureKeyUnknown, "header carries no kid")
+	}
+	return nil
+}
+
+// verifySignature resolves kid and checks the Ed25519 signature.
+func (v *JWTVerifier) verifySignature(parts []string, kid string) error {
+	pub, ok, err := v.Keys.Key(kid)
+	if err != nil {
+		return &VerificationError{Code: FailureKeySourceUnavailable, Err: err}
+	}
+	if !ok {
+		return failf(FailureKeyUnknown, "kid %q not in key set", kid)
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return failf(FailureMalformed, "signature: %v", err)
+	}
+	if len(pub) != ed25519.PublicKeySize || !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
+		return failf(FailureSignatureInvalid, "signature does not verify under kid %q", kid)
+	}
+	return nil
+}
+
+func decodeClaims(segment string) (map[string]any, error) {
+	payloadJSON, err := base64.RawURLEncoding.DecodeString(segment)
 	if err != nil {
 		return nil, failf(FailureMalformed, "payload: %v", err)
 	}
@@ -104,7 +137,7 @@ func (v *JWTVerifier) Verify(token string) (*Principal, error) {
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
 		return nil, failf(FailureMalformed, "payload json: %v", err)
 	}
-	return v.principalFromClaims(claims)
+	return claims, nil
 }
 
 func (v *JWTVerifier) principalFromClaims(claims map[string]any) (*Principal, error) {
@@ -112,53 +145,14 @@ func (v *JWTVerifier) principalFromClaims(claims map[string]any) (*Principal, er
 	if v.Now != nil {
 		now = v.Now()
 	}
-	leeway := v.Leeway
-	if leeway == 0 {
-		leeway = 30 * time.Second
+	iss, sub, err := v.checkIdentityClaims(claims)
+	if err != nil {
+		return nil, err
 	}
-	maxLife := v.MaxLifetime
-	if maxLife == 0 {
-		maxLife = 24 * time.Hour
+	exp, err := v.checkTimeClaims(claims, now)
+	if err != nil {
+		return nil, err
 	}
-
-	iss, _ := claims["iss"].(string)
-	if iss == "" || iss != v.Issuer {
-		return nil, failf(FailureIssuerMismatch, "iss %q, expected %q", iss, v.Issuer)
-	}
-	if !audienceContains(claims["aud"], v.Audience) {
-		return nil, failf(FailureAudienceMismatch, "aud does not contain %q", v.Audience)
-	}
-	sub, _ := claims["sub"].(string)
-	if strings.TrimSpace(sub) == "" {
-		return nil, failf(FailureClaimsInvalid, "sub is required")
-	}
-	exp, expOK := numericDate(claims["exp"])
-	if !expOK {
-		return nil, failf(FailureClaimsInvalid, "exp is required")
-	}
-	if !now.Before(exp.Add(leeway)) {
-		return nil, failf(FailureExpired, "expired at %s", exp.UTC().Format(time.RFC3339))
-	}
-	if nbf, ok := numericDate(claims["nbf"]); ok && now.Add(leeway).Before(nbf) {
-		return nil, failf(FailureNotYetValid, "nbf %s", nbf.UTC().Format(time.RFC3339))
-	}
-	// The advertised maximum lifetime must hold without trusting an
-	// optional claim: exp is bounded relative to trusted current time, and
-	// iat is required so the token's own lifetime is auditable.
-	if exp.Sub(now) > maxLife+leeway {
-		return nil, failf(FailureLifetimeExceeded, "exp is %s ahead of now, exceeds %s", exp.Sub(now), maxLife)
-	}
-	iat, iatOK := numericDate(claims["iat"])
-	if !iatOK {
-		return nil, failf(FailureClaimsInvalid, "iat is required")
-	}
-	if now.Add(leeway).Before(iat) {
-		return nil, failf(FailureNotYetValid, "iat %s is in the future", iat.UTC().Format(time.RFC3339))
-	}
-	if exp.Sub(iat) > maxLife {
-		return nil, failf(FailureLifetimeExceeded, "exp-iat %s exceeds %s", exp.Sub(iat), maxLife)
-	}
-
 	p := &Principal{
 		PrincipalID: sub,
 		Issuer:      iss,
@@ -177,6 +171,64 @@ func (v *JWTVerifier) principalFromClaims(claims map[string]any) (*Principal, er
 		}
 	}
 	return p, nil
+}
+
+// checkIdentityClaims enforces exact issuer, audience membership and a
+// non-empty subject.
+func (v *JWTVerifier) checkIdentityClaims(claims map[string]any) (iss, sub string, err error) {
+	iss, _ = claims["iss"].(string)
+	if iss == "" || iss != v.Issuer {
+		return "", "", failf(FailureIssuerMismatch, "iss %q, expected %q", iss, v.Issuer)
+	}
+	if !audienceContains(claims["aud"], v.Audience) {
+		return "", "", failf(FailureAudienceMismatch, "aud does not contain %q", v.Audience)
+	}
+	sub, _ = claims["sub"].(string)
+	if strings.TrimSpace(sub) == "" {
+		return "", "", failf(FailureClaimsInvalid, "sub is required")
+	}
+	return iss, sub, nil
+}
+
+// checkTimeClaims enforces exp (required, not elapsed, bounded relative to
+// trusted current time), nbf, and iat (required, not in the future, and
+// exp-iat within the maximum lifetime).
+func (v *JWTVerifier) checkTimeClaims(claims map[string]any, now time.Time) (time.Time, error) {
+	leeway := v.Leeway
+	if leeway == 0 {
+		leeway = 30 * time.Second
+	}
+	maxLife := v.MaxLifetime
+	if maxLife == 0 {
+		maxLife = 24 * time.Hour
+	}
+	exp, expOK := numericDate(claims["exp"])
+	if !expOK {
+		return time.Time{}, failf(FailureClaimsInvalid, "exp is required")
+	}
+	if !now.Before(exp.Add(leeway)) {
+		return time.Time{}, failf(FailureExpired, "expired at %s", exp.UTC().Format(time.RFC3339))
+	}
+	if nbf, ok := numericDate(claims["nbf"]); ok && now.Add(leeway).Before(nbf) {
+		return time.Time{}, failf(FailureNotYetValid, "nbf %s", nbf.UTC().Format(time.RFC3339))
+	}
+	// The advertised maximum lifetime must hold without trusting an
+	// optional claim: exp is bounded relative to trusted current time, and
+	// iat is required so the token's own lifetime is auditable.
+	if exp.Sub(now) > maxLife+leeway {
+		return time.Time{}, failf(FailureLifetimeExceeded, "exp is %s ahead of now, exceeds %s", exp.Sub(now), maxLife)
+	}
+	iat, iatOK := numericDate(claims["iat"])
+	if !iatOK {
+		return time.Time{}, failf(FailureClaimsInvalid, "iat is required")
+	}
+	if now.Add(leeway).Before(iat) {
+		return time.Time{}, failf(FailureNotYetValid, "iat %s is in the future", iat.UTC().Format(time.RFC3339))
+	}
+	if exp.Sub(iat) > maxLife {
+		return time.Time{}, failf(FailureLifetimeExceeded, "exp-iat %s exceeds %s", exp.Sub(iat), maxLife)
+	}
+	return exp, nil
 }
 
 func audienceContains(aud any, want string) bool {
