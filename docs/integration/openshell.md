@@ -30,7 +30,7 @@ Talon does **not** dispatch, retry or fall back on this path.
 | Sandbox identity | **OpenShell issues, Talon verifies** | gateway-signed extension JWT (`typ: openshell-ext+jwt`, EdDSA) verified against configured issuer/audience/JWKS; subject bound to one agent in `agent.talon.yaml` |
 | Provider attempt lifecycle (timeout, retry, fallback, cancellation) | **OpenShell + the agent's SDK** | each SDK retry is a fresh Talon decision; Talon's `retry`/`fallback` settings are inert on this path |
 | Signed evidence | **Talon** | one record per decision with `workload_identity` and `enforcement` (evidence spec 1.11) |
-| Containment facts OpenShell enforced alone | **OpenShell enforces, Talon imports** | `talon audit import-external` over OpenShell's OCSF export, labelled `external_runtime_enforced`, `observed: false`, receipt unverified |
+| Containment facts OpenShell enforced alone | **OpenShell enforces, Talon imports** | `talon audit import-external` over OpenShell's OCSF export, labelled `external_asserted`, receipt unverified (an operator-imported assertion, never a Talon observation) |
 
 There are no two authorities for one decision: a Talon rule never appears in OpenShell policy and an OpenShell rule never appears in Talon YAML. The one candidate for **COMPILE** — Talon's provider allowlist into OpenShell's endpoint allowlist — was evaluated and rejected for v1: OpenShell admission is additionally keyed by calling binary, L7 rules and `enforcement: enforce|audit`, so the semantics are not equivalent and a mechanical mapping could silently widen or narrow. No static capability-delta work applies because no mapping exists.
 
@@ -69,7 +69,7 @@ Every delegated decision writes one signed record (invocation type `gateway`) ca
 "upstream_auth_mode": "external_runtime",
 "gateway_annotations": ["delegated_dispatch"],
 "workload_identity": {"status":"verified","runtime":"openshell","auth_method":"jwt_eddsa","issuer":"openshell-gateway:gw-1","subject":"spiffe://openshell/sandbox/sb-42","principal_id":"…","audience":"…","binding":"agent_config","verified_at":"…"},
-"enforcement": {"mechanism":"delegate","boundary":"external_runtime","decision_authority":"talon","provenance":"external_runtime_enforced","observed":false,
+"enforcement": {"mechanism":"delegate","boundary":"external_runtime","decision_authority":"talon","provenance":"delegated_expected","decision_returned_via":"openshell_middleware",
                 "runtime":{"type":"openshell","id":"openshell-gateway:gw-1","policy_ref":"<openshell network_middlewares entry>","reference":"<sandbox_id>","request_id":"<openshell request id>"}}
 ```
 
@@ -77,10 +77,10 @@ Read it precisely:
 
 - `decision_authority: talon` — Talon decided allow/deny/transform under its own compiled policy (digests in `policy_decision.policy_digests`).
 - `boundary: external_runtime`, `mechanism: delegate` — the prevention point was OpenShell's hook, not Talon's proxy.
-- `observed: false` — Talon returned a verdict and did **not** see OpenShell block or forward. `external_runtime_enforced` on such a record means "enforced by the runtime under its documented hook contract"; Talon's HMAC proves Talon recorded this decision, not that OpenShell honored it.
+- `provenance: delegated_expected`, `decision_returned_via: openshell_middleware` — Talon proves exactly two things: it decided, and it returned that verdict through the configured middleware. Enforcement is **expected** under OpenShell's documented hook contract and was **not observed**; Talon's HMAC proves Talon recorded this decision, nothing about what OpenShell did with it. The vocabulary is literal: `talon_enforced` (Talon owned and observed the boundary), `delegated_expected`, `external_asserted` (unsigned/unverified external statement), `external_verified` (cryptographically or authoritatively verified receipt), `client_asserted`.
 - A record with no `enforcement` object is the ordinary Talon-intercepted gateway path (`talon audit show` prints the default explicitly).
 
-An OpenShell-only containment denial (network or HTTP class, `action: Denied`) imported with `talon audit import-external --runtime openshell --file <ocsf.jsonl>` becomes an `external_runtime_event` record (never request-class): `mechanism: verify`, `decision_authority: external_runtime`, `provenance: external_runtime_enforced`, `observed: false`, `receipt: {kind: openshell_ocsf, digest, verified: false}`, `workload_identity.status: asserted`. Talon never claims it saw the file, process or connection; it claims an operator imported OpenShell's unsigned statement that it did. Attribution uses the same sandbox binding as the live path; events for unbound sandboxes are skipped and reported.
+An OpenShell-only containment denial (network or HTTP class, `action: Denied`) imported with `talon audit import-external --runtime openshell --file <ocsf.jsonl>` becomes an `external_runtime_event` record (never request-class): `mechanism: verify`, `decision_authority: external_runtime`, `provenance: external_asserted`, `receipt: {kind: openshell_ocsf, digest, verified: false}`, `workload_identity.status: asserted`. It is an **assertion**: Talon never claims it saw the file, process or connection, and never claims the export is authentic; it claims an operator imported OpenShell's unsigned statement. `external_verified` is reserved for receipts Talon can verify, which OpenShell v0.1.2 does not provide. Attribution uses the same sandbox binding as the live path; events for unbound sandboxes are skipped and reported.
 
 Cost on this path is **estimate-only**: Talon does not see the provider response, so `execution.cost` is the pre-request estimate and token counts are zero. Budget enforcement works on those estimates. The response-phase hook (OpenShell `HttpResponsePreReturn`) is the next slice.
 

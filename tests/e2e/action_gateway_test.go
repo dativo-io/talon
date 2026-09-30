@@ -175,7 +175,11 @@ actions:
           currency: {type: string, enum: [EUR, USD]}
       review:
         fields: [ticket_id, amount, currency]
-      destination: {type: http, url: "`+down.srv.URL+`/refunds", method: POST}
+      destination:
+        type: http
+        url: "`+down.srv.URL+`/refunds"
+        method: POST
+        success: {status_codes: [201]}
     notify_customer:
       input_schema:
         type: object
@@ -187,6 +191,7 @@ actions:
     delete_customer:
       input_schema:
         type: object
+        additionalProperties: false
         properties:
           customer_id: {type: string}
       destination: {type: http, url: "`+down.srv.URL+`/refunds"}
@@ -208,16 +213,23 @@ policies:
 	if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", agAgent+"-talon-key", agAgentKey); code != 0 {
 		t.Fatalf("secrets set: %d\n%s", code, stderr)
 	}
-	keyRe := regexp.MustCompile(`talon_appr_[0-9a-f]+`)
-	out, stderr, code := RunTalon(t, dir, nil, "approver", "add", "--name", "lead-1", "--role", "support-leads")
+	keyRe := regexp.MustCompile(`talon_appr_cred_[0-9a-f]+\.[A-Za-z0-9_-]+`)
+	legacyRe := regexp.MustCompile(`talon_appr_[0-9a-f]{24}`)
+	out, stderr, code := RunTalon(t, dir, nil, "approver", "add", "--name", "lead-1", "--tenant", "default", "--groups", "support-leads")
 	if code != 0 {
 		t.Fatalf("approver add: %d\n%s", code, stderr)
 	}
 	leadKey := keyRe.FindString(out)
-	out, _, _ = RunTalon(t, dir, nil, "approver", "add", "--name", "intern-1", "--role", "interns")
+	out, _, _ = RunTalon(t, dir, nil, "approver", "add", "--name", "intern-1", "--tenant", "default", "--groups", "interns")
 	internKey := keyRe.FindString(out)
-	if leadKey == "" || internKey == "" {
-		t.Fatalf("approver keys not printed: %q", out)
+	// Same group, OTHER tenant: must never decide this tenant's approvals.
+	out, _, _ = RunTalon(t, dir, nil, "approver", "add", "--name", "lead-other", "--tenant", "other-tenant", "--groups", "support-leads")
+	otherTenantKey := keyRe.FindString(out)
+	// Legacy role credential: refused by the Action Gateway.
+	out, _, _ = RunTalon(t, dir, nil, "approver", "add", "--name", "legacy-lead", "--role", "support-leads")
+	legacyKey := legacyRe.FindString(out)
+	if leadKey == "" || internKey == "" || otherTenantKey == "" || legacyKey == "" {
+		t.Fatalf("approver credentials not printed: %q", out)
 	}
 
 	port := freePort(t)
@@ -263,6 +275,12 @@ policies:
 	if st, res = c.do("POST", "/v1/approvals/"+approvalID+"/decisions", internKey, decision); st != 401 || errCode(res) != "approval_not_authorized" {
 		t.Fatalf("wrong group must not approve: %d %v", st, res)
 	}
+	if st, res = c.do("POST", "/v1/approvals/"+approvalID+"/decisions", otherTenantKey, decision); st != 401 || errCode(res) != "approval_not_authorized" {
+		t.Fatalf("support-leads of ANOTHER tenant must not approve: %d %v", st, res)
+	}
+	if st, res = c.do("POST", "/v1/approvals/"+approvalID+"/decisions", legacyKey, decision); st != 401 || errCode(res) != "approval_not_authorized" {
+		t.Fatalf("legacy role credential must not approve: %d %v", st, res)
+	}
 	st, res = c.do("GET", "/v1/approvals/"+approvalID, agAgentKey, "")
 	if st != 200 || dig(res, "approval", "status") != "pending" {
 		t.Fatalf("approval still pending: %d %v", st, res)
@@ -273,7 +291,7 @@ policies:
 
 	// 4. Authorized approval: decision alone dispatches nothing.
 	st, res = c.do("POST", "/v1/approvals/"+approvalID+"/decisions", leadKey, decision)
-	if st != 200 || dig(res, "approval", "status") != "approved" || dig(res, "approval", "decided_by") != "lead-1" || dig(res, "operation", "operation_status") != "authorized" {
+	if st != 200 || dig(res, "approval", "status") != "approved" || !strings.HasPrefix(fmt.Sprint(dig(res, "approval", "decided_by")), "apr_") || dig(res, "operation", "operation_status") != "authorized" {
 		t.Fatalf("approve: %d %v", st, res)
 	}
 	if down.refundCalls.Load() != 0 {
@@ -318,7 +336,7 @@ policies:
 		t.Fatalf("allow: %d %v", st, res)
 	}
 	st, res = c.do("POST", "/v1/action-operations/op-notify-1/attempts", agAgentKey, "")
-	if st != 200 || dig(res, "operation", "operation_status") != "unknown" || dig(res, "attempt", "result_provenance") != "unknown" || dig(res, "attempt", "dispatch_observed") != true {
+	if st != 200 || dig(res, "operation", "operation_status") != "unknown" || dig(res, "attempt", "result_provenance") != "unknown" || dig(res, "attempt", "dispatch_armed") != true || dig(res, "attempt", "request_written") != true || dig(res, "attempt", "response_observed") != false {
 		t.Fatalf("unknown: %d %v", st, res)
 	}
 	if st, res = c.do("POST", "/v1/action-operations/op-notify-1/attempts", agAgentKey, ""); st != 409 || errCode(res) != "operation_outcome_unknown" {
@@ -347,7 +365,7 @@ policies:
 		}
 	}
 	out, _, _ = RunTalon(t, dir, nil, "audit", "verify", "--operation", "op-refund-1")
-	for _, want := range []string{"#1 operation_established", "#2 approval_requested", "approval=approved by lead-1 (support-leads)", "attempt_claimed", "attempt_dispatched", "status=succeeded result=observed dispatch_observed=true", "operation_conflict"} {
+	for _, want := range []string{"#1 operation_established", "#2 approval_requested", "approval=approved by apr_", "(support-leads)", "attempt_claimed", "attempt_armed", "status=succeeded result=observed request_written=true response_observed=true", "operation_conflict"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("verify output missing %q:\n%s", want, out)
 		}
@@ -366,10 +384,10 @@ policies:
 	if err := db.QueryRow(`SELECT id, evidence_json FROM evidence WHERE invocation_type='action_lifecycle' AND evidence_json LIKE '%"event":"approval_decided"%' LIMIT 1`).Scan(&id, &js); err != nil {
 		t.Fatalf("find decision record: %v", err)
 	}
-	if !bytes.Contains([]byte(js), []byte(`"reviewer_principal":"lead-1"`)) {
+	if !bytes.Contains([]byte(js), []byte(`"reviewer_principal":"apr_`)) {
 		t.Fatalf("unexpected record: %s", js)
 	}
-	js = strings.Replace(js, `"reviewer_principal":"lead-1"`, `"reviewer_principal":"mallory"`, 1)
+	js = regexp.MustCompile(`"reviewer_principal":"apr_[a-f0-9]+"`).ReplaceAllString(js, `"reviewer_principal":"apr_mallory"`)
 	if _, err := db.Exec(`UPDATE evidence SET evidence_json = ? WHERE id = ?`, js, id); err != nil {
 		t.Fatal(err)
 	}

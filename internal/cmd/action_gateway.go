@@ -29,7 +29,7 @@ type actionGateway struct {
 	approvers *approver.Store
 }
 
-func buildActionGateway(ctx context.Context, snap *agentcatalog.RuntimeSnapshot, evStore *evidence.Store, approverDBPath string) (*actionGateway, error) {
+func buildActionGateway(ctx context.Context, snap *agentcatalog.RuntimeSnapshot, evStore *evidence.Store, approverDBPath, vaultKey string) (*actionGateway, error) {
 	if snap == nil {
 		return nil, nil
 	}
@@ -47,6 +47,12 @@ func buildActionGateway(ctx context.Context, snap *agentcatalog.RuntimeSnapshot,
 		return nil, err
 	}
 	dispatcher := action.NewHTTPDispatcher(&http.Client{Timeout: 35 * time.Second})
+	// Active payloads are sealed under a key derived from the vault key
+	// (explicit version); without it no operation can be established.
+	cryptor, err := action.NewPayloadCryptor(vaultKey)
+	if err != nil {
+		return nil, fmt.Errorf("action payload encryption: %w", err)
+	}
 	ag := &actionGateway{services: map[string]*action.Service{}, repo: repo}
 	for _, ra := range withCatalog {
 		cat, err := action.CompileCatalog(ra.Policy.Actions)
@@ -61,7 +67,7 @@ func buildActionGateway(ctx context.Context, snap *agentcatalog.RuntimeSnapshot,
 		if tenant == "" {
 			tenant = "default"
 		}
-		svc, err := action.NewService(tenant, ra.Name, cat, ap, repo, evStore, dispatcher)
+		svc, err := action.NewService(tenant, ra.Name, cat, ap, repo, evStore, dispatcher, cryptor)
 		if err != nil {
 			return nil, err
 		}

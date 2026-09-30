@@ -245,3 +245,31 @@ func splitToken(tok string) []string {
 	}
 	return append(out, tok[start:])
 }
+
+// The advertised maximum lifetime must hold even when a token omits iat:
+// exp is bounded relative to trusted current time, and iat is required.
+func TestJWTVerifier_LifetimeBoundWithoutIat(t *testing.T) {
+	iss := newIssuer(t, "k1")
+	v := verifier(NewStaticKeySet(iss.jwks()))
+	v.MaxLifetime = time.Hour
+
+	c := baseClaims()
+	delete(c, "iat")
+	c["exp"] = fixedNow.Add(30 * 24 * time.Hour).Unix()
+	if _, err := v.Verify(iss.mint(t, nil, c)); FailureCode(err) != FailureLifetimeExceeded {
+		t.Fatalf("far-future exp without iat must hit the lifetime bound, got %v", err)
+	}
+
+	c = baseClaims()
+	delete(c, "iat")
+	if _, err := v.Verify(iss.mint(t, nil, c)); FailureCode(err) != FailureClaimsInvalid {
+		t.Fatalf("iat is required for this verifier profile, got %v", err)
+	}
+
+	c = baseClaims()
+	c["exp"] = fixedNow.Add(2 * time.Hour).Unix()
+	c["iat"] = fixedNow.Add(-time.Minute).Unix()
+	if _, err := v.Verify(iss.mint(t, nil, c)); FailureCode(err) != FailureLifetimeExceeded {
+		t.Fatalf("exp 2h ahead with MaxLifetime 1h must be rejected, got %v", err)
+	}
+}

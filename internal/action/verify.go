@@ -93,7 +93,7 @@ func VerifyLifecycle(records []*evidence.Evidence, verifySig func(*evidence.Evid
 		}
 		// Rule 2: identity and digests never change.
 		if l.OperationRef != first.OperationRef || l.OperationID != first.OperationID || l.Action != first.Action ||
-			l.Digest != first.Digest || l.SchemaDigest != first.SchemaDigest || l.PolicyDigest != first.PolicyDigest ||
+			l.Digest != first.Digest || l.SchemaDigest != first.SchemaDigest || l.PolicyDigest != first.PolicyDigest || l.DefinitionDigest != first.DefinitionDigest ||
 			l.ExecutionProfile != first.ExecutionProfile || l.DestinationID != first.DestinationID || l.Verdict != first.Verdict {
 			fail("record %s: exact operation identity/digest differs from the establishing record", r.ID)
 		}
@@ -101,8 +101,8 @@ func VerifyLifecycle(records []*evidence.Evidence, verifySig func(*evidence.Evid
 
 	// Rule 3+: state machine over events.
 	type attemptState struct {
-		claimed, dispatched, completed bool
-		status                         string
+		claimed, armed, completed bool
+		status                    string
 	}
 	attempts := map[string]*attemptState{}
 	var ordinals []int
@@ -137,6 +137,9 @@ func VerifyLifecycle(records []*evidence.Evidence, verifySig func(*evidence.Evid
 			if l.ReviewerPrincipal == "" {
 				fail("record %s: decision without an authenticated reviewer principal", r.ID)
 			}
+			if l.ReviewerPrincipal != "system" && l.ReviewerTenant != r.TenantID {
+				fail("record %s: reviewer tenant %q differs from the operation tenant %q", r.ID, l.ReviewerTenant, r.TenantID)
+			}
 			approvals[l.ApprovalID] = l.ApprovalStatus
 			if l.ApprovalStatus == ApprovalApproved {
 				approvedAt = i
@@ -161,15 +164,18 @@ func VerifyLifecycle(records []*evidence.Evidence, verifySig func(*evidence.Evid
 			}
 			ordinals = append(ordinals, l.AttemptOrdinal)
 			attempts[l.AttemptID] = &attemptState{claimed: true}
-		case evidence.ActionEventAttemptDispatched:
+		case evidence.ActionEventAttemptArmed:
 			st, ok := attempts[l.AttemptID]
-			if !ok || !st.claimed || st.dispatched || st.completed {
-				fail("record %s: dispatch marker for attempt %q without a prior open claim", r.ID, l.AttemptID)
+			if !ok || !st.claimed || st.armed || st.completed {
+				fail("record %s: arm marker for attempt %q without a prior open claim", r.ID, l.AttemptID)
 			} else {
-				st.dispatched = true
+				st.armed = true
 			}
-			if !l.DispatchObserved {
-				fail("record %s: dispatch marker must state dispatch_observed", r.ID)
+			if !l.DispatchArmed {
+				fail("record %s: arm marker must state dispatch_armed", r.ID)
+			}
+			if l.RequestWritten || l.ResponseObserved {
+				fail("record %s: an arm marker is intent only; it must not claim an observed request or response", r.ID)
 			}
 		case evidence.ActionEventAttemptCompleted:
 			st, ok := attempts[l.AttemptID]
@@ -178,21 +184,23 @@ func VerifyLifecycle(records []*evidence.Evidence, verifySig func(*evidence.Evid
 				continue
 			}
 			st.completed, st.status = true, l.AttemptStatus
+			if st.armed != l.DispatchArmed {
+				fail("record %s: completion dispatch_armed=%t contradicts the chain", r.ID, l.DispatchArmed)
+			}
 			switch l.AttemptStatus {
-			case AttemptSucceeded, AttemptUnknown:
-				if !st.dispatched {
-					fail("record %s: attempt %s reported %s without a dispatch marker", r.ID, l.AttemptID, l.AttemptStatus)
+			case AttemptSucceeded:
+				if !st.armed || !l.RequestWritten || !l.ResponseObserved || l.ResultProvenance != ResultProvenanceObserved {
+					fail("record %s: a succeeded attempt requires arm + observed request write + observed response + observed provenance", r.ID)
 				}
-				if l.AttemptStatus == AttemptSucceeded && l.ResultProvenance != ResultProvenanceObserved {
-					fail("record %s: a succeeded attempt must carry observed result provenance", r.ID)
-				}
-				if l.AttemptStatus == AttemptUnknown && l.ResultProvenance != ResultProvenanceUnknown {
-					fail("record %s: an unknown attempt must carry unknown result provenance", r.ID)
+				closed = l.AttemptStatus
+			case AttemptUnknown:
+				if !st.armed || l.ResultProvenance != ResultProvenanceUnknown {
+					fail("record %s: an unknown attempt requires a prior arm marker and unknown provenance", r.ID)
 				}
 				closed = l.AttemptStatus
 			case AttemptFailed:
-				if !st.dispatched && l.ResultProvenance != ResultProvenanceNotDispatched {
-					fail("record %s: a failure without dispatch must be not_dispatched", r.ID)
+				if l.RequestWritten || l.ResultProvenance != ResultProvenanceNotDispatched {
+					fail("record %s: a failed attempt is only ever a not_dispatched failure (an observed non-success is unknown, never retryable)", r.ID)
 				}
 			default:
 				fail("record %s: unknown attempt status %q", r.ID, l.AttemptStatus)

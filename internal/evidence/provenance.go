@@ -24,12 +24,29 @@ const (
 	BoundaryExternalRuntime = "external_runtime"
 )
 
-// Provenance vocabulary (#146).
+// Enforcement provenance vocabulary (#146, applied literally). Each value
+// names exactly what Talon can prove about ENFORCEMENT — never more:
+//
+//	talon_enforced      Talon owned the prevention boundary and observed the
+//	                    outcome itself (its own gateway/MCP interception).
+//	delegated_expected  Talon decided and RETURNED the verdict through a
+//	                    configured runtime hook; enforcement is expected by
+//	                    the runtime's contract but Talon did not observe it.
+//	external_asserted   an external party asserted enforcement and Talon
+//	                    could not verify the assertion (unsigned log export,
+//	                    operator import). Attribution only.
+//	external_verified   Talon cryptographically or authoritatively verified
+//	                    an external enforcement receipt.
+//	client_asserted     an authenticated client reported the fact.
+//
+// A valid Talon signature proves Talon recorded the claim with this
+// provenance; it never upgrades the provenance.
 const (
-	ProvenanceTalonEnforced           = "talon_enforced"
-	ProvenanceExternalRuntimeEnforced = "external_runtime_enforced"
-	ProvenanceExternalRuntimeVerified = "external_runtime_verified"
-	ProvenanceClientAsserted          = "client_asserted"
+	ProvenanceTalonEnforced     = "talon_enforced"
+	ProvenanceDelegatedExpected = "delegated_expected"
+	ProvenanceExternalAsserted  = "external_asserted"
+	ProvenanceExternalVerified  = "external_verified"
+	ProvenanceClientAsserted    = "client_asserted"
 )
 
 // Workload identity verification statuses (#457).
@@ -53,14 +70,13 @@ type Enforcement struct {
 	Boundary          string `json:"boundary"`
 	DecisionAuthority string `json:"decision_authority"`
 	Provenance        string `json:"provenance"`
-	// Observed is true only when Talon itself observed the enforcement
-	// outcome (its own interception, or a verified runtime receipt). On a
-	// delegated pre-execution decision Talon returns a verdict and relies
-	// on the runtime's hook contract; it did not see the block or the
-	// forward, so Observed is false.
-	Observed bool                `json:"observed"`
-	Runtime  *ExternalRuntimeRef `json:"runtime,omitempty"`
-	Receipt  *ExternalReceipt    `json:"receipt,omitempty"`
+	// DecisionReturnedVia names the configured channel Talon returned its
+	// decision through on a delegated path (e.g. "openshell_middleware").
+	// It documents what Talon DID — return a verdict — not what the
+	// runtime did with it.
+	DecisionReturnedVia string              `json:"decision_returned_via,omitempty"`
+	Runtime             *ExternalRuntimeRef `json:"runtime,omitempty"`
+	Receipt             *ExternalReceipt    `json:"receipt,omitempty"`
 }
 
 // ExternalRuntimeRef is a SAFE reference to the external runtime involved:
@@ -130,7 +146,7 @@ const (
 	ActionEventApprovalRequested    = "approval_requested"
 	ActionEventApprovalDecided      = "approval_decided"
 	ActionEventAttemptClaimed       = "attempt_claimed"
-	ActionEventAttemptDispatched    = "attempt_dispatched"
+	ActionEventAttemptArmed         = "attempt_armed"
 	ActionEventAttemptCompleted     = "attempt_completed"
 	ActionEventAuthorizationRefused = "authorization_refused"
 )
@@ -159,7 +175,9 @@ type ActionLifecycle struct {
 	Action           string `json:"action"`
 	Digest           string `json:"digest"` // exact operation digest
 	SchemaDigest     string `json:"schema_digest"`
-	PolicyDigest     string `json:"policy_digest"` // approval-relevant policy digest
+	PolicyDigest     string `json:"policy_digest"`               // approval-relevant policy digest
+	DefinitionDigest string `json:"definition_digest,omitempty"` // trusted definition: schema, destination, success contract, projection, binding
+	ProjectionDigest string `json:"projection_digest,omitempty"`
 	BindingProfile   string `json:"binding_profile"`
 	ExecutionProfile string `json:"execution_profile"` // talon_forwarded
 	DestinationID    string `json:"destination_id"`
@@ -174,21 +192,35 @@ type ActionLifecycle struct {
 	ApprovalExpires string   `json:"approval_expires_at,omitempty"`
 	// Reviewer identity is the authenticated approver principal, never a
 	// display name from the request body.
-	ReviewerPrincipal string `json:"reviewer_principal,omitempty"`
-	ReviewerGroup     string `json:"reviewer_group,omitempty"`
-	DecisionReason    string `json:"decision_reason,omitempty"`
+	ReviewerPrincipal         string `json:"reviewer_principal,omitempty"`
+	ReviewerTenant            string `json:"reviewer_tenant,omitempty"`
+	ReviewerSubject           string `json:"reviewer_subject,omitempty"`
+	ReviewerCredentialID      string `json:"reviewer_credential_id,omitempty"`
+	ReviewerCredentialVersion int    `json:"reviewer_credential_version,omitempty"`
+	ReviewerGroup             string `json:"reviewer_group,omitempty"`
+	DecisionReason            string `json:"decision_reason,omitempty"`
 	// Attempt facts.
 	AttemptID        string `json:"attempt_id,omitempty"`
 	AttemptOrdinal   int    `json:"attempt_ordinal,omitempty"`
 	AttemptStatus    string `json:"attempt_status,omitempty"`
 	IdempotencyKey   string `json:"idempotency_key,omitempty"`
 	DispatchBoundary string `json:"dispatch_boundary,omitempty"` // talon_forwarded
-	// DispatchObserved is true once Talon itself wrote the downstream
-	// request (the dispatch marker); it says nothing about the result.
-	DispatchObserved bool `json:"dispatch_observed,omitempty"`
-	// ResultProvenance says how the outcome is known: observed by Talon,
-	// unknown (request may have left, no reliable answer), or not
-	// dispatched at all.
+	// DispatchArmed is the durable PRE-effect marker: the attempt crossed
+	// the point after which a restart can no longer assume "not sent". It
+	// is an intent fact, not an observation.
+	DispatchArmed bool `json:"dispatch_armed,omitempty"`
+	// RequestWritten / ResponseObserved are the dispatcher's own
+	// observations, recorded only at completion: did Talon see the request
+	// bytes leave, did Talon read a response. They are false whenever Talon
+	// did not observe them, including after a crash.
+	RequestWritten   bool `json:"request_written,omitempty"`
+	ResponseObserved bool `json:"response_observed,omitempty"`
+	// HTTPStatus is the observed response status, when any.
+	HTTPStatus int `json:"http_status,omitempty"`
+	// ResultProvenance says how the OUTCOME is known: observed (a response
+	// matching the trusted success contract), unknown (the request may or
+	// did reach the destination and no trustworthy outcome exists), or
+	// not_dispatched (the request never left Talon).
 	ResultProvenance string `json:"result_provenance,omitempty"`
 	OutcomeCode      string `json:"outcome_code,omitempty"`
 	OutcomeRef       string `json:"outcome_ref,omitempty"` // safe reference (e.g. response digest)

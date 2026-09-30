@@ -153,12 +153,15 @@ func (g *Gateway) EvaluateDelegated(ctx context.Context, req DelegatedRequest) D
 		Binding:     evidence.WorkloadIdentityBindingAgentConfig,
 		VerifiedAt:  req.Principal.VerifiedAt.UTC().Format(time.RFC3339),
 	}
+	// What this record can prove: Talon decided, and returned the verdict
+	// through the configured runtime hook. Whether the runtime honored it
+	// is EXPECTED under its contract, never observed here (#146 literal).
 	enforcement := &evidence.Enforcement{
-		Mechanism:         evidence.MechanismDelegate,
-		Boundary:          evidence.BoundaryExternalRuntime,
-		DecisionAuthority: evidence.BoundaryTalon,
-		Provenance:        evidence.ProvenanceExternalRuntimeEnforced,
-		Observed:          false,
+		Mechanism:           evidence.MechanismDelegate,
+		Boundary:            evidence.BoundaryExternalRuntime,
+		DecisionAuthority:   evidence.BoundaryTalon,
+		Provenance:          evidence.ProvenanceDelegatedExpected,
+		DecisionReturnedVia: req.Runtime + "_middleware",
 		Runtime: &evidence.ExternalRuntimeRef{
 			Type: req.Runtime, ID: req.RuntimeID, PolicyRef: req.PolicyRef,
 			Reference: req.Reference, RequestID: req.RequestID,

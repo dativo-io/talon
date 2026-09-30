@@ -229,7 +229,11 @@
               "review": {
                 "type": "object",
                 "additionalProperties": false,
-                "properties": {"fields": {"type": "array", "items": {"type": "string"}, "maxItems": 64}}
+                "properties": {
+                  "fields": {"type": "array", "items": {"type": "string"}, "maxItems": 64},
+                  "masked": {"type": "array", "items": {"type": "string"}, "maxItems": 64},
+                  "non_material": {"type": "array", "items": {"type": "string"}, "maxItems": 64}
+                }
               },
               "destination": {
                 "type": "object",
@@ -238,7 +242,14 @@
                 "properties": {
                   "type": {"type": "string", "enum": ["http"]},
                   "url": {"type": "string", "minLength": 1, "maxLength": 2048},
-                  "method": {"type": "string", "enum": ["POST", "PUT", "PATCH", "DELETE"]}
+                  "method": {"type": "string", "enum": ["POST", "PUT", "PATCH", "DELETE"]},
+                  "success": {
+                    "type": "object",
+                    "description": "Trusted outcome contract: observed HTTP statuses that mean the business effect completed. Any other response after the request left Talon is an UNKNOWN outcome (no automatic retry). Absent = every response is unknown.",
+                    "required": ["status_codes"],
+                    "additionalProperties": false,
+                    "properties": {"status_codes": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "integer", "minimum": 200, "maximum": 299}}}
+                  }
                 }
               }
             }

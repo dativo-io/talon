@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptrace"
@@ -14,8 +13,8 @@ import (
 	"time"
 )
 
-// Dispatcher performs the downstream effect of an ALREADY AUTHORIZED and
-// CLAIMED attempt. It never decides anything.
+// Dispatcher performs the downstream effect of an ALREADY AUTHORIZED,
+// CLAIMED and ARMED attempt. It never decides anything and never retries.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, req DispatchRequest) Outcome
 }
@@ -29,23 +28,33 @@ type DispatchRequest struct {
 	IdempotencyKey string
 }
 
-// Outcome classifies what Talon knows after one dispatch.
+// Outcome is what Talon can truthfully say after one dispatch (#458 B3/B4).
 //
-//	Dispatched=false           the request never left Talon → known failure,
-//	                           safe to retry (ResultProvenanceNotDispatched)
-//	Dispatched=true, observed  Talon read a response → succeeded/failed,
-//	                           ResultProvenanceObserved
-//	Dispatched=true, no answer the request was written but no reliable
-//	                           response arrived → AttemptUnknown,
-//	                           ResultProvenanceUnknown; NEVER retried
-//	                           automatically
+// Observation facts (what Talon saw) and the outcome verdict (what Talon
+// may conclude) are separate:
+//
+//	RequestWritten=false                      the request never left Talon
+//	                                          → failed / not_dispatched; an
+//	                                          unchanged explicit retry is safe
+//	RequestWritten=true, ResponseObserved=true,
+//	  status ∈ definition's success contract   → succeeded / observed
+//	RequestWritten=true, anything else          → UNKNOWN / unknown. This
+//	                                          includes any undeclared status
+//	                                          (500 after the effect, 409, a
+//	                                          redirect), a lost response, a
+//	                                          timeout after send and a
+//	                                          truncated body. No retry.
+//
+// An HTTP status is never a business outcome by itself; only the trusted
+// success contract turns an observed response into "succeeded".
 type Outcome struct {
-	Status     string // succeeded | failed | unknown
-	Dispatched bool
-	Provenance string
-	Code       string
-	Ref        string // safe reference: sha256 of the response body
-	HTTPStatus int
+	Status           string // succeeded | failed | unknown
+	Provenance       string // observed | unknown | not_dispatched
+	RequestWritten   bool
+	ResponseObserved bool
+	HTTPStatus       int
+	Code             string
+	Ref              string // sha256 of the response body when observed
 }
 
 // HTTPDispatcher forwards the canonical payload to the definition's
@@ -58,30 +67,29 @@ type HTTPDispatcher struct {
 	MaxResponseBytes int64
 }
 
-// NewHTTPDispatcher returns a dispatcher with sane defaults.
+// NewHTTPDispatcher returns a dispatcher whose client can neither replay a
+// request nor follow a redirect:
+//   - keep-alives are disabled so net/http never transparently resends a
+//     request on a stale connection (a hidden second effect);
+//   - redirects are refused (ErrUseLastResponse): the approved destination
+//     is the ONLY destination an attempt may contact; a 3xx answer is an
+//     observed non-success from that destination (#458 B2).
 func NewHTTPDispatcher(client *http.Client) *HTTPDispatcher {
-	if client == nil {
-		client = &http.Client{}
+	c := http.Client{}
+	if client != nil {
+		c = *client
 	}
-	// Never reuse a connection for a dispatch: net/http transparently
-	// replays a request on a stale keep-alive connection when it believes
-	// the request is replayable, which would be a hidden second effect.
-	// A fresh connection per attempt also keeps the wrote-request boundary
-	// exact.
-	if client.Transport == nil {
+	if c.Transport == nil {
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.DisableKeepAlives = true
 		t.MaxIdleConnsPerHost = -1
-		c := *client
 		c.Transport = t
-		client = &c
 	}
-	return &HTTPDispatcher{Client: client, Timeout: 30 * time.Second, MaxResponseBytes: 1 << 20}
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &HTTPDispatcher{Client: &c, Timeout: 30 * time.Second, MaxResponseBytes: 1 << 20}
 }
 
-// Dispatch implements Dispatcher. The wrote-request trace hook is the
-// dispatch boundary: an error before it is a known non-dispatch, an error
-// after it is UNKNOWN.
+// Dispatch implements Dispatcher.
 func (d *HTTPDispatcher) Dispatch(ctx context.Context, req DispatchRequest) Outcome {
 	def := req.Definition
 	timeout := d.Timeout
@@ -104,14 +112,16 @@ func (d *HTTPDispatcher) Dispatch(ctx context.Context, req DispatchRequest) Outc
 	hreq.Header.Set("X-Talon-Operation-Ref", req.OperationRef)
 	hreq.Header.Set("X-Talon-Attempt-Id", req.AttemptID)
 	hreq.ContentLength = int64(len(req.Payload))
-	// Make the request non-replayable for net/http: with GetBody set (or an
-	// Idempotency-Key header) the transport would retry a POST on its own
-	// after a connection-level failure — an automatic second dispatch that
-	// this contract forbids. With GetBody nil the transport surfaces the
-	// error instead, and the outcome classification decides.
+	// Non-replayable for net/http: with GetBody set (or an Idempotency-Key
+	// header) the transport would resend a POST after a connection-level
+	// failure on its own.
 	hreq.GetBody = nil
 
-	resp, err := d.Client.Do(hreq)
+	client := d.Client
+	if client == nil {
+		client = NewHTTPDispatcher(nil).Client
+	}
+	resp, err := client.Do(hreq)
 	if err != nil {
 		if !wrote {
 			return Outcome{Status: AttemptFailed, Provenance: ResultProvenanceNotDispatched, Code: "dispatch_transport_error"}
@@ -120,23 +130,30 @@ func (d *HTTPDispatcher) Dispatch(ctx context.Context, req DispatchRequest) Outc
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = "dispatch_timeout_after_send"
 		}
-		return Outcome{Status: AttemptUnknown, Dispatched: true, Provenance: ResultProvenanceUnknown, Code: code}
+		return Outcome{Status: AttemptUnknown, Provenance: ResultProvenanceUnknown, RequestWritten: true, Code: code}
 	}
 	defer resp.Body.Close()
-	max := d.MaxResponseBytes
-	if max <= 0 {
-		max = 1 << 20
+	maxBytes := d.MaxResponseBytes
+	if maxBytes <= 0 {
+		maxBytes = 1 << 20
 	}
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, max))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if readErr != nil {
-		// Headers arrived but the body did not: the effect may have
-		// happened; the status line is not a reliable outcome on its own.
-		return Outcome{Status: AttemptUnknown, Dispatched: true, Provenance: ResultProvenanceUnknown, Code: "dispatch_response_truncated", HTTPStatus: resp.StatusCode}
+		return Outcome{Status: AttemptUnknown, Provenance: ResultProvenanceUnknown, RequestWritten: true, Code: "dispatch_response_truncated", HTTPStatus: resp.StatusCode}
 	}
 	sum := sha256.Sum256(body)
 	ref := hex.EncodeToString(sum[:])
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return Outcome{Status: AttemptSucceeded, Dispatched: true, Provenance: ResultProvenanceObserved, Code: "http_" + strconv.Itoa(resp.StatusCode), Ref: ref, HTTPStatus: resp.StatusCode}
+	base := Outcome{RequestWritten: true, ResponseObserved: true, HTTPStatus: resp.StatusCode, Ref: ref, Code: "http_" + strconv.Itoa(resp.StatusCode)}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		base.Code = "dispatch_redirect_refused"
 	}
-	return Outcome{Status: AttemptFailed, Dispatched: true, Provenance: ResultProvenanceObserved, Code: fmt.Sprintf("http_%d", resp.StatusCode), Ref: ref, HTTPStatus: resp.StatusCode}
+	if def.IsAuthoritativeSuccess(resp.StatusCode) {
+		base.Status, base.Provenance = AttemptSucceeded, ResultProvenanceObserved
+		return base
+	}
+	// The request reached the destination and the answer is not a declared
+	// authoritative success: the business effect may or may not have
+	// happened. Conservative UNKNOWN; never a retryable "failed".
+	base.Status, base.Provenance = AttemptUnknown, ResultProvenanceUnknown
+	return base
 }

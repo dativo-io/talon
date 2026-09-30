@@ -1,6 +1,12 @@
 package action
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -41,15 +47,30 @@ func deep(n int) string {
 	return s
 }
 
+func objSchema(props map[string]any, required ...any) map[string]any {
+	m := map[string]any{"type": "object", "additionalProperties": false, "properties": props}
+	if len(required) > 0 {
+		m["required"] = required
+	}
+	return m
+}
+
+func dest() policy.ActionDestinationConfig {
+	return policy.ActionDestinationConfig{Type: "http", URL: "https://api.example/x"}
+}
+
 func TestCompileCatalog_FailsClosed(t *testing.T) {
-	good := policy.ActionDefinitionConfig{InputSchema: map[string]any{"type": "object"}, Destination: policy.ActionDestinationConfig{Type: "http", URL: "https://api.example/x"}}
+	good := policy.ActionDefinitionConfig{InputSchema: objSchema(map[string]any{"a": map[string]any{"type": "string"}}), Destination: dest()}
 	for name, cfg := range map[string]policy.ActionDefinitionConfig{
-		"Bad-Name":   good,
-		"no_schema":  {Destination: good.Destination},
-		"not_object": {InputSchema: map[string]any{"type": "string"}, Destination: good.Destination},
-		"plain_http": {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "http://api.example/x"}},
-		"creds":      {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "https://u:p@api.example/x"}},
-		"bad_type":   {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "grpc", URL: "https://api.example/x"}},
+		"Bad-Name":    good,
+		"no_schema":   {Destination: dest()},
+		"not_object":  {InputSchema: map[string]any{"type": "string", "additionalProperties": false}, Destination: dest()},
+		"open_schema": {InputSchema: map[string]any{"type": "object", "properties": map[string]any{}}, Destination: dest()},
+		"plain_http":  {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "http://api.example/x"}},
+		"creds":       {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "https://u:p@api.example/x"}},
+		"bad_type":    {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "grpc", URL: "https://api.example/x"}},
+		"bad_success": {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "https://api.example/x", Success: &policy.ActionSuccessConfig{StatusCodes: []int{302}}}},
+		"has_id":      {InputSchema: map[string]any{"$id": "https://evil.example/s", "type": "object", "additionalProperties": false}, Destination: dest()},
 	} {
 		_, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{name: cfg}})
 		require.Error(t, err, name)
@@ -60,8 +81,137 @@ func TestCompileCatalog_FailsClosed(t *testing.T) {
 	d, _ := cat.Lookup("ok")
 	require.Equal(t, "POST", d.Destination.Method)
 	require.Equal(t, ExecutionProfileTalonForwarded, d.ExecutionProfile)
+	require.Equal(t, []string{"a"}, d.Review.Shown, "absent review shows every field")
 	cat2, _ := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"loop": {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "http://127.0.0.1:9/x"}}, "ok": good}})
 	require.Equal(t, cat.Digest, cat2.Digest, "catalog digest is order-independent")
+}
+
+// B5: the projection must cover every material field; omission needs an
+// explicit non-material classification; paths must exist; every
+// classification change moves the definition digest.
+func TestCompileReview_Sufficiency(t *testing.T) {
+	props := map[string]any{"recipient": map[string]any{"type": "string"}, "amount": map[string]any{"type": "number"}, "currency": map[string]any{"type": "string"}}
+	mk := func(r *policy.ActionReviewConfig) (*Definition, error) {
+		cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Review: r, Destination: dest()}}})
+		if err != nil {
+			return nil, err
+		}
+		d, _ := cat.Lookup("pay")
+		return d, nil
+	}
+	_, err := mk(&policy.ActionReviewConfig{Fields: []string{"recipient"}})
+	require.Error(t, err, "a reviewer could approve a €10,000 transfer without seeing the amount")
+	require.Contains(t, err.Error(), "amount")
+	_, err = mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "amount", "currency", "memo"}})
+	require.Error(t, err, "nonexistent review path")
+	_, err = mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "amount"}, Masked: []string{"amount", "currency"}})
+	require.Error(t, err, "double classification")
+	full, err := mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "amount", "currency"}})
+	require.NoError(t, err)
+	masked, err := mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "currency"}, Masked: []string{"amount"}})
+	require.NoError(t, err)
+	nonMat, err := mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "amount"}, NonMaterial: []string{"currency"}})
+	require.NoError(t, err)
+	require.NotEqual(t, full.ProjectionDigest, masked.ProjectionDigest)
+	require.NotEqual(t, full.DefinitionDigest, masked.DefinitionDigest, "projection is part of the definition digest")
+	require.NotEqual(t, full.DefinitionDigest, nonMat.DefinitionDigest)
+	require.Equal(t, full.SchemaDigest, masked.SchemaDigest, "only the projection changed")
+	proj := masked.ReviewProjection([]byte(`{"amount":10000,"currency":"EUR","recipient":"acct-1"}`))
+	require.JSONEq(t, `{"masked":true,"type":"number","length":5}`, string(proj["amount"]))
+	require.Equal(t, `"EUR"`, string(proj["currency"]))
+	// Success contract is part of the definition digest too.
+	withSuccess, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Destination: policy.ActionDestinationConfig{Type: "http", URL: "https://api.example/x", Success: &policy.ActionSuccessConfig{StatusCodes: []int{200}}}}}})
+	require.NoError(t, err)
+	ws, _ := withSuccess.Lookup("pay")
+	require.NotEqual(t, full.DefinitionDigest, ws.DefinitionDigest)
+}
+
+// B9: schemas compile offline; no $ref can cause an HTTP request, a
+// filesystem read or a remote load.
+func TestCompileSchema_NoExternalResolution(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); _, _ = w.Write([]byte(`{"type":"string"}`)) }))
+	defer srv.Close()
+	secret := filepath.Join(t.TempDir(), "secret.json")
+	require.NoError(t, os.WriteFile(secret, []byte(`{"type":"string"}`), 0o600))
+	for name, ref := range map[string]string{
+		"http":  srv.URL + "/schema.json",
+		"https": "https://schemas.example/s.json#/definitions/x",
+		"file":  "file://" + secret,
+		"other": "urn:example:schema",
+	} {
+		t.Run(name, func(t *testing.T) {
+			schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"a": map[string]any{"$ref": ref}}}
+			_, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: schema, Destination: dest()}}})
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrExternalRef)
+		})
+	}
+	require.Zero(t, hits.Load(), "no HTTP request was made during compilation")
+	// In-document refs remain supported.
+	schema := map[string]any{
+		"type": "object", "additionalProperties": false,
+		"$defs":      map[string]any{"money": map[string]any{"type": "number", "minimum": 0}},
+		"properties": map[string]any{"amount": map[string]any{"$ref": "#/$defs/money"}},
+	}
+	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: schema, Destination: dest()}}})
+	require.NoError(t, err)
+	d, _ := cat.Lookup("x")
+	require.NoError(t, d.ValidateArguments([]byte(`{"amount":5}`)))
+	require.Error(t, d.ValidateArguments([]byte(`{"amount":-1}`)))
+	require.Zero(t, hits.Load())
+}
+
+// Conformance for the supported 2020-12 subset.
+func TestSchemaConformanceSubset(t *testing.T) {
+	schema := map[string]any{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type":    "object", "additionalProperties": false,
+		"required": []any{"ticket_id", "amount", "currency"},
+		"properties": map[string]any{
+			"ticket_id": map[string]any{"type": "string", "minLength": 2, "maxLength": 10, "pattern": "^T-[0-9]+$"},
+			"amount":    map[string]any{"type": "number", "minimum": 0.01, "maximum": 1000},
+			"currency":  map[string]any{"type": "string", "enum": []any{"EUR", "USD"}},
+			"kind":      map[string]any{"const": "refund"},
+			"tags":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 3},
+			"customer":  map[string]any{"type": "object", "additionalProperties": false, "required": []any{"id"}, "properties": map[string]any{"id": map[string]any{"type": "string"}}},
+		},
+	}
+	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: schema, Destination: dest()}}})
+	require.NoError(t, err)
+	d, _ := cat.Lookup("x")
+	ok := []string{
+		`{"ticket_id":"T-1","amount":5,"currency":"EUR"}`,
+		`{"ticket_id":"T-1","amount":5,"currency":"EUR","kind":"refund","tags":["a"],"customer":{"id":"c"}}`,
+	}
+	bad := map[string]string{
+		"missing required":      `{"ticket_id":"T-1","amount":5}`,
+		"extra property":        `{"ticket_id":"T-1","amount":5,"currency":"EUR","x":1}`,
+		"pattern":               `{"ticket_id":"X-1","amount":5,"currency":"EUR"}`,
+		"maxLength":             `{"ticket_id":"T-123456789","amount":5,"currency":"EUR"}`,
+		"minimum":               `{"ticket_id":"T-1","amount":0,"currency":"EUR"}`,
+		"maximum":               `{"ticket_id":"T-1","amount":1001,"currency":"EUR"}`,
+		"enum":                  `{"ticket_id":"T-1","amount":5,"currency":"GBP"}`,
+		"const":                 `{"ticket_id":"T-1","amount":5,"currency":"EUR","kind":"refunds"}`,
+		"items type":            `{"ticket_id":"T-1","amount":5,"currency":"EUR","tags":[1]}`,
+		"maxItems":              `{"ticket_id":"T-1","amount":5,"currency":"EUR","tags":["a","b","c","d"]}`,
+		"nested required":       `{"ticket_id":"T-1","amount":5,"currency":"EUR","customer":{}}`,
+		"nested additional":     `{"ticket_id":"T-1","amount":5,"currency":"EUR","customer":{"id":"c","x":1}}`,
+		"wrong type for number": `{"ticket_id":"T-1","amount":"5","currency":"EUR"}`,
+	}
+	for _, in := range ok {
+		c, err := Canonicalize([]byte(in))
+		require.NoError(t, err)
+		require.NoError(t, d.ValidateArguments(c), in)
+	}
+	for name, in := range bad {
+		c, err := Canonicalize([]byte(in))
+		require.NoError(t, err)
+		require.Error(t, d.ValidateArguments(c), name)
+	}
+	_, err = CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"a": map[string]any{"type": "nonsense"}}}, Destination: dest()}}})
+	require.Error(t, err, "invalid keyword values fail at compile, never silently pass")
+	require.True(t, strings.Contains(err.Error(), "compile"))
 }
 
 func TestVerdictPrecedence(t *testing.T) {
@@ -80,7 +230,6 @@ func TestVerdictPrecedence(t *testing.T) {
 	require.Equal(t, []string{"release-managers"}, v.ApproverGroups)
 	require.Equal(t, VerdictAllow, ap.Evaluate("notify").Outcome)
 	require.Equal(t, DefaultApprovalLifetime, ap.ExpiresAfter)
-
 	ap2, _ := CompileApprovalPolicy(pol)
 	require.Equal(t, ap.Digest, ap2.Digest)
 	pol.Policies.Approvals.Rules["releases"] = policy.ApprovalRuleConfig{Actions: []string{"publish_*"}, ApproverGroups: []string{"anyone"}}

@@ -895,16 +895,32 @@ type ActionDefinitionConfig struct {
 	Destination ActionDestinationConfig `yaml:"destination" json:"destination"`
 }
 
-// ActionReviewConfig is the reviewer-safe projection definition.
+// ActionReviewConfig is the reviewer projection definition (#427/#433).
+// Every top-level argument field is material: each must be listed in
+// exactly one of fields (shown), masked (shown as a safe length-only
+// representation) or non_material (omitted from the projection but still
+// bound by the digest). Absent review = every field shown.
 type ActionReviewConfig struct {
-	Fields []string `yaml:"fields,omitempty" json:"fields,omitempty"`
+	Fields      []string `yaml:"fields,omitempty" json:"fields,omitempty"`
+	Masked      []string `yaml:"masked,omitempty" json:"masked,omitempty"`
+	NonMaterial []string `yaml:"non_material,omitempty" json:"non_material,omitempty"`
 }
 
-// ActionDestinationConfig identifies the material destination of an action.
+// ActionDestinationConfig identifies the material destination of an action
+// and its trusted outcome contract.
 type ActionDestinationConfig struct {
 	Type   string `yaml:"type" json:"type"` // http
 	URL    string `yaml:"url" json:"url"`
 	Method string `yaml:"method,omitempty" json:"method,omitempty"` // default POST
+	// Success declares which observed responses constitute AUTHORITATIVE
+	// business success. Any other response after the request left Talon is
+	// an unknown outcome (no retry). Absent = every response is unknown.
+	Success *ActionSuccessConfig `yaml:"success,omitempty" json:"success,omitempty"`
+}
+
+// ActionSuccessConfig is the trusted success contract of a destination.
+type ActionSuccessConfig struct {
+	StatusCodes []int `yaml:"status_codes" json:"status_codes"`
 }
 
 // ApprovalsConfig holds the agent's approval rules and lifetime.

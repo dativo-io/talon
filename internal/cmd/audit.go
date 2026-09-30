@@ -1204,7 +1204,10 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		fmt.Fprintln(w)
 	}
 	if e := ev.Enforcement; e != nil {
-		fmt.Fprintf(w, "Enforcement: %s | mechanism=%s | boundary=%s | decided_by=%s | observed=%t", e.Provenance, e.Mechanism, e.Boundary, e.DecisionAuthority, e.Observed)
+		fmt.Fprintf(w, "Enforcement: %s | mechanism=%s | boundary=%s | decided_by=%s", e.Provenance, e.Mechanism, e.Boundary, e.DecisionAuthority)
+		if e.DecisionReturnedVia != "" {
+			fmt.Fprintf(w, " | decision_returned_via=%s", e.DecisionReturnedVia)
+		}
 		if r := e.Runtime; r != nil {
 			fmt.Fprintf(w, " | runtime=%s", r.Type)
 			if r.ID != "" {
@@ -1222,7 +1225,7 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		}
 		fmt.Fprintln(w)
 	} else if ev.InvocationType == "gateway" || ev.InvocationType == "gateway_count_tokens" {
-		fmt.Fprintln(w, "Enforcement: talon_enforced | mechanism=intercept | boundary=talon | decided_by=talon | observed=true (default)")
+		fmt.Fprintln(w, "Enforcement: talon_enforced | mechanism=intercept | boundary=talon | decided_by=talon (default)")
 	}
 	if o := ev.Orchestration; o != nil {
 		fmt.Fprintln(w, "Orchestration (client-asserted)")
@@ -1358,10 +1361,13 @@ func auditVerifyOperationLifecycle(ctx context.Context, store *evidence.Store, o
 		switch l.Event {
 		case evidence.ActionEventApprovalDecided:
 			extra = fmt.Sprintf(" approval=%s by %s (%s)", l.ApprovalStatus, l.ReviewerPrincipal, l.ReviewerGroup)
-		case evidence.ActionEventAttemptClaimed, evidence.ActionEventAttemptDispatched:
+		case evidence.ActionEventAttemptClaimed, evidence.ActionEventAttemptArmed:
 			extra = fmt.Sprintf(" attempt=%s#%d", l.AttemptID, l.AttemptOrdinal)
 		case evidence.ActionEventAttemptCompleted:
-			extra = fmt.Sprintf(" attempt=%s#%d status=%s result=%s dispatch_observed=%t", l.AttemptID, l.AttemptOrdinal, l.AttemptStatus, l.ResultProvenance, l.DispatchObserved)
+			extra = fmt.Sprintf(" attempt=%s#%d status=%s result=%s request_written=%t response_observed=%t", l.AttemptID, l.AttemptOrdinal, l.AttemptStatus, l.ResultProvenance, l.RequestWritten, l.ResponseObserved)
+			if l.HTTPStatus > 0 {
+				extra += fmt.Sprintf(" http=%d", l.HTTPStatus)
+			}
 		case evidence.ActionEventAuthorizationRefused, evidence.ActionEventOperationConflict:
 			extra = " code=" + l.RefusalCode
 		}

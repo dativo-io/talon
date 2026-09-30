@@ -11,7 +11,7 @@
 #   - one Talon prevention (model restriction) with ZERO provider dispatch
 #   - forged / foreign / missing identity → ZERO provider dispatch
 #   - one OpenShell-only containment fact imported and labelled
-#     external_runtime_enforced (never a Talon decision)
+#     external_asserted (never a Talon decision, never a Talon observation)
 #   - provider credential never enters Talon evidence or logs
 #   - signed evidence verifies online and offline, across a Talon restart
 #

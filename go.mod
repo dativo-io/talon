@@ -27,7 +27,7 @@ require (
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.40.0
 	go.opentelemetry.io/otel/sdk v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
-	golang.org/x/crypto v0.36.0
+	golang.org/x/crypto v0.51.0
 	golang.org/x/time v0.6.0
 )
 
@@ -38,14 +38,15 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.4
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.opentelemetry.io/otel/exporters/stdout/stdoutmetric v1.40.0
 	go.opentelemetry.io/otel/metric v1.44.0
 	go.opentelemetry.io/otel/sdk/metric v1.44.0
-	golang.org/x/net v0.38.0
+	golang.org/x/net v0.55.0
 	golang.org/x/sys v0.45.0
-	golang.org/x/term v0.40.0
+	golang.org/x/term v0.43.0
 	golang.org/x/text v0.40.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/dnaeon/go-vcr.v3 v3.2.0

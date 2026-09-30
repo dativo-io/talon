@@ -36,7 +36,8 @@ type ApprovalOwnerResolver func(ctx context.Context, approvalID string) (*action
 
 // ApproverResolver authenticates a reviewer credential.
 type ApproverResolver interface {
-	Resolve(ctx context.Context, key string) (*approver.Record, error)
+	ResolvePrincipal(ctx context.Context, token string) (*approver.Principal, error)
+	IsActive(ctx context.Context, principalID, credentialID string) (bool, error)
 }
 
 // WithActionGateway mounts the Action Gateway routes.
@@ -232,9 +233,13 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, "an approver credential (Authorization: Bearer talon_appr_…) is required; admin and agent keys carry no approval authority", nil)
 		return
 	}
-	rec, err := s.approvers.Resolve(r.Context(), strings.TrimPrefix(auth, "Bearer "))
-	if err != nil || rec == nil {
-		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, "unknown approver credential", nil)
+	principal, err := s.approvers.ResolvePrincipal(r.Context(), strings.TrimPrefix(auth, "Bearer "))
+	if err != nil || principal == nil {
+		msg := "unknown, revoked or inactive approver credential"
+		if errors.Is(err, approver.ErrLegacyCredential) {
+			msg = err.Error()
+		}
+		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, msg, nil)
 		return
 	}
 	var body decisionBody
@@ -256,9 +261,16 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approval not found", nil)
 		return
 	}
+	resolver := s.approvers
 	proj, err := svc.Decide(r.Context(), action.DecideRequest{
 		ApprovalID: approvalID, Approve: approve, Reason: body.Reason,
-		Reviewer: action.ReviewerPrincipal{Name: rec.Name, Group: rec.Role},
+		Reviewer: action.ReviewerPrincipal{
+			PrincipalID: principal.PrincipalID, TenantScope: principal.TenantScope, Subject: principal.Subject, Groups: principal.Groups,
+			CredentialID: principal.CredentialID, CredentialVersion: principal.CredentialVersion,
+			Revalidate: func(ctx context.Context) (bool, error) {
+				return resolver.IsActive(ctx, principal.PrincipalID, principal.CredentialID)
+			},
+		},
 	})
 	if err != nil {
 		writeDomainError(w, err)

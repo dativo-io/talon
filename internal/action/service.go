@@ -19,7 +19,8 @@ import (
 
 // Service is ActionGovernance for one agent generation: catalog + approval
 // policy are captured at construction (immutable), state lives in the
-// repository, evidence in the evidence store, effects in the dispatcher.
+// repository, evidence in the evidence store, effects in the dispatcher,
+// active payloads sealed by the cryptor.
 type Service struct {
 	TenantID string
 	AgentID  string
@@ -29,22 +30,30 @@ type Service struct {
 	repo       *Repository
 	evidence   *evidence.Store
 	dispatcher Dispatcher
+	cryptor    *PayloadCryptor
 	now        func() time.Time
 	newID      func(prefix string) string
+
+	// crash-injection hooks (tests only): a hook that panics simulates a
+	// process crash at that exact point after the preceding commit.
+	hookAfterClaim     func()
+	hookAfterArm       func()
+	hookBeforeComplete func(Outcome)
 }
 
 // NewService wires the domain for one agent. The repository must live in
-// the evidence store's database (NewRepository(evStore.DB())).
-func NewService(tenantID, agentID string, catalog *Catalog, policy *ApprovalPolicy, repo *Repository, evStore *evidence.Store, dispatcher Dispatcher) (*Service, error) {
-	if catalog == nil || policy == nil || repo == nil || evStore == nil || dispatcher == nil {
-		return nil, errors.New("action service: catalog, policy, repository, evidence store and dispatcher are required")
+// the evidence store's database (NewRepository(evStore.DB())). A payload
+// cryptor is mandatory: without it no operation can be established.
+func NewService(tenantID, agentID string, catalog *Catalog, policy *ApprovalPolicy, repo *Repository, evStore *evidence.Store, dispatcher Dispatcher, cryptor *PayloadCryptor) (*Service, error) {
+	if catalog == nil || policy == nil || repo == nil || evStore == nil || dispatcher == nil || cryptor == nil {
+		return nil, errors.New("action service: catalog, policy, repository, evidence store, dispatcher and payload cryptor are required")
 	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
 	return &Service{
 		TenantID: tenantID, AgentID: agentID, Catalog: catalog, Policy: policy,
-		repo: repo, evidence: evStore, dispatcher: dispatcher,
+		repo: repo, evidence: evStore, dispatcher: dispatcher, cryptor: cryptor,
 		now: func() time.Time { return time.Now().UTC() },
 		newID: func(prefix string) string {
 			return prefix + "_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:20]
@@ -54,11 +63,19 @@ func NewService(tenantID, agentID string, catalog *Catalog, policy *ApprovalPoli
 
 var operationIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
-// ReviewerPrincipal is the AUTHENTICATED human approver (never a display
-// name from a request body).
+// ReviewerPrincipal is the AUTHENTICATED, tenant-scoped human approver
+// (#428). Everything here comes from trusted identity state, never from
+// a request body or header.
 type ReviewerPrincipal struct {
-	Name  string
-	Group string
+	PrincipalID       string
+	TenantScope       string
+	Subject           string
+	Groups            []string
+	CredentialID      string
+	CredentialVersion int
+	// Revalidate rechecks active/not-revoked state inside the decision
+	// transaction. nil = no recheck possible (treated as inactive).
+	Revalidate func(ctx context.Context) (bool, error)
 }
 
 // EstablishRequest is the adapter-neutral first call.
@@ -80,6 +97,7 @@ type EstablishResult struct {
 func (s *Service) lifecycleRecord(op *Operation, ev *evidence.ActionLifecycle, allowed bool, reasons []string, code string) *evidence.Evidence {
 	ev.OperationID, ev.OperationRef, ev.Action = op.OperationID, op.Ref, op.Action
 	ev.Digest, ev.SchemaDigest, ev.PolicyDigest = op.Digest, op.SchemaDigest, op.PolicyDigest
+	ev.DefinitionDigest, ev.ProjectionDigest = op.DefinitionDigest, op.ProjectionDigest
 	ev.BindingProfile, ev.ExecutionProfile, ev.DestinationID = op.BindingProfile, op.ExecutionProfile, op.DestinationID
 	ev.IdentitySource, ev.Verdict, ev.MatchedRuleID, ev.OperationStatus = op.IdentitySource, op.Verdict, op.RuleID, op.Status
 	decision := explanation.DecisionAllow
@@ -88,7 +106,7 @@ func (s *Service) lifecycleRecord(op *Operation, ev *evidence.ActionLifecycle, a
 	}
 	stage := explanation.StagePreExecution
 	switch ev.Event {
-	case evidence.ActionEventAttemptDispatched, evidence.ActionEventAttemptCompleted:
+	case evidence.ActionEventAttemptArmed, evidence.ActionEventAttemptCompleted:
 		stage = explanation.StageExecution
 	}
 	return &evidence.Evidence{
@@ -128,14 +146,32 @@ func statusForEvent(op *Operation) string {
 	}
 }
 
-// commit writes the record inside tx and bumps the operation sequence in
-// memory (the caller persists the operation row in the same tx).
-func (s *Service) commit(ctx context.Context, tx *sql.Tx, op *Operation, ev *evidence.ActionLifecycle, allowed bool, reasons []string, code string) error {
+// commit writes the record through the transaction's evidence writer and
+// bumps the operation sequence in memory (the caller persists the
+// operation row in the same tx).
+func (s *Service) commit(ctx context.Context, tx *sql.Tx, w *evidence.TxWriter, op *Operation, ev *evidence.ActionLifecycle, allowed bool, reasons []string, code string) error {
 	op.Sequence++
 	ev.Sequence = op.Sequence
 	rec := s.lifecycleRecord(op, ev, allowed, reasons, code)
-	if err := s.evidence.StoreTx(ctx, tx, rec); err != nil {
+	if err := w.Store(ctx, tx, rec); err != nil {
 		return &Error{Code: CodeStoreUnavailable, Message: "committing lifecycle evidence", Err: err}
+	}
+	return nil
+}
+
+// bump applies a version-guarded operation update; false means a
+// concurrent writer won.
+func bump(ctx context.Context, tx *sql.Tx, op *Operation, now time.Time) (bool, error) {
+	prev := op.Version
+	op.Version++
+	op.UpdatedAt = now
+	return updateOperation(ctx, tx, op, prev)
+}
+
+// finalize persists the sequence/status after evidence was written.
+func finalize(ctx context.Context, tx *sql.Tx, op *Operation) error {
+	if _, err := updateOperation(ctx, tx, op, op.Version); err != nil {
+		return &Error{Code: CodeStoreUnavailable, Message: "finalizing operation", Err: err}
 	}
 	return nil
 }
@@ -172,9 +208,10 @@ func (s *Service) Establish(ctx context.Context, req EstablishRequest) (*Establi
 	}
 	verdict := s.Policy.Evaluate(def.Name)
 	digest := s.operationDigest(def, canonical)
+	reviewJSON, _ := json.Marshal(def.ReviewProjection(canonical))
 
 	var result *EstablishResult
-	err = s.repo.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.repo.withTx(ctx, s.evidence, func(tx *sql.Tx, w *evidence.TxWriter) error {
 		existing, err := getOperation(ctx, tx, s.TenantID, s.AgentID, opID)
 		if err != nil {
 			return &Error{Code: CodeStoreUnavailable, Message: "reading operation", Err: err}
@@ -190,17 +227,15 @@ func (s *Service) Establish(ctx context.Context, req EstablishRequest) (*Establi
 			}
 			// Same id, different intended effect: record the conflict on the
 			// EXISTING operation and mutate nothing else.
-			existing.Version++
-			existing.UpdatedAt = s.now()
-			if ok, err := updateOperation(ctx, tx, existing, existing.Version-1); err != nil || !ok {
+			if ok, err := bump(ctx, tx, existing, s.now()); err != nil || !ok {
 				return &Error{Code: CodeStoreUnavailable, Message: "recording conflict", Err: err}
 			}
-			if err := s.commit(ctx, tx, existing, &evidence.ActionLifecycle{Event: evidence.ActionEventOperationConflict, RefusalCode: CodeOperationConflict},
+			if err := s.commit(ctx, tx, w, existing, &evidence.ActionLifecycle{Event: evidence.ActionEventOperationConflict, RefusalCode: CodeOperationConflict},
 				false, []string{"same operation_id presented with a different material payload; existing digest retained"}, "ACTION_OPERATION_CONFLICT"); err != nil {
 				return err
 			}
-			if _, err := updateOperation(ctx, tx, existing, existing.Version); err != nil {
-				return &Error{Code: CodeStoreUnavailable, Message: "recording conflict", Err: err}
+			if err := finalize(ctx, tx, existing); err != nil {
+				return err
 			}
 			proj, _ := s.project(ctx, tx, existing)
 			return refusal(&Error{Code: CodeOperationConflict, Message: "operation_id already bound to a different material payload; use a new operation_id for a corrected action", State: proj})
@@ -208,9 +243,10 @@ func (s *Service) Establish(ctx context.Context, req EstablishRequest) (*Establi
 		now := s.now()
 		op := &Operation{
 			Ref: s.newID("op"), TenantID: s.TenantID, AgentID: s.AgentID, OperationID: opID, Action: def.Name,
-			Digest: digest, SchemaDigest: def.SchemaDigest, PolicyDigest: s.Policy.Digest, CatalogDigest: s.Catalog.Digest,
+			Digest: digest, SchemaDigest: def.SchemaDigest, DefinitionDigest: def.DefinitionDigest, ProjectionDigest: def.ProjectionDigest,
+			PolicyDigest: s.Policy.Digest, CatalogDigest: s.Catalog.Digest,
 			ExecutionProfile: def.ExecutionProfile, BindingProfile: def.BindingProfile, DestinationID: def.DestinationID,
-			IdentitySource: identitySource, Verdict: verdict.Outcome, RuleID: verdict.RuleID, Version: 1, Payload: canonical,
+			IdentitySource: identitySource, Verdict: verdict.Outcome, RuleID: verdict.RuleID, Version: 1, ReviewJSON: reviewJSON,
 			CreatedAt: now, UpdatedAt: now,
 		}
 		op.IdempotencyKey = "talon-" + op.Ref
@@ -237,20 +273,24 @@ func (s *Service) Establish(ctx context.Context, req EstablishRequest) (*Establi
 		}
 		if err := insertOperation(ctx, tx, op); err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
-				// Lost a race with an identical establish; the winner's row is
-				// authoritative. Retry the read path.
 				return &Error{Code: CodeStoreUnavailable, Message: "concurrent establish; retry", Err: err}
 			}
 			return &Error{Code: CodeStoreUnavailable, Message: "inserting operation", Err: err}
 		}
-		if err := s.commit(ctx, tx, op, &evidence.ActionLifecycle{Event: evidence.ActionEventOperationEstablished}, allowed, reasons, code); err != nil {
+		// A denied operation is never resumed: no payload is retained.
+		if verdict.Outcome != VerdictDeny {
+			if err := insertPayload(ctx, tx, s.cryptor, op.Ref, op.Digest, canonical, now); err != nil {
+				return &Error{Code: CodeStoreUnavailable, Message: "sealing active payload", Err: err}
+			}
+		}
+		if err := s.commit(ctx, tx, w, op, &evidence.ActionLifecycle{Event: evidence.ActionEventOperationEstablished}, allowed, reasons, code); err != nil {
 			return err
 		}
 		if ap != nil {
 			if err := insertApproval(ctx, tx, ap); err != nil {
 				return &Error{Code: CodeStoreUnavailable, Message: "inserting approval", Err: err}
 			}
-			if err := s.commit(ctx, tx, op, &evidence.ActionLifecycle{
+			if err := s.commit(ctx, tx, w, op, &evidence.ActionLifecycle{
 				Event: evidence.ActionEventApprovalRequested, ApprovalID: ap.ID, ApprovalStatus: ap.Status,
 				ApproverGroups: ap.Groups, ApprovalExpires: ap.ExpiresAt.Format(time.RFC3339),
 			}, true, []string{"exact approval subject persisted; zero dispatch until an authorized reviewer approves and the runtime claims an attempt"}, "ACTION_APPROVAL_REQUESTED"); err != nil {
@@ -260,13 +300,12 @@ func (s *Service) Establish(ctx context.Context, req EstablishRequest) (*Establi
 		if ok, err := updateOperation(ctx, tx, op, 1); err != nil || !ok {
 			return &Error{Code: CodeStoreUnavailable, Message: "finalizing operation", Err: err}
 		}
-		result = &EstablishResult{Operation: projectionOf(op, ap, nil, def), Created: true}
+		result = &EstablishResult{Operation: projectionOf(op, ap, nil, payloadState(ctx, tx, op.Ref)), Created: true}
 		return nil
 	})
 	if err != nil {
 		var de *Error
 		if errors.As(err, &de) && de.Code == CodeStoreUnavailable && strings.Contains(de.Message, "concurrent establish") {
-			// One retry resolves the identical-race case deterministically.
 			return s.Establish(ctx, req)
 		}
 		return nil, err
@@ -274,14 +313,14 @@ func (s *Service) Establish(ctx context.Context, req EstablishRequest) (*Establi
 	return result, nil
 }
 
-// operationDigest binds tenant, agent, action identity, complete
-// canonical arguments, schema, binding profile, approval-relevant policy,
-// execution profile and material destination (#427).
+// operationDigest binds tenant, agent, complete canonical arguments and
+// the COMPLETE trusted definition identity (schema, projection,
+// destination + success contract, execution/binding profiles) plus the
+// approval-relevant policy (#427).
 func (s *Service) operationDigest(def *Definition, canonical []byte) string {
 	parts := []string{
 		"tenant=" + s.TenantID, "agent=" + s.AgentID, "action=" + def.Name,
-		"args=" + Digest(canonical), "schema=" + def.SchemaDigest, "binding=" + def.BindingProfile,
-		"policy=" + s.Policy.Digest, "profile=" + def.ExecutionProfile, "destination=" + def.DestinationID,
+		"args=" + Digest(canonical), "definition=" + def.DefinitionDigest, "policy=" + s.Policy.Digest,
 	}
 	return Digest([]byte(strings.Join(parts, "\n")))
 }
@@ -299,8 +338,7 @@ func (s *Service) project(ctx context.Context, q querier, op *Operation) (*Proje
 	if err != nil {
 		return nil, &Error{Code: CodeStoreUnavailable, Message: "reading attempt", Err: err}
 	}
-	def, _ := s.Catalog.Lookup(op.Action)
-	return projectionOf(op, ap, at, def), nil
+	return projectionOf(op, ap, at, payloadState(ctx, q, op.Ref)), nil
 }
 
 // Get returns the safe projection of a scoped operation.
@@ -332,6 +370,13 @@ func (s *Service) GetApproval(ctx context.Context, approvalID string) (*Projecti
 	return s.project(ctx, s.repo.db, op)
 }
 
+// definitionCurrent reports whether the trusted definition bound at
+// establish is still the active one.
+func (s *Service) definitionCurrent(op *Operation) bool {
+	d, ok := s.Catalog.Lookup(op.Action)
+	return ok && d.DefinitionDigest == op.DefinitionDigest
+}
+
 // ---- Decide ----------------------------------------------------------
 
 // DecideRequest is an authenticated reviewer's decision.
@@ -344,10 +389,13 @@ type DecideRequest struct {
 
 // Decide commits one immutable decision on a pending approval. It never
 // dispatches, never resumes, and never changes the exact subject. Exactly
-// one concurrent decision wins.
+// one concurrent decision wins. Authorization = tenant scope match AND a
+// group of the matched rule AND an active principal/credential, rechecked
+// inside the transaction.
 func (s *Service) Decide(ctx context.Context, req DecideRequest) (*Projection, error) {
-	if strings.TrimSpace(req.Reviewer.Name) == "" || strings.TrimSpace(req.Reviewer.Group) == "" {
-		return nil, newErr(CodeApprovalNotAuthorized, "an authenticated approver principal with a group is required")
+	rv := req.Reviewer
+	if strings.TrimSpace(rv.PrincipalID) == "" || strings.TrimSpace(rv.TenantScope) == "" || len(rv.Groups) == 0 {
+		return nil, newErr(CodeApprovalNotAuthorized, "an authenticated, tenant-scoped approver principal with groups is required")
 	}
 	if len(req.Reason) > 1024 {
 		return nil, newErr(CodeInvalidRequest, "reason exceeds 1024 characters")
@@ -355,8 +403,15 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (*Projection, e
 	if !req.Approve && strings.TrimSpace(req.Reason) == "" {
 		return nil, newErr(CodeInvalidRequest, "a rejection requires a reason")
 	}
+	reviewerEv := func(ap *Approval, group string) *evidence.ActionLifecycle {
+		return &evidence.ActionLifecycle{
+			ApprovalID: ap.ID, ApprovalStatus: ap.Status, ApproverGroups: ap.Groups, ApprovalExpires: ap.ExpiresAt.Format(time.RFC3339),
+			ReviewerPrincipal: rv.PrincipalID, ReviewerTenant: rv.TenantScope, ReviewerSubject: rv.Subject, ReviewerGroup: group,
+			ReviewerCredentialID: rv.CredentialID, ReviewerCredentialVersion: rv.CredentialVersion,
+		}
+	}
 	var out *Projection
-	err := s.repo.withTx(ctx, func(tx *sql.Tx) error {
+	err := s.repo.withTx(ctx, s.evidence, func(tx *sql.Tx, w *evidence.TxWriter) error {
 		ap, err := getApproval(ctx, tx, req.ApprovalID)
 		if err != nil {
 			return &Error{Code: CodeStoreUnavailable, Message: "reading approval", Err: err}
@@ -368,28 +423,41 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (*Projection, e
 		if err != nil || op == nil || op.TenantID != s.TenantID || op.AgentID != s.AgentID {
 			return newErr(CodeNotFound, "approval not found")
 		}
-		if !containsString(ap.Groups, req.Reviewer.Group) {
-			// Evidenced refusal; state unchanged.
-			op.Version++
-			op.UpdatedAt = s.now()
-			if ok, err := updateOperation(ctx, tx, op, op.Version-1); err != nil || !ok {
+		refuse := func(code, msg string) error {
+			if ok, err := bump(ctx, tx, op, s.now()); err != nil || !ok {
 				return &Error{Code: CodeStoreUnavailable, Message: "recording refusal", Err: err}
 			}
-			if err := s.commit(ctx, tx, op, &evidence.ActionLifecycle{
-				Event: evidence.ActionEventAuthorizationRefused, ApprovalID: ap.ID, ApprovalStatus: ap.Status,
-				ApproverGroups: ap.Groups, ReviewerPrincipal: req.Reviewer.Name, ReviewerGroup: req.Reviewer.Group, RefusalCode: CodeApprovalNotAuthorized,
-			},
-				false, []string{"reviewer group is not an approver group of the matched rule"}, "ACTION_APPROVAL_NOT_AUTHORIZED"); err != nil {
+			ev := reviewerEv(ap, "")
+			ev.Event, ev.RefusalCode = evidence.ActionEventAuthorizationRefused, code
+			if err := s.commit(ctx, tx, w, op, ev, false, []string{msg}, "ACTION_APPROVAL_NOT_AUTHORIZED"); err != nil {
 				return err
 			}
-			if _, err := updateOperation(ctx, tx, op, op.Version); err != nil {
-				return &Error{Code: CodeStoreUnavailable, Message: "recording refusal", Err: err}
+			if err := finalize(ctx, tx, op); err != nil {
+				return err
 			}
-			return refusal(newErr(CodeApprovalNotAuthorized, "reviewer is not in an approver group for this rule"))
+			return refusal(newErr(code, msg))
+		}
+		// Tenant scope is the first gate: a principal can never decide
+		// another tenant's approval, whatever its groups.
+		if rv.TenantScope != op.TenantID {
+			return refuse(CodeApprovalNotAuthorized, "reviewer tenant scope does not match the operation's tenant")
+		}
+		group := firstCommon(ap.Groups, rv.Groups)
+		if group == "" {
+			return refuse(CodeApprovalNotAuthorized, "reviewer is not in an approver group of the matched rule")
+		}
+		if rv.Revalidate == nil {
+			return refuse(CodeApprovalNotAuthorized, "reviewer principal cannot be revalidated")
+		}
+		if active, err := rv.Revalidate(ctx); err != nil || !active {
+			return refuse(CodeApprovalNotAuthorized, "reviewer principal or credential is inactive/revoked")
 		}
 		now := s.now()
 		if ap.Status == ApprovalPending && !now.Before(ap.ExpiresAt) {
-			return s.expireApproval(ctx, tx, op, ap, now)
+			return s.closeApproval(ctx, tx, w, op, ap, ApprovalExpired, CodeApprovalExpired, "approval lifetime elapsed before a decision; system expiry, not a human decision", "ACTION_APPROVAL_EXPIRED", now)
+		}
+		if ap.Status == ApprovalPending && !s.definitionCurrent(op) {
+			return s.closeApproval(ctx, tx, w, op, ap, ApprovalInvalidated, CodeApprovalBindingStale, "the trusted action definition (schema/projection/destination/success contract) changed since the subject was bound; the pending approval is invalidated — establish a new operation", "ACTION_APPROVAL_INVALIDATED", now)
 		}
 		if ap.Status != ApprovalPending {
 			proj, _ := s.project(ctx, tx, op)
@@ -399,7 +467,7 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (*Projection, e
 		if req.Approve {
 			ap.Status = ApprovalApproved
 		}
-		ap.DecidedAt, ap.DecidedBy, ap.DecidedGroup, ap.Reason = utcPtr(now), req.Reviewer.Name, req.Reviewer.Group, req.Reason
+		ap.DecidedAt, ap.DecidedBy, ap.DecidedGroup, ap.Reason = utcPtr(now), rv.PrincipalID, group, req.Reason
 		ap.Version++
 		won, err := decideApproval(ctx, tx, ap, ap.Version-1)
 		if err != nil {
@@ -409,33 +477,30 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (*Projection, e
 			proj, _ := s.project(ctx, tx, op)
 			return &Error{Code: CodeApprovalAlreadyDecided, Message: "a concurrent decision was committed first", State: proj}
 		}
-		prev := op.Version
-		op.Version++
-		op.UpdatedAt = now
 		if req.Approve {
 			op.Status = OpAuthorized
 		} else {
 			op.Status, op.OutcomeCode, op.TerminalAt = OpCancelled, CodeApprovalRejected, utcPtr(now)
+			if err := purgePayload(ctx, tx, op.Ref, now); err != nil {
+				return &Error{Code: CodeStoreUnavailable, Message: "purging payload", Err: err}
+			}
 		}
-		if ok, err := updateOperation(ctx, tx, op, prev); err != nil || !ok {
+		if ok, err := bump(ctx, tx, op, now); err != nil || !ok {
 			return &Error{Code: CodeStoreUnavailable, Message: "updating operation after decision", Err: err}
 		}
 		code := "ACTION_APPROVAL_REJECTED"
 		if req.Approve {
 			code = "ACTION_APPROVAL_APPROVED"
 		}
-		if err := s.commit(ctx, tx, op, &evidence.ActionLifecycle{
-			Event: evidence.ActionEventApprovalDecided, ApprovalID: ap.ID, ApprovalStatus: ap.Status,
-			ApproverGroups: ap.Groups, ApprovalExpires: ap.ExpiresAt.Format(time.RFC3339), ReviewerPrincipal: ap.DecidedBy, ReviewerGroup: ap.DecidedGroup, DecisionReason: ap.Reason,
-		},
-			req.Approve, []string{"reviewer decision committed; decision performs no dispatch — the runtime must claim an attempt"}, code); err != nil {
+		ev := reviewerEv(ap, group)
+		ev.Event, ev.DecisionReason = evidence.ActionEventApprovalDecided, ap.Reason
+		if err := s.commit(ctx, tx, w, op, ev, req.Approve, []string{"reviewer decision committed; decision performs no dispatch — the runtime must claim an attempt"}, code); err != nil {
 			return err
 		}
-		if _, err := updateOperation(ctx, tx, op, op.Version); err != nil {
-			return &Error{Code: CodeStoreUnavailable, Message: "finalizing decision", Err: err}
+		if err := finalize(ctx, tx, op); err != nil {
+			return err
 		}
-		def, _ := s.Catalog.Lookup(op.Action)
-		out = projectionOf(op, ap, nil, def)
+		out = projectionOf(op, ap, nil, payloadState(ctx, tx, op.Ref))
 		return nil
 	})
 	if err != nil {
@@ -444,33 +509,36 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (*Projection, e
 	return out, nil
 }
 
-func (s *Service) expireApproval(ctx context.Context, tx *sql.Tx, op *Operation, ap *Approval, now time.Time) error {
-	ap.Status = ApprovalExpired
+// closeApproval terminates a pending approval by a SYSTEM event (expiry or
+// invalidation): the approval and operation close, the payload is purged,
+// and the caller receives the stable code as an evidenced refusal.
+func (s *Service) closeApproval(ctx context.Context, tx *sql.Tx, w *evidence.TxWriter, op *Operation, ap *Approval, status, code, msg, evCode string, now time.Time) error {
+	ap.Status = status
 	ap.DecidedAt = utcPtr(now)
 	ap.DecidedBy, ap.DecidedGroup = "system", "system"
 	ap.Version++
 	if won, err := decideApproval(ctx, tx, ap, ap.Version-1); err != nil || !won {
-		return &Error{Code: CodeStoreUnavailable, Message: "expiring approval", Err: err}
+		return &Error{Code: CodeStoreUnavailable, Message: "closing approval", Err: err}
 	}
-	prev := op.Version
-	op.Version++
-	op.UpdatedAt = now
-	op.Status, op.OutcomeCode, op.TerminalAt = OpCancelled, CodeApprovalExpired, utcPtr(now)
-	if ok, err := updateOperation(ctx, tx, op, prev); err != nil || !ok {
-		return &Error{Code: CodeStoreUnavailable, Message: "expiring operation", Err: err}
+	op.Status, op.OutcomeCode, op.TerminalAt = OpCancelled, code, utcPtr(now)
+	if err := purgePayload(ctx, tx, op.Ref, now); err != nil {
+		return &Error{Code: CodeStoreUnavailable, Message: "purging payload", Err: err}
 	}
-	if err := s.commit(ctx, tx, op, &evidence.ActionLifecycle{
+	if ok, err := bump(ctx, tx, op, now); err != nil || !ok {
+		return &Error{Code: CodeStoreUnavailable, Message: "closing operation", Err: err}
+	}
+	if err := s.commit(ctx, tx, w, op, &evidence.ActionLifecycle{
 		Event: evidence.ActionEventApprovalDecided, ApprovalID: ap.ID, ApprovalStatus: ap.Status,
-		ApproverGroups: ap.Groups, ApprovalExpires: ap.ExpiresAt.Format(time.RFC3339), ReviewerPrincipal: "system", ReviewerGroup: "system",
+		ApproverGroups: ap.Groups, ApprovalExpires: ap.ExpiresAt.Format(time.RFC3339), ReviewerPrincipal: "system", ReviewerGroup: "system", RefusalCode: code,
 	},
-		false, []string{"approval lifetime elapsed before a decision; system expiry, not a human decision"}, "ACTION_APPROVAL_EXPIRED"); err != nil {
+		false, []string{msg}, evCode); err != nil {
 		return err
 	}
-	if _, err := updateOperation(ctx, tx, op, op.Version); err != nil {
-		return &Error{Code: CodeStoreUnavailable, Message: "expiring operation", Err: err}
+	if err := finalize(ctx, tx, op); err != nil {
+		return err
 	}
 	proj, _ := s.project(ctx, tx, op)
-	return refusal(&Error{Code: CodeApprovalExpired, Message: "approval expired before a decision", State: proj})
+	return refusal(&Error{Code: code, Message: msg, State: proj})
 }
 
 // ---- Execute ---------------------------------------------------------
@@ -481,17 +549,23 @@ type ExecuteResult struct {
 	Attempt   *AttemptProjection
 }
 
-// Execute is the runtime/controller resumption: revalidate the exact
-// operation against CURRENT catalog/policy, claim ONE attempt (committed
-// before any effect), mark the dispatch boundary, dispatch once through
-// the trusted dispatcher, and record the observed result or UNKNOWN.
+// Execute is the runtime/controller resumption:
+//
+//  1. revalidate the exact operation against the CURRENT catalog/policy and
+//     open the sealed payload (fail closed);
+//  2. claim ONE attempt (committed);
+//  3. ARM the attempt (durable pre-effect marker, committed) — after this a
+//     crash recovers as UNKNOWN, never as "not sent";
+//  4. dispatch exactly once through the trusted dispatcher;
+//  5. record the observed facts and the conservative outcome.
+//
 // Nothing here is reachable from a reviewer decision.
 func (s *Service) Execute(ctx context.Context, operationID string) (*ExecuteResult, error) {
 	var op *Operation
 	var at *Attempt
 	var def *Definition
-	// Phase 1: authorization usability + attempt claim, one transaction.
-	err := s.repo.withTx(ctx, func(tx *sql.Tx) error {
+	var payload []byte
+	err := s.repo.withTx(ctx, s.evidence, func(tx *sql.Tx, w *evidence.TxWriter) error {
 		cur, err := getOperation(ctx, tx, s.TenantID, s.AgentID, operationID)
 		if err != nil {
 			return &Error{Code: CodeStoreUnavailable, Message: "reading operation", Err: err}
@@ -506,7 +580,7 @@ func (s *Service) Execute(ctx context.Context, operationID string) (*ExecuteResu
 				return &Error{Code: CodeStoreUnavailable, Message: "reading approval", Err: err}
 			}
 			if ap.Status == ApprovalPending && !s.now().Before(ap.ExpiresAt) {
-				return s.expireApproval(ctx, tx, op, ap, s.now())
+				return s.closeApproval(ctx, tx, w, op, ap, ApprovalExpired, CodeApprovalExpired, "approval lifetime elapsed before a decision; system expiry, not a human decision", "ACTION_APPROVAL_EXPIRED", s.now())
 			}
 		}
 		if code, msg := s.claimBlocker(op); code != "" {
@@ -514,13 +588,13 @@ func (s *Service) Execute(ctx context.Context, operationID string) (*ExecuteResu
 			return &Error{Code: code, Message: msg, State: proj}
 		}
 		d, ok := s.Catalog.Lookup(op.Action)
-		if !ok || d.SchemaDigest != op.SchemaDigest || d.DestinationID != op.DestinationID || d.ExecutionProfile != op.ExecutionProfile {
-			return s.refuse(ctx, tx, op, CodeApprovalBindingStale, "the trusted catalog definition changed since this operation was bound; establish a new operation")
+		if !ok || d.DefinitionDigest != op.DefinitionDigest {
+			return s.refuse(ctx, tx, w, op, CodeApprovalBindingStale, "the trusted action definition (schema/projection/destination/success contract) changed since this operation was bound; establish a new operation")
 		}
 		def = d
 		current := s.Policy.Evaluate(op.Action)
 		if current.Outcome == VerdictDeny {
-			return s.refuse(ctx, tx, op, CodePolicyDenied, "current policy denies this action; a prior authorization cannot be used")
+			return s.refuse(ctx, tx, w, op, CodePolicyDenied, "current policy denies this action; a prior authorization cannot be used")
 		}
 		var ap *Approval
 		if op.ApprovalID != "" {
@@ -531,22 +605,27 @@ func (s *Service) Execute(ctx context.Context, operationID string) (*ExecuteResu
 		}
 		if current.Outcome == VerdictRequireApproval || op.Verdict == VerdictRequireApproval {
 			if ap == nil || ap.Status != ApprovalApproved || ap.SubjectDigest != op.Digest {
-				return s.refuse(ctx, tx, op, CodeApprovalRequired, "no usable approved decision binds this exact operation under current policy")
+				return s.refuse(ctx, tx, w, op, CodeApprovalRequired, "no usable approved decision binds this exact operation under current policy")
 			}
 			if s.Policy.Digest != op.PolicyDigest {
-				return s.refuse(ctx, tx, op, CodeApprovalBindingStale, "approval-relevant policy changed since the approval was granted; a new approval cycle is required")
+				return s.refuse(ctx, tx, w, op, CodeApprovalBindingStale, "approval-relevant policy changed since the approval was granted; a new approval cycle is required")
 			}
 			if op.AttemptCount == 0 && !s.now().Before(ap.ExpiresAt) {
-				return s.refuse(ctx, tx, op, CodeApprovalExpired, "approved decision expired before the first attempt")
+				return s.refuse(ctx, tx, w, op, CodeApprovalExpired, "approved decision expired before the first attempt")
 			}
 		}
+		// The sealed payload must open BEFORE anything is claimed: a
+		// missing key, a rotated key or a tampered record is a fail-closed
+		// refusal, never a partially claimed attempt.
+		pl, err := loadPayload(ctx, tx, s.cryptor, op.Ref, op.Digest)
+		if err != nil {
+			return s.refuse(ctx, tx, w, op, CodePayloadUnavailable, "active payload cannot be opened: "+err.Error())
+		}
+		payload = pl
 		now := s.now()
-		prev := op.Version
-		op.Version++
 		op.Status = OpExecuting
 		op.AttemptCount++
-		op.UpdatedAt = now
-		if ok, err := updateOperation(ctx, tx, op, prev); err != nil {
+		if ok, err := bump(ctx, tx, op, now); err != nil {
 			return &Error{Code: CodeStoreUnavailable, Message: "claiming attempt", Err: err}
 		} else if !ok {
 			proj, _ := s.project(ctx, tx, op)
@@ -556,95 +635,105 @@ func (s *Service) Execute(ctx context.Context, operationID string) (*ExecuteResu
 		if err := insertAttempt(ctx, tx, at); err != nil {
 			return &Error{Code: CodeStoreUnavailable, Message: "inserting attempt", Err: err}
 		}
-		if err := s.commit(ctx, tx, op, &evidence.ActionLifecycle{
+		if err := s.commit(ctx, tx, w, op, &evidence.ActionLifecycle{
 			Event: evidence.ActionEventAttemptClaimed, AttemptID: at.ID, AttemptOrdinal: at.Ordinal, AttemptStatus: at.Status,
 			IdempotencyKey: at.IdempotencyKey, DispatchBoundary: op.ExecutionProfile, ApprovalID: op.ApprovalID, ApprovalStatus: approvalStatus(ap),
 		},
 			true, []string{"current catalog/policy revalidated; exactly one attempt claimed before any effect"}, "ACTION_ATTEMPT_CLAIMED"); err != nil {
 			return err
 		}
-		if _, err := updateOperation(ctx, tx, op, op.Version); err != nil {
-			return &Error{Code: CodeStoreUnavailable, Message: "finalizing claim", Err: err}
-		}
-		return nil
+		return finalize(ctx, tx, op)
 	})
 	if err != nil {
 		return nil, err
 	}
+	if s.hookAfterClaim != nil {
+		s.hookAfterClaim()
+	}
 
-	// Phase 2: dispatch marker, committed BEFORE the request leaves. A crash
-	// after this point recovers as UNKNOWN, never as "not sent".
-	err = s.repo.withTx(ctx, func(tx *sql.Tx) error {
-		at.DispatchedAt, at.DispatchObserved = utcPtr(s.now()), true
+	// ARM: the durable pre-effect marker. It states intent only — "a
+	// dispatch may now occur" — never that a request was written.
+	err = s.repo.withTx(ctx, s.evidence, func(tx *sql.Tx, w *evidence.TxWriter) error {
+		at.ArmedAt = utcPtr(s.now())
 		if ok, err := updateAttempt(ctx, tx, at); err != nil || !ok {
-			return &Error{Code: CodeStoreUnavailable, Message: "marking dispatch boundary", Err: err}
+			return &Error{Code: CodeStoreUnavailable, Message: "arming dispatch", Err: err}
 		}
-		prev := op.Version
-		op.Version++
-		op.UpdatedAt = s.now()
-		if ok, err := updateOperation(ctx, tx, op, prev); err != nil || !ok {
-			return &Error{Code: CodeStoreUnavailable, Message: "marking dispatch boundary", Err: err}
+		if ok, err := bump(ctx, tx, op, s.now()); err != nil || !ok {
+			return &Error{Code: CodeStoreUnavailable, Message: "arming dispatch", Err: err}
 		}
-		if err := s.commit(ctx, tx, op, &evidence.ActionLifecycle{
-			Event: evidence.ActionEventAttemptDispatched, AttemptID: at.ID, AttemptOrdinal: at.Ordinal, AttemptStatus: at.Status,
-			IdempotencyKey: at.IdempotencyKey, DispatchBoundary: op.ExecutionProfile, DispatchObserved: true,
+		if err := s.commit(ctx, tx, w, op, &evidence.ActionLifecycle{
+			Event: evidence.ActionEventAttemptArmed, AttemptID: at.ID, AttemptOrdinal: at.Ordinal, AttemptStatus: at.Status,
+			IdempotencyKey: at.IdempotencyKey, DispatchBoundary: op.ExecutionProfile, DispatchArmed: true,
 		},
-			true, []string{"dispatch boundary marked; the downstream request is about to leave Talon"}, "ACTION_ATTEMPT_DISPATCHED"); err != nil {
+			true, []string{"dispatch armed: from here a crash recovers as unknown; no request has been observed yet"}, "ACTION_ATTEMPT_ARMED"); err != nil {
 			return err
 		}
-		_, err := updateOperation(ctx, tx, op, op.Version)
-		return err
+		return finalize(ctx, tx, op)
 	})
 	if err != nil {
-		// The marker did not commit: nothing was sent. Leave the attempt
-		// `started` for recovery (→ failed/not_dispatched at next start).
+		// The marker did not commit: nothing was sent. The attempt stays
+		// `started`/unarmed for recovery (→ failed/not_dispatched).
 		return nil, err
 	}
 
-	outcome := s.dispatcher.Dispatch(ctx, DispatchRequest{Definition: def, Payload: op.Payload, OperationRef: op.Ref, AttemptID: at.ID, IdempotencyKey: at.IdempotencyKey})
+	if s.hookAfterArm != nil {
+		s.hookAfterArm()
+	}
+	outcome := s.dispatcher.Dispatch(ctx, DispatchRequest{Definition: def, Payload: payload, OperationRef: op.Ref, AttemptID: at.ID, IdempotencyKey: at.IdempotencyKey})
+	if s.hookBeforeComplete != nil {
+		s.hookBeforeComplete(outcome)
+	}
 	return s.complete(ctx, op, at, outcome)
 }
 
 func (s *Service) complete(ctx context.Context, op *Operation, at *Attempt, outcome Outcome) (*ExecuteResult, error) {
 	var out *ExecuteResult
-	err := s.repo.withTx(ctx, func(tx *sql.Tx) error {
+	err := s.repo.withTx(ctx, s.evidence, func(tx *sql.Tx, w *evidence.TxWriter) error {
 		now := s.now()
-		at.Status, at.CompletedAt, at.ResultProvenance, at.OutcomeCode, at.OutcomeRef = outcome.Status, utcPtr(now), outcome.Provenance, outcome.Code, outcome.Ref
+		at.Status, at.CompletedAt = outcome.Status, utcPtr(now)
+		at.RequestWritten, at.ResponseObserved, at.HTTPStatus = outcome.RequestWritten, outcome.ResponseObserved, outcome.HTTPStatus
+		at.ResultProvenance, at.OutcomeCode, at.OutcomeRef = outcome.Provenance, outcome.Code, outcome.Ref
 		if ok, err := updateAttempt(ctx, tx, at); err != nil || !ok {
 			return &Error{Code: CodeStoreUnavailable, Message: "completing attempt", Err: err}
 		}
-		prev := op.Version
-		op.Version++
-		op.UpdatedAt = now
 		op.OutcomeProvenance, op.OutcomeCode = outcome.Provenance, outcome.Code
 		allowed := true
 		code := "ACTION_ATTEMPT_SUCCEEDED"
-		reason := "downstream result observed by Talon"
+		reason := "response matched the trusted success contract; outcome observed by Talon"
+		terminal := false
 		switch outcome.Status {
 		case AttemptSucceeded:
-			op.Status, op.TerminalAt = OpSucceeded, utcPtr(now)
+			op.Status, op.TerminalAt, terminal = OpSucceeded, utcPtr(now), true
 		case AttemptUnknown:
-			op.Status, op.TerminalAt = OpUnknown, utcPtr(now)
-			code, allowed, reason = "ACTION_ATTEMPT_UNKNOWN", false, "the request may have reached the destination but no reliable outcome was observed; automatic retry is blocked"
+			op.Status, op.TerminalAt, terminal = OpUnknown, utcPtr(now), true
+			code, allowed = "ACTION_ATTEMPT_UNKNOWN", false
+			reason = "the request may or did reach the destination and no trustworthy outcome exists; automatic retry is blocked"
+			if outcome.ResponseObserved {
+				reason = fmt.Sprintf("the destination answered HTTP %d, which the trusted success contract does not declare as success; the business effect may have happened; automatic retry is blocked", outcome.HTTPStatus)
+			}
 		default:
 			op.Status = OpFailed
-			code, allowed, reason = "ACTION_ATTEMPT_FAILED", false, "known failure; the unchanged operation may be retried by an explicit new claim"
-			if !outcome.Dispatched {
-				reason = "the request never left Talon; the unchanged operation may be retried by an explicit new claim"
+			code, allowed = "ACTION_ATTEMPT_FAILED", false
+			reason = "the request never left Talon; the unchanged operation may be retried by an explicit new claim"
+		}
+		if terminal {
+			if err := purgePayload(ctx, tx, op.Ref, now); err != nil {
+				return &Error{Code: CodeStoreUnavailable, Message: "purging payload", Err: err}
 			}
 		}
-		if ok, err := updateOperation(ctx, tx, op, prev); err != nil || !ok {
+		if ok, err := bump(ctx, tx, op, now); err != nil || !ok {
 			return &Error{Code: CodeStoreUnavailable, Message: "completing operation", Err: err}
 		}
-		if err := s.commit(ctx, tx, op, &evidence.ActionLifecycle{
+		if err := s.commit(ctx, tx, w, op, &evidence.ActionLifecycle{
 			Event: evidence.ActionEventAttemptCompleted, AttemptID: at.ID, AttemptOrdinal: at.Ordinal, AttemptStatus: at.Status,
-			IdempotencyKey: at.IdempotencyKey, DispatchBoundary: op.ExecutionProfile, DispatchObserved: at.DispatchObserved, ResultProvenance: at.ResultProvenance,
+			IdempotencyKey: at.IdempotencyKey, DispatchBoundary: op.ExecutionProfile, DispatchArmed: at.ArmedAt != nil,
+			RequestWritten: at.RequestWritten, ResponseObserved: at.ResponseObserved, HTTPStatus: at.HTTPStatus, ResultProvenance: at.ResultProvenance,
 			OutcomeCode: at.OutcomeCode, OutcomeRef: at.OutcomeRef,
 		}, allowed, []string{reason}, code); err != nil {
 			return err
 		}
-		if _, err := updateOperation(ctx, tx, op, op.Version); err != nil {
-			return &Error{Code: CodeStoreUnavailable, Message: "finalizing completion", Err: err}
+		if err := finalize(ctx, tx, op); err != nil {
+			return err
 		}
 		proj, err := s.project(ctx, tx, op)
 		if err != nil {
@@ -673,8 +762,11 @@ func (s *Service) claimBlocker(op *Operation) (string, string) {
 	case OpExecuting:
 		return CodeAttemptAlreadyInProgress, "an attempt is already in progress"
 	case OpCancelled:
-		if op.OutcomeCode == CodeApprovalExpired {
+		switch op.OutcomeCode {
+		case CodeApprovalExpired:
 			return CodeApprovalExpired, "approval expired"
+		case CodeApprovalBindingStale:
+			return CodeApprovalBindingStale, "the pending approval was invalidated by a trusted-definition change"
 		}
 		return CodeApprovalRejected, "the reviewer rejected this operation"
 	}
@@ -683,28 +775,25 @@ func (s *Service) claimBlocker(op *Operation) (string, string) {
 
 // refuse records an authorization refusal (state otherwise unchanged) and
 // returns the domain error.
-func (s *Service) refuse(ctx context.Context, tx *sql.Tx, op *Operation, code, msg string) error {
-	prev := op.Version
-	op.Version++
-	op.UpdatedAt = s.now()
-	if ok, err := updateOperation(ctx, tx, op, prev); err != nil || !ok {
+func (s *Service) refuse(ctx context.Context, tx *sql.Tx, w *evidence.TxWriter, op *Operation, code, msg string) error {
+	if ok, err := bump(ctx, tx, op, s.now()); err != nil || !ok {
 		return &Error{Code: CodeStoreUnavailable, Message: "recording refusal", Err: err}
 	}
-	if err := s.commit(ctx, tx, op, &evidence.ActionLifecycle{Event: evidence.ActionEventAuthorizationRefused, ApprovalID: op.ApprovalID, RefusalCode: code},
+	if err := s.commit(ctx, tx, w, op, &evidence.ActionLifecycle{Event: evidence.ActionEventAuthorizationRefused, ApprovalID: op.ApprovalID, RefusalCode: code},
 		false, []string{msg}, "ACTION_AUTHORIZATION_REFUSED"); err != nil {
 		return err
 	}
-	if _, err := updateOperation(ctx, tx, op, op.Version); err != nil {
-		return &Error{Code: CodeStoreUnavailable, Message: "recording refusal", Err: err}
+	if err := finalize(ctx, tx, op); err != nil {
+		return err
 	}
 	proj, _ := s.project(ctx, tx, op)
 	return refusal(&Error{Code: code, Message: msg, State: proj})
 }
 
-// RecoverInterrupted closes attempts left `started` by a crash: dispatched
-// → UNKNOWN (the effect may exist), not dispatched → failed/not_dispatched
-// (safe to retry). Called once at service construction; no attempt is in
-// flight at process start, so every such row is orphaned.
+// RecoverInterrupted closes attempts left `started` by a crash: armed →
+// UNKNOWN (the effect may exist; nothing was observed), not armed →
+// failed/not_dispatched (safe to retry). Called once at service
+// construction; no attempt is in flight at process start.
 func (s *Service) RecoverInterrupted(ctx context.Context) (int, error) {
 	orphans, err := s.repo.orphanedAttempts(ctx)
 	if err != nil {
@@ -716,9 +805,9 @@ func (s *Service) RecoverInterrupted(ctx context.Context) (int, error) {
 		if err != nil || op == nil || op.TenantID != s.TenantID || op.AgentID != s.AgentID {
 			continue
 		}
-		outcome := Outcome{Status: AttemptFailed, Provenance: ResultProvenanceNotDispatched, Code: "interrupted_before_dispatch"}
-		if at.DispatchObserved {
-			outcome = Outcome{Status: AttemptUnknown, Dispatched: true, Provenance: ResultProvenanceUnknown, Code: "interrupted_after_dispatch"}
+		outcome := Outcome{Status: AttemptFailed, Provenance: ResultProvenanceNotDispatched, Code: "interrupted_before_arm"}
+		if at.ArmedAt != nil {
+			outcome = Outcome{Status: AttemptUnknown, Provenance: ResultProvenanceUnknown, Code: "interrupted_after_arm"}
 		}
 		if _, err := s.complete(ctx, op, at, outcome); err != nil {
 			log.Warn().Err(err).Str("operation_ref", op.Ref).Msg("action_recovery_failed")
@@ -736,13 +825,15 @@ func approvalStatus(ap *Approval) string {
 	return ap.Status
 }
 
-func containsString(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
+func firstCommon(a, b []string) string {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return x
+			}
 		}
 	}
-	return false
+	return ""
 }
 
 // ListLifecycle returns the operation's evidence chain in sequence order.

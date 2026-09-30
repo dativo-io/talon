@@ -41,7 +41,7 @@ func TestProvenanceFields_AppendRuleAndRoundTrip(t *testing.T) {
 		},
 		Enforcement: &Enforcement{
 			Mechanism: MechanismDelegate, Boundary: BoundaryExternalRuntime, DecisionAuthority: BoundaryTalon,
-			Provenance: ProvenanceExternalRuntimeEnforced, Observed: false,
+			Provenance: ProvenanceDelegatedExpected, DecisionReturnedVia: "openshell_middleware",
 			Runtime: &ExternalRuntimeRef{Type: "openshell", ID: "openshell-gateway:gw", Reference: "sb", RequestID: "r1"},
 		},
 	}
@@ -63,11 +63,11 @@ func TestProvenanceFields_AppendRuleAndRoundTrip(t *testing.T) {
 	require.Equal(t, -1, cb, "omitted when nil")
 	require.True(t, strings.HasSuffix(strings.TrimSpace(string(raw)), `}}`), "enforcement is the final member: %s", raw)
 
-	// A tampered provenance claim must not verify: downgrading
-	// observed:false → true or verify → intercept is detectable.
+	// A tampered provenance claim must not verify: upgrading
+	// delegated_expected → external_verified is detectable.
 	tampered := *got
 	e := *got.Enforcement
-	e.Observed = true
+	e.Provenance = ProvenanceExternalVerified
 	tampered.Enforcement = &e
 	require.False(t, store.VerifyRecord(&tampered))
 }

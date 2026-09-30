@@ -196,7 +196,7 @@ func ContainmentRecord(ev *ContainmentEvent, agent ImportedAgent, issuer, operat
 			Code:      "EXTERNAL_RUNTIME_DENIED",
 			Decision:  explanation.DecisionDeny,
 			Stage:     explanation.StageExternalRuntime,
-			Reason:    "OpenShell containment denied " + ev.ClassName + " access to " + dst + " (Talon did not observe this; imported from OpenShell's OCSF export)",
+			Reason:    "OpenShell's OCSF export asserts it denied " + ev.ClassName + " access to " + dst + " (unsigned operator import; Talon did not observe or verify this)",
 			PolicyRef: policyRef,
 		}},
 		WorkloadIdentity: &evidence.WorkloadIdentity{
@@ -205,12 +205,13 @@ func ContainmentRecord(ev *ContainmentEvent, agent ImportedAgent, issuer, operat
 			Subject: sandboxSubjectPrefix + ev.SandboxID,
 			Binding: evidence.WorkloadIdentityBindingAgentConfig,
 		},
+		// An unsigned, operator-imported export is an ASSERTION. Talon's
+		// signature proves Talon recorded the assertion, nothing more.
 		Enforcement: &evidence.Enforcement{
 			Mechanism:         evidence.MechanismVerify,
 			Boundary:          evidence.BoundaryExternalRuntime,
 			DecisionAuthority: evidence.BoundaryExternalRuntime,
-			Provenance:        evidence.ProvenanceExternalRuntimeEnforced,
-			Observed:          false,
+			Provenance:        evidence.ProvenanceExternalAsserted,
 			Runtime: &evidence.ExternalRuntimeRef{
 				Type: RuntimeType, ID: issuer, PolicyRef: ev.PolicyName, Reference: ev.SandboxID,
 			},

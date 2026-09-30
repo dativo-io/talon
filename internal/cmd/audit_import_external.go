@@ -26,8 +26,8 @@ var (
 // enforced on its own (#482 VERIFY): today, OpenShell OCSF network/HTTP
 // denials. Each denial becomes ONE signed external_runtime_event record
 // attributed through the same agent binding the delegated model path uses
-// (agent.workload_identity.bindings), labelled external_runtime_enforced /
-// observed=false / receipt unverified. Talon never claims it saw the block.
+// (agent.workload_identity.bindings), labelled external_asserted /
+// receipt unverified. Talon never claims it saw or verified the block.
 var auditImportExternalCmd = &cobra.Command{
 	Use:   "import-external",
 	Short: "Import external-runtime containment denials (OpenShell OCSF export) as signed external_runtime_event records",
@@ -41,8 +41,8 @@ Attribution uses the sandbox id in the event (container.uid) resolved through
 agent.workload_identity.bindings — the same trusted binding the delegated model
 path uses. Events for unbound sandboxes are reported and skipped.
 
-Every imported record says: enforcement=external_runtime_enforced,
-mechanism=verify, observed=false, receipt.verified=false. A valid Talon
+Every imported record says: enforcement=external_asserted,
+mechanism=verify, receipt.verified=false. A valid Talon
 signature on it proves Talon recorded the import, not that OpenShell enforced.`,
 	RunE: runAuditImportExternal,
 }
@@ -113,7 +113,7 @@ func runAuditImportExternal(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("storing record: %w", err)
 		}
 		written++
-		fmt.Fprintf(out, "  imported  %s  agent=%s dst=%s:%d  enforcement=external_runtime_enforced observed=false receipt=unverified\n", rec.ID, agent.Name, ev.DstHost, ev.DstPort)
+		fmt.Fprintf(out, "  imported  %s  agent=%s dst=%s:%d  enforcement=external_asserted receipt=unverified\n", rec.ID, agent.Name, ev.DstHost, ev.DstPort)
 	}
 	fmt.Fprintf(out, "External runtime import (%s): %d denial(s) in export, %d imported, %d unbound, %d non-denial line(s) skipped\n",
 		importExternalRuntime, len(events), written, unbound, skipped)

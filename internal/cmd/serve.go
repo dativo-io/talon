@@ -550,7 +550,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	evidenceGen := evidence.NewGenerator(evidenceStore)
 
 	// Action Gateway (#458): built from the startup runtime generation.
-	actionGW, err := buildActionGateway(ctx, runtimeHolder.Current(), evidenceStore, cfg.EvidenceDBPath())
+	actionGW, err := buildActionGateway(ctx, runtimeHolder.Current(), evidenceStore, cfg.EvidenceDBPath(), cfg.SecretsKey)
 	if err != nil {
 		return fmt.Errorf("initializing action gateway: %w", err)
 	}

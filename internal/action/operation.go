@@ -27,6 +27,9 @@ const (
 	ApprovalApproved = "approved"
 	ApprovalRejected = "rejected"
 	ApprovalExpired  = "expired"
+	// ApprovalInvalidated: the exact subject became obsolete (trusted
+	// definition changed) before a decision. System outcome, not a human one.
+	ApprovalInvalidated = "invalidated"
 )
 
 // Attempt statuses.
@@ -43,29 +46,41 @@ const (
 	IdentityAdapterGenerated = "adapter_generated"
 )
 
+// Result provenance aliases (canonical values live in the evidence package
+// so the verifier and the domain agree by construction).
+const (
+	ResultProvenanceObserved      = evidence.ResultProvenanceObserved
+	ResultProvenanceUnknown       = evidence.ResultProvenanceUnknown
+	ResultProvenanceNotDispatched = evidence.ResultProvenanceNotDispatched
+)
+
 // Operation is one immutable intended business effect.
 type Operation struct {
-	Ref               string // Talon resource id; evidence correlation id
-	TenantID          string
-	AgentID           string
-	OperationID       string
-	Action            string
-	Digest            string
-	SchemaDigest      string
-	PolicyDigest      string
-	CatalogDigest     string
-	ExecutionProfile  string
-	BindingProfile    string
-	DestinationID     string
-	IdentitySource    string
-	Verdict           string
-	RuleID            string
-	Status            string
-	Version           int
-	Sequence          int
-	ApprovalID        string
-	IdempotencyKey    string
-	Payload           []byte // canonical arguments (plaintext in v1; see LIMITATIONS)
+	Ref              string // Talon resource id; evidence correlation id
+	TenantID         string
+	AgentID          string
+	OperationID      string
+	Action           string
+	Digest           string
+	SchemaDigest     string
+	DefinitionDigest string // trusted definition identity bound at establish (schema, projection, destination, success, binding)
+	ProjectionDigest string
+	PolicyDigest     string
+	CatalogDigest    string
+	ExecutionProfile string
+	BindingProfile   string
+	DestinationID    string
+	IdentitySource   string
+	Verdict          string
+	RuleID           string
+	Status           string
+	Version          int
+	Sequence         int
+	ApprovalID       string
+	IdempotencyKey   string
+	// ReviewJSON is the stored reviewer projection (never the raw payload;
+	// the payload lives sealed in action_payloads).
+	ReviewJSON        []byte
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	TerminalAt        *time.Time
@@ -85,7 +100,7 @@ type Approval struct {
 	ExpiresAt     time.Time
 	CreatedAt     time.Time
 	DecidedAt     *time.Time
-	DecidedBy     string
+	DecidedBy     string // principal_id, or "system"
 	DecidedGroup  string
 	Reason        string
 	Version       int
@@ -99,9 +114,11 @@ type Attempt struct {
 	Status           string
 	IdempotencyKey   string
 	StartedAt        time.Time
-	DispatchedAt     *time.Time
+	ArmedAt          *time.Time // durable pre-effect marker (intent, not observation)
 	CompletedAt      *time.Time
-	DispatchObserved bool
+	RequestWritten   bool // dispatcher observation
+	ResponseObserved bool // dispatcher observation
+	HTTPStatus       int
 	ResultProvenance string
 	OutcomeCode      string
 	OutcomeRef       string
@@ -117,6 +134,7 @@ type Projection struct {
 	Verdict           string                     `json:"verdict"`
 	MatchedRuleID     string                     `json:"matched_rule_id,omitempty"`
 	Digest            string                     `json:"digest"`
+	DefinitionDigest  string                     `json:"definition_digest"`
 	ExecutionProfile  string                     `json:"execution_profile"`
 	DestinationID     string                     `json:"destination_id"`
 	Version           int                        `json:"version"`
@@ -126,6 +144,7 @@ type Projection struct {
 	Approval          *ApprovalProjection        `json:"approval,omitempty"`
 	LatestAttempt     *AttemptProjection         `json:"latest_attempt,omitempty"`
 	Review            map[string]json.RawMessage `json:"review,omitempty"`
+	Payload           PayloadState               `json:"payload"`
 	CreatedAt         time.Time                  `json:"created_at"`
 	UpdatedAt         time.Time                  `json:"updated_at"`
 }
@@ -150,20 +169,23 @@ type AttemptProjection struct {
 	Status           string     `json:"status"`
 	IdempotencyKey   string     `json:"idempotency_key"`
 	StartedAt        time.Time  `json:"started_at"`
-	DispatchedAt     *time.Time `json:"dispatched_at,omitempty"`
+	ArmedAt          *time.Time `json:"armed_at,omitempty"`
 	CompletedAt      *time.Time `json:"completed_at,omitempty"`
-	DispatchObserved bool       `json:"dispatch_observed"`
+	DispatchArmed    bool       `json:"dispatch_armed"`
+	RequestWritten   bool       `json:"request_written"`
+	ResponseObserved bool       `json:"response_observed"`
+	HTTPStatus       int        `json:"http_status,omitempty"`
 	ResultProvenance string     `json:"result_provenance,omitempty"`
 	OutcomeCode      string     `json:"outcome_code,omitempty"`
 	OutcomeRef       string     `json:"outcome_ref,omitempty"`
 }
 
-func projectionOf(op *Operation, ap *Approval, at *Attempt, def *Definition) *Projection {
+func projectionOf(op *Operation, ap *Approval, at *Attempt, payload PayloadState) *Projection {
 	p := &Projection{
 		OperationID: op.OperationID, OperationRef: op.Ref, Action: op.Action, Status: op.Status, Verdict: op.Verdict,
-		MatchedRuleID: op.RuleID, Digest: op.Digest, ExecutionProfile: op.ExecutionProfile, DestinationID: op.DestinationID,
+		MatchedRuleID: op.RuleID, Digest: op.Digest, DefinitionDigest: op.DefinitionDigest, ExecutionProfile: op.ExecutionProfile, DestinationID: op.DestinationID,
 		Version: op.Version, AttemptCount: op.AttemptCount, OutcomeCode: op.OutcomeCode, OutcomeProvenance: op.OutcomeProvenance,
-		CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt,
+		Payload: payload, CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt,
 	}
 	if ap != nil {
 		p.Approval = &ApprovalProjection{
@@ -174,20 +196,13 @@ func projectionOf(op *Operation, ap *Approval, at *Attempt, def *Definition) *Pr
 	if at != nil {
 		p.LatestAttempt = &AttemptProjection{
 			ID: at.ID, Ordinal: at.Ordinal, Status: at.Status, IdempotencyKey: at.IdempotencyKey,
-			StartedAt: at.StartedAt, DispatchedAt: at.DispatchedAt, CompletedAt: at.CompletedAt, DispatchObserved: at.DispatchObserved,
+			StartedAt: at.StartedAt, ArmedAt: at.ArmedAt, CompletedAt: at.CompletedAt, DispatchArmed: at.ArmedAt != nil,
+			RequestWritten: at.RequestWritten, ResponseObserved: at.ResponseObserved, HTTPStatus: at.HTTPStatus,
 			ResultProvenance: at.ResultProvenance, OutcomeCode: at.OutcomeCode, OutcomeRef: at.OutcomeRef,
 		}
 	}
-	if def != nil && len(op.Payload) > 0 {
-		p.Review = def.ReviewProjection(op.Payload)
+	if len(op.ReviewJSON) > 0 {
+		_ = json.Unmarshal(op.ReviewJSON, &p.Review)
 	}
 	return p
 }
-
-// Result provenance aliases (canonical values live in the evidence package
-// so the verifier and the domain agree by construction).
-const (
-	ResultProvenanceObserved      = evidence.ResultProvenanceObserved
-	ResultProvenanceUnknown       = evidence.ResultProvenanceUnknown
-	ResultProvenanceNotDispatched = evidence.ResultProvenanceNotDispatched
-)

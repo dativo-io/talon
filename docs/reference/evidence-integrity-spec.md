@@ -212,10 +212,14 @@ nested fields are:
   prevention/observation boundary for this record. Fields: `mechanism`
   (`intercept` | `delegate` | `verify`), `boundary` (`talon` |
   `external_runtime`), `decision_authority` (`talon` | `external_runtime`),
-  `provenance` (`talon_enforced` | `external_runtime_enforced` |
-  `external_runtime_verified` | `client_asserted`), `observed` (bool — true
-  only when Talon itself observed the enforcement outcome; false on a
-  delegated pre-execution decision and on an imported fact), optional
+  `provenance` — literal enforcement provenance: `talon_enforced` (Talon
+  owned the boundary and observed the outcome), `delegated_expected`
+  (Talon decided and returned the verdict through a configured runtime
+  hook; enforcement expected, not observed), `external_asserted`
+  (unsigned/unverified external statement, e.g. an operator-imported log),
+  `external_verified` (cryptographically or authoritatively verified
+  receipt), `client_asserted` — optional `decision_returned_via` (the
+  configured channel Talon returned a delegated decision through), optional
   `runtime` object (`type`, `id`, `policy_ref`, `reference`, `request_id`
   — safe references to the external runtime, never tokens), and optional
   `receipt` object (`kind`, `digest`, `verified`, `detail`) describing an
@@ -230,7 +234,7 @@ nested fields are:
   class `action_event`). Every record of one operation shares the
   operation's resource id as `correlation_id`. Fields: `event`
   (`operation_established` | `operation_conflict` | `approval_requested` |
-  `approval_decided` | `attempt_claimed` | `attempt_dispatched` |
+  `approval_decided` | `attempt_claimed` | `attempt_armed` |
   `attempt_completed` | `authorization_refused`), `sequence` (operation-
   local, gap-free, 1 = establishing record), the exact identity
   (`operation_id`, `operation_ref`, `action`, `digest`, `schema_digest`,
@@ -241,19 +245,27 @@ nested fields are:
   (`reviewer_principal`, `reviewer_group`, `decision_reason` — never a
   display name from a request), and attempt facts (`attempt_id`,
   `attempt_ordinal`, `attempt_status`, `idempotency_key`,
-  `dispatch_boundary`, `dispatch_observed`, `result_provenance` =
-  `observed` | `unknown` | `not_dispatched`, `outcome_code`, `outcome_ref`,
-  `refusal_code`). These answer distinct questions on purpose: who decided
-  (verdict), whether a human decided (approval axis), whether Talon wrote
-  the downstream request (`dispatch_observed`), and how the result is
-  known (`result_provenance`); none of them is the enforcement-boundary
-  `enforcement.observed` flag. Raw arguments never appear; the digest and
+  `dispatch_boundary`, `dispatch_armed` (durable pre-effect marker: intent,
+  never observation), `request_written` and `response_observed` (the
+  dispatcher's own observations, recorded only at completion and false
+  after a crash), `http_status`, `result_provenance` = `observed` (response
+  matched the trusted success contract) | `unknown` | `not_dispatched`,
+  `outcome_code`, `outcome_ref`, `refusal_code`; reviewer facts
+  `reviewer_principal` (principal id), `reviewer_tenant`,
+  `reviewer_subject`, `reviewer_group`, `reviewer_credential_id`,
+  `reviewer_credential_version`; identity facts `definition_digest` and
+  `projection_digest`). These answer distinct questions on purpose: who
+  decided (verdict), whether a human decided (approval axis), whether
+  Talon armed a dispatch (`dispatch_armed`), what Talon observed
+  (`request_written`, `response_observed`), and how the result is known
+  (`result_provenance`); none of them is an enforcement-provenance value. Raw arguments never appear; the digest and
   the reviewer projection are the permanent record. Beyond per-record
   signatures, `talon audit verify --operation <id>` checks lifecycle
   consistency (order, sequence, constant digests, approval before claim,
-  claim before dispatch before completion, at most one effect) so
-  individually valid records cannot describe an impossible lifecycle.
-  Appended after `enforcement`.
+  claim before arm before completion, observed write and response for a
+  succeeded attempt, no attempt after a closed operation, reviewer tenant
+  equal to the operation tenant) so individually valid records cannot
+  describe an impossible lifecycle. Appended after `enforcement`.
 
 ## 3. Canonical serialization
 

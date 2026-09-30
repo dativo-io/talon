@@ -142,13 +142,21 @@ func (v *JWTVerifier) principalFromClaims(claims map[string]any) (*Principal, er
 	if nbf, ok := numericDate(claims["nbf"]); ok && now.Add(leeway).Before(nbf) {
 		return nil, failf(FailureNotYetValid, "nbf %s", nbf.UTC().Format(time.RFC3339))
 	}
-	if iat, ok := numericDate(claims["iat"]); ok {
-		if now.Add(leeway).Before(iat) {
-			return nil, failf(FailureNotYetValid, "iat %s is in the future", iat.UTC().Format(time.RFC3339))
-		}
-		if exp.Sub(iat) > maxLife {
-			return nil, failf(FailureLifetimeExceeded, "exp-iat %s exceeds %s", exp.Sub(iat), maxLife)
-		}
+	// The advertised maximum lifetime must hold without trusting an
+	// optional claim: exp is bounded relative to trusted current time, and
+	// iat is required so the token's own lifetime is auditable.
+	if exp.Sub(now) > maxLife+leeway {
+		return nil, failf(FailureLifetimeExceeded, "exp is %s ahead of now, exceeds %s", exp.Sub(now), maxLife)
+	}
+	iat, iatOK := numericDate(claims["iat"])
+	if !iatOK {
+		return nil, failf(FailureClaimsInvalid, "iat is required")
+	}
+	if now.Add(leeway).Before(iat) {
+		return nil, failf(FailureNotYetValid, "iat %s is in the future", iat.UTC().Format(time.RFC3339))
+	}
+	if exp.Sub(iat) > maxLife {
+		return nil, failf(FailureLifetimeExceeded, "exp-iat %s exceeds %s", exp.Sub(iat), maxLife)
 	}
 
 	p := &Principal{

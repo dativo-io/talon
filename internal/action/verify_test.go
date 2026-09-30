@@ -18,7 +18,7 @@ func completeChain(t *testing.T) (*harness, []*evidence.Evidence) {
 	h := newHarness(t)
 	ctx := context.Background()
 	res := h.establish(t, "op-v", "create_refund_request", refundArgs)
-	_, err := h.svc.Decide(ctx, DecideRequest{ApprovalID: res.Operation.Approval.ID, Approve: true, Reason: "ok", Reviewer: ReviewerPrincipal{Name: "lead-1", Group: "support-leads"}})
+	_, err := h.svc.Decide(ctx, DecideRequest{ApprovalID: res.Operation.Approval.ID, Approve: true, Reason: "ok", Reviewer: lead("lead-1")})
 	require.NoError(t, err)
 	_, err = h.svc.Execute(ctx, "op-v")
 	require.NoError(t, err)
@@ -47,9 +47,9 @@ func TestVerifyLifecycle_TamperedRecordsFail(t *testing.T) {
 		mutate func(*evidence.Evidence)
 	}{
 		{"operation digest", evidence.ActionEventOperationEstablished, func(e *evidence.Evidence) { e.ActionLifecycle.Digest = strings.Repeat("0", 64) }},
-		{"reviewer identity", evidence.ActionEventApprovalDecided, func(e *evidence.Evidence) { e.ActionLifecycle.ReviewerPrincipal = "mallory" }},
+		{"reviewer identity", evidence.ActionEventApprovalDecided, func(e *evidence.Evidence) { e.ActionLifecycle.ReviewerPrincipal = "apr_mallory" }},
 		{"attempt id", evidence.ActionEventAttemptClaimed, func(e *evidence.Evidence) { e.ActionLifecycle.AttemptID = "att_forged" }},
-		{"dispatch state", evidence.ActionEventAttemptDispatched, func(e *evidence.Evidence) { e.ActionLifecycle.DispatchObserved = false }},
+		{"dispatch state", evidence.ActionEventAttemptArmed, func(e *evidence.Evidence) { e.ActionLifecycle.DispatchArmed = false }},
 		{"terminal result", evidence.ActionEventAttemptCompleted, func(e *evidence.Evidence) {
 			e.ActionLifecycle.AttemptStatus = AttemptFailed
 			e.ActionLifecycle.OperationStatus = OpFailed
@@ -117,7 +117,7 @@ func TestVerifyLifecycle_ImpossibleOrdersRejected(t *testing.T) {
 	requested := byEvent(base, evidence.ActionEventApprovalRequested)
 	decided := byEvent(base, evidence.ActionEventApprovalDecided)
 	claimed := byEvent(base, evidence.ActionEventAttemptClaimed)
-	dispatched := byEvent(base, evidence.ActionEventAttemptDispatched)
+	dispatched := byEvent(base, evidence.ActionEventAttemptArmed)
 	completed := byEvent(base, evidence.ActionEventAttemptCompleted)
 
 	reseq := func(recs ...*evidence.Evidence) []*evidence.Evidence {

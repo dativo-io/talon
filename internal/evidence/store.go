@@ -663,14 +663,47 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 	return s.storeWith(ctx, s.db, ev)
 }
 
-// StoreTx signs and inserts ev inside tx so a state transition and its
-// evidence commit atomically (#146/#458). The caller owns commit/rollback;
-// health/metrics/observer side effects fire only on success of the
-// insert, so a rolled-back transaction is still visible as a write
-// failure to the caller.
-func (s *Store) StoreTx(ctx context.Context, tx *sql.Tx, ev *Evidence) error {
-	return s.storeWith(ctx, tx, ev)
+// TxWriter records evidence inside a caller-owned transaction (#146/#458).
+// Rows are signed and inserted immediately (so the transaction carries
+// state + evidence atomically), but every post-commit projection — health
+// success, metrics, the store observer — is deferred until the caller
+// reports that the transaction COMMITTED. A rolled-back transaction leaves
+// no row and emits no notification, so projections can never describe
+// evidence that does not exist.
+type TxWriter struct {
+	s       *Store
+	pending []*Evidence
 }
+
+// NewTxWriter starts collecting evidence for one transaction.
+func (s *Store) NewTxWriter() *TxWriter { return &TxWriter{s: s} }
+
+// Store signs and inserts ev in tx. No projection fires yet.
+func (w *TxWriter) Store(ctx context.Context, tx *sql.Tx, ev *Evidence) error {
+	if err := w.s.insertSigned(ctx, tx, ev); err != nil {
+		return err
+	}
+	w.pending = append(w.pending, ev)
+	return nil
+}
+
+// Committed must be called exactly once after tx.Commit() succeeded: it
+// fires health/metrics/observer for every record written in the
+// transaction, in write order.
+func (w *TxWriter) Committed(ctx context.Context) {
+	for _, ev := range w.pending {
+		health.MarkEvidenceWriteSuccess(time.Now().UTC())
+		RecordEvidenceStored(ctx, ev.InvocationType)
+		w.s.notifyStored(ctx, ev)
+	}
+	w.pending = nil
+}
+
+// Discard forgets pending records after a rollback (nothing is emitted).
+func (w *TxWriter) Discard() { w.pending = nil }
+
+// Pending reports how many records await commit (tests/diagnostics).
+func (w *TxWriter) Pending() int { return len(w.pending) }
 
 // DB exposes the underlying handle for repositories that live in the
 // evidence database and must commit state atomically with evidence rows
@@ -682,6 +715,19 @@ type sqlExecer interface {
 }
 
 func (s *Store) storeWith(ctx context.Context, exec sqlExecer, ev *Evidence) error {
+	if err := s.insertSigned(ctx, exec, ev); err != nil {
+		return err
+	}
+	health.MarkEvidenceWriteSuccess(time.Now().UTC())
+	RecordEvidenceStored(ctx, ev.InvocationType)
+	s.notifyStored(ctx, ev)
+	return nil
+}
+
+// insertSigned canonicalizes, signs and inserts one record through exec
+// (a *sql.DB or a *sql.Tx). It performs NO post-commit projection: the
+// caller decides when the write is durable.
+func (s *Store) insertSigned(ctx context.Context, exec sqlExecer, ev *Evidence) error {
 	ctx, span := tracer.Start(ctx, "evidence.store",
 		trace.WithAttributes(
 			attribute.String("evidence.id", ev.ID),
@@ -747,10 +793,6 @@ func (s *Store) storeWith(ctx context.Context, exec sqlExecer, ev *Evidence) err
 		health.MarkEvidenceWriteFailure(time.Now().UTC(), err)
 		return fmt.Errorf("storing evidence: %w", err)
 	}
-
-	health.MarkEvidenceWriteSuccess(time.Now().UTC())
-	RecordEvidenceStored(ctx, ev.InvocationType)
-	s.notifyStored(ctx, ev)
 	return nil
 }
 

@@ -33,6 +33,10 @@ func NewStore(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := s.initPrincipals(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 

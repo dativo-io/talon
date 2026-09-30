@@ -407,7 +407,7 @@ gateway:
 		t.Fatalf("audit show allow: %d", code)
 	}
 	for _, want := range []string{
-		"Enforcement: external_runtime_enforced | mechanism=delegate | boundary=external_runtime | decided_by=talon | observed=false",
+		"Enforcement: delegated_expected | mechanism=delegate | boundary=external_runtime | decided_by=talon | decision_returned_via=openshell_middleware",
 		"runtime=openshell(" + osIssuer + ")", "runtime_policy=talon-governance", "runtime_ref=" + osSandbox,
 		"Workload Identity: verified | runtime=openshell | subject=" + osSubject, "binding=agent_config",
 	} {
@@ -421,7 +421,7 @@ gateway:
 	}
 	showExt, _, _ := RunTalon(t, dir, nil, "audit", "show", importedID)
 	for _, want := range []string{
-		"Enforcement: external_runtime_enforced | mechanism=verify | boundary=external_runtime | decided_by=external_runtime | observed=false",
+		"Enforcement: external_asserted | mechanism=verify | boundary=external_runtime | decided_by=external_runtime",
 		"receipt=openshell_ocsf verified=false", "Workload Identity: asserted",
 	} {
 		if !strings.Contains(showExt, want) {

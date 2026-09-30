@@ -38,6 +38,7 @@ const (
 	CodeOperationOutcomeUnknown   = "operation_outcome_unknown"
 	CodeAttemptAlreadyInProgress  = "attempt_already_in_progress"
 	CodeAttemptNotAuthorized      = "attempt_not_authorized"
+	CodePayloadUnavailable        = "payload_unavailable"
 	CodeNotFound                  = "not_found"
 	CodeInvalidRequest            = "invalid_request"
 	CodeStoreUnavailable          = "store_unavailable"
