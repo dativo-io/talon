@@ -65,7 +65,9 @@ gateway:
       base_url: "http://localhost:9090"
       secret_name: "openai-api-key"
   organization_policy:
-    response_pii_action: "allow"
+    defaults:
+      pii_action: "warn"
+      response_pii_action: "warn"
 EOF
 # The demo runs as the claude-code agent (agent.talon.yaml in this directory
 # carries the identity + overrides, #266).
@@ -162,7 +164,7 @@ pricing is visible in evidence.
 - `docker-compose.yml` — Talon + dual-wire mock; vault seeded
   with fake keys inside the container.
 - `talon.config.yaml` — one `claude-code` agent, `max_session_cost: 0.02`,
-  `response_pii_action: allow` (the honest streaming default — see
-  `LIMITATIONS.md`).
+  `response_pii_action: warn` (streams normally; response PII is observed
+  after delivery and recorded in evidence — see `LIMITATIONS.md` §7).
 - `demo.sh` — the walk-through above; each step also runs standalone
   (`./demo.sh budget`).

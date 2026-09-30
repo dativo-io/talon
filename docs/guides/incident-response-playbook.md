@@ -100,7 +100,7 @@ talon audit export --from <start_time> --to <end_time> --format json
 **Remediate:**
 
 1. Escalate the `response_pii_action` in the agent's policy:
-   - `"warn"` → `"redact"` (strips PII from responses, works for both streaming and non-streaming)
+   - `"warn"` → `"redact"` (strips PII from responses before release; `warn` only observes after delivery. Preventive redaction buffers streaming responses until the verdict)
    - `"redact"` → `"block"` (rejects the entire response with HTTP 451)
 2. Review `tool_policies` for any tools configured with `pii_action: "audit"` — determine whether they should be upgraded to `"redact"`.
 

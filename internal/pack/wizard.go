@@ -113,8 +113,9 @@ Coding-agents pack scaffolded. Next steps:
   7. Review what was enforced (active policy is always enforced):
      talon audit list --session <id>
 
-Notes: response_pii_action is "allow" for coding callers because any other
-value buffers whole SSE streams today; max_session_cost is a SOFT cap; the
+Notes: response_pii_action is "warn" for coding callers: streams are delivered
+as they arrive and scanned after delivery (observation, not prevention);
+redact/block buffer whole streams. max_session_cost is a SOFT cap; the
 credential recognizers are traffic guards, not a secret scanner — keep
 gitleaks/trufflehog in pre-commit. See docs/guides/governing-coding-agents.md.
 `

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -87,6 +88,10 @@ type RecordGatewayEvidenceParams struct {
 	// ToolContent carries the evidence-only PII observation over tool-related
 	// request content (#212). Never used for enforcement in v1.
 	ToolContent *evidence.ToolContentScan
+	// ResponseScan states how the response PII control was applied and
+	// whether the scan covered the whole response (#476). Nil when no
+	// response scan ran.
+	ResponseScan *evidence.ResponseScan
 	// Orchestration carries client-asserted coding-orchestration identity
 	// (#194). Evidence-only; never a policy input in v1.
 	Orchestration *evidence.OrchestrationContext
@@ -144,6 +149,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			OutputPIITypes:    params.OutputPIITypes,
 			Scanner:           params.Scanner,
 			ToolContent:       params.ToolContent,
+			ResponseScan:      params.ResponseScan,
 		},
 		Execution: evidence.Execution{
 			ModelUsed:     params.Model,
@@ -201,14 +207,15 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			params.PolicyVersion,
 		)
 		if params.OutputPIIDetected {
-			facts = append(facts, explanation.Fact{
-				Code:            explanation.CodePolicyDeniedPIIOutput,
-				Decision:        explanation.DecisionDeny,
-				Stage:           explanation.StageOutputValidation,
-				Trigger:         "output_pii_detected",
-				PolicyRef:       explanation.PolicyRef(params.PolicyVersion),
-				VersionIdentity: params.PolicyVersion,
-			})
+			disposition := outputPIIObserved
+			switch {
+			case !params.PolicyAllowed:
+				disposition = outputPIIBlocked
+			case params.ResponseScan != nil && params.ResponseScan.Action == "redact" &&
+				params.ResponseScan.Enforcement == evidence.ResponseScanEnforcementPreventive:
+				disposition = outputPIIRedacted
+			}
+			facts = append(facts, outputPIIFact(params.OutputPIITypes, disposition, explanation.PolicyRef(params.PolicyVersion), params.PolicyVersion))
 		}
 	}
 	ev.Explanations = explanation.BuildFromFacts(facts)
@@ -216,6 +223,39 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		return nil, err
 	}
 	return ev, nil
+}
+
+// What happened to a response in which PII was detected.
+const (
+	outputPIIBlocked  = "blocked"
+	outputPIIRedacted = "redacted"
+	outputPIIObserved = "observed"
+)
+
+// outputPIIFact is the single output-validation explanation fact for a
+// response with detected PII, keyed on the disposition that actually
+// happened: a withheld response is a denial, a redacted one a modification,
+// and an observed one (warn) an allow — the response was delivered.
+func outputPIIFact(piiTypes []string, disposition, policyRef, version string) explanation.Fact {
+	trigger := "output_pii_detected"
+	if len(piiTypes) > 0 {
+		trigger = strings.Join(piiTypes, ",")
+	}
+	fact := explanation.Fact{
+		Stage:           explanation.StageOutputValidation,
+		Trigger:         trigger,
+		PolicyRef:       policyRef,
+		VersionIdentity: version,
+	}
+	switch disposition {
+	case outputPIIBlocked:
+		fact.Code, fact.Decision = explanation.CodePolicyDeniedPIIOutput, explanation.DecisionDeny
+	case outputPIIRedacted:
+		fact.Code, fact.Decision = explanation.CodePolicyRedactedPIIOutput, explanation.DecisionModify
+	default:
+		fact.Code, fact.Decision = explanation.CodePolicyObservedPIIOutput, explanation.DecisionAllow
+	}
+	return fact
 }
 
 func sanitizeGatewayAnnotations(in []string) []string {

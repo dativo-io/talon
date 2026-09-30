@@ -465,8 +465,9 @@ func TestInitPack_CodingAgents_GeneratesFiles(t *testing.T) {
 	cfg := string(configContent)
 	assert.Contains(t, cfg, "organization_policy")
 	assert.NotContains(t, cfg, "tenant_key", "legacy identity must not scaffold")
-	assert.GreaterOrEqual(t, strings.Count(cfg, `response_pii_action: "allow"`)+strings.Count(cfg, "response_pii_action: allow"), 1,
-		"the organization baseline must default response_pii_action to allow")
+	assert.GreaterOrEqual(t, strings.Count(cfg, `response_pii_action: "warn"`)+strings.Count(cfg, "response_pii_action: warn"), 1,
+		"the organization baseline must default response_pii_action to warn: streamed and observed after delivery (#476)")
+	assert.NotContains(t, cfg, `response_pii_action: "allow"`, "the pre-#476 allow workaround must not scaffold")
 	assert.Contains(t, cfg, `secret_name: "anthropic-api-key"`, "anthropic family is vault-secret only")
 
 	agent := string(agentContent)

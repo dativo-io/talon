@@ -741,3 +741,33 @@ func TestAuditVerifyCmd_SessionAndFileMutuallyExclusive(t *testing.T) {
 	err := rootCmd.Execute()
 	require.Error(t, err)
 }
+
+// #476: audit show states how the response PII control was applied so a
+// post-delivery observation is never read as prevention.
+func TestRenderAuditShow_ResponseScan(t *testing.T) {
+	base := func(rs *evidence.ResponseScan) *evidence.Evidence {
+		return &evidence.Evidence{
+			ID: "gw_rs", Timestamp: time.Now(), TenantID: "t", AgentID: "a", InvocationType: "gateway",
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+			Classification: evidence.Classification{OutputPIIDetected: rs != nil, OutputPIITypes: []string{"email"}, ResponseScan: rs},
+			Execution:      evidence.Execution{ModelUsed: "m"},
+		}
+	}
+	var buf bytes.Buffer
+	renderAuditShow(&buf, base(&evidence.ResponseScan{Action: "warn", Enforcement: evidence.ResponseScanEnforcementPostDelivery, Streamed: true, Status: evidence.ResponseScanStatusComplete, BytesObserved: 900, CaptureLimit: 4 << 20}), true)
+	out := buf.String()
+	assert.Contains(t, out, "Response Scan: action=warn | observed after delivery (not preventive) | complete | observed 900 of max 4194304 bytes")
+	assert.Contains(t, out, "Output PII:    email")
+
+	buf.Reset()
+	renderAuditShow(&buf, base(&evidence.ResponseScan{Action: "warn", Enforcement: evidence.ResponseScanEnforcementPostDelivery, Streamed: true, Status: evidence.ResponseScanStatusIncomplete, IncompleteReason: evidence.ResponseScanIncompleteScannerUnavailable, CaptureLimit: 4 << 20}), true)
+	assert.Contains(t, buf.String(), "| incomplete (scanner_unavailable)")
+
+	buf.Reset()
+	renderAuditShow(&buf, base(&evidence.ResponseScan{Action: "redact", Enforcement: evidence.ResponseScanEnforcementPreventive, Status: evidence.ResponseScanStatusComplete}), true)
+	assert.Contains(t, buf.String(), "Response Scan: action=redact | preventive | complete")
+
+	buf.Reset()
+	renderAuditShow(&buf, base(nil), true)
+	assert.NotContains(t, buf.String(), "Response Scan:")
+}

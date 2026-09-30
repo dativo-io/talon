@@ -409,7 +409,7 @@ Per-field contract (mirrors `internal/gateway/effective.go`; the code and this t
 | `defaults.session_cost` | override replaces when > 0 (#283) |
 | `constraints.max_daily_cost` / `max_monthly_cost` / `max_session_cost` | org budget **ceilings**: enforced by their own Rego rules alongside the resolved per-agent cap; an override can never raise them; deny reasons name the organization (#287/#283); 0 = no ceiling |
 | `defaults.pii_action` | monotonic: the baseline is a floor and the override applies only when **stricter** (`block` > `redact` > `warn` > `allow`); a weaker override is ignored |
-| `defaults.response_pii_action` | baseline level: falls back to `defaults.pii_action`; override level: same monotonic tighten-only rule — and the override's **input** `pii_action` does **not** cascade to the response action |
+| `defaults.response_pii_action` | baseline level: falls back to `defaults.pii_action`; override level: same monotonic tighten-only rule — and the override's **input** `pii_action` does **not** cascade to the response action. Streaming semantics per action: see [below](#response-pii-actions-and-streaming) |
 | allowed / blocked models | override replaces when non-empty; organization lists (`constraints.allowed_models` / `.blocked_models`) and provider lists are hard constraints the override never escapes |
 | `constraints.allowed_providers` | agent list narrows within the organization hard constraint; empty = unrestricted at that level; a provider must pass **both** lists |
 | `constraints.max_data_tier` | organization cap is a ceiling; the agent override applies only when **lower** (tighter) |
@@ -652,6 +652,20 @@ reachable and `talon compliance ropa` adds a `consistency:` warning when
 non-EU destinations appear in the data-flow evidence. To make enforcement
 match the declaration, set `data_sovereignty_mode: eu_strict` (and configure
 an EU or local provider).
+
+
+#### Response PII actions and streaming
+
+`response_pii_action` selects what the response-side detector may do, and that decides whether a streaming (SSE) response can be delivered as it arrives (#476):
+
+| Action | Streaming delivery | Response scan | May alter delivered bytes | Preventive |
+|---|---|---|---|---|
+| `allow` | streams normally | none | no | no |
+| `warn` | streams normally — each SSE event is flushed to the client as the provider emits it | **after delivery**, over a bounded capture (4 MiB of raw SSE per response) | no | no — post-delivery observation; cannot recall PII already delivered |
+| `redact` | buffered: the whole stream is held until the verdict | before release | yes | yes |
+| `block` | buffered: the whole stream is held until the decision | before release | yes (withheld, HTTP 451) | yes |
+
+Signed evidence records which of these happened in `classification.response_scan`: `action`, `enforcement` (`post_delivery_observation` for a streamed `warn`, `observation` for a non-streaming `warn`, `preventive` for `redact`/`block`), `status` (`complete` | `incomplete`) and, when incomplete, `incomplete_reason` (`capture_limit_exceeded`, `upstream_error`, `client_cancelled`, `scanner_unavailable`, `no_text_content`), plus `bytes_observed` / `capture_limit` for streamed observations. An incomplete observation is never a clean scan: `output_pii_detected: false` only means "none found in what was observed". A scanner failure after delivery leaves the delivered stream untouched and marks the observation incomplete; under `redact`/`block` scanner failure stays fail-closed (HTTP 502). Non-streaming responses are always scanned before the write.
 
 ### Gateway dashboard
 

@@ -79,7 +79,7 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 			"anthropic": {Enabled: true, BaseURL: mockURL, SecretName: "anthropic-api-key", APIFamily: "anthropic"},
 			"openai":    {Enabled: true, BaseURL: mockURL, SecretName: "openai-api-key"},
 		},
-		OrganizationPolicy: gateway.OrganizationPolicy{Defaults: gateway.OrgDefaults{PIIAction: "warn", ResponsePIIAction: "allow"}},
+		OrganizationPolicy: gateway.OrganizationPolicy{Defaults: gateway.OrgDefaults{PIIAction: "warn", ResponsePIIAction: "warn"}},
 		RateLimits:         gateway.RateLimitsConfig{GlobalRequestsPerMin: 100000, PerAgentRequestsPerMin: 100000},
 		Timeouts:           gateway.TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
@@ -102,7 +102,7 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 			Path: "agent.talon.yaml", Name: "claude-code", TenantID: "demo", KeySecretName: "claude-code-talon-key",
 			Override: &gateway.PolicyOverride{
 				PIIAction:         "warn",
-				ResponsePIIAction: "allow",
+				ResponsePIIAction: "warn",
 				MaxSessionCost:    0.02, // trips after a few mock-priced requests
 			},
 		},

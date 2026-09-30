@@ -7,21 +7,30 @@ import (
 )
 
 const (
-	CodePolicyAllowed          = "POLICY_ALLOWED"
-	CodePolicyDenied           = "POLICY_DENIED"
-	CodePolicyDeniedPIIInput   = "POLICY_DENIED_PII_INPUT"
-	CodePolicyDeniedPIIOutput  = "POLICY_DENIED_PII_OUTPUT"
-	CodePolicyDeniedCost       = "POLICY_DENIED_COST"
-	CodePolicyDeniedEgress     = "POLICY_DENIED_EGRESS"
-	CodePolicyDeniedRouting    = "POLICY_DENIED_ROUTING"
-	CodePolicyDeniedTool       = "POLICY_DENIED_TOOL"
-	CodePolicyDeniedHook       = "POLICY_DENIED_HOOK"
-	CodePolicyDeniedCircuit    = "POLICY_DENIED_CIRCUIT_BREAKER"
-	CodePolicyDeniedEarlyTerm  = "POLICY_DENIED_EARLY_TERMINATION"
-	CodePolicyModified         = "POLICY_MODIFIED"
-	CodePolicyFiltered         = "POLICY_FILTERED"
-	CodeExecutionFailed        = "EXECUTION_FAILED"
-	CodeLegacyReasonUnmigrated = "LEGACY_REASON_UNMIGRATED"
+	CodePolicyAllowed         = "POLICY_ALLOWED"
+	CodePolicyDenied          = "POLICY_DENIED"
+	CodePolicyDeniedPIIInput  = "POLICY_DENIED_PII_INPUT"
+	CodePolicyDeniedPIIOutput = "POLICY_DENIED_PII_OUTPUT"
+	// CodePolicyObservedPIIOutput: response PII was detected under warn and
+	// the response was delivered unchanged — an observation, never a denial
+	// (#476). The wording is timing-neutral on purpose: whether the scan ran
+	// after delivery (streamed) or before the write (non-streaming) is a
+	// signed fact in classification.response_scan.enforcement, not in the
+	// generic explanation.
+	CodePolicyObservedPIIOutput = "POLICY_OBSERVED_PII_OUTPUT"
+	// CodePolicyRedactedPIIOutput: response PII was redacted before release.
+	CodePolicyRedactedPIIOutput = "POLICY_REDACTED_PII_OUTPUT"
+	CodePolicyDeniedCost        = "POLICY_DENIED_COST"
+	CodePolicyDeniedEgress      = "POLICY_DENIED_EGRESS"
+	CodePolicyDeniedRouting     = "POLICY_DENIED_ROUTING"
+	CodePolicyDeniedTool        = "POLICY_DENIED_TOOL"
+	CodePolicyDeniedHook        = "POLICY_DENIED_HOOK"
+	CodePolicyDeniedCircuit     = "POLICY_DENIED_CIRCUIT_BREAKER"
+	CodePolicyDeniedEarlyTerm   = "POLICY_DENIED_EARLY_TERMINATION"
+	CodePolicyModified          = "POLICY_MODIFIED"
+	CodePolicyFiltered          = "POLICY_FILTERED"
+	CodeExecutionFailed         = "EXECUTION_FAILED"
+	CodeLegacyReasonUnmigrated  = "LEGACY_REASON_UNMIGRATED"
 
 	CodeGraphRunAllowed         = "GRAPH_RUN_ALLOWED"
 	CodeGraphIterationLimitDeny = "GRAPH_ITERATION_LIMIT_DENY"
@@ -223,6 +232,8 @@ var reasonByCode = map[string]string{
 	CodePolicyDenied:            "Request blocked by policy.",
 	CodePolicyDeniedPIIInput:    "Request blocked because input PII was detected.",
 	CodePolicyDeniedPIIOutput:   "Request blocked because output PII was detected.",
+	CodePolicyObservedPIIOutput: "Response PII observed; the response was not modified.",
+	CodePolicyRedactedPIIOutput: "Response PII was redacted before release.",
 	CodePolicyDeniedCost:        "Request blocked by cost policy limits.",
 	CodePolicyDeniedEgress:      "Request blocked because the destination is not allowed for this data classification.",
 	CodePolicyDeniedRouting:     "Request blocked by model routing policy.",
@@ -361,10 +372,23 @@ func containsAny(input string, markers ...string) bool {
 	return false
 }
 
+// ReasonText returns the canonical human-readable reason for a code ("" when
+// the code is unknown).
+func ReasonText(code string) string {
+	return reasonByCode[code]
+}
+
+// FixFor returns the canonical suggested fix for a code ("" when none).
+func FixFor(code string) string {
+	return defaultFix(code)
+}
+
 func defaultFix(code string) string {
 	switch code {
 	case CodePolicyDeniedPIIInput, CodePolicyDeniedPIIOutput:
 		return "Remove or mask sensitive data before retrying the request."
+	case CodePolicyObservedPIIOutput:
+		return "Review downstream exposure of the delivered response; set response_pii_action to redact or block to prevent delivery."
 	case CodePolicyDeniedCost:
 		return "Reduce expected token usage or increase cost limits in policy."
 	case CodePolicyDeniedEgress:

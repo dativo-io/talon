@@ -36,6 +36,14 @@ func TestEvidenceIntegritySpecRoundTrip(t *testing.T) {
 			InputTier:   1,
 			PIIDetected: []string{"email", "iban"},
 			PIIRedacted: true,
+			// response_scan (spec 1.10, #476): the nested optional field is
+			// populated so its canonical serialization is covered too.
+			OutputPIIDetected: true,
+			OutputPIITypes:    []string{"email"},
+			ResponseScan: &ResponseScan{
+				Action: "warn", Enforcement: ResponseScanEnforcementPostDelivery, Streamed: true,
+				Status: ResponseScanStatusComplete, BytesObserved: 2048, CaptureLimit: 4 << 20,
+			},
 		},
 		Execution: Execution{
 			ModelUsed:  "gpt-4o-mini",

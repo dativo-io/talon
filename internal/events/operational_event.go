@@ -126,12 +126,27 @@ func decisionFromExplanation(ev *evidence.Evidence) (decision, reasonCode, reaso
 	suggestedFix = item.Fix
 
 	hasFilteredTools := ev.ToolGovernance != nil && len(ev.ToolGovernance.ToolsFiltered) > 0
-	hasRedaction := ev.Classification.PIIRedacted || ev.Classification.OutputPIIDetected
+	hasRedaction := ev.Classification.PIIRedacted || ev.Classification.ResponsePIIRedacted(ev.DataFlow)
 
 	switch item.Decision {
 	case explanation.DecisionFailure:
 		decision = "error"
 	case explanation.DecisionDeny:
+		if ev.PolicyDecision.Allowed && item.Code == explanation.CodePolicyDeniedPIIOutput {
+			// Records written before #476 explained every response-PII
+			// detection as a denial, even when the signed decision allowed
+			// the request and the response was delivered (warn) or redacted.
+			// The signed decision and data-flow disposition are the truth;
+			// the stale deny code is re-labelled instead of rendered as
+			// "blocked".
+			decision = projectedAllowDecision(hasFilteredTools, hasRedaction)
+			code := explanation.CodePolicyObservedPIIOutput
+			if hasRedaction {
+				code = explanation.CodePolicyRedactedPIIOutput
+			}
+			reasonCode, reasonText, suggestedFix = code, explanation.ReasonText(code), explanation.FixFor(code)
+			break
+		}
 		decision = "blocked"
 	case explanation.DecisionFilter:
 		decision = projectedAllowDecision(hasFilteredTools, true)
@@ -167,8 +182,13 @@ func decisionFields(ev *evidence.Evidence) (decision, reasonCode, reasonText, su
 		fix := fixFromCode(code)
 		return "blocked", code, text, fix
 	}
-	if ev.Classification.PIIRedacted || ev.Classification.OutputPIIDetected {
+	if ev.Classification.PIIRedacted || ev.Classification.ResponsePIIRedacted(ev.DataFlow) {
 		return "redacted", "PII_REDACTED", "PII was redacted by policy", ""
+	}
+	if ev.Classification.ResponsePIIObserved(ev.DataFlow) {
+		// warn: the response reached the client unchanged; the finding is an
+		// observation, not an enforcement outcome (#476).
+		return "allowed", explanation.CodePolicyObservedPIIOutput, explanation.ReasonText(explanation.CodePolicyObservedPIIOutput), explanation.FixFor(explanation.CodePolicyObservedPIIOutput)
 	}
 	if ev.ToolGovernance != nil && len(ev.ToolGovernance.ToolsFiltered) > 0 {
 		return "filtered_tool", "TOOL_FILTERED", "Request tools were filtered by policy", ""

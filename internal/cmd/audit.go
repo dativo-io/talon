@@ -959,6 +959,39 @@ func renderAuditList(w io.Writer, index []evidence.Index) {
 	}
 }
 
+// renderResponseScan prints the response-side PII control facts (#476) so an
+// operator reading `audit show` can tell a post-delivery observation from a
+// preventive redact/block at a glance, and an incomplete scan from a clean
+// one. Nothing is printed for records without a response scan.
+func renderResponseScan(w io.Writer, ev *evidence.Evidence) {
+	rs := ev.Classification.ResponseScan
+	if rs == nil {
+		return
+	}
+	outTypes := strings.Join(ev.Classification.OutputPIITypes, ", ")
+	if outTypes == "" {
+		outTypes = "(none)"
+	}
+	var enforcement string
+	switch rs.Enforcement {
+	case evidence.ResponseScanEnforcementPostDelivery:
+		enforcement = "observed after delivery (not preventive)"
+	case evidence.ResponseScanEnforcementObservation:
+		enforcement = "observed, response unchanged (not preventive)"
+	default:
+		enforcement = rs.Enforcement
+	}
+	line := fmt.Sprintf("Response Scan: action=%s | %s | %s", rs.Action, enforcement, rs.Status)
+	if rs.IncompleteReason != "" {
+		line += " (" + rs.IncompleteReason + ")"
+	}
+	if rs.CaptureLimit > 0 {
+		line += fmt.Sprintf(" | observed %d of max %d bytes", rs.BytesObserved, rs.CaptureLimit)
+	}
+	fmt.Fprintln(w, line)
+	fmt.Fprintf(w, "Output PII:    %s\n", outTypes)
+}
+
 // renderVerifyResult writes verify outcome and optional compact summary to w (testable).
 func renderVerifyResult(w io.Writer, evidenceID string, valid bool, ev *evidence.Evidence) {
 	if valid {
@@ -1063,6 +1096,7 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 	// was masked before egress (InputPIIRedacted). There is no output-redaction
 	// flag, so we do not print a misleading output= value (#307).
 	fmt.Fprintf(w, "PII Redacted:  input=%t\n", ev.Classification.InputPIIRedacted)
+	renderResponseScan(w, ev)
 	fmt.Fprintln(w, "Execution")
 	fmt.Fprintf(w, "Model:         %s\n", ev.Execution.ModelUsed)
 	fmt.Fprintf(w, "Cost:          %s\n", formatMoney(ev.Execution.Currency, ev.Execution.Cost))
