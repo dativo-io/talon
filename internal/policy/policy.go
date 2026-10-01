@@ -897,9 +897,11 @@ type ActionDefinitionConfig struct {
 
 // ActionReviewConfig is the reviewer projection definition (#427/#433).
 // Every top-level argument field is material: each must be listed in
-// exactly one of fields (shown), masked (shown as a safe length-only
-// representation) or non_material (omitted from the projection but still
-// bound by the digest). Absent review = every field shown.
+// exactly one of fields (shown verbatim) or non_material (omitted from the
+// projection but still bound by the digest). Absent review = every field
+// shown. Masked is parsed only so the catalog can refuse it with an
+// explicit reason: a reviewer must see the exact value of every material
+// field, and no masked stand-in is accepted for a governed action.
 type ActionReviewConfig struct {
 	Fields      []string `yaml:"fields,omitempty" json:"fields,omitempty"`
 	Masked      []string `yaml:"masked,omitempty" json:"masked,omitempty"`

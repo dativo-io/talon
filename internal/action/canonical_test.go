@@ -104,26 +104,90 @@ func TestCompileReview_Sufficiency(t *testing.T) {
 	require.Contains(t, err.Error(), "amount")
 	_, err = mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "amount", "currency", "memo"}})
 	require.Error(t, err, "nonexistent review path")
-	_, err = mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "amount"}, Masked: []string{"amount", "currency"}})
+	_, err = mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "amount", "currency"}, NonMaterial: []string{"currency"}})
 	require.Error(t, err, "double classification")
 	full, err := mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "amount", "currency"}})
 	require.NoError(t, err)
-	masked, err := mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "currency"}, Masked: []string{"amount"}})
-	require.NoError(t, err)
 	nonMat, err := mk(&policy.ActionReviewConfig{Fields: []string{"recipient", "amount"}, NonMaterial: []string{"currency"}})
 	require.NoError(t, err)
-	require.NotEqual(t, full.ProjectionDigest, masked.ProjectionDigest)
-	require.NotEqual(t, full.DefinitionDigest, masked.DefinitionDigest, "projection is part of the definition digest")
-	require.NotEqual(t, full.DefinitionDigest, nonMat.DefinitionDigest)
-	require.Equal(t, full.SchemaDigest, masked.SchemaDigest, "only the projection changed")
-	proj := masked.ReviewProjection([]byte(`{"amount":10000,"currency":"EUR","recipient":"acct-1"}`))
-	require.JSONEq(t, `{"masked":true,"type":"number","length":5}`, string(proj["amount"]))
-	require.Equal(t, `"EUR"`, string(proj["currency"]))
+	require.NotEqual(t, full.ProjectionDigest, nonMat.ProjectionDigest)
+	require.NotEqual(t, full.DefinitionDigest, nonMat.DefinitionDigest, "projection is part of the definition digest")
+	require.Equal(t, full.SchemaDigest, nonMat.SchemaDigest, "only the projection changed")
+	proj := nonMat.ReviewProjection([]byte(`{"amount":10000,"currency":"EUR","recipient":"acct-1"}`))
+	require.Equal(t, `10000`, string(proj["amount"]), "material fields are shown exactly")
+	require.Equal(t, `"acct-1"`, string(proj["recipient"]))
+	_, hasCurrency := proj["currency"]
+	require.False(t, hasCurrency, "non-material fields are omitted")
 	// Success contract is part of the definition digest too.
 	withSuccess, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Destination: policy.ActionDestinationConfig{Type: "http", URL: "https://api.example/x", Success: &policy.ActionSuccessConfig{StatusCodes: []int{200}}}}}})
 	require.NoError(t, err)
 	ws, _ := withSuccess.Lookup("pay")
 	require.NotEqual(t, full.DefinitionDigest, ws.DefinitionDigest)
+}
+
+// A masked material field would let a reviewer approve a value they never
+// saw: the catalog fails closed, whatever else is declared.
+func TestCompileReview_MaskedIsRejected(t *testing.T) {
+	props := map[string]any{"recipient": map[string]any{"type": "string"}, "amount": map[string]any{"type": "number"}, "iban": map[string]any{"type": "string"}}
+	for name, r := range map[string]*policy.ActionReviewConfig{
+		"masked material amount":  {Fields: []string{"recipient", "iban"}, Masked: []string{"amount"}},
+		"masked only":             {Masked: []string{"iban"}},
+		"masked alongside others": {Fields: []string{"recipient"}, Masked: []string{"iban"}, NonMaterial: []string{"amount"}},
+		"masked unknown field":    {Fields: []string{"recipient", "amount", "iban"}, Masked: []string{"nope"}},
+	} {
+		_, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Review: r, Destination: dest()}}})
+		require.Error(t, err, name)
+		require.Contains(t, err.Error(), "review.masked", name)
+	}
+	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Review: &policy.ActionReviewConfig{Fields: []string{"recipient", "amount", "iban"}}, Destination: dest()}}})
+	require.NoError(t, err)
+	d, _ := cat.Lookup("pay")
+	proj := d.ReviewProjection([]byte(`{"amount":10000,"iban":"DE89370400440532013000","recipient":"acct-1"}`))
+	require.Equal(t, `"DE89370400440532013000"`, string(proj["iban"]), "a shown field is the exact dispatched value")
+}
+
+// The public contract is JSON Schema 2020-12: an absent $schema compiles
+// as 2020-12, the canonical URI is accepted, every other dialect is
+// refused before compilation (DefaultDraft alone would compile a draft-07
+// document under draft-07 semantics).
+func TestSchemaDialect_PinnedTo2020(t *testing.T) {
+	base := func(dialect any) map[string]any {
+		m := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"a": map[string]any{"type": "string"}}}
+		if dialect != nil {
+			m["$schema"] = dialect
+		}
+		return m
+	}
+	cases := []struct {
+		name    string
+		dialect any
+		ok      bool
+	}{
+		{"absent", nil, true},
+		{"canonical 2020-12", "https://json-schema.org/draft/2020-12/schema", true},
+		{"canonical 2020-12 with empty fragment", "https://json-schema.org/draft/2020-12/schema#", true},
+		{"draft-07", "http://json-schema.org/draft-07/schema#", false},
+		{"draft-07 https", "https://json-schema.org/draft-07/schema", false},
+		{"2019-09", "https://json-schema.org/draft/2019-09/schema", false},
+		{"draft-04", "http://json-schema.org/draft-04/schema#", false},
+		{"arbitrary dialect", "https://example.com/my-dialect", false},
+		{"non-string", 2020, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: base(tc.dialect), Destination: dest()}}})
+			if !tc.ok {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "$schema")
+				return
+			}
+			require.NoError(t, err)
+			d, _ := cat.Lookup("x")
+			require.NoError(t, d.ValidateArguments([]byte(`{"a":"x"}`)))
+			require.Error(t, d.ValidateArguments([]byte(`{"a":1}`)))
+			require.Error(t, d.ValidateArguments([]byte(`{"b":"x"}`)), "closed schema under 2020-12 semantics")
+		})
+	}
 }
 
 // B9: schemas compile offline; no $ref can cause an HTTP request, a

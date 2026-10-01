@@ -94,7 +94,7 @@ func testPolicy(url string) *policy.Policy {
 					"type": "object", "additionalProperties": false, "required": []any{"ticket_id", "amount", "currency"},
 					"properties": map[string]any{"ticket_id": map[string]any{"type": "string"}, "amount": map[string]any{"type": "number"}, "currency": map[string]any{"type": "string", "enum": []any{"EUR", "USD"}}, "note": map[string]any{"type": "string"}, "iban": map[string]any{"type": "string"}},
 				},
-				Review:      &policy.ActionReviewConfig{Fields: []string{"ticket_id", "amount", "currency"}, Masked: []string{"iban"}, NonMaterial: []string{"note"}},
+				Review:      &policy.ActionReviewConfig{Fields: []string{"ticket_id", "amount", "currency", "iban"}, NonMaterial: []string{"note"}},
 				Destination: policy.ActionDestinationConfig{Type: "http", URL: url + "/refunds", Method: "POST", Success: &policy.ActionSuccessConfig{StatusCodes: []int{201}}},
 			},
 			"notify_customer": {
@@ -235,11 +235,11 @@ func TestApprovalLifecycle_ExactlyOneEffect(t *testing.T) {
 	require.Equal(t, OpAwaitingApproval, res.Operation.Status)
 	require.Equal(t, ApprovalPending, res.Operation.Approval.Status)
 	require.True(t, res.Operation.Payload.Present)
-	// Projection: shown fields verbatim, masked as a safe representation,
-	// non-material omitted — every material field represented.
+	// Projection: every material field shown verbatim (exactly what will
+	// be dispatched), non-material omitted.
 	require.Equal(t, json.RawMessage(`"T-1842"`), res.Operation.Review["ticket_id"])
 	require.Equal(t, json.RawMessage(`50.00`), res.Operation.Review["amount"])
-	require.JSONEq(t, `{"masked":true,"type":"string","length":22}`, string(res.Operation.Review["iban"]))
+	require.Equal(t, json.RawMessage(`"DE89370400440532013000"`), res.Operation.Review["iban"])
 	_, hasNote := res.Operation.Review["note"]
 	require.False(t, hasNote)
 	require.Equal(t, int64(0), h.down.calls.Load(), "REQUIRE_APPROVAL: zero dispatch")
@@ -510,6 +510,102 @@ func TestUnknown_NoTransportLevelReplay(t *testing.T) {
 	require.Equal(t, int64(2), h.down.calls.Load(), "exactly one request for the lossy attempt; no transport replay")
 }
 
+// An ambiguous post-dispatch outcome must never be serialized as generic
+// "completed" evidence: the lifecycle status AND the record's generic
+// status are both "unknown" (the generic vocabulary reads an empty status
+// as completed, so it has to be explicit).
+func TestEvidenceStatus_UnknownIsNeverCompleted(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.establish(t, "op-amb", "notify_customer", `{"ticket_id":"amb"}`)
+	h.down.lossy.Store(true)
+	exec, err := h.svc.Execute(ctx, "op-amb")
+	require.NoError(t, err)
+	require.Equal(t, OpUnknown, exec.Operation.Status)
+	recs := h.lifecycle(t, "op-amb")
+	last := recs[len(recs)-1]
+	require.Equal(t, evidence.ActionEventAttemptCompleted, last.ActionLifecycle.Event)
+	require.Equal(t, OpUnknown, last.ActionLifecycle.OperationStatus)
+	require.Equal(t, evidence.StatusUnknown, last.Status)
+	for _, r := range recs {
+		require.NotEmpty(t, r.Status, "record %s: a lifecycle record never relies on the empty=completed default", r.ID)
+		require.NotEqual(t, evidence.StatusCompleted, r.Status, "record %s: nothing about op-amb completed", r.ID)
+	}
+	// Generic statuses track the state machine for every other outcome too.
+	h.down.lossy.Store(false)
+	h.establish(t, "op-ok", "notify_customer", `{"ticket_id":"ok"}`)
+	_, err = h.svc.Execute(ctx, "op-ok")
+	require.NoError(t, err)
+	okRecs := h.lifecycle(t, "op-ok")
+	require.Equal(t, evidence.StatusQueued, okRecs[0].Status, "established + authorized: accepted, no effect yet")
+	require.Equal(t, evidence.StatusCompleted, okRecs[len(okRecs)-1].Status)
+	res := h.establish(t, "op-cancel", "create_refund_request", refundArgs)
+	_, err = h.svc.Decide(ctx, DecideRequest{ApprovalID: res.Operation.Approval.ID, Approve: false, Reason: "no", Reviewer: lead("lead-1")})
+	require.NoError(t, err)
+	cRecs := h.lifecycle(t, "op-cancel")
+	require.Equal(t, evidence.StatusCancelled, cRecs[len(cRecs)-1].Status)
+	require.Equal(t, OpCancelled, cRecs[len(cRecs)-1].ActionLifecycle.OperationStatus)
+	h.establish(t, "op-deny", "delete_customer", `{"customer_id":"c1"}`)
+	dRecs := h.lifecycle(t, "op-deny")
+	require.Equal(t, evidence.StatusDenied, dRecs[0].Status)
+}
+
+// The evidence database enforces the action tables' foreign keys: an
+// approval, attempt or payload can never exist without its operation.
+func TestRepository_ForeignKeysEnforced(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	db := h.store.DB()
+	var fk int
+	require.NoError(t, db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk))
+	require.Equal(t, 1, fk, "foreign_keys pragma must be ON for the evidence connection")
+	now := time.Now().UTC()
+	for name, stmt := range map[string]func() error{
+		"action_approvals": func() error {
+			_, err := db.ExecContext(ctx, `INSERT INTO action_approvals (id, operation_ref, subject_digest, rule_id, groups_json, status, expires_at, created_at) VALUES ('apr_orphan','op_missing','d','r','[]','pending',?,?)`, now, now)
+			return err
+		},
+		"action_attempts": func() error {
+			_, err := db.ExecContext(ctx, `INSERT INTO action_attempts (id, operation_ref, ordinal, status, idempotency_key, started_at) VALUES ('att_orphan','op_missing',1,'started','k',?)`, now)
+			return err
+		},
+		"action_payloads": func() error {
+			_, err := db.ExecContext(ctx, `INSERT INTO action_payloads (operation_ref, key_version, nonce, ciphertext, created_at) VALUES ('op_missing','v1',x'00',x'00',?)`, now)
+			return err
+		},
+	} {
+		err := stmt()
+		require.Error(t, err, "%s: orphan insert must fail", name)
+		require.Contains(t, err.Error(), "FOREIGN KEY constraint failed", name)
+	}
+	// The same inserts succeed against a real operation (the schema, not
+	// the statements, is what refused the orphans).
+	res := h.establish(t, "op-real", "notify_customer", `{"ticket_id":"x"}`)
+	_, err := db.ExecContext(ctx, `INSERT INTO action_attempts (id, operation_ref, ordinal, status, idempotency_key, started_at) VALUES ('att_real','`+res.Operation.OperationRef+`',9,'started','k',?)`, now)
+	require.NoError(t, err)
+}
+
+// Approval ids are opaque across tenants at the repository layer: the
+// owner lookup is scoped by the caller's trusted tenant and a foreign id
+// is simply not found.
+func TestRepository_OwnerOfApprovalIsTenantScoped(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	res := h.establish(t, "op-scope", "create_refund_request", refundArgs)
+	id := res.Operation.Approval.ID
+	tenant, agent, ok, err := h.repo.OwnerOfApproval(ctx, "acme", id)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "acme", tenant)
+	require.Equal(t, "support-bot", agent)
+	_, _, ok, err = h.repo.OwnerOfApproval(ctx, "other-tenant", id)
+	require.NoError(t, err)
+	require.False(t, ok, "a foreign tenant never resolves the owner")
+	_, _, ok, err = h.repo.OwnerOfApproval(ctx, "acme", "apr_does_not_exist")
+	require.NoError(t, err)
+	require.False(t, ok)
+}
+
 // ---- B4: crash points -------------------------------------------------
 
 func TestRecoverInterrupted_CrashPoints(t *testing.T) {
@@ -606,7 +702,7 @@ func TestRecoverInterrupted_CrashPoints(t *testing.T) {
 func TestDefinitionChange_InvalidatesAuthorization(t *testing.T) {
 	changeReview := func(pol *policy.Policy) {
 		d := pol.Actions.Definitions["create_refund_request"]
-		d.Review = &policy.ActionReviewConfig{Fields: []string{"ticket_id", "currency", "iban"}, Masked: []string{"amount"}, NonMaterial: []string{"note"}}
+		d.Review = &policy.ActionReviewConfig{Fields: []string{"ticket_id", "currency", "iban"}, NonMaterial: []string{"note", "amount"}}
 		pol.Actions.Definitions["create_refund_request"] = d
 	}
 	t.Run("pending approval is invalidated on decision", func(t *testing.T) {
@@ -652,7 +748,14 @@ func TestPayload_SealedAtRest(t *testing.T) {
 	ctx := context.Background()
 	res := h.establish(t, "op-seal", "create_refund_request", refundArgs)
 	h.approve(t, res, lead("lead-1"))
-	// Nothing in the database holds the plaintext arguments.
+	// Nothing in the database holds the plaintext canonical arguments: the
+	// only plaintext copy of a material value is the reviewer projection
+	// (action_operations.review_json), which by contract shows every
+	// material field exactly as it will be dispatched.
+	var reviewJSON string
+	require.NoError(t, h.store.DB().QueryRowContext(ctx, `SELECT review_json FROM action_operations WHERE operation_id = 'op-seal'`).Scan(&reviewJSON))
+	require.Contains(t, reviewJSON, "DE89370400440532013000", "the reviewer projection shows the exact material value")
+	require.NotContains(t, reviewJSON, `"vip"`, "non-material fields are not projected")
 	rows, err := h.store.DB().QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type='table'`)
 	require.NoError(t, err)
 	var tables []string
@@ -710,6 +813,9 @@ func plaintextProbe(t *testing.T, h *harness, table string) string {
 		var notnull, pk int
 		var dflt any
 		require.NoError(t, rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk))
+		if table == "action_operations" && name == "review_json" {
+			continue // the reviewer projection: asserted separately
+		}
 		clauses = append(clauses, `CAST("`+name+`" AS TEXT) LIKE '%DE89370400440532013000%'`)
 	}
 	return strings.Join(clauses, " OR ")

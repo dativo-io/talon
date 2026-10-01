@@ -133,16 +133,27 @@ func (s *Service) lifecycleRecord(op *Operation, ev *evidence.ActionLifecycle, a
 	}
 }
 
+// statusForEvent maps the operation state to the generic evidence status.
+// Every lifecycle record carries an explicit value: the generic vocabulary
+// treats an EMPTY status as "completed" (backward-compatible default), so
+// an in-flight, cancelled or — above all — unknown operation must never be
+// serialized without one.
 func statusForEvent(op *Operation) string {
 	switch op.Status {
 	case OpDenied:
-		return "denied"
+		return evidence.StatusDenied
 	case OpSucceeded:
-		return "completed"
+		return evidence.StatusCompleted
 	case OpFailed:
-		return "failed"
-	default:
-		return ""
+		return evidence.StatusFailed
+	case OpUnknown:
+		return evidence.StatusUnknown
+	case OpCancelled:
+		return evidence.StatusCancelled
+	case OpExecuting:
+		return evidence.StatusRunning
+	default: // authorized, awaiting_approval: accepted, no effect yet
+		return evidence.StatusQueued
 	}
 }
 

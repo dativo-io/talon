@@ -80,7 +80,7 @@ type Evidence struct {
 	// that carried them unverifiable. Read-only compatibility, not a feature.
 	ObservationModeOverride bool              `json:"observation_mode_override,omitempty"`
 	ShadowViolations        []ShadowViolation `json:"shadow_violations,omitempty"`
-	Status                  string            `json:"status,omitempty"`         // "queued", "running", "completed", "failed", "terminated", "blocked", "denied"; empty = completed (backward-compatible)
+	Status                  string            `json:"status,omitempty"`         // see Status* constants; empty = completed (backward-compatible)
 	FailureReason           string            `json:"failure_reason,omitempty"` // Structured failure classification: cost_exceeded, tool_timeout, llm_error, policy_deny, operator_kill, etc.
 	Signature               string            `json:"signature"`
 	RoutingDecision         *RoutingDecision  `json:"routing_decision,omitempty"` // Provider selection and rejected candidates (EU routing)
@@ -511,23 +511,59 @@ type GraphSummary struct {
 	Signature           string    `json:"signature"`
 }
 
+// evidenceDSN derives the go-sqlite3 DSN for the evidence database. A
+// caller-supplied DSN (containing "?") keeps its options but still gets
+// foreign-key enforcement unless it set it explicitly; the in-memory
+// database gets enforcement only.
+func evidenceDSN(dbPath string) string {
+	const fk = "_foreign_keys=on"
+	switch {
+	case strings.Contains(dbPath, "?"):
+		if strings.Contains(dbPath, "_foreign_keys=") || strings.Contains(dbPath, "_fk=") {
+			return dbPath
+		}
+		return dbPath + "&" + fk
+	case dbPath == ":memory:":
+		return dbPath + "?" + fk
+	default:
+		return dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate&" + fk
+	}
+}
+
 // addColumnIfNotExists attempts an ALTER TABLE ADD COLUMN and silently ignores
 // the error when the column already exists (SQLite lacks IF NOT EXISTS for columns).
 func addColumnIfNotExists(db *sql.DB, table, column, colType string) {
 	_, _ = db.ExecContext(context.Background(), fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colType))
 }
 
+// Generic evidence record statuses. An empty Status is read as completed
+// for records written before the field existed, which is why every writer
+// of an ambiguous or non-final outcome must set one explicitly.
+const (
+	StatusQueued     = "queued"
+	StatusRunning    = "running"
+	StatusCompleted  = "completed"
+	StatusFailed     = "failed"
+	StatusTerminated = "terminated"
+	StatusBlocked    = "blocked"
+	StatusDenied     = "denied"
+	// StatusUnknown: the governed effect may or may not have happened and
+	// no trustworthy outcome exists (#458). Never completed.
+	StatusUnknown = "unknown"
+	// StatusCancelled: the operation was closed before any effect
+	// (rejected, expired or invalidated approval).
+	StatusCancelled = "cancelled"
+)
+
 // NewStore creates an evidence store with HMAC signing.
 func NewStore(dbPath string, signingKey string) (*Store, error) {
 	// WAL + busy timeout match the sibling stores on this file; immediate
 	// transactions make every BeginTx take the write lock up front so
 	// concurrent action-lifecycle transactions (#458) queue instead of
-	// failing with SQLITE_BUSY on a deferred upgrade.
-	dsn := dbPath
-	if !strings.Contains(dbPath, "?") && dbPath != ":memory:" {
-		dsn = dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
-	}
-	db, err := sql.Open("sqlite3", dsn)
+	// failing with SQLITE_BUSY on a deferred upgrade. Foreign keys are
+	// enforced per connection (SQLite defaults them OFF): the action tables
+	// declare REFERENCES that are otherwise decorative.
+	db, err := sql.Open("sqlite3", evidenceDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("opening evidence database: %w", err)
 	}

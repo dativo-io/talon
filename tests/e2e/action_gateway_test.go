@@ -28,6 +28,7 @@ import (
 //   REQUIRE_APPROVAL           → count 0; claim refused
 //   admin/agent key decision   → refused; count 0
 //   wrong-group approver       → refused; count 0
+//   other-tenant approver      → not found (opaque id), NOTHING mutated, count 0
 //   authorized approver        → approved; count STILL 0
 //   controlled resume (claim)  → count 1, exact canonical payload, stable idempotency key
 //   exact replay               → same state; count still 1
@@ -120,6 +121,58 @@ func (c *agClient) adminDo(method, path, body string) (int, map[string]any) {
 	var out map[string]any
 	_ = json.Unmarshal(raw, &out)
 	return resp.StatusCode, out
+}
+
+// doRaw returns the status and the exact response body.
+func (c *agClient) doRaw(method, path, bearer, body string) (int, string) {
+	c.t.Helper()
+	req, _ := http.NewRequest(method, c.base+path, strings.NewReader(body))
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		c.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(raw)
+}
+
+// opSnapshot is the durable state a request must not be able to change
+// unless it is authorized for the operation's tenant.
+type opSnapshot struct {
+	Status         string
+	Version        int
+	Sequence       int
+	AttemptCount   int
+	ApprovalStatus string
+	ApprovalVer    int
+	EvidenceCount  int
+}
+
+// snapshotOperation reads the operation's durable state straight from the
+// evidence database (WAL: readable while the server holds it).
+func snapshotOperation(t *testing.T, dir, operationID string) opSnapshot {
+	t.Helper()
+	db, err := sql.Open("sqlite3", filepath.Join(dir, "evidence.db")+"?mode=ro&_busy_timeout=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var s opSnapshot
+	var ref string
+	if err := db.QueryRow(`SELECT ref, status, version, sequence, attempt_count FROM action_operations WHERE operation_id = ?`, operationID).Scan(&ref, &s.Status, &s.Version, &s.Sequence, &s.AttemptCount); err != nil {
+		t.Fatalf("snapshot %s: %v", operationID, err)
+	}
+	if err := db.QueryRow(`SELECT status, version FROM action_approvals WHERE operation_ref = ?`, ref).Scan(&s.ApprovalStatus, &s.ApprovalVer); err != nil {
+		t.Fatalf("snapshot approval of %s: %v", operationID, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM evidence WHERE correlation_id = ? AND invocation_type = 'action_lifecycle'`, ref).Scan(&s.EvidenceCount); err != nil {
+		t.Fatalf("snapshot evidence of %s: %v", operationID, err)
+	}
+	return s
 }
 
 func dig(m map[string]any, path ...string) any {
@@ -275,8 +328,30 @@ policies:
 	if st, res = c.do("POST", "/v1/approvals/"+approvalID+"/decisions", internKey, decision); st != 401 || errCode(res) != "approval_not_authorized" {
 		t.Fatalf("wrong group must not approve: %d %v", st, res)
 	}
-	if st, res = c.do("POST", "/v1/approvals/"+approvalID+"/decisions", otherTenantKey, decision); st != 401 || errCode(res) != "approval_not_authorized" {
-		t.Fatalf("support-leads of ANOTHER tenant must not approve: %d %v", st, res)
+	// Cross-tenant: the approval id is opaque. A tenant-B principal with a
+	// valid tenant-A approval id gets exactly the "missing approval" answer
+	// and tenant A's operation is not touched: no lifecycle evidence, no
+	// version or sequence change, approval unchanged, zero dispatch.
+	before := snapshotOperation(t, dir, "op-refund-1")
+	stForeign, rawForeign := c.doRaw("POST", "/v1/approvals/"+approvalID+"/decisions", otherTenantKey, decision)
+	stMissing, rawMissing := c.doRaw("POST", "/v1/approvals/apr_"+strings.Repeat("0", 24)+"/decisions", otherTenantKey, decision)
+	if stForeign != 404 || stMissing != 404 {
+		t.Fatalf("foreign-tenant / nonexistent approval must both be not found: %d %d", stForeign, stMissing)
+	}
+	if rawForeign != rawMissing {
+		t.Fatalf("foreign-valid and nonexistent approval ids must be externally indistinguishable:\n%s\n%s", rawForeign, rawMissing)
+	}
+	var foreignBody map[string]any
+	_ = json.Unmarshal([]byte(rawForeign), &foreignBody)
+	if errCode(foreignBody) != "not_found" {
+		t.Fatalf("foreign-tenant decision code: %s", rawForeign)
+	}
+	after := snapshotOperation(t, dir, "op-refund-1")
+	if before != after {
+		t.Fatalf("a foreign-tenant request mutated tenant A's operation:\n before %+v\n after  %+v", before, after)
+	}
+	if down.refundCalls.Load() != 0 {
+		t.Fatalf("foreign-tenant request dispatched: %d", down.refundCalls.Load())
 	}
 	if st, res = c.do("POST", "/v1/approvals/"+approvalID+"/decisions", legacyKey, decision); st != 401 || errCode(res) != "approval_not_authorized" {
 		t.Fatalf("legacy role credential must not approve: %d %v", st, res)

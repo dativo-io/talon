@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/policy"
@@ -99,6 +100,17 @@ func deepValidatePolicy(ctx context.Context, pol *policy.Policy) error {
 	}
 	if _, err := policy.NewPIIScannerForPolicy(pol, ""); err != nil {
 		return fmt.Errorf("PII scanner from policy: %w", err)
+	}
+	// The action catalog compiles with the same fail-closed rules serve
+	// applies (closed 2020-12 schema, exact reviewer projection, trusted
+	// destination), so a catalog serve would refuse is refused here first.
+	if pol.Actions != nil && len(pol.Actions.Definitions) > 0 {
+		if _, err := action.CompileCatalog(pol.Actions); err != nil {
+			return fmt.Errorf("action catalog: %w", err)
+		}
+		if _, err := action.CompileApprovalPolicy(pol); err != nil {
+			return fmt.Errorf("action approval policy: %w", err)
+		}
 	}
 	return nil
 }

@@ -90,7 +90,7 @@ type GenerateParams struct {
 	CostSaved                float64 // Estimated cost saved by not calling the LLM
 	PlanReview               *PlanReviewEvent
 	ExplanationFacts         []explanation.Fact // Structured source-of-truth facts; legacy bridge used when empty.
-	Status                   string             // Run lifecycle status: queued, running, completed, failed, terminated, blocked, denied
+	Status                   string             // Run lifecycle status: see Status* constants (queued … denied, unknown, cancelled)
 	FailureReason            string             // Structured classification: cost_exceeded, llm_error, policy_deny, operator_kill, etc.
 	PlanID                   string             // Execution plan ID for lineage (links to execution_plans.id)
 	GraphRunID               string             // Graph runtime run ID for external orchestrators (LangGraph, LangChain, etc.)
