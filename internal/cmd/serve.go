@@ -91,7 +91,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	cfg.WarnIfDefaultKeys()
 
-	// The MCP initialize handshake advertises the real build version (#367).
+	// server/discover and every MCP result's serverInfo advertise the real
+	// build version (#367, #447).
 	mcp.ServerVersion = resolvedVersion()
 
 	policyBaseDir := "."
@@ -589,6 +590,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	mcpHandler := mcp.NewHandler(toolRegistry, policyEngine, evidenceStore, cls)
+	// MCP Origin validation (DNS rebinding): loopback and same-origin are
+	// always accepted; explicitly configured origins are added. There is no
+	// wildcard — the server's "*" CORS default does not apply to MCP.
+	mcpHandler.Transport.AllowedOrigins = serveMCPOrigins()
 	opts = append(opts, server.WithMCPServer(mcpHandler))
 
 	var proxyHandler http.Handler
@@ -601,7 +606,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("proxy policy engine: %w", err)
 		}
-		proxyHandler = mcp.NewProxyHandler(proxyCfg, proxyEngine, evidenceStore, cls, secretsStore)
+		ph := mcp.NewProxyHandler(proxyCfg, proxyEngine, evidenceStore, cls, secretsStore)
+		ph.Transport.AllowedOrigins = serveMCPOrigins()
+		proxyHandler = ph
 		opts = append(opts, server.WithMCPProxy(proxyHandler))
 	}
 
@@ -1049,4 +1056,21 @@ func validateServeModeFlags(proxyQuickstart, gatewayEnabled, gatewayConfigExplic
 		return fmt.Errorf("--proxy-quickstart cannot be combined with --gateway or --gateway-config")
 	}
 	return nil
+}
+
+// serveMCPOrigins returns the explicitly configured browser origins allowed
+// to reach the MCP endpoints (TALON_MCP_ALLOWED_ORIGINS, comma-separated).
+// Empty means loopback and same-origin only; "*" is never honoured.
+func serveMCPOrigins() []string {
+	raw := strings.TrimSpace(os.Getenv("TALON_MCP_ALLOWED_ORIGINS"))
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, o := range strings.Split(raw, ",") {
+		if o = strings.TrimSpace(o); o != "" && o != "*" {
+			out = append(out, o)
+		}
+	}
+	return out
 }

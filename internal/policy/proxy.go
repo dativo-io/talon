@@ -75,6 +75,13 @@ type UpstreamAuthConfig struct {
 type ToolMapping struct {
 	Name         string `yaml:"name" json:"name"`
 	UpstreamName string `yaml:"upstream_name,omitempty" json:"upstream_name,omitempty"`
+	// HeaderParams is the operator-trusted declaration of which primitive
+	// arguments the upstream mirrors into Mcp-Param-* headers (MCP
+	// x-mcp-header): argument path ("region" or "nested.zone") → header name
+	// part. Inbound headers are validated against the parsed body; outbound
+	// headers are generated from the authorized body. It is protocol
+	// metadata only and never defines policy, materiality or approval.
+	HeaderParams map[string]string `yaml:"header_params,omitempty" json:"header_params,omitempty"`
 }
 
 // PIIHandlingConfig defines PII redaction rules for proxy mode.

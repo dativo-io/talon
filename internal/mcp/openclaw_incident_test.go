@@ -54,6 +54,7 @@ func proxyCall(t *testing.T, h *ProxyHandler, toolName string, args map[string]i
 		"jsonrpc": "2.0", "method": "tools/call", "params": params, "id": 1,
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "test-tenant"))
 	rec := httptest.NewRecorder()

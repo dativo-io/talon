@@ -72,6 +72,7 @@ func callProxyTool(t *testing.T, h *ProxyHandler, arguments string) *jsonrpcResp
 	t.Helper()
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"crm_lookup","arguments":` + arguments + `}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader([]byte(body)))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

@@ -4,12 +4,10 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -25,6 +23,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier/adapter"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
+	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
@@ -49,6 +48,9 @@ type ProxyHandler struct {
 	secrets       UpstreamSecretGetter
 	httpClient    *http.Client
 	runtime       ProxyRuntimeConfig
+	// Transport is the shared 2026-07-28 protocol gate (same implementation
+	// as the native route).
+	Transport *wire.Transport
 }
 
 // NewProxyHandler creates an MCP proxy handler. secretsStore may be nil when
@@ -68,9 +70,41 @@ func NewProxyHandler(
 		evidenceStore: evidenceStore,
 		classifier:    cls,
 		secrets:       secretsStore,
-		httpClient:    &http.Client{Timeout: timeout},
+		httpClient:    newUpstreamClient(timeout),
 		runtime:       DefaultProxyRuntime(),
+		Transport:     newTransport(),
 	}
+}
+
+// newUpstreamClient never follows redirects: the configured upstream is the
+// only endpoint an authorized call may reach, and a redirect would carry the
+// upstream credential elsewhere.
+func newUpstreamClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+// proxyServer is the identity this route reports and uses as the MCP client
+// of the upstream.
+func proxyServer() wire.Implementation {
+	return wire.Implementation{Name: "talon-mcp-proxy", Version: ServerVersion}
+}
+
+// headerDecl returns the trusted Mcp-Param declaration for a Talon-facing
+// tool name (validated at config load).
+func (h *ProxyHandler) headerDecl(toolName string) *wire.HeaderParams {
+	for _, m := range h.config.Proxy.AllowedTools {
+		if m.Name == toolName {
+			decl, err := wire.HeaderParamsFromConfig(m.HeaderParams)
+			if err != nil {
+				return &wire.HeaderParams{}
+			}
+			return decl
+		}
+	}
+	return &wire.HeaderParams{}
 }
 
 // proxyInvocation carries request-scoped attribution for evidence (#350):
@@ -181,100 +215,67 @@ func (h *ProxyHandler) SetRuntime(r ProxyRuntimeConfig) {
 
 // ServeHTTP handles POST /mcp/proxy JSON-RPC 2.0 and forwards to upstream.
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeRPCError(w, nil, codeInvalidRequest, "method must be POST")
-		return
-	}
 	ctx, span := proxyTracer.Start(r.Context(), "mcp.proxy.serve")
 	defer span.End()
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeRPCError(w, nil, codeParseError, "reading body: "+err.Error())
+	// Protocol gate first (#447): transport, version, _meta, header/body
+	// integrity and the method allowlist. A rejection here is a protocol
+	// error with no governance evidence — no trustworthy action exists yet.
+	req, outcome := h.Transport.Accept(w, r)
+	if outcome != wire.Ready {
+		span.SetAttributes(attribute.Bool("mcp.protocol_rejected", outcome == wire.Rejected))
 		return
 	}
-	var req jsonrpcRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeRPCError(w, nil, codeParseError, "invalid JSON: "+err.Error())
-		return
-	}
-	if req.JSONRPC != jsonrpcVersion {
-		writeRPCError(w, req.ID, codeInvalidRequest, "jsonrpc must be 2.0")
-		return
-	}
+	span.SetAttributes(attribute.String("mcp.method", req.Method))
 
 	// Attribution is resolved once per request (#350). Header hygiene
 	// violations are rejected before any evidence is written, mirroring the
 	// gateway contract (reject, never truncate).
 	inv, err := h.resolveProxyInvocation(r)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(&jsonrpcResponse{
-			JSONRPC: jsonrpcVersion, ID: req.ID,
-			Error: &rpcError{Code: codeInvalidRequest, Message: "invalid attribution header: " + err.Error()},
-		})
+		wire.WriteError(w, req.ID, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidRequest, Reason: wire.ReasonInvalidRequest, Message: "invalid attribution header: " + err.Error()})
 		return
 	}
 	// Echo the resolved identifiers so callers can join their receipts to
-	// the audit trail.
+	// the audit trail. X-Talon-Session-ID is Talon application correlation,
+	// never an MCP transport session (there is none).
 	w.Header().Set("X-Correlation-ID", inv.correlationID)
 	if inv.sessionID != "" {
 		w.Header().Set("X-Talon-Session-ID", inv.sessionID)
 	}
 
-	// MCP lifecycle (#367): initialize is answered LOCALLY — tools capability
-	// only, never forwarded upstream (nothing ungoverned moves). Generalized
-	// to every notification (#363): an id-less JSON-RPC message MUST NOT
-	// receive a response body (spec §4.1) — acknowledge with 202 and drop,
-	// instead of routing it into the method-allowlist rejection arm where it
-	// used to earn a -32601 body with "id": null. Nothing is forwarded
-	// upstream: the streamable-HTTP session handshake is unsupported here by
-	// design (#356 mapping), so there is no session to relay state into.
-	if isNotification(&req) {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-
 	var resp *jsonrpcResponse
 	switch req.Method {
-	case "initialize":
-		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: mcpInitializeResult("talon-mcp-proxy", req.Params)}
-	case "tools/list":
-		resp = h.handleToolsList(ctx, body, inv, &req)
-	case "tools/call":
-		resp = h.handleProxyToolCall(ctx, &req, inv)
-	default:
-		// Fail-closed method allowlist (#356): the proxy governs the MCP
-		// lifecycle plus tools/list and tools/call; every other method is
-		// rejected with evidence, mirroring the native /mcp server's -32601.
-		// Forwarding ungoverned methods (resources/read, prompts/get) would
-		// open an unscanned, unaudited data lane through the governance proxy.
-		h.recordEvidence(ctx, inv, "proxy_method_rejected", req.Method, "unsupported_method:"+req.Method, nil)
-		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{
-			Code:    codeMethodNotFound,
-			Message: "method not found: " + req.Method + " (the proxy governs initialize, tools/list, and tools/call only)",
-			Data:    talonErrData(TalonCodeMethodNotAllowed),
-		}}
+	case wire.MethodDiscover:
+		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: wire.Discover(proxyServer(), map[string]interface{}{"tools": map[string]interface{}{}}, "", listTTLMs)}
+	case wire.MethodToolsList:
+		resp = h.handleToolsList(ctx, req, inv)
+	case wire.MethodToolsCall:
+		resp = h.handleProxyToolCall(ctx, w, req, inv)
+		if resp == nil {
+			return // protocol rejection already written
+		}
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	resp.write(w)
 }
 
 //nolint:gocyclo // proxy flow: forbidden, policy, PII, forward, evidence
-func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequest, inv *proxyInvocation) *jsonrpcResponse {
+func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseWriter, req *wire.Request, inv *proxyInvocation) *jsonrpcResponse {
 	ctx, span := proxyTracer.Start(ctx, "mcp.proxy.tools.call")
 	defer span.End()
 
-	var params toolsCallParams
-	if len(req.Params) > 0 {
-		_ = json.Unmarshal(req.Params, &params)
-	}
+	params := toolsCallParams{Name: req.Name, Arguments: req.Arguments}
 	toolName := params.Name
 	if toolName == "" {
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "tool name is required"}}
+	}
+	// Mcp-Param-* integrity against the operator-trusted declaration, before
+	// forbidden/policy/PII: a mismatch is a protocol rejection with zero
+	// governance evidence and zero upstream dispatch.
+	if perr := wire.ValidateHeaderParams(h.headerDecl(toolName), params.Arguments, req.HeaderParams); perr != nil {
+		span.SetAttributes(attribute.String("mcp.protocol_reason", perr.Reason))
+		wire.WriteError(w, req.ID, perr)
+		return nil
 	}
 
 	// Map to upstream name
@@ -394,14 +395,24 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		}
 	}
 
-	// Forward to upstream (with optional name mapping)
-	forwardParams := params
-	forwardParams.Name = upstreamName
-	forwardBody, _ := json.Marshal(forwardParams)
-	forwardReq := jsonrpcRequest{JSONRPC: jsonrpcVersion, Method: req.Method, Params: forwardBody, ID: req.ID}
-	forwardJSON, _ := json.Marshal(forwardReq)
-
-	upstreamResp, err := h.doUpstreamRequest(ctx, forwardJSON, inv)
+	// Forward: a FRESH request built from the authorized, normalized
+	// payload — canonical upstream name, redacted arguments, the client's
+	// MRTR continuation (requestState/inputResponses) and permitted _meta,
+	// this protocol version, Talon's identity, and Mcp-* headers generated
+	// from that body (never copied from inbound headers).
+	outMeta := wire.OutboundMeta(req.Meta, proxyServer())
+	outParams := wire.EncodeCallParams(outMeta, wire.CallParams{Name: upstreamName, Arguments: params.Arguments, RequestState: req.RequestState, InputResponses: req.InputResponses})
+	paramHeaders, err := wire.OutboundHeaderParams(h.headerDecl(toolName), params.Arguments)
+	if err != nil {
+		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "outbound_header_params_invalid", &flow)
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "argument cannot be mirrored into the declared header: " + err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
+	}
+	httpReq, err := wire.NewUpstreamRequest(ctx, h.config.Proxy.Upstream.URL, req.ID, wire.MethodToolsCall, outParams, upstreamName, paramHeaders)
+	if err != nil {
+		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "outbound_request_invalid", &flow)
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
+	}
+	upstreamResp, err := h.doUpstream(ctx, httpReq, inv) //nolint:bodyclose // closed by wire.ReadUpstreamResponse
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -423,21 +434,32 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_error: "+err.Error(), &flow)
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
 	}
-	defer upstreamResp.Body.Close()
-	var out jsonrpcResponse
-	if err := json.NewDecoder(upstreamResp.Body).Decode(&out); err != nil {
+	upstream, err := wire.ReadUpstreamResponse(upstreamResp)
+	if err != nil {
 		// A response arrived, so egress happened — the flow item is truthful.
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_response_invalid", &flow)
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid", Data: talonErrData(TalonCodeUpstreamError)}}
 	}
-	out.ID = req.ID
-	if out.Error != nil {
+	out := jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID}
+	if upstream.Error != nil {
 		// The vendor answered with a JSON-RPC error: the call executed and
 		// failed — record it as such, never as a clean allowed completion.
+		out.Error = &rpcError{Code: upstream.Error.Code, Message: upstream.Error.Message}
+		if len(upstream.Error.Data) > 0 {
+			out.Error.Data = upstream.Error.Data
+		}
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName,
-			fmt.Sprintf("upstream_jsonrpc_error: %d %s", out.Error.Code, out.Error.Message), &flow)
+			fmt.Sprintf("upstream_jsonrpc_error: %d %s", upstream.Error.Code, upstream.Error.Message), &flow)
 		return &out
 	}
+	// Lossless result: complete and input_required (MRTR) results pass
+	// through with resultType made explicit and this server's identity.
+	normalized, err := wire.NormalizeUpstreamResult(upstream.Result, proxyServer())
+	if err != nil {
+		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_response_invalid", &flow)
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid", Data: talonErrData(TalonCodeUpstreamError)}}
+	}
+	out.Result = normalized
 
 	// Response PII scanning: scan tool result before returning to caller.
 	// A scanner failure blocks the result fail-closed.
@@ -617,21 +639,59 @@ func toolNameFromRaw(raw json.RawMessage) string {
 	return ""
 }
 
-// handleToolsList forwards a tools/list request and filters the response to
-// only include tools in the policy's allowed_tools list. This prevents agents
-// from discovering (and attempting to call) tools they are not authorized to use.
-// It supports multiple upstream result shapes (object with "tools", array at top,
-// or other common keys) and preserves the response shape. If the result shape
-// is unrecognizable, it returns an empty tool list to avoid leaking unfiltered data.
-func (h *ProxyHandler) handleToolsList(ctx context.Context, body []byte, inv *proxyInvocation, req *jsonrpcRequest) *jsonrpcResponse {
+// handleToolsList rebuilds a tools/list request for the upstream (Talon's
+// own _meta, the client's cursor), filters the response to the policy's
+// allowed_tools and excludes definitions whose x-mcp-header annotations are
+// invalid. The result carries current cache hints: the upstream ttlMs when
+// it sent one (else 0), always cacheScope private because the list is
+// filtered for this governed route.
+func (h *ProxyHandler) handleToolsList(ctx context.Context, req *wire.Request, inv *proxyInvocation) *jsonrpcResponse {
 	ctx, span := proxyTracer.Start(ctx, "mcp.proxy.tools.list")
 	defer span.End()
 
-	resp := h.forwardRequest(ctx, body, inv, req)
-	if resp == nil || resp.Error != nil || resp.Result == nil {
-		return resp
+	outParams := wire.EncodeListParams(wire.OutboundMeta(req.Meta, proxyServer()), req.Cursor)
+	httpReq, err := wire.NewUpstreamRequest(ctx, h.config.Proxy.Upstream.URL, req.ID, wire.MethodToolsList, outParams, "", nil)
+	if err != nil {
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
+	}
+	upstreamResp, err := h.doUpstream(ctx, httpReq, inv) //nolint:bodyclose // closed by wire.ReadUpstreamResponse
+	if err != nil {
+		if errors.Is(err, errSecretRetrieval) {
+			// Fail-closed vault failure (#358): generic message, no detail leak.
+			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Service configuration error", Data: talonErrData(TalonCodeUpstreamError)}}
+		}
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
+	}
+	upstream, err := wire.ReadUpstreamResponse(upstreamResp)
+	if err != nil {
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid", Data: talonErrData(TalonCodeUpstreamError)}}
+	}
+	if upstream.Error != nil {
+		out := &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: upstream.Error.Code, Message: upstream.Error.Message}}
+		if len(upstream.Error.Data) > 0 {
+			out.Error.Data = upstream.Error.Data
+		}
+		return out
 	}
 
+	var raw interface{}
+	_ = json.Unmarshal(upstream.Result, &raw)
+	extract := extractToolsListFromResult(raw)
+	filtered := h.filterUpstreamTools(extract.Tools)
+	span.SetAttributes(
+		attribute.Int("proxy.tools_upstream", len(extract.Tools)),
+		attribute.Int("proxy.tools_filtered", len(filtered)),
+		attribute.String("proxy.tools_result_shape", extract.Shape),
+	)
+	fields, ttl := listFields(extract)
+	fields["tools"] = filtered
+	result := wire.Cacheable(wire.Complete(proxyServer(), fields), ttl, wire.CacheScopePrivate)
+	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: result}
+}
+
+// filterUpstreamTools keeps allowed_tools entries whose x-mcp-header
+// annotations are valid, in deterministic name order.
+func (h *ProxyHandler) filterUpstreamTools(tools []json.RawMessage) []interface{} {
 	allowedSet := make(map[string]bool, len(h.config.Proxy.AllowedTools))
 	for _, t := range h.config.Proxy.AllowedTools {
 		allowedSet[t.Name] = true
@@ -639,71 +699,68 @@ func (h *ProxyHandler) handleToolsList(ctx context.Context, body []byte, inv *pr
 			allowedSet[t.UpstreamName] = true
 		}
 	}
-
-	extract := extractToolsListFromResult(resp.Result)
-
-	filtered := make([]json.RawMessage, 0, len(extract.Tools))
-	for _, toolRaw := range extract.Tools {
+	filtered := make([]interface{}, 0, len(tools))
+	for _, toolRaw := range tools {
 		name := toolNameFromRaw(toolRaw)
-		if name != "" && allowedSet[name] {
-			filtered = append(filtered, toolRaw)
+		if name == "" || !allowedSet[name] {
+			continue
 		}
+		if err := validToolHeaderAnnotations(toolRaw); err != nil {
+			log.Warn().Str("tool", name).Err(err).Msg("mcp_proxy_tool_excluded_invalid_header_annotation")
+			continue
+		}
+		var v interface{}
+		_ = json.Unmarshal(toolRaw, &v)
+		filtered = append(filtered, v)
 	}
-
-	span.SetAttributes(
-		attribute.Int("proxy.tools_upstream", len(extract.Tools)),
-		attribute.Int("proxy.tools_filtered", len(filtered)),
-		attribute.String("proxy.tools_result_shape", extract.Shape),
-	)
-
-	var resultIface interface{}
-	switch extract.Shape {
-	case "object":
-		out := make(map[string]interface{}, 1)
-		for k, v := range extract.ObjectRest {
-			out[k] = v
-		}
-		filteredSlice := make([]interface{}, 0, len(filtered))
-		for _, b := range filtered {
-			var v interface{}
-			_ = json.Unmarshal(b, &v)
-			filteredSlice = append(filteredSlice, v)
-		}
-		out[extract.ToolsKey] = filteredSlice
-		resultIface = out
-	case "array":
-		filteredSlice := make([]interface{}, 0, len(filtered))
-		for _, b := range filtered {
-			var v interface{}
-			_ = json.Unmarshal(b, &v)
-			filteredSlice = append(filteredSlice, v)
-		}
-		resultIface = filteredSlice
-	default:
-		// Unrecognized shape: return canonical empty result so we never leak unfiltered tools.
-		resultIface = map[string]interface{}{"tools": []interface{}{}}
-	}
-
-	resp.Result = resultIface
-	return resp
+	sort.SliceStable(filtered, func(i, j int) bool { return toolNameOf(filtered[i]) < toolNameOf(filtered[j]) })
+	return filtered
 }
 
-func (h *ProxyHandler) forwardRequest(ctx context.Context, body []byte, inv *proxyInvocation, req *jsonrpcRequest) *jsonrpcResponse {
-	upstreamResp, err := h.doUpstreamRequest(ctx, body, inv)
-	if err != nil {
-		if errors.Is(err, errSecretRetrieval) {
-			// Fail-closed vault failure (#358): generic message, no detail leak.
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Service configuration error", Data: talonErrData(TalonCodeUpstreamError)}}
+// listFields carries the upstream's non-tool result members (e.g.
+// nextCursor) forward and reads its ttlMs hint; resultType, _meta and the
+// cache fields are always set by Talon.
+func listFields(extract toolsListExtract) (fields map[string]interface{}, ttlMs int) {
+	fields = map[string]interface{}{}
+	if extract.Shape != "object" {
+		return fields, 0
+	}
+	for k, v := range extract.ObjectRest {
+		switch k {
+		case "resultType", "_meta", "ttlMs", "cacheScope":
+			continue
 		}
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error()}}
+		fields[k] = v
 	}
-	defer upstreamResp.Body.Close()
-	var out jsonrpcResponse
-	if err := json.NewDecoder(upstreamResp.Body).Decode(&out); err != nil {
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid"}}
+	if v, ok := extract.ObjectRest["ttlMs"].(float64); ok && v > 0 {
+		ttlMs = int(v)
 	}
-	out.ID = req.ID
-	return &out
+	return fields, ttlMs
+}
+
+// validToolHeaderAnnotations applies the client-side x-mcp-header rejection
+// rule to an upstream tool definition.
+func validToolHeaderAnnotations(toolRaw json.RawMessage) error {
+	var t struct {
+		InputSchema json.RawMessage `json:"inputSchema"`
+	}
+	if err := json.Unmarshal(toolRaw, &t); err != nil || len(t.InputSchema) == 0 {
+		return nil
+	}
+	_, err := wire.HeaderParamsFromSchema(t.InputSchema)
+	return err
+}
+
+func toolNameOf(v interface{}) string {
+	if m, ok := v.(map[string]interface{}); ok {
+		if n, ok := m["name"].(string); ok {
+			return n
+		}
+		if id, ok := m["id"].(string); ok {
+			return id
+		}
+	}
+	return ""
 }
 
 // errSecretRetrieval marks a vault failure on the upstream-auth path (#358):
@@ -711,12 +768,9 @@ func (h *ProxyHandler) forwardRequest(ctx context.Context, body []byte, inv *pro
 // (gateway parity — vault details never leak to the vendor).
 var errSecretRetrieval = errors.New("secret retrieval error")
 
-func (h *ProxyHandler) doUpstreamRequest(ctx context.Context, body []byte, inv *proxyInvocation) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.Proxy.Upstream.URL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
+// doUpstream attaches the vault-backed upstream credential to an already
+// constructed MCP request and sends it.
+func (h *ProxyHandler) doUpstream(ctx context.Context, req *http.Request, inv *proxyInvocation) (*http.Response, error) {
 	// Vault-backed upstream auth (#358): resolved PER REQUEST — rotation via
 	// `talon secrets set` lands immediately, and retrieval failure is
 	// fail-closed (the request never leaves without its credential). The

@@ -50,6 +50,9 @@ test-integration: ## Run integration tests
 test-e2e: ## Run e2e tests (builds binary in TestMain). Uses -count=1 so cache is disabled.
 	@go test -count=1 -tags=e2e -timeout 5m ./tests/e2e/...
 
+test-mcp-smoke: ## MCP 2026-07-28 protocol smoke (#447): discover/list/call/integrity against the built binary with a mock upstream (no keys)
+	@bash scripts/mcp-smoke.sh
+
 test-openshell-smoke: ## OpenShell composition smoke (#482): fixture supervisor replays the pinned v0.1.2 middleware contract against the built binary (no OpenShell install, no keys)
 	@bash scripts/openshell-smoke.sh
 

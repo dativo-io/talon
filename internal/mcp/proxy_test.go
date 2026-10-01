@@ -13,6 +13,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/testutil"
@@ -64,36 +65,37 @@ func TestProxyHandler_ServeHTTP_methodAndJSON(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
-	// GET not allowed
+	// GET: legacy session stream — 405.
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/mcp/proxy", nil)
+	req = stamp(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	var r jsonrpcResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
 	require.NotNil(t, r.Error)
-	assert.Equal(t, codeInvalidRequest, r.Error.Code)
+	assert.Equal(t, wire.CodeInvalidRequest, r.Error.Code)
 
-	// Invalid JSON
+	// Invalid JSON: 400 + parse error.
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader([]byte("{")))
-	req.Header.Set("Content-Type", "application/json")
+	req = stamp(req)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
 	require.NotNil(t, r.Error)
-	assert.Equal(t, codeParseError, r.Error.Code)
+	assert.Equal(t, wire.CodeParseError, r.Error.Code)
 
-	// Wrong jsonrpc version
+	// Wrong jsonrpc version: 400 + invalid request.
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "1.0", "method": "tools/list", "id": 1})
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	req = stamp(req)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
 	require.NotNil(t, r.Error)
-	assert.Equal(t, codeInvalidRequest, r.Error.Code)
+	assert.Equal(t, wire.CodeInvalidRequest, r.Error.Code)
 }
 
 func TestProxyHandler_toolsCall_missingName(t *testing.T) {
@@ -114,15 +116,19 @@ func TestProxyHandler_toolsCall_missingName(t *testing.T) {
 		"jsonrpc": "2.0", "method": "tools/call", "params": map[string]interface{}{}, "id": 1,
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	// A tools/call without params.name cannot carry the REQUIRED Mcp-Name
+	// mirror: it is a header-validation failure (400 / HeaderMismatch)
+	// before any governance code runs.
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	var r jsonrpcResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
 	require.NotNil(t, r.Error)
-	assert.Equal(t, codeInvalidParams, r.Error.Code)
+	assert.Equal(t, wire.CodeHeaderMismatch, r.Error.Code)
 }
 
 // TestProxyHandler_forbiddenTool_Blocks_ZeroUpstream verifies that explicitly
@@ -156,6 +162,7 @@ func TestProxyHandler_forbiddenTool_Blocks_ZeroUpstream(t *testing.T) {
 			"params": map[string]interface{}{"name": tool, "arguments": map[string]interface{}{}},
 		})
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+		req = stamp(req)
 		req.Header.Set("Content-Type", "application/json")
 		req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 		rec := httptest.NewRecorder()
@@ -294,6 +301,7 @@ func TestProxyHandler_toolsList_filteringAndShapes(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -344,6 +352,7 @@ func TestProxyHandler_toolsList_arrayShapeAndUnknownSafe(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -353,11 +362,17 @@ func TestProxyHandler_toolsList_arrayShapeAndUnknownSafe(t *testing.T) {
 	var r jsonrpcResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
 	require.Nil(t, r.Error)
-	// Result must be array (shape preserved).
-	arr, ok := r.Result.([]interface{})
+	// A legacy array-shaped upstream list is normalized to the canonical
+	// 2026-07-28 ListToolsResult: filtered tools, resultType and cache hints.
+	obj, ok := r.Result.(map[string]interface{})
+	require.True(t, ok)
+	arr, ok := obj["tools"].([]interface{})
 	require.True(t, ok)
 	assert.Len(t, arr, 1)
 	assert.Equal(t, "keep", arr[0].(map[string]interface{})["name"])
+	assert.Equal(t, wire.ResultTypeComplete, obj["resultType"])
+	assert.Equal(t, float64(0), obj["ttlMs"], "no upstream ttlMs → immediately stale")
+	assert.Equal(t, wire.CacheScopePrivate, obj["cacheScope"])
 }
 
 func TestProxyHandler_toolsList_unknownShapeReturnsEmpty(t *testing.T) {
@@ -387,6 +402,7 @@ func TestProxyHandler_toolsList_unknownShapeReturnsEmpty(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()

@@ -26,12 +26,20 @@ http://localhost:8080/mcp/proxy
 
 Talon intercepts all MCP tool calls, scans for PII, checks against
 allowed/forbidden tool lists, and generates evidence records. The proxy
-speaks the MCP lifecycle (`initialize` answered locally, never forwarded;
-`notifications/initialized` accepted) and governs `tools/list` and
-`tools/call` — any other MCP method (`resources/read`, `prompts/get`, …)
-is rejected fail-closed with `error.data.talon_code:
-TALON_METHOD_NOT_ALLOWED` and an evidence record, never forwarded
-ungoverned.
+speaks **MCP protocol version `2026-07-28` only**: no `initialize`
+handshake, no MCP session — every request carries `MCP-Protocol-Version`,
+`Mcp-Method` (and `Mcp-Name` for `tools/call`) and `params._meta`. It
+serves `server/discover`, `tools/list` and `tools/call`; any other MCP
+method (`resources/read`, `prompts/get`, …) is a protocol `-32601` /
+HTTP 404, never forwarded. Use a 2026-07-28 MCP client or SDK.
+
+```bash
+curl -s -X POST http://localhost:8080/mcp/proxy \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: server/discover" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
 
 ## What's in the Config
 
