@@ -102,7 +102,7 @@ GWEOF
   # (#266 round 6 — agent traffic must use /v1/proxy). This section tests
   # agent-key semantics on graph events (incl. the tenant-mismatch 403), so
   # it must run in the native-only mode where agent keys reach that route.
-  run_talon serve --config "$dir/talon.config.yaml" --port "$ge_port" >"$ge_log" 2>&1 &
+  run_talon_bg serve --config "$dir/talon.config.yaml" --port "$ge_port" >"$ge_log" 2>&1
   GE_PID=$!
   if ! smoke_wait_health "$ge_base" 45 1; then
     log_failure "graph events server did not start on port ${ge_port}"

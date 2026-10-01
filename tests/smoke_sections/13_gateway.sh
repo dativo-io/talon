@@ -49,7 +49,7 @@ GWEOF
   fi
   TALON_GATEWAY_PID=""
   local gw_log_13="$dir/gateway_serve.log"
-  run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.config.yaml" >"$gw_log_13" 2>&1 &
+  run_talon_bg serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.config.yaml" >"$gw_log_13" 2>&1
   TALON_GATEWAY_PID=$!
   if ! smoke_wait_health "$gateway_base_url" 10 1; then
     local gw_pid_state_13="running"

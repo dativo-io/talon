@@ -57,16 +57,12 @@ GWEOF
 
   local SRV_PID=""
   local srv_log="$dir/compliance_dashboard_serve.log"
-  run_talon serve --port "$port" --gateway --gateway-config "$dir/talon.config.yaml" >"$srv_log" 2>&1 &
-  SRV_PID=$!
-  if ! smoke_wait_health "$base_url" 45 1; then
-    log_failure "compliance dashboard server did not start on port ${port}" "url=${base_url}/health pid=${SRV_PID}"
-    dump_diag_file "section 34 serve log" "$srv_log" 120
-    kill "$SRV_PID" 2>/dev/null || true
-    wait "$SRV_PID" 2>/dev/null || true
+  if ! start_owned_talon_server "compliance dashboard server" "$srv_log" "$port" \
+      serve --port "$port" --gateway --gateway-config "$dir/talon.config.yaml"; then
     cd "$REPO_ROOT" || true
     return 0
   fi
+  SRV_PID="$SMOKE_SERVER_PID"
   local admin_key="${TALON_ADMIN_KEY}"
   local agent_key="talon-gw-compliance-001"
 
@@ -133,8 +129,7 @@ GWEOF
   assert_pass "coverage with bad from date → 400" \
     test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "${base_url}/v1/compliance/coverage?from=12-31-2026")" = "400"
 
-  kill "$SRV_PID" 2>/dev/null || true
-  wait "$SRV_PID" 2>/dev/null || true
+  stop_owned_talon_server "$SRV_PID" "$port" || true
   sleep 2
   cd "$REPO_ROOT" || true
 }

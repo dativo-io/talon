@@ -102,6 +102,12 @@ type RecordGatewayEvidenceParams struct {
 	// CostBudget carries the agent/org budget-window context of a
 	// cost-control event (#144): threshold crossings and budget denies.
 	CostBudget *evidence.CostBudget
+	// WorkloadIdentity records verified workload-identity federation at
+	// ingress (#457). Nil on the ordinary agent-key path.
+	WorkloadIdentity *evidence.WorkloadIdentity
+	// Enforcement records who owned the prevention boundary (#146). Nil =
+	// Talon intercepted on its own gateway boundary (the legacy default).
+	Enforcement *evidence.Enforcement
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -184,14 +190,16 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			SelectedProvider: params.Provider,
 			SelectedModel:    params.Model,
 		},
-		DataFlow:       params.DataFlow,
-		EgressDecision: params.EgressDecision,
-		Status:         params.Status,
-		FailureReason:  params.FailureReason,
-		Failover:       params.Failover,
-		Orchestration:  params.Orchestration,
-		SessionBudget:  params.SessionBudget,
-		CostBudget:     params.CostBudget,
+		DataFlow:         params.DataFlow,
+		EgressDecision:   params.EgressDecision,
+		Status:           params.Status,
+		FailureReason:    params.FailureReason,
+		Failover:         params.Failover,
+		Orchestration:    params.Orchestration,
+		SessionBudget:    params.SessionBudget,
+		CostBudget:       params.CostBudget,
+		WorkloadIdentity: params.WorkloadIdentity,
+		Enforcement:      params.Enforcement,
 	}
 	if !params.PolicyAllowed {
 		ev.PolicyDecision.Action = "deny"
@@ -273,6 +281,7 @@ func sanitizeGatewayAnnotations(in []string) []string {
 		// The session-store read failed and the session budget check failed
 		// open (#198) — the enforcement gap must be visible in evidence.
 		"session_budget_unavailable": {},
+		"delegated_dispatch":         {}, // #482: the provider was reached by an external runtime after a Talon delegated decision
 	}
 	out := make([]string, 0, len(in))
 	for _, v := range in {

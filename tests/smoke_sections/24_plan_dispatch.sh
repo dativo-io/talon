@@ -126,7 +126,7 @@ PREVIEWEOF
     cd "$REPO_ROOT" || true
     return 0
   fi
-  run_talon serve --port "$serve_port" >"$dir/plan_dispatch_serve.log" 2>&1 &
+  run_talon_bg serve --port "$serve_port" >"$dir/plan_dispatch_serve.log" 2>&1
   S_PID=$!
   if ! smoke_wait_health "$base_url" 45 1; then
     local s_pid_state="running"

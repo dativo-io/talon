@@ -13,7 +13,7 @@
 # -----------------------------------------------------------------------------
 test_section_27_runtime_governance() {
   local section="27_runtime_governance"
-  local gov_port="8080"
+  local gov_port; gov_port="$(smoke_free_port)"   # gateway needs no fixed port
   local gov_base="http://127.0.0.1:${gov_port}"
   echo ""
   echo "=== SECTION 27 — Runtime Governance Decision Matrix ==="
@@ -23,7 +23,7 @@ test_section_27_runtime_governance() {
   if ! wait_port_free "$gov_port" 180 10; then
     log_failure "runtime governance section could not acquire port ${gov_port}" "port remained busy"
     dump_diag_kv "port ${gov_port} in use" \
-      "lsof=$(lsof -nP -iTCP:${gov_port} -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')"
+      "lsof=$(lsof -nP -iTCP:"${gov_port}" -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')"
     cd "$REPO_ROOT" || true
     return 0
   fi
@@ -84,25 +84,16 @@ AGEOF
 
   local GOV_PID=""
   local gov_log="$dir/gov_gateway_serve.log"
-  gov_stop() { [[ -n "$GOV_PID" ]] && { kill "$GOV_PID" 2>/dev/null || true; wait "$GOV_PID" 2>/dev/null || true; GOV_PID=""; }; }
+  gov_stop() { [[ -n "$GOV_PID" ]] && { stop_owned_talon_server "$GOV_PID" "$gov_port" || true; GOV_PID=""; }; }
   gov_start() { # phase agent file
     gov_stop
-    env TALON_DATA_DIR="$TALON_DATA_DIR" TALON_DEFAULT_POLICY="$dir/agents/$1.talon.yaml" \
-      talon serve --port "$gov_port" --gateway --gateway-config "$dir/talon.config.yaml" >>"$gov_log" 2>&1 &
-    GOV_PID=$!
-    if ! smoke_wait_health "$gov_base" 45 1; then
-      local gw_state="running"
-      if ! kill -0 "$GOV_PID" 2>/dev/null; then
-        wait "$GOV_PID" 2>/dev/null; gw_state="exited($?)"
-      fi
-      log_failure "runtime governance gateway did not start (phase $1)" \
-        "url=${gov_base}/health pid=$GOV_PID state=$gw_state"
-      dump_diag_file "section 27 serve log" "$gov_log" 120
+    if ! TALON_DEFAULT_POLICY="$dir/agents/$1.talon.yaml" \
+      start_owned_talon_server "runtime governance gateway (phase $1)" "$gov_log" "$gov_port" \
+        serve --port "$gov_port" --gateway --gateway-config "$dir/talon.config.yaml"; then
       dump_diag_file "phase agent file" "$dir/agents/$1.talon.yaml"
-      dump_diag_env
-      gov_stop
       return 1
     fi
+    GOV_PID="$SMOKE_SERVER_PID"
     return 0
   }
   if ! gov_start "gov-allow-agent"; then cd "$REPO_ROOT" || true; return 0; fi

@@ -27,9 +27,15 @@ type Policy struct {
 	ToolPolicies       map[string]ToolPIIPolicy         `yaml:"tool_policies,omitempty" json:"tool_policies,omitempty"`
 	ToolGovernance     map[string]ToolIdempotencyConfig `yaml:"tool_governance,omitempty" json:"tool_governance,omitempty"`
 	Audit              *AuditConfig                     `yaml:"audit,omitempty" json:"audit,omitempty"`
-	Compliance         *ComplianceConfig                `yaml:"compliance,omitempty" json:"compliance,omitempty"`
-	Metadata           *MetadataConfig                  `yaml:"metadata,omitempty" json:"metadata,omitempty"`
-	Copaw              *CopawConfig                     `yaml:"copaw,omitempty" json:"copaw,omitempty"` // CoPaw skill governance (when using CoPaw integration)
+	// Actions is the agent's trusted action catalog (#427/#458): the
+	// governed side-effecting actions a runtime may attempt, each with its
+	// JSON Schema input contract, reviewer projection and material
+	// destination. Callers invoke catalogued actions; they can never define
+	// or modify one.
+	Actions    *ActionsConfig    `yaml:"actions,omitempty" json:"actions,omitempty"`
+	Compliance *ComplianceConfig `yaml:"compliance,omitempty" json:"compliance,omitempty"`
+	Metadata   *MetadataConfig   `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Copaw      *CopawConfig      `yaml:"copaw,omitempty" json:"copaw,omitempty"` // CoPaw skill governance (when using CoPaw integration)
 
 	// Computed fields (not serialized from YAML)
 	Hash       string `yaml:"-" json:"-"`
@@ -69,6 +75,28 @@ type AgentConfig struct {
 	// recorded in evidence for this agent's gateway traffic. nil = true
 	// (default). Recording only — never a policy input in v1 (#194).
 	AcceptClientMetadata *bool `yaml:"accept_client_metadata,omitempty" json:"accept_client_metadata,omitempty"`
+	// WorkloadIdentity binds VERIFIED external workload principals to this
+	// use case (#457/#482). The binding lives in trusted Talon configuration
+	// so a caller can never select its own use case: a runtime presents a
+	// credential, Talon verifies it against the runtime's configured issuer
+	// and keys, and only a subject listed here resolves to this agent.
+	WorkloadIdentity *WorkloadIdentityConfig `yaml:"workload_identity,omitempty" json:"workload_identity,omitempty"`
+}
+
+// WorkloadIdentityConfig lists the verified principals that map to one
+// agent. It never carries key material or trust anchors — those are
+// operator/server configuration for the runtime that issues the identity.
+type WorkloadIdentityConfig struct {
+	Bindings []WorkloadBinding `yaml:"bindings" json:"bindings"`
+}
+
+// WorkloadBinding is one (runtime, verified subject) → this agent binding.
+// Runtime names the configured verification source (v1: "openshell");
+// Subject is the exact verified subject that source presents (for
+// OpenShell, the sandbox SPIFFE-style subject `spiffe://openshell/sandbox/<id>`).
+type WorkloadBinding struct {
+	Runtime string `yaml:"runtime" json:"runtime"`
+	Subject string `yaml:"subject" json:"subject"`
 }
 
 // IsEnabled reports the agent's operational state (#268). nil (unset) = true.
@@ -339,6 +367,10 @@ type PoliciesConfig struct {
 	SessionLimits      *SessionLimitsConfig      `yaml:"session_limits,omitempty" json:"session_limits,omitempty"`
 	// Retries is the agent's same-provider retry override (#139).
 	Retries *RetriesConfig `yaml:"retries,omitempty" json:"retries,omitempty"`
+	// Approvals are the agent-added action-approval rules (#425/#458):
+	// which catalogued actions require a human decision and which approver
+	// groups may decide. DENY > REQUIRE_APPROVAL > ALLOW.
+	Approvals *ApprovalsConfig `yaml:"approvals,omitempty" json:"approvals,omitempty"`
 	// Models are flat allow/block lists for this agent's gateway traffic.
 	// Distinct from ModelRouting, which is the runner-side tier-based routing
 	// preference — Models decides what MAY be called, ModelRouting decides
@@ -838,4 +870,71 @@ func isBedrockModelName(model string) bool {
 		}
 	}
 	return false
+}
+
+// ActionsConfig is the trusted action catalog declared in agent.talon.yaml
+// (#427). v1 supports explicit declarations only (no MCP discovery).
+type ActionsConfig struct {
+	Definitions map[string]ActionDefinitionConfig `yaml:"definitions" json:"definitions"`
+}
+
+// ActionDefinitionConfig declares one governed action. The complete
+// normalized argument payload is the binding (no exclusions in v1); the
+// execution profile is always talon_forwarded to the declared destination.
+type ActionDefinitionConfig struct {
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// InputSchema is the JSON Schema for the arguments. Required and must
+	// describe an object: an approval-governed side effect needs an
+	// intentional contract, never an empty schema.
+	InputSchema map[string]interface{} `yaml:"input_schema" json:"input_schema"`
+	// Review lists the argument fields shown to a reviewer (all material
+	// fields are bound regardless; this is projection only).
+	Review *ActionReviewConfig `yaml:"review,omitempty" json:"review,omitempty"`
+	// Destination is the trusted downstream Talon forwards the authorized
+	// attempt to. Credentials are never part of the definition.
+	Destination ActionDestinationConfig `yaml:"destination" json:"destination"`
+}
+
+// ActionReviewConfig is the reviewer projection definition (#427/#433).
+// Every top-level argument field is material: each must be listed in
+// exactly one of fields (shown), masked (shown as a safe length-only
+// representation) or non_material (omitted from the projection but still
+// bound by the digest). Absent review = every field shown.
+type ActionReviewConfig struct {
+	Fields      []string `yaml:"fields,omitempty" json:"fields,omitempty"`
+	Masked      []string `yaml:"masked,omitempty" json:"masked,omitempty"`
+	NonMaterial []string `yaml:"non_material,omitempty" json:"non_material,omitempty"`
+}
+
+// ActionDestinationConfig identifies the material destination of an action
+// and its trusted outcome contract.
+type ActionDestinationConfig struct {
+	Type   string `yaml:"type" json:"type"` // http
+	URL    string `yaml:"url" json:"url"`
+	Method string `yaml:"method,omitempty" json:"method,omitempty"` // default POST
+	// Success declares which observed responses constitute AUTHORITATIVE
+	// business success. Any other response after the request left Talon is
+	// an unknown outcome (no retry). Absent = every response is unknown.
+	Success *ActionSuccessConfig `yaml:"success,omitempty" json:"success,omitempty"`
+}
+
+// ActionSuccessConfig is the trusted success contract of a destination.
+type ActionSuccessConfig struct {
+	StatusCodes []int `yaml:"status_codes" json:"status_codes"`
+}
+
+// ApprovalsConfig holds the agent's approval rules and lifetime.
+type ApprovalsConfig struct {
+	// ExpiresAfter bounds how long a pending approval may be decided and
+	// how long an approved decision stays usable for a first attempt.
+	// Duration string; default 1h.
+	ExpiresAfter string                        `yaml:"expires_after,omitempty" json:"expires_after,omitempty"`
+	Rules        map[string]ApprovalRuleConfig `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// ApprovalRuleConfig requires approval for matching actions. Actions are
+// exact catalog names or a trailing-* prefix glob.
+type ApprovalRuleConfig struct {
+	Actions        []string `yaml:"actions" json:"actions"`
+	ApproverGroups []string `yaml:"approver_groups" json:"approver_groups"`
 }

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -126,6 +127,18 @@ type Evidence struct {
 	// record, or the binding limit/spend/estimate a budget_exceeded deny saw.
 	// Appended after session_budget per the spec §2 append rule.
 	CostBudget *CostBudget `json:"cost_budget,omitempty"`
+	// WorkloadIdentity records verified workload-identity federation at
+	// ingress (#457, spec 1.11): verification outcome and safe principal
+	// facts, never the raw credential. Appended after cost_budget per the
+	// spec §2 append rule.
+	WorkloadIdentity *WorkloadIdentity `json:"workload_identity,omitempty"`
+	// Enforcement records who owned the prevention/observation boundary
+	// (#146 external-enforcement provenance, spec 1.11). Absent = Talon
+	// intercepted on its own boundary. Appended after workload_identity.
+	Enforcement *Enforcement `json:"enforcement,omitempty"`
+	// ActionLifecycle carries one governed-action lifecycle transition
+	// (#458, spec 1.12). Appended after enforcement.
+	ActionLifecycle *ActionLifecycle `json:"action_lifecycle,omitempty"`
 }
 
 // SessionBudget is the structured detail of a session-budget deny (#198).
@@ -506,7 +519,15 @@ func addColumnIfNotExists(db *sql.DB, table, column, colType string) {
 
 // NewStore creates an evidence store with HMAC signing.
 func NewStore(dbPath string, signingKey string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	// WAL + busy timeout match the sibling stores on this file; immediate
+	// transactions make every BeginTx take the write lock up front so
+	// concurrent action-lifecycle transactions (#458) queue instead of
+	// failing with SQLITE_BUSY on a deferred upgrade.
+	dsn := dbPath
+	if !strings.Contains(dbPath, "?") && dbPath != ":memory:" {
+		dsn = dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
+	}
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening evidence database: %w", err)
 	}
@@ -639,6 +660,74 @@ func (s *Store) notifyStored(ctx context.Context, ev *Evidence) {
 
 // Store saves evidence with an HMAC signature.
 func (s *Store) Store(ctx context.Context, ev *Evidence) error {
+	return s.storeWith(ctx, s.db, ev)
+}
+
+// TxWriter records evidence inside a caller-owned transaction (#146/#458).
+// Rows are signed and inserted immediately (so the transaction carries
+// state + evidence atomically), but every post-commit projection — health
+// success, metrics, the store observer — is deferred until the caller
+// reports that the transaction COMMITTED. A rolled-back transaction leaves
+// no row and emits no notification, so projections can never describe
+// evidence that does not exist.
+type TxWriter struct {
+	s       *Store
+	pending []*Evidence
+}
+
+// NewTxWriter starts collecting evidence for one transaction.
+func (s *Store) NewTxWriter() *TxWriter { return &TxWriter{s: s} }
+
+// Store signs and inserts ev in tx. No projection fires yet.
+func (w *TxWriter) Store(ctx context.Context, tx *sql.Tx, ev *Evidence) error {
+	if err := w.s.insertSigned(ctx, tx, ev); err != nil {
+		return err
+	}
+	w.pending = append(w.pending, ev)
+	return nil
+}
+
+// Committed must be called exactly once after tx.Commit() succeeded: it
+// fires health/metrics/observer for every record written in the
+// transaction, in write order.
+func (w *TxWriter) Committed(ctx context.Context) {
+	for _, ev := range w.pending {
+		health.MarkEvidenceWriteSuccess(time.Now().UTC())
+		RecordEvidenceStored(ctx, ev.InvocationType)
+		w.s.notifyStored(ctx, ev)
+	}
+	w.pending = nil
+}
+
+// Discard forgets pending records after a rollback (nothing is emitted).
+func (w *TxWriter) Discard() { w.pending = nil }
+
+// Pending reports how many records await commit (tests/diagnostics).
+func (w *TxWriter) Pending() int { return len(w.pending) }
+
+// DB exposes the underlying handle for repositories that live in the
+// evidence database and must commit state atomically with evidence rows
+// (internal/action). Callers must not use it to write evidence directly.
+func (s *Store) DB() *sql.DB { return s.db }
+
+type sqlExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func (s *Store) storeWith(ctx context.Context, exec sqlExecer, ev *Evidence) error {
+	if err := s.insertSigned(ctx, exec, ev); err != nil {
+		return err
+	}
+	health.MarkEvidenceWriteSuccess(time.Now().UTC())
+	RecordEvidenceStored(ctx, ev.InvocationType)
+	s.notifyStored(ctx, ev)
+	return nil
+}
+
+// insertSigned canonicalizes, signs and inserts one record through exec
+// (a *sql.DB or a *sql.Tx). It performs NO post-commit projection: the
+// caller decides when the write is durable.
+func (s *Store) insertSigned(ctx context.Context, exec sqlExecer, ev *Evidence) error {
 	ctx, span := tracer.Start(ctx, "evidence.store",
 		trace.WithAttributes(
 			attribute.String("evidence.id", ev.ID),
@@ -695,7 +784,7 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 	query := `INSERT INTO evidence (id, correlation_id, timestamp, tenant_id, agent_id, invocation_type, evidence_json, signature, session_id, stage, candidate_index, judge_score, selected, plan_id, graph_run_id)
 	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err = s.db.ExecContext(ctx, query,
+	_, err = exec.ExecContext(ctx, query,
 		ev.ID, ev.CorrelationID, ev.Timestamp, ev.TenantID, ev.AgentID,
 		ev.InvocationType, string(evidenceJSONWithSig), signature, ev.SessionID, ev.Stage,
 		ev.CandidateIndex, ev.JudgeScore, ev.Selected, ev.PlanID, ev.GraphRunID,
@@ -704,10 +793,6 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 		health.MarkEvidenceWriteFailure(time.Now().UTC(), err)
 		return fmt.Errorf("storing evidence: %w", err)
 	}
-
-	health.MarkEvidenceWriteSuccess(time.Now().UTC())
-	RecordEvidenceStored(ctx, ev.InvocationType)
-	s.notifyStored(ctx, ev)
 	return nil
 }
 

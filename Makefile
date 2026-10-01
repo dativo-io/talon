@@ -50,6 +50,12 @@ test-integration: ## Run integration tests
 test-e2e: ## Run e2e tests (builds binary in TestMain). Uses -count=1 so cache is disabled.
 	@go test -count=1 -tags=e2e -timeout 5m ./tests/e2e/...
 
+test-openshell-smoke: ## OpenShell composition smoke (#482): fixture supervisor replays the pinned v0.1.2 middleware contract against the built binary (no OpenShell install, no keys)
+	@bash scripts/openshell-smoke.sh
+
+openshell-proto: ## Regenerate Go types from the pinned OpenShell v0.1.2 protos (buf via go run; generated code is checked in)
+	@bash scripts/openshell-proto-gen.sh
+
 test-smoke: build ## Run black-box smoke test (prereqs: TALON_SECRETS_KEY, OPENAI_API_KEY; see tests/smoke_test.sh)
 	@PATH="$(CURDIR)/bin:$$PATH" bash ./tests/smoke_test.sh
 

@@ -30,7 +30,7 @@ test_section_28_control_plane() {
 
   local CP_PID=""
   local cp_log="$dir/cp_serve.log"
-  run_talon serve --port "$cp_port" >"$cp_log" 2>&1 &
+  run_talon_bg serve --port "$cp_port" >"$cp_log" 2>&1
   CP_PID=$!
   if ! smoke_wait_health "$cp_base" 45 1; then
     log_failure "control plane server did not start on port ${cp_port}"
@@ -358,7 +358,7 @@ POLICYEOF
   fi
   dump_diag_file "agent.talon.yaml for E2E tool approval" "$agent_yaml"
 
-  run_talon serve --port "$cp_port" >"$cp_log" 2>&1 &
+  run_talon_bg serve --port "$cp_port" >"$cp_log" 2>&1
   CP_PID=$!
   if ! smoke_wait_health "$cp_base" 45 1; then
     log_failure "control_plane_e2e_serve_restart_failed"

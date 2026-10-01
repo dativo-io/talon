@@ -34,6 +34,11 @@ func LoadedAgentFromPolicy(pol *policy.Policy, path string) gateway.LoadedAgent 
 	if pol.Agent.Key != nil {
 		la.KeySecretName = pol.Agent.Key.SecretName
 	}
+	if wi := pol.Agent.WorkloadIdentity; wi != nil {
+		for _, b := range wi.Bindings {
+			la.WorkloadBindings = append(la.WorkloadBindings, gateway.WorkloadBinding{Runtime: b.Runtime, Subject: b.Subject})
+		}
+	}
 	if pol.Metadata != nil {
 		la.Team = pol.Metadata.Team
 		la.Tags = append([]string(nil), pol.Metadata.Tags...)

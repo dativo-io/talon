@@ -162,3 +162,15 @@ smoke_wait_health() {
   done
   return 0
 }
+
+# smoke_run_response_text <talon run stdout>: the model/cached response
+# block of `talon run` output — everything between the "Policy check"
+# line and the "Evidence stored" line — trimmed, so two runs can be
+# compared byte-for-byte without cost/duration/evidence-id noise.
+smoke_run_response_text() {
+  awk '
+    /^✓ Policy check:/ { started = 1; next }
+    /^✓ Evidence stored:/ { exit }
+    started { print }
+  ' <<< "$1" | sed -e '/./,$!d' | sed -e ':a' -e '/^\n*$/{$d;N;ba' -e '}'
+}

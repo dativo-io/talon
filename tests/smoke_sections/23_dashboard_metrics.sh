@@ -7,7 +7,7 @@
 # -----------------------------------------------------------------------------
 test_section_23_dashboard_metrics() {
   local section="23_dashboard_metrics"
-  local dashboard_port="8080"
+  local dashboard_port; dashboard_port="$(smoke_free_port)"   # dashboard needs no fixed port
   local dashboard_base_url="http://127.0.0.1:${dashboard_port}"
   echo ""
   echo "=== SECTION 23 — Gateway Dashboard Metrics ==="
@@ -16,7 +16,7 @@ test_section_23_dashboard_metrics() {
   if ! wait_port_free "$dashboard_port" 180 10; then
     log_failure "dashboard metrics section could not acquire port ${dashboard_port}" "port remained busy"
     dump_diag_kv "port ${dashboard_port} in use" \
-      "lsof=$(lsof -nP -iTCP:${dashboard_port} -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')" \
+      "lsof=$(lsof -nP -iTCP:"${dashboard_port}" -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')" \
       "TALON_SERVE_PID=${TALON_SERVE_PID:-}" \
       "TALON_GATEWAY_PID=${TALON_GATEWAY_PID:-}"
     cd "$REPO_ROOT" || true
@@ -113,26 +113,16 @@ CACHEEOF
   fi
   local GW_PID=""
   local gw_log_file="$dir/dashboard_gateway_serve.log"
-  dm_stop() { [[ -n "$GW_PID" ]] && { kill "$GW_PID" 2>/dev/null || true; wait "$GW_PID" 2>/dev/null || true; GW_PID=""; }; }
+  dm_stop() { [[ -n "$GW_PID" ]] && { stop_owned_talon_server "$GW_PID" "$dashboard_port" || true; GW_PID=""; }; }
   dm_start() { # phase agent file; collector backfills prior evidence at startup
     dm_stop
-    env TALON_DATA_DIR="$TALON_DATA_DIR" TALON_DEFAULT_POLICY="$dir/agents/$1.talon.yaml" \
-      talon serve --port "$dashboard_port" --gateway --gateway-config "$dir/talon.config.yaml" >>"$gw_log_file" 2>&1 &
-    GW_PID=$!
-    if ! smoke_wait_health "$dashboard_base_url" 45 1; then
-      local gw_pid_state="running"
-      if ! kill -0 "$GW_PID" 2>/dev/null; then
-        wait "$GW_PID" 2>/dev/null
-        gw_pid_state="exited($?)"
-      fi
-      log_failure "dashboard gateway server did not start (phase $1)" \
-        "url=${dashboard_base_url}/health pid=${GW_PID} state=${gw_pid_state}"
-      dump_diag_file "section 23 serve log" "$gw_log_file" 120
+    if ! TALON_DEFAULT_POLICY="$dir/agents/$1.talon.yaml" \
+      start_owned_talon_server "dashboard gateway (phase $1)" "$gw_log_file" "$dashboard_port" \
+        serve --port "$dashboard_port" --gateway --gateway-config "$dir/talon.config.yaml"; then
       dump_diag_file "phase agent file" "$dir/agents/$1.talon.yaml"
-      dump_diag_env
-      dm_stop
       return 1
     fi
+    GW_PID="$SMOKE_SERVER_PID"
     return 0
   }
   if ! dm_start "metrics-agent"; then cd "$REPO_ROOT" || true; return 0; fi

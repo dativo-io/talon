@@ -14,6 +14,9 @@ Talon never returns a stack trace or internal error dump in any envelope. Upstre
 | 403 | `agent_disabled` | The agent is disabled (`enabled: false`, #268) | No — operator action required |
 | 403 | `model_not_allowed` | Model outside the agent/org/provider allow- or block-lists | No — change model or policy |
 | 403 | `provider_not_allowed` | Provider outside the agent/org provider allowlist | No — change route or policy |
+| 401 | `workload_identity_required` | Delegated path (#482): no verified workload identity — the runtime's caller token was missing, forged, expired or for the wrong issuer/audience; the message names the stable `workload_identity_*` failure code | No — fix the runtime's identity configuration |
+| 403 | `workload_identity_unbound` | Delegated path: the verified subject is bound to no Talon AI use case (`agent.workload_identity.bindings`) | No — bind the subject in the agent file |
+| 403 | `destination_not_governed` | Delegated path: no enabled provider `base_url` matches the destination host the runtime asked about (fail closed) | No — configure the provider or unbind Talon from that host in the runtime policy |
 | 403 | `data_tier_exceeded` | Request data tier above the agent/org maximum | No — content/policy decision |
 | 403 | `tool_policy_violation` | Request declares forbidden tools and the effective action is `block` | No — remove the tools or change policy |
 | 403 | `budget_exceeded` | Agent/org daily or monthly cost cap would be exceeded (deny before provider; carries `cost_budget` evidence, #144) | Not until the budget window resets or the cap changes |

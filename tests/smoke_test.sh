@@ -322,12 +322,15 @@ check_prereqs() {
     echo "Port 8080 is still in use; cannot run smoke tests on the standard port."
     exit 2
   fi
+  SMOKE_BG_PIDS_FILE="$TALON_DATA_DIR/.smoke_bg_pids"
+  : > "$SMOKE_BG_PIDS_FILE"
   echo "Prerequisites OK. TALON_DATA_DIR=$TALON_DATA_DIR"
   [[ $VAULT_HAS_OPENAI_KEY -eq 1 ]] && echo "Using existing vault (openai-api-key already set)."
 }
 
 # --- Teardown (Section 3.4) ---
 teardown() {
+  reap_bg_pids
   if [[ -n "$TALON_SERVE_PID" ]] && kill -0 "$TALON_SERVE_PID" 2>/dev/null; then
     kill "$TALON_SERVE_PID" 2>/dev/null || true
     wait "$TALON_SERVE_PID" 2>/dev/null || true
@@ -346,9 +349,21 @@ trap teardown EXIT
 # --- Run one section; never abort the suite (subshell catches exit so all sections run) ---
 run_section() {
   local name="$1"; shift
+  # SMOKE_ONLY="17_config_provider 35_failover" runs only the named sections
+  # (focused reruns); unset = the full suite.
+  if [[ -n "${SMOKE_ONLY:-}" ]]; then
+    case " ${SMOKE_ONLY} " in
+      *" ${name} "*) ;;
+      *) return 0 ;;
+    esac
+  fi
   CURRENT_SECTION="$name"
   local code=0
   ( "$@" ) || code=$?
+  # A section runs in a subshell: kill any talon process it started and did
+  # not stop (crash, failed assertion, early return) so the next section
+  # never inherits a busy port.
+  reap_bg_pids
   if [[ $code -ne 0 ]]; then
     echo "  !! Section $name crashed with exit code $code"
     if [[ -n "$SMOKE_LOG_FILE" ]]; then
@@ -378,6 +393,211 @@ setup_section_dir() {
 
 run_talon() {
   env TALON_DATA_DIR="$TALON_DATA_DIR" talon "$@"
+}
+
+# --- Background talon processes: exact PID ownership ---------------------
+# `run_talon serve … &` would background a shell FUNCTION, so $! is a
+# subshell PID; killing it orphans the real talon listener, which keeps the
+# port and starves the next section. run_talon_bg backgrounds the talon
+# process itself (env exec's it, so $! IS the talon PID), records the PID in
+# a per-run registry, and callers keep reading $! as before. Redirections on
+# the call apply to the process.
+SMOKE_BG_PIDS_FILE=""
+run_talon_bg() {
+  env TALON_DATA_DIR="$TALON_DATA_DIR" talon "$@" &
+  if [[ -n "$SMOKE_BG_PIDS_FILE" ]]; then
+    echo "$!" >> "$SMOKE_BG_PIDS_FILE"
+  fi
+}
+
+# stop_talon_pid <pid> [port] [max_wait_sec]: terminate exactly the owned
+# process with a BOUNDED lifecycle — never a blocking wait on a process that
+# ignores SIGTERM:
+#   verify ownership → TERM exact PID → bounded poll for exit (and port
+#   release) → KILL the same PID when the deadline passes → reap → verify
+#   the port is released.
+stop_talon_pid() {
+  local pid="$1" port="${2:-}" max_wait="${3:-15}" waited=0
+  [[ -n "$pid" ]] || return 0
+  if ! smoke_owns_pid "$pid"; then
+    echo "  !  refusing to stop pid $pid: not started by this smoke run"
+    return 1
+  fi
+  kill -TERM "$pid" 2>/dev/null || true
+  # Bounded poll (250 ms steps): process exit is the primary signal, the
+  # port release the secondary one.
+  local ticks=$((max_wait * 4))
+  while kill -0 "$pid" 2>/dev/null && [[ $waited -lt $ticks ]]; do
+    sleep 0.25
+    ((waited += 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "  -  pid $pid ignored SIGTERM for ${max_wait}s; sending SIGKILL to the same pid"
+    kill -KILL "$pid" 2>/dev/null || true
+    waited=0
+    while kill -0 "$pid" 2>/dev/null && [[ $waited -lt 20 ]]; do
+      sleep 0.25
+      ((waited += 1))
+    done
+  fi
+  # Reap only after the process is gone (or KILLed): this cannot block.
+  wait "$pid" 2>/dev/null || true
+  [[ -n "$port" ]] || return 0
+  waited=0
+  while is_port_in_use "$port" && [[ $waited -lt 20 ]]; do
+    sleep 0.25
+    ((waited += 1))
+  done
+  if is_port_in_use "$port"; then
+    echo "  !  port $port still held after stopping pid $pid: $(smoke_port_owner "$port")"
+    return 1
+  fi
+  return 0
+}
+
+# smoke_free_port: a currently free loopback TCP port for sections whose
+# feature does not require a specific port (dashboard, gateway, quickstart).
+smoke_free_port() {
+  if command -v python3 &>/dev/null; then
+    python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null && return 0
+  fi
+  local p
+  for p in $(seq 18100 18200); do
+    is_port_in_use "$p" || { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+# smoke_port_owner <port>: describe the current listener on a port and say
+# whether THIS run started it (pid in the registry) — the harness never
+# kills a listener it cannot prove it owns.
+smoke_port_owner() {
+  local port="$1" line pid
+  if ! command -v lsof &>/dev/null; then
+    echo "listener unknown (lsof unavailable)"
+    return 0
+  fi
+  line="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1" pid="$2" user="$3}')"
+  [[ -n "$line" ]] || { echo "no listener found on port $port"; return 0; }
+  pid="$(sed -n 's/.*pid=\([0-9]*\).*/\1/p' <<< "$line")"
+  if [[ -n "$SMOKE_BG_PIDS_FILE" && -f "$SMOKE_BG_PIDS_FILE" ]] && grep -qx "$pid" "$SMOKE_BG_PIDS_FILE" 2>/dev/null; then
+    echo "listener: $line — OWNED by this smoke run (leaked by an earlier section)"
+  else
+    echo "listener: $line — NOT owned by this smoke run (pre-existing or another process; left untouched)"
+  fi
+}
+
+# start_owned_talon_server <label> <log> <port> <talon args…>
+# Starts `talon <args>` (the args must include --port <port>), captures the
+# exact PID in SMOKE_SERVER_PID, and waits until /health answers OR the
+# process exits. On failure it classifies the cause — port unavailable,
+# process exited (with configuration hint), health never ready — logs the
+# owned process's stderr tail, stops/reaps whatever it started, and returns 1.
+SMOKE_SERVER_PID=""
+start_owned_talon_server() {
+  local label="$1" log="$2" port="$3"; shift 3
+  SMOKE_SERVER_PID=""
+  if is_port_in_use "$port"; then
+    log_failure "$label: server not started — port ${port} unavailable" "$(smoke_port_owner "$port")"
+    return 1
+  fi
+  run_talon_bg "$@" >>"$log" 2>&1
+  SMOKE_SERVER_PID=$!
+  local base="http://127.0.0.1:${port}" i=0 max="${SMOKE_SERVER_READY_SEC:-30}" rc reason
+  while ! smoke_health "$base"; do
+    if ! kill -0 "$SMOKE_SERVER_PID" 2>/dev/null; then
+      wait "$SMOKE_SERVER_PID" 2>/dev/null; rc=$?
+      reason="process exited (exit=$rc) before becoming ready"
+      if grep -qiE "address already in use|bind: " "$log" 2>/dev/null; then
+        reason="process exited (exit=$rc): port ${port} was taken during startup — $(smoke_port_owner "$port")"
+      elif grep -qiE "config|yaml|invalid|validation|unknown flag|required" "$log" 2>/dev/null; then
+        reason="process exited (exit=$rc): configuration/startup error"
+      fi
+      log_failure "$label: server did not start — $reason" "port=${port} pid=${SMOKE_SERVER_PID} log=${log}"
+      dump_diag_file "$label server output (last 40 lines)" "$log" 40
+      SMOKE_SERVER_PID=""
+      return 1
+    fi
+    if [[ $i -ge $max ]]; then
+      log_failure "$label: server did not start — health endpoint not ready within ${max}s (process still running)" "url=${base}/health pid=${SMOKE_SERVER_PID} log=${log}"
+      dump_diag_file "$label server output (last 40 lines)" "$log" 40
+      stop_owned_talon_server "$SMOKE_SERVER_PID" "$port"
+      SMOKE_SERVER_PID=""
+      return 1
+    fi
+    sleep 1
+    ((i += 1))
+  done
+  return 0
+}
+
+# stop_owned_talon_server <pid> <port>: bounded stop of the exact owned PID
+# (TERM → poll → KILL same pid → reap) and confirmation the port is released.
+stop_owned_talon_server() {
+  stop_talon_pid "$1" "$2" 20
+}
+
+# smoke_lifecycle_selftest <n>: start/stop an owned server n times on
+# dynamic ports and prove the PID is gone and the port rebinds each time.
+# Run with: SMOKE_LIFECYCLE_SELFTEST=20 make test-smoke
+smoke_lifecycle_selftest() {
+  local n="$1" i port fails=0 dir
+  dir="$(mktemp -d)"
+  TALON_DATA_DIR="$dir"; export TALON_DATA_DIR
+  SMOKE_BG_PIDS_FILE="$dir/.smoke_bg_pids"; : > "$SMOKE_BG_PIDS_FILE"
+  SMOKE_LOG_FILE="$dir/selftest.log"; touch "$SMOKE_LOG_FILE"
+  cd "$dir" || exit 1
+  export TALON_SIGNING_KEY="${TALON_SIGNING_KEY:-selftest-signing-key-32-bytes-long!!}"
+  run_talon init --scaffold --name lifecycle &>/dev/null; true
+  echo "=== lifecycle self-test: ${n} owned start/stop cycles ==="
+  for ((i = 1; i <= n; i++)); do
+    port="$(smoke_free_port)"
+    if ! start_owned_talon_server "selftest#$i" "$dir/serve_$i.log" "$port" serve --port "$port"; then
+      fails=$((fails + 1)); continue
+    fi
+    local pid="$SMOKE_SERVER_PID"
+    stop_owned_talon_server "$pid" "$port" || fails=$((fails + 1))
+    if kill -0 "$pid" 2>/dev/null; then echo "  ✗  cycle $i: pid $pid still alive"; fails=$((fails + 1)); fi
+    if is_port_in_use "$port"; then echo "  ✗  cycle $i: port $port still bound"; fails=$((fails + 1)); fi
+    # rebind proof: a second owned server on the SAME port must come up.
+    if start_owned_talon_server "selftest#$i-rebind" "$dir/serve_${i}_rebind.log" "$port" serve --port "$port"; then
+      stop_owned_talon_server "$SMOKE_SERVER_PID" "$port" || fails=$((fails + 1))
+    else
+      fails=$((fails + 1))
+    fi
+    echo "  ✓  cycle $i: port $port started, stopped, reaped, rebound"
+  done
+  reap_bg_pids
+  echo "lifecycle self-test: cycles=$n failures=$fails"
+  rm -rf "$dir"
+  [[ $fails -eq 0 ]]
+}
+
+# smoke_owns_pid <pid>: true when this run started the pid (registry) or
+# when no registry exists yet (bootstrap before prerequisites).
+smoke_owns_pid() {
+  local pid="$1"
+  [[ -n "$SMOKE_BG_PIDS_FILE" && -f "$SMOKE_BG_PIDS_FILE" ]] || return 0
+  grep -qx "$pid" "$SMOKE_BG_PIDS_FILE" 2>/dev/null
+}
+
+# reap_bg_pids: terminate any registered background talon process that is
+# still alive (a section crashed, failed an assertion or returned early
+# before its own stop). Only PIDs this run started are ever touched.
+reap_bg_pids() {
+  [[ -n "$SMOKE_BG_PIDS_FILE" && -f "$SMOKE_BG_PIDS_FILE" ]] || return 0
+  local pid
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "  -  reaping leftover talon process pid=$pid"
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done < "$SMOKE_BG_PIDS_FILE"
+  : > "$SMOKE_BG_PIDS_FILE"
 }
 
 # Apply tight budget and resource limits to agent.talon.yaml for smoke testing.
@@ -457,7 +677,7 @@ wait_port_free() {
 
   while is_port_in_use "$port"; do
     if [[ $waited -ge $max_wait_sec ]]; then
-      echo "  -  Port $port is still in use after ${max_wait_sec}s."
+      echo "  -  Port $port is still in use after ${max_wait_sec}s: $(smoke_port_owner "$port")"
       return 1
     fi
     echo "  -  Waiting ${check_every_sec}s, then checking port $port again..."
@@ -498,6 +718,11 @@ unset _section_file
 # Main
 # -----------------------------------------------------------------------------
 main() {
+  if [[ -n "${SMOKE_LIFECYCLE_SELFTEST:-}" ]]; then
+    trap - EXIT
+    smoke_lifecycle_selftest "${SMOKE_LIFECYCLE_SELFTEST}"
+    exit $?
+  fi
   echo "Dativo Talon Smoke Test — OpenAI only, black-box E2E"
   check_prereqs
 
