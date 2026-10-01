@@ -31,8 +31,12 @@ import (
 // authenticated AI use case, or false when the agent declares no catalog.
 type ActionServiceResolver func(tenantID, agentID string) (*action.Service, bool)
 
-// ApprovalOwnerResolver returns the service owning an approval id.
-type ApprovalOwnerResolver func(ctx context.Context, approvalID string) (*action.Service, bool)
+// ApprovalOwnerResolver returns the service owning an approval id within
+// the authenticated reviewer's trusted tenant scope. An approval outside
+// that scope is "not found": approval ids are opaque across tenants, and
+// a foreign tenant's operation must never be touched (no evidence, no
+// version or sequence change) by a request it does not authorize.
+type ApprovalOwnerResolver func(ctx context.Context, tenantScope, approvalID string) (*action.Service, bool)
 
 // ApproverResolver authenticates a reviewer credential.
 type ApproverResolver interface {
@@ -256,7 +260,7 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	approvalID := chi.URLParam(r, "approval_id")
-	svc, ok := s.approvalOwners(r.Context(), approvalID)
+	svc, ok := s.approvalOwners(r.Context(), principal.TenantScope, approvalID)
 	if !ok {
 		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approval not found", nil)
 		return

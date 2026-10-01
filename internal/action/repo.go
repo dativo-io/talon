@@ -402,10 +402,13 @@ func utcPtr(t time.Time) *time.Time {
 	return &u
 }
 
-// OwnerOfApproval returns the tenant/agent that owns an approval (adapter
-// routing only; the service re-scopes every read).
-func (r *Repository) OwnerOfApproval(ctx context.Context, approvalID string) (tenant, agent string, ok bool, err error) {
-	row := r.db.QueryRowContext(ctx, `SELECT o.tenant_id, o.agent_id FROM action_approvals a JOIN action_operations o ON o.ref = a.operation_ref WHERE a.id = ?`, approvalID)
+// OwnerOfApproval returns the tenant/agent that owns an approval WITHIN
+// the caller's trusted tenant scope (adapter routing only; the service
+// re-scopes every read). An approval of another tenant is not found: the
+// id must be opaque across tenants, so no foreign operation is ever
+// loaded, evidenced or version-bumped on behalf of a mis-scoped caller.
+func (r *Repository) OwnerOfApproval(ctx context.Context, tenantID, approvalID string) (tenant, agent string, ok bool, err error) {
+	row := r.db.QueryRowContext(ctx, `SELECT o.tenant_id, o.agent_id FROM action_approvals a JOIN action_operations o ON o.ref = a.operation_ref WHERE a.id = ? AND o.tenant_id = ?`, approvalID, tenantID)
 	err = row.Scan(&tenant, &agent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", false, nil

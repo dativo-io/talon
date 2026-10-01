@@ -18,7 +18,7 @@ runtime ── POST /v1/action-operations/{id}/attempts ─▶ revalidate curren
 
 ## Declaring actions (`agent.talon.yaml`)
 
-Every action needs a **closed** object schema (`additionalProperties: false`) so each argument field is a declared, classified property; a **reviewer projection** that classifies every top-level field exactly once (`review.fields` shown verbatim, `review.masked` shown as `{masked,type,length}`, `review.non_material` omitted but still digest-bound; absent `review` = every field shown); and a **destination** with an optional **trusted success contract** (`success.status_codes`). The whole definition — schema, projection, destination, success contract, execution and binding profiles — has one `definition_digest`; any change makes prior authorization unusable.
+Every action needs a **closed** object schema (`additionalProperties: false`) so each argument field is a declared, classified property; a **reviewer projection** that classifies every top-level field exactly once (`review.fields` shown verbatim — the exact value that will be dispatched — or `review.non_material` omitted from the reviewer view but still digest-bound; absent `review` = every field shown); and a **destination** with an optional **trusted success contract** (`success.status_codes`). There is no masked representation: `review.masked` is refused at catalog compile, because a reviewer who sees `{masked, type, length}` has not seen the material effect they are approving. The whole definition — schema, projection, destination, success contract, execution and binding profiles — has one `definition_digest`; any change makes prior authorization unusable.
 
 ```yaml
 capabilities:
@@ -37,9 +37,9 @@ actions:
           amount: {type: number}
           currency: {type: string, enum: [EUR, USD]}
       review:
-        fields: [ticket_id, amount, currency] # every top-level field must be classified exactly once
-        masked: [iban]                        # material, shown as {masked:true,type,length}
+        fields: [ticket_id, amount, currency] # every top-level field must be classified exactly once; shown exactly
         non_material: [note]                  # omitted from the reviewer view, still in the digest
+                                              # review.masked is refused: no masked stand-in for a material field
       destination:
         type: http
         url: "https://refunds.internal/v1/refunds"
@@ -57,13 +57,13 @@ policies:
 
 Rules: `DENY > REQUIRE_APPROVAL > ALLOW`. An action absent from the catalog is `action_not_found` (never executed). Plaintext `http` destinations are accepted for loopback only. Credentials never appear in a definition; the destination identity (`method + URL`) is bound into the digest.
 
-**Schemas** are JSON Schema **2020-12** compiled **offline** (santhosh-tekuri/jsonschema v6): any `$ref` outside the document (`http`, `https`, `file`, URNs) and any `$id` are rejected at catalog compile; nothing is ever fetched or read during compilation or validation. Supported subset covered by conformance tests: `type`, `properties`, `required`, `additionalProperties`, `enum`, `const`, `minimum`/`maximum`, `minLength`/`maxLength`, `pattern`, `items`/`maxItems`, nested objects, in-document `$ref`/`$defs`.
+**Schemas** are JSON Schema **2020-12** compiled **offline** (santhosh-tekuri/jsonschema v6). The dialect is pinned: an absent `$schema` compiles as 2020-12, the canonical `https://json-schema.org/draft/2020-12/schema` URI is accepted, and any other dialect (`draft-07`, `2019-09`, a custom URI) is refused at catalog compile. Any `$ref` outside the document (`http`, `https`, `file`, URNs) and any `$id` are rejected at catalog compile; nothing is ever fetched or read during compilation or validation. Supported subset covered by conformance tests: `type`, `properties`, `required`, `additionalProperties`, `enum`, `const`, `minimum`/`maximum`, `minLength`/`maxLength`, `pattern`, `items`/`maxItems`, nested objects, in-document `$ref`/`$defs`.
 
 ## Binding and identity
 
 The operation digest binds tenant, agent, canonical action name, the **complete canonical argument payload** (sorted keys, source-literal numbers so `50` ≠ `50.0`, explicit `null` ≠ absent, no exclusions), the **definition digest** (schema, projection, destination, success contract, `talon_forwarded`, `talon/whole-payload/v1`) and the approval-relevant policy digest. Every claim and every decision revalidates the current definition digest: a changed schema, projection, destination or success contract invalidates a pending approval (`invalidated`) and refuses an approved one (`approval_binding_stale`), always before dispatch.
 
-**Payload at rest.** The operation row keeps only the digest, the reviewer projection and lifecycle metadata. The canonical arguments live in `action_payloads`, sealed with AES-256-GCM under a key derived (HKDF, explicit `key_version`) from the vault key, with the operation ref and digest as authenticated data. A missing or rotated key, or a tampered record, fails closed before any attempt is claimed (`payload_unavailable`). The payload is purged when the operation reaches a terminal state; digest, projection and signed lifecycle stay verifiable.
+**Payload at rest.** The operation row keeps only the digest, the reviewer projection (the shown material fields, in plaintext, because that is what the reviewer must see) and lifecycle metadata. The canonical arguments live in `action_payloads`, sealed with AES-256-GCM under a key derived (HKDF, explicit `key_version`) from the vault key, with the operation ref and digest as authenticated data. A missing or rotated key, or a tampered record, fails closed before any attempt is claimed (`payload_unavailable`). The payload is purged when the operation reaches a terminal state; digest, projection and signed lifecycle stay verifiable.
 
 - `operation_id` is caller-provided (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`), unique per tenant + agent. Volatile request/trace/tool-call ids are not operation identity.
 - Same id + same digest → the existing operation and state (`created: false`), never a new effect.
@@ -79,7 +79,7 @@ Runtime routes take the AI use case's **agent key** (`Authorization: Bearer <age
 | `GET /v1/action-operations/{operation_id}` | safe projection (verdict, statuses, approval, latest attempt, reviewer projection — never raw arguments) |
 | `POST /v1/action-operations/{operation_id}/attempts` | claim + arm + dispatch; `200` with `attempt.status` `succeeded` / `failed` / `unknown` and the observation facts `dispatch_armed`, `request_written`, `response_observed`, `http_status`; `409 approval_pending` (with `Retry-After`), `409 operation_already_succeeded`, `409 operation_outcome_unknown`, `409 attempt_already_in_progress`, `409 approval_binding_stale`, `409 approval_expired`, `403 policy_denied` / `approval_required` / `approval_rejected`, `409 payload_unavailable` |
 | `GET /v1/approvals/{approval_id}` | approval + operation projection (owner agent key) |
-| `POST /v1/approvals/{approval_id}/decisions` `{decision: approve\|reject, reason}` | `200` decided; `401 approval_not_authorized` (no/unknown approver credential, admin key, agent key, or a group not named by the matched rule — refusals are evidenced); `409 approval_already_decided`; `409 approval_expired` |
+| `POST /v1/approvals/{approval_id}/decisions` `{decision: approve\|reject, reason}` | `200` decided; `401 approval_not_authorized` (no/unknown approver credential, admin key, agent key, or a group not named by the matched rule — refusals are evidenced); `404 not_found` (no approval with that id **in the principal's tenant scope** — a valid id of another tenant is indistinguishable from a nonexistent one and touches nothing); `409 approval_already_decided`; `409 approval_expired` |
 
 Error envelope: `{"error": {"code", "message", "operation"?}}`. The code is the contract; HTTP status alone is insufficient.
 
@@ -104,11 +104,12 @@ Redirects are never followed: the approved destination is the only destination a
 - **DENY** → zero downstream calls; a denied operation cannot be claimed.
 - **REQUIRE_APPROVAL** → zero calls while pending; a claim returns `approval_pending`.
 - **Decision ≠ execution.** An approved decision changes approval state only; dispatch count stays 0 until a runtime claim. Reject/expire/invalidate close the operation (`cancelled`) and purge the payload.
-- **Tenant-scoped approval.** A `support-leads` credential of tenant A cannot decide a tenant-B approval requiring `support-leads`: refused, evidenced, approval stays pending, zero dispatch.
+- **Tenant-scoped approval, opaque ids.** A `support-leads` credential of tenant A presenting a tenant-B approval id gets the same `404 not_found` as for a nonexistent id; tenant B's operation version, lifecycle sequence, evidence count and approval status are unchanged and dispatch count stays 0 (owner resolution is scoped by the principal's trusted tenant before any operation is loaded; `Decide` re-checks the tenant as defense in depth).
 - **Revalidation at claim and at decision.** Current definition digest and approval-relevant policy digest must match; a current DENY blocks even an approved operation; first-attempt claim checks approval expiry; the sealed payload must open.
 - **At most one effect.** Concurrent claims yield exactly one attempt; a succeeded operation is permanently closed; the dispatcher never replays at the transport level.
 - **Crash recovery.** Interrupted after claim but before arm → retryable `failed/not_dispatched`; after arm (before the call, after the write, or after the response) → `unknown`, payload purged, no retry.
-- **Evidence.** Every transition is a signed `action_lifecycle` record (spec 1.12); `talon audit verify --operation <id>` verifies signatures and lifecycle consistency (arm before completion, observed write + response for success, no attempt after close, reviewer tenant = operation tenant); tampered fields and impossible orders fail.
+- **Evidence.** Every transition is a signed `action_lifecycle` record (spec 1.12) whose generic `status` is explicit (`queued`, `running`, `completed`, `failed`, `denied`, `cancelled`, `unknown`) — an ambiguous outcome is `unknown` at both the lifecycle and the generic level, never the empty-means-completed default; `talon audit verify --operation <id>` verifies signatures and lifecycle consistency (arm before completion, observed write + response for success, no attempt after close, reviewer tenant = operation tenant); tampered fields and impossible orders fail.
+- **Referential integrity.** The evidence database connection enforces SQLite foreign keys; an approval, attempt or sealed payload cannot exist without its operation.
 
 ## Verify locally
 

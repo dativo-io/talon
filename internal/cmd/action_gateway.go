@@ -114,8 +114,8 @@ func (ag *actionGateway) resolver() server.ActionServiceResolver {
 }
 
 func (ag *actionGateway) ownerResolver() server.ApprovalOwnerResolver {
-	return func(ctx context.Context, approvalID string) (*action.Service, bool) {
-		tenant, agent, ok, err := ag.repo.OwnerOfApproval(ctx, approvalID)
+	return func(ctx context.Context, tenantScope, approvalID string) (*action.Service, bool) {
+		tenant, agent, ok, err := ag.repo.OwnerOfApproval(ctx, tenantScope, approvalID)
 		if err != nil || !ok {
 			return nil, false
 		}

@@ -57,7 +57,6 @@ func (refusingLoader) Load(u string) (any, error) {
 // top-level argument field is material and appears in exactly one set.
 type Review struct {
 	Shown       []string
-	Masked      []string
 	NonMaterial []string
 }
 
@@ -169,7 +168,7 @@ func compileDefinition(name string, cfg policy.ActionDefinitionConfig) (*Definit
 	}
 	def.ProjectionDigest = Digest([]byte(strings.Join([]string{
 		ProjectionVersionV1,
-		"shown=" + strings.Join(review.Shown, ","), "masked=" + strings.Join(review.Masked, ","), "non_material=" + strings.Join(review.NonMaterial, ","),
+		"shown=" + strings.Join(review.Shown, ","), "non_material=" + strings.Join(review.NonMaterial, ","),
 	}, "\n")))
 	def.DefinitionDigest = definitionIdentity(def)
 	return def, nil
@@ -251,6 +250,14 @@ func definitionIdentity(def *Definition) string {
 	}, "\n")))
 }
 
+// schemaDialect2020 is the only dialect a governed action may declare.
+// The public contract is JSON Schema 2020-12; a document that names
+// another dialect would otherwise be compiled under THAT dialect's
+// semantics (DefaultDraft only covers an absent $schema), so the catalog
+// pins the dialect before compilation. The empty-fragment form is the
+// same canonical URI.
+const schemaDialect2020 = "https://json-schema.org/draft/2020-12/schema"
+
 // compileSchema compiles one schema document with draft 2020-12 semantics
 // and no external resolution whatsoever.
 func compileSchema(name string, canonical []byte) (*jsonschema.Schema, error) {
@@ -261,6 +268,9 @@ func compileSchema(name string, canonical []byte) (*jsonschema.Schema, error) {
 	if m, ok := doc.(map[string]any); ok {
 		if id, has := m["$id"]; has {
 			return nil, fmt.Errorf("input_schema: $id (%v) is not permitted; the catalog assigns schema identity", id)
+		}
+		if err := checkSchemaDialect(m); err != nil {
+			return nil, err
 		}
 	}
 	c := jsonschema.NewCompiler()
@@ -280,6 +290,23 @@ func compileSchema(name string, canonical []byte) (*jsonschema.Schema, error) {
 	return sch, nil
 }
 
+// checkSchemaDialect accepts an absent $schema or the canonical 2020-12
+// URI and rejects every other dialect (draft-07, 2019-09, custom URIs).
+func checkSchemaDialect(m map[string]any) error {
+	raw, has := m["$schema"]
+	if !has {
+		return nil
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return fmt.Errorf("input_schema: $schema must be the string %q", schemaDialect2020)
+	}
+	if s == schemaDialect2020 || s == schemaDialect2020+"#" {
+		return nil
+	}
+	return fmt.Errorf("input_schema: $schema %q is not supported; governed action schemas are JSON Schema 2020-12 (%s)", s, schemaDialect2020)
+}
+
 func topLevelProperties(schema map[string]any) []string {
 	props, _ := schema["properties"].(map[string]any)
 	out := make([]string, 0, len(props))
@@ -293,8 +320,16 @@ func topLevelProperties(schema map[string]any) []string {
 // compileReview enforces the projection contract: every declared field is
 // material and must be classified exactly once; classifications must name
 // existing fields. Absent review = every field shown.
+//
+// review.masked is refused outright: a reviewer approves the EXACT material
+// effect, and a {masked,type,length} stand-in lets them approve a value
+// they never saw. A field is either shown verbatim or explicitly declared
+// non-material; there is no third representation in this slice.
 func compileReview(props []string, cfg *policy.ActionReviewConfig) (Review, error) {
-	if cfg == nil || (len(cfg.Fields) == 0 && len(cfg.Masked) == 0 && len(cfg.NonMaterial) == 0) {
+	if cfg != nil && len(cfg.Masked) > 0 {
+		return Review{}, fmt.Errorf("review.masked %v is not supported: a reviewer must see the exact value of every material field — list each in review.fields, or in review.non_material only if it truly cannot change the effect", cfg.Masked)
+	}
+	if cfg == nil || (len(cfg.Fields) == 0 && len(cfg.NonMaterial) == 0) {
 		return Review{Shown: append([]string(nil), props...)}, nil
 	}
 	known := map[string]struct{}{}
@@ -322,10 +357,6 @@ func compileReview(props []string, cfg *policy.ActionReviewConfig) (Review, erro
 	if err != nil {
 		return Review{}, err
 	}
-	masked, err := classify("masked", cfg.Masked)
-	if err != nil {
-		return Review{}, err
-	}
 	nonMaterial, err := classify("non_material", cfg.NonMaterial)
 	if err != nil {
 		return Review{}, err
@@ -337,9 +368,9 @@ func compileReview(props []string, cfg *policy.ActionReviewConfig) (Review, erro
 		}
 	}
 	if len(missing) > 0 {
-		return Review{}, fmt.Errorf("review: material field(s) %v are not classified — list each in review.fields, review.masked or review.non_material (omission would let a reviewer approve without seeing it)", missing)
+		return Review{}, fmt.Errorf("review: material field(s) %v are not classified — list each in review.fields or review.non_material (omission would let a reviewer approve without seeing it)", missing)
 	}
-	return Review{Shown: shown, Masked: masked, NonMaterial: nonMaterial}, nil
+	return Review{Shown: shown, NonMaterial: nonMaterial}, nil
 }
 
 func isLoopback(host string) bool {
@@ -397,16 +428,9 @@ func (d *Definition) ValidateArguments(canonical []byte) error {
 	return nil
 }
 
-// MaskedValue is the safe representation of a masked material field.
-type MaskedValue struct {
-	Masked bool   `json:"masked"`
-	Type   string `json:"type"`
-	Length int    `json:"length"`
-}
-
 // ReviewProjection renders the reviewer-safe view of canonical arguments:
-// shown fields verbatim, masked fields as {masked,type,length}, non-material
-// fields omitted. Every material field is therefore represented.
+// shown fields verbatim, non-material fields omitted. Every material field
+// is therefore shown exactly as it will be dispatched.
 func (d *Definition) ReviewProjection(canonical []byte) map[string]json.RawMessage {
 	var all map[string]json.RawMessage
 	if err := json.Unmarshal(canonical, &all); err != nil {
@@ -418,36 +442,5 @@ func (d *Definition) ReviewProjection(canonical []byte) map[string]json.RawMessa
 			out[f] = v
 		}
 	}
-	for _, f := range d.Review.Masked {
-		if v, ok := all[f]; ok {
-			mv := MaskedValue{Masked: true, Type: jsonType(v), Length: len(v)}
-			if mv.Type == "string" {
-				var sv string
-				_ = json.Unmarshal(v, &sv)
-				mv.Length = len(sv)
-			}
-			b, _ := json.Marshal(mv)
-			out[f] = b
-		}
-	}
 	return out
-}
-
-func jsonType(v json.RawMessage) string {
-	if len(v) == 0 {
-		return "null"
-	}
-	switch v[0] {
-	case '"':
-		return "string"
-	case '{':
-		return "object"
-	case '[':
-		return "array"
-	case 't', 'f':
-		return "boolean"
-	case 'n':
-		return "null"
-	}
-	return "number"
 }
