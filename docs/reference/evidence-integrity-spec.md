@@ -144,6 +144,19 @@ nested fields are:
   `pricing_known` is true only when the model was priced from the table.
 - `audit_trail`: SHA-256 `input_hash` / `output_hash` content digests.
 - `compliance`: `frameworks` (array) and `data_location`.
+- `status` (optional): the generic outcome of the recorded invocation, one
+  of `queued` | `running` | `completed` | `failed` | `terminated` |
+  `blocked` | `denied` | `unknown` | `cancelled`. An **empty or omitted
+  `status` means `completed`**: historical records were written without
+  the field and keep that meaning; verifiers and consumers must preserve
+  it. Writers of any non-final or ambiguous outcome set the value
+  explicitly. `unknown` (#458) means the governed effect may or may not
+  have happened and no trustworthy outcome exists — it is never
+  `completed`; `cancelled` means the operation closed before any effect
+  (rejected, expired or invalidated approval). `action_lifecycle` records
+  set `status` on every transition (`queued` while authorized or awaiting
+  approval, `running` while an attempt executes, then the terminal value
+  mirrored from `action_lifecycle.operation_status`).
 - `data_flow` (optional): `detector` (string, optional) and `items` (array of
   objects linking classified data sources to destinations). Each item carries
   `source`, `source_detail` (optional), `tier`, `entity_types` (sorted array,
@@ -377,7 +390,9 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
   appended after `enforcement`, plus invocation type `action_lifecycle`
   (record class `action_event`): the per-transition signed record of one
   governed action operation, with a lifecycle verifier over the chain.
-  Additive and backward-compatible per the append rule.
+  Additive and backward-compatible per the append rule. The top-level
+  `status` vocabulary gained `unknown` and `cancelled` (values only — no
+  canonical-form change; empty/omitted still means `completed`).
 - **1.11** — added optional top-level fields `workload_identity` (#457) and
   `enforcement` (#146), appended after `cost_budget`, for the OpenShell
   reference composition (#482): verified external workload identity facts,
