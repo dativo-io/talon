@@ -166,7 +166,8 @@ Terminate TLS at your reverse proxy — `talon serve` itself speaks plain HTTP.
 ```
 Vendor wants to search tickets
     ↓
-POST /mcp/proxy  {"method": "tools/call", "params": {"name": "zendesk_ticket_search", ...}}
+POST /mcp/proxy  (MCP-Protocol-Version: 2026-07-28, Mcp-Method: tools/call, Mcp-Name: zendesk_ticket_search)
+                 {"method": "tools/call", "params": {"_meta": {...}, "name": "zendesk_ticket_search", ...}}
     ↓
 Talon intercepts:
     ├─ Policy check: Is "zendesk_ticket_search" in allowed_tools? ✓ YES
@@ -182,13 +183,19 @@ Vendor receives data (works normally, unaware of governance layer)
     ↓
 Your compliance officer has a complete audit trail
 
-Note: the proxy speaks the MCP lifecycle (initialize is answered locally —
-never forwarded; notifications/initialized accepted) and governs tools/list
-and tools/call. Any OTHER method (resources/read, prompts/get, ...) is
-rejected fail-closed with error.data.talon_code TALON_METHOD_NOT_ALLOWED
-and a signed evidence record — never forwarded ungoverned. All Talon-shaped
-denials carry stable machine-readable codes in error.data.talon_code (see
-ARCHITECTURE_MCP_PROXY.md for the full table).
+Note: the proxy speaks MCP protocol version 2026-07-28 ONLY. There is no
+initialize handshake and no MCP session: every request carries
+MCP-Protocol-Version, Mcp-Method (and Mcp-Name for tools/call) plus
+params._meta with io.modelcontextprotocol/protocolVersion and
+io.modelcontextprotocol/clientCapabilities. Update vendor MCP clients to a
+2026-07-28 SDK; older clients are rejected with a modern error naming the
+supported version. The proxy serves server/discover, tools/list and
+tools/call; any OTHER method (resources/read, prompts/get, ...) is a
+protocol -32601 / HTTP 404 — never forwarded. Header/body mismatches are
+HeaderMismatch (-32020) with zero upstream dispatch. All Talon-shaped
+governance denials carry stable machine-readable codes in
+error.data.talon_code (see ARCHITECTURE_MCP_PROXY.md for the full table);
+protocol errors never do.
 
 Also: tools/list responses are filtered — the vendor only ever discovers
 tools you listed in allowed_tools.
@@ -403,10 +410,20 @@ The proxy speaks JSON-RPC 2.0 at `POST /mcp/proxy`.
 curl -X POST https://talon.your-company.local/mcp/proxy \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${TALON_AGENT_KEY}" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/call" \
+  -H "Mcp-Name: zendesk_ticket_search" \
   -d '{
     "jsonrpc": "2.0",
     "method": "tools/call",
-    "params": {"name": "zendesk_ticket_search", "arguments": {"query": "test"}},
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "vendor-client", "version": "1.0"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+      },
+      "name": "zendesk_ticket_search", "arguments": {"query": "test"}},
     "id": 1
   }'
 
@@ -420,10 +437,19 @@ talon audit list --agent zendesk-vendor-proxy --limit 5
 curl -X POST https://talon.your-company.local/mcp/proxy \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${TALON_AGENT_KEY}" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/call" \
+  -H "Mcp-Name: zendesk_ticket_create" \
   -d '{
     "jsonrpc": "2.0",
     "method": "tools/call",
     "params": {
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "vendor-client", "version": "1.0"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+      },
       "name": "zendesk_ticket_create",
       "arguments": {"subject": "Test", "requester_email": "test@example.com", "requester_phone": "+34612345678"}
     },
@@ -441,10 +467,14 @@ talon audit show <evidence-id>
 curl -X POST https://talon.your-company.local/mcp/proxy \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${TALON_AGENT_KEY}" \
-  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"zendesk_user_delete","arguments":{"user_id":123}},"id":3}'
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/call" \
+  -H "Mcp-Name: zendesk_user_delete" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}},"name":"zendesk_user_delete","arguments":{"user_id":123}},"id":3}'
 
 # Expected: a JSON-RPC error instead of a forwarded call —
-#   {"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"tool not allowed by policy"}}
+#   {"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"tool not allowed by policy","data":{"talon_code":"TALON_TOOL_FORBIDDEN"}}}
 # and a proxy_tool_blocked evidence record:
 talon audit list --agent zendesk-vendor-proxy --limit 1
 ```

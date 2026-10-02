@@ -66,6 +66,7 @@ func TestNoPIIEgressAfterRedaction_MCPProxy(t *testing.T) {
 			"jsonrpc": "2.0",
 			"id":      1,
 			"result": map[string]interface{}{
+				"resultType": "complete",
 				"content": []interface{}{
 					map[string]interface{}{"type": "text", "text": "Contact is " + rawEmail},
 				},
@@ -95,7 +96,7 @@ func TestMCPProxyResidualPIIApprovalCannotBypass(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      req.ID,
-			"result":  map[string]interface{}{"content": []interface{}{map[string]interface{}{"type": "text", "text": "ok"}}},
+			"result":  map[string]interface{}{"resultType": "complete", "content": []interface{}{map[string]interface{}{"type": "text", "text": "ok"}}},
 		})
 	}))
 	t.Cleanup(upstream.Close)

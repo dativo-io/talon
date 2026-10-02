@@ -54,6 +54,7 @@ func proxyCall(t *testing.T, h *ProxyHandler, toolName string, args map[string]i
 		"jsonrpc": "2.0", "method": "tools/call", "params": params, "id": 1,
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "test-tenant"))
 	rec := httptest.NewRecorder()
@@ -120,7 +121,7 @@ func TestProxy_AllowedToolForwardedToUpstream(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := map[string]interface{}{
 			"jsonrpc": "2.0",
-			"result":  map[string]interface{}{"content": []map[string]interface{}{{"type": "text", "text": "found 3 issues"}}},
+			"result":  map[string]interface{}{"resultType": "complete", "content": []map[string]interface{}{{"type": "text", "text": "found 3 issues"}}},
 			"id":      1,
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -217,7 +218,7 @@ func TestProxy_GapF_ResponsePIIScanned(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := map[string]interface{}{
 			"jsonrpc": "2.0",
-			"result":  map[string]interface{}{"content": []map[string]interface{}{{"type": "text", "text": "Customer email: jan.kowalski@gmail.com"}}},
+			"result":  map[string]interface{}{"resultType": "complete", "content": []map[string]interface{}{{"type": "text", "text": "Customer email: jan.kowalski@gmail.com"}}},
 			"id":      1,
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -253,7 +254,7 @@ func TestProxy_UnlistedToolDefaultBehavior(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := map[string]interface{}{
 			"jsonrpc": "2.0",
-			"result":  map[string]interface{}{"content": []map[string]interface{}{{"type": "text", "text": "ok"}}},
+			"result":  map[string]interface{}{"resultType": "complete", "content": []map[string]interface{}{{"type": "text", "text": "ok"}}},
 			"id":      1,
 		}
 		w.Header().Set("Content-Type", "application/json")

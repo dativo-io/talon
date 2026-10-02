@@ -85,7 +85,7 @@ func TestMCPProxy_InvalidJSONAfterRedaction_FailClosed(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      1,
-			"result":  map[string]interface{}{"ok": true},
+			"result":  map[string]interface{}{"resultType": "complete", "ok": true},
 		})
 	}))
 	t.Cleanup(upstream.Close)

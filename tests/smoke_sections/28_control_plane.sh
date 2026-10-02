@@ -291,7 +291,9 @@ test_section_28_control_plane() {
 
   local mcp_list_resp safe_tool="" mcp_tool_name mcp_tool_count=0
   mcp_list_resp="$(curl -s -X POST -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' \
+    -H "Accept: application/json, text/event-stream" \
+    -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/list" \
+    -d '{"jsonrpc":"2.0","method":"tools/list","id":1,"params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"talon-smoke","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}' \
     "${cp_base}/mcp" 2>/dev/null || true)"
   mcp_tool_count="$(jq -r '(.result.tools // []) | length' <<< "$mcp_list_resp" 2>/dev/null || echo 0)"
   for mcp_tool_name in smoke_safe_ls ls read_file file_read; do

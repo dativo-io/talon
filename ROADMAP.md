@@ -42,7 +42,7 @@ The active roadmap is optimized for one near-term outcome: **qualified activatio
 - **Control-plane/runtime boundary ADR** — one canonical policy/authorization model with `INTERCEPT | DELEGATE | COMPILE | VERIFY` enforcement choices ([#424](https://github.com/dativo-io/talon/issues/424))
 - **Company/use-case policy compiler** — constrained authoring model, source attribution and effective rules; no generic policy DSL ([#425](https://github.com/dativo-io/talon/issues/425))
 - **Trusted action catalog and exact binding** — schema validation, material-argument binding and reviewer-safe projection ([#427](https://github.com/dativo-io/talon/issues/427))
-- **MCP 2026-07-28 clean cutover** — current protocol only, request metadata integrity and no legacy compatibility track ([#447](https://github.com/dativo-io/talon/issues/447))
+- **MCP 2026-07-28 clean cutover** — **shipped**: current protocol only, per-request `_meta`, `server/discover`, `Mcp-Method`/`Mcp-Name`/`Mcp-Param-*` integrity, no handshake/session/legacy track ([#447](https://github.com/dativo-io/talon/issues/447)); governance convergence of the MCP routes onto ActionGovernance remains [#431](https://github.com/dativo-io/talon/issues/431)
 - **Minimal durable authorization correctness** — immutable subject/decision, operation identity, attempt claim/dispatch boundary and conservative unknown outcomes ([#426](https://github.com/dativo-io/talon/issues/426))
 - **Local approver authority** — canonical principals/groups and policy-authorized decisions ([#428](https://github.com/dativo-io/talon/issues/428))
 - **Privileged management permissions** — explicit operator authorization, separate from reviewer/runtime identity ([#446](https://github.com/dativo-io/talon/issues/446))

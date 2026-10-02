@@ -12,6 +12,9 @@ proxy:
 
   # Talon-facing tool name -> vendor's upstream name.
   # Omit upstream_name when the names are identical.
+  # Upstream x-mcp-header annotations are stripped from the definitions the
+  # proxy presents: this route declares no mirrored Mcp-Param-* parameters
+  # until trusted upstream discovery (#427/#431) captures schemas.
   allowed_tools:
     - name: ticket_search
     - name: ticket_create
