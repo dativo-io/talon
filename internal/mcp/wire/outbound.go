@@ -31,7 +31,7 @@ type CallParams struct {
 // extensions). Reserved keys Talon owns are never copied from the inbound
 // request.
 func OutboundMeta(inbound Meta, client Implementation) map[string]json.RawMessage {
-	out := make(map[string]json.RawMessage, len(inbound.Extra)+4)
+	out := make(map[string]json.RawMessage, len(inbound.Extra))
 	for k, v := range inbound.Extra {
 		out[k] = v
 	}

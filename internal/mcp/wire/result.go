@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 )
 
 // ServerInfoMeta renders the per-response identity field.
@@ -15,13 +14,9 @@ func ServerInfoMeta(server Implementation) map[string]any {
 // Complete builds a resultType:"complete" result from fields and stamps the
 // server identity.
 func Complete(server Implementation, fields map[string]any) map[string]any {
-	var out map[string]any
-	if len(fields) > math.MaxInt-2 {
-		// Defensive fallback: avoid capacity arithmetic overflow.
-		out = make(map[string]any)
-	} else {
-		out = make(map[string]any, len(fields)+2)
-	}
+	// Capacity is only a hint; no arithmetic on an input-derived length
+	// (CodeQL go/allocation-size-overflow).
+	out := make(map[string]any, len(fields))
 	for k, v := range fields {
 		out[k] = v
 	}
