@@ -154,11 +154,8 @@ func (h *Handler) handleToolsList(ctx context.Context, id json.RawMessage) *json
 	list := h.registry.List()
 	entries := make([]map[string]interface{}, 0, len(list))
 	for _, t := range list {
-		schema := t.InputSchema()
-		if len(schema) == 0 || string(schema) == "null" {
-			schema = json.RawMessage(`{"type":"object"}`)
-		}
-		if _, err := wire.HeaderParamsFromSchema(schema); err != nil {
+		schema, _, err := nativeToolDefinition(t)
+		if err != nil {
 			// A definition with an invalid x-mcp-header annotation is
 			// excluded from the list (streamable-http §Schema Extension).
 			log.Warn().Str("tool", t.Name()).Err(err).Msg("mcp_tool_excluded_invalid_header_annotation")
@@ -198,7 +195,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	// execution, with no evidence (no trustworthy action exists yet). The
 	// header is never the argument value.
 	if tool, ok := h.registry.Get(params.Name); ok {
-		decl, derr := wire.HeaderParamsFromSchema(tool.InputSchema())
+		_, decl, derr := nativeToolDefinition(tool)
 		if derr != nil {
 			wire.WriteError(w, req.ID, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidParams, Reason: wire.ReasonInvalidRequest, Message: "tool definition is invalid: " + derr.Error()})
 			return nil
@@ -465,6 +462,19 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	}
 
 	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: toolResult(result)}
+}
+
+// nativeToolDefinition is the ONE source of truth for a native tool's
+// presented definition and its mirrored-parameter declaration: the exact
+// schema tools/list shows is the schema inbound Mcp-Param-* validation
+// uses, so advertisement and validation cannot drift.
+func nativeToolDefinition(t tools.Tool) (schema json.RawMessage, decl *wire.HeaderParams, err error) {
+	schema = t.InputSchema()
+	if len(schema) == 0 || string(schema) == "null" {
+		schema = json.RawMessage(`{"type":"object"}`)
+	}
+	decl, err = wire.HeaderParamsFromSchema(schema)
+	return schema, decl, err
 }
 
 // toolResult renders a native tool's JSON result as a CallToolResult: the

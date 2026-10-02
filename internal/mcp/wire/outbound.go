@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"reflect"
 	"strings"
 )
 
@@ -120,19 +121,26 @@ const MaxUpstreamBody int64 = 8 << 20
 // JSON-RPC body.
 var ErrUpstreamStatus = errors.New("upstream returned an HTTP error without a JSON-RPC body")
 
-// ReadUpstreamResponse reads one JSON-RPC response from an upstream reply in
-// either response mode: a single application/json object, or a request-
-// scoped text/event-stream in which the final event carries the response
-// (request-related notifications before it are dropped; this surface does
-// not relay them). A 4xx/5xx with a JSON-RPC error body is returned as that
-// error so the caller can map it; without one it is ErrUpstreamStatus.
-func ReadUpstreamResponse(resp *http.Response) (*Response, error) {
+// ErrUpstreamProtocol reports an upstream reply that is not a valid JSON-RPC
+// response to the request Talon sent.
+var ErrUpstreamProtocol = errors.New("upstream protocol violation")
+
+// ReadUpstreamResponse reads the ONE JSON-RPC response to the request with
+// id expectID, in either response mode: a single application/json object,
+// or a request-scoped text/event-stream. Every candidate is validated:
+// jsonrpc "2.0", a valid id equal to expectID, exactly one of result/error.
+// On a stream, id-less messages are request-scoped notifications and are
+// skipped; a message with a different id is a protocol violation, never a
+// candidate; the first matching response terminates the exchange. A
+// 4xx/5xx with a valid JSON-RPC error body is returned as that error so
+// the caller can map it; without one it is ErrUpstreamStatus.
+func ReadUpstreamResponse(resp *http.Response, expectID json.RawMessage) (*Response, error) {
 	defer resp.Body.Close()
 	mt, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	limited := io.LimitReader(resp.Body, MaxUpstreamBody)
 	switch mt {
 	case "text/event-stream":
-		return readSSEResponse(limited)
+		return readSSEResponse(limited, expectID)
 	case "application/json":
 		raw, err := io.ReadAll(limited)
 		if err != nil {
@@ -140,57 +148,98 @@ func ReadUpstreamResponse(resp *http.Response) (*Response, error) {
 		}
 		var out Response
 		if err := json.Unmarshal(raw, &out); err != nil {
-			return nil, fmt.Errorf("upstream response invalid: %w", err)
+			return nil, fmt.Errorf("%w: %v", ErrUpstreamProtocol, err)
 		}
-		if out.Result == nil && out.Error == nil {
-			return nil, fmt.Errorf("upstream response invalid: neither result nor error")
+		if err := validateResponse(&out, expectID); err != nil {
+			return nil, err
 		}
 		return &out, nil
 	default:
 		if resp.StatusCode >= 400 {
 			return nil, fmt.Errorf("%w: HTTP %d", ErrUpstreamStatus, resp.StatusCode)
 		}
-		return nil, fmt.Errorf("upstream response invalid: unsupported Content-Type %q", resp.Header.Get("Content-Type"))
+		return nil, fmt.Errorf("%w: unsupported Content-Type %q", ErrUpstreamProtocol, resp.Header.Get("Content-Type"))
 	}
 }
 
-// readSSEResponse scans SSE events and returns the last JSON-RPC response
-// (a message with a result or error) on the stream.
-func readSSEResponse(r io.Reader) (*Response, error) {
+// validateResponse applies the JSON-RPC response rules against the
+// outbound request id.
+func validateResponse(r *Response, expectID json.RawMessage) error {
+	if r.JSONRPC != "2.0" {
+		return fmt.Errorf("%w: jsonrpc must be \"2.0\"", ErrUpstreamProtocol)
+	}
+	if r.ID == nil {
+		return fmt.Errorf("%w: response has no id", ErrUpstreamProtocol)
+	}
+	if e := checkID(r.ID); e != nil {
+		return fmt.Errorf("%w: invalid response id", ErrUpstreamProtocol)
+	}
+	if !idsEqual(r.ID, expectID) {
+		return fmt.Errorf("%w: response id does not match the request id", ErrUpstreamProtocol)
+	}
+	if (r.Result == nil) == (r.Error == nil) {
+		return fmt.Errorf("%w: exactly one of result or error is required", ErrUpstreamProtocol)
+	}
+	return nil
+}
+
+// idsEqual compares JSON-RPC ids by value (so 1 and 1.0 agree, "1" and 1
+// do not).
+func idsEqual(a, b json.RawMessage) bool {
+	var av, bv any
+	if json.Unmarshal(a, &av) != nil || json.Unmarshal(b, &bv) != nil {
+		return false
+	}
+	return reflect.DeepEqual(av, bv)
+}
+
+// readSSEResponse scans SSE events for the response to expectID.
+func readSSEResponse(r io.Reader, expectID json.RawMessage) (*Response, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), int(MaxUpstreamBody))
 	var data []string
-	var final *Response
-	flush := func() {
-		if len(data) == 0 {
-			return
-		}
-		payload := strings.Join(data, "\n")
-		data = data[:0]
-		var msg Response
-		if json.Unmarshal([]byte(payload), &msg) == nil && (msg.Result != nil || msg.Error != nil) {
-			final = &msg
-		}
-	}
 	for sc.Scan() {
 		line := sc.Text()
 		switch {
-		case line == "":
-			flush()
-		case strings.HasPrefix(line, ":"):
-			// keep-alive comment
 		case strings.HasPrefix(line, "data:"):
 			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		case line == "":
+			final, err := sseEvent(data, expectID)
+			data = data[:0]
+			if err != nil || final != nil {
+				return final, err
+			}
 		}
+		// comments (":…") and other fields are ignored
 	}
-	flush()
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("upstream stream: %w", err)
 	}
-	if final == nil {
-		return nil, fmt.Errorf("upstream stream ended without a JSON-RPC response")
+	final, err := sseEvent(data, expectID)
+	if err != nil || final != nil {
+		return final, err
 	}
-	return final, nil
+	return nil, fmt.Errorf("%w: stream ended without the response to the request", ErrUpstreamProtocol)
+}
+
+// sseEvent classifies one SSE event's data: nothing (empty), a skipped
+// request-scoped notification (nil, nil), the matching response, or a
+// protocol violation.
+func sseEvent(data []string, expectID json.RawMessage) (*Response, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var msg Response
+	if json.Unmarshal([]byte(strings.Join(data, "\n")), &msg) != nil {
+		return nil, fmt.Errorf("%w: malformed SSE event", ErrUpstreamProtocol)
+	}
+	if msg.ID == nil && msg.Result == nil && msg.Error == nil {
+		return nil, nil // request-scoped notification: skipped, not relayed
+	}
+	if err := validateResponse(&msg, expectID); err != nil {
+		return nil, err
+	}
+	return &msg, nil
 }
 
 func mustJSON(v any) json.RawMessage {

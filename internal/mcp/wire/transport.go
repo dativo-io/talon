@@ -26,6 +26,11 @@ type Transport struct {
 	MaxBody int64
 	// Methods is the JSON-RPC method allowlist for this route.
 	Methods []string
+	// Notifications is the client-to-server notification allowlist. The
+	// 2026-07-28 core defines none on Streamable HTTP (cancellation is the
+	// request stream's lifecycle), so this surface accepts none: every
+	// id-less message is answered with Method not found.
+	Notifications []string
 }
 
 // Outcome tells the route what Accept did with the request.
@@ -34,8 +39,6 @@ type Outcome int
 const (
 	// Rejected: a protocol error was already written; stop.
 	Rejected Outcome = iota
-	// Notified: a notification was accepted with 202 and no body; stop.
-	Notified
 	// Ready: req is a validated request; dispatch it.
 	Ready
 )
@@ -75,16 +78,20 @@ func (t *Transport) Accept(w http.ResponseWriter, r *http.Request) (*Request, Ou
 		return nil, Rejected
 	}
 	if env.ID == nil {
-		// A notification. The core defines no client-to-server notification
-		// on Streamable HTTP, so anything in the notifications namespace is
-		// accepted and dropped (202, no body); any other id-less method is
-		// refused — a side effect must never run without a response.
-		if !IsNotificationMethod(env.Method) {
-			WriteError(w, nil, newErr(http.StatusBadRequest, CodeInvalidRequest, ReasonNotificationUnsupported, "a message without an id is a notification; only notifications/* methods are accepted"))
+		// A notification. Only an explicitly supported notification would be
+		// accepted (202, no body); this surface supports none, so removed
+		// lifecycle notifications and unknown ones alike are Method not
+		// found — nothing is dispatched and no evidence is written. No
+		// _meta or header requirement is invented for notifications.
+		if !t.notificationAllowed(env.Method) {
+			WriteError(w, nil, &Error{
+				Status: http.StatusNotFound, Code: CodeMethodNotFound, Reason: ReasonNotificationUnsupported,
+				Message: "notification not supported: " + env.Method + " (this surface defines no client-to-server notifications)",
+			})
 			return nil, Rejected
 		}
 		w.WriteHeader(http.StatusAccepted)
-		return nil, Notified
+		return nil, Rejected
 	}
 	req := &Request{ID: env.ID, Method: env.Method, Params: env.Params}
 	meta, merr := parseMeta(env.Params)
@@ -110,6 +117,15 @@ func (t *Transport) Accept(w http.ResponseWriter, r *http.Request) (*Request, Ou
 	}
 	req.HeaderParams = captureHeaderParams(r.Header)
 	return req, Ready
+}
+
+func (t *Transport) notificationAllowed(m string) bool {
+	for _, a := range t.Notifications {
+		if a == m {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Transport) methodAllowed(m string) bool {
@@ -183,26 +199,29 @@ func isLoopbackHost(h string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// checkAccept requires an Accept header that admits application/json, the
-// response type this surface produces. Clients are REQUIRED by the spec to
-// list both application/json and text/event-stream; a client that cannot
-// take JSON is incompatible regardless of how its body parses.
+// checkAccept enforces the literal Streamable HTTP contract: the client
+// MUST list both application/json and text/event-stream as media types.
+// Wildcards do not satisfy either; parameters (q=…) and case are handled
+// per HTTP media-type rules; additional types are fine.
 func checkAccept(accept string) *Error {
-	bad := newErr(http.StatusNotAcceptable, CodeInvalidRequest, ReasonAcceptUnsupported, "Accept must include application/json (and text/event-stream)")
-	if strings.TrimSpace(accept) == "" {
-		return bad
-	}
+	bad := newErr(http.StatusNotAcceptable, CodeInvalidRequest, ReasonAcceptUnsupported, "Accept must list both application/json and text/event-stream")
+	var jsonOK, sseOK bool
 	for _, part := range strings.Split(accept, ",") {
 		mt, _, err := mime.ParseMediaType(strings.TrimSpace(part))
 		if err != nil {
 			continue
 		}
 		switch strings.ToLower(mt) {
-		case "application/json", "application/*", "*/*":
-			return nil
+		case "application/json":
+			jsonOK = true
+		case "text/event-stream":
+			sseOK = true
 		}
 	}
-	return bad
+	if !jsonOK || !sseOK {
+		return bad
+	}
+	return nil
 }
 
 // checkStandardHeaders enforces the mirrored request metadata.

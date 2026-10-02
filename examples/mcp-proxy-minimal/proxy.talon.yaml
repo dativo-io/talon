@@ -12,13 +12,11 @@ proxy:
 
   # Talon-facing tool name -> vendor's upstream name.
   # Omit upstream_name when the names are identical.
-  # header_params declares which primitive arguments the vendor mirrors into
-  # Mcp-Param-* headers (MCP x-mcp-header); Talon validates them inbound and
-  # generates them outbound from the authorized body. Protocol metadata only.
+  # Upstream x-mcp-header annotations are stripped from the definitions the
+  # proxy presents: this route declares no mirrored Mcp-Param-* parameters
+  # until trusted upstream discovery (#427/#431) captures schemas.
   allowed_tools:
     - name: ticket_search
-      # header_params:
-      #   region: Region
     - name: ticket_create
     - name: ticket_update
     - name: user_lookup

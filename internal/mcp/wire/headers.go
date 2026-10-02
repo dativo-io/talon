@@ -274,31 +274,6 @@ func walkUnreachable(child any, path []string, hp *HeaderParams, seen map[string
 	return nil
 }
 
-// HeaderParamsFromConfig builds declarations from operator configuration:
-// argument path ("a" or "a.b") → header name part. Types are inferred from
-// the argument value at validation time.
-func HeaderParamsFromConfig(m map[string]string) (*HeaderParams, error) {
-	hp := &HeaderParams{}
-	seen := map[string]bool{}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		path := strings.Split(strings.TrimSpace(k), ".")
-		for _, seg := range path {
-			if seg == "" {
-				return nil, fmt.Errorf("header_params: empty path segment in %q", k)
-			}
-		}
-		if err := addDecl(hp, seen, ParamDecl{Header: m[k], Path: path}); err != nil {
-			return nil, err
-		}
-	}
-	return hp, nil
-}
-
 // lookupPath returns the JSON value at a properties path, and whether it is
 // present (a present null counts as absent for header purposes).
 func lookupPath(args map[string]any, path []string) (any, bool) {

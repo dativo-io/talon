@@ -32,7 +32,7 @@ func attribUpstream(t *testing.T, hit *bool) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": req.ID,
-			"result": map[string]string{"content": "ok"},
+			"result": map[string]string{"resultType": "complete", "content": "ok"},
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -563,49 +563,46 @@ func TestProxyUnsupportedMethod_ProtocolRejection(t *testing.T) {
 	assert.Empty(t, listRecords(t, store, "default"), "protocol rejections write no governance evidence")
 }
 
-// TestNotifications_202NoBody pins the notification transport mechanics on
-// BOTH routes: a notifications/* message gets 202 and no body and is never
-// forwarded; an id-less message outside that namespace is NOT a notification
-// Talon will silently drop (400); an unknown method WITH an id is a proper
-// -32601 with the id echoed. notifications/initialized is not special — it
-// is just one more notification the core no longer defines.
-func TestNotifications_202NoBody(t *testing.T) {
+// TestNotifications_Rejected pins that this surface defines NO client-to-
+// server notification under 2026-07-28: the removed lifecycle notifications
+// (initialized, cancelled) and unknown ones alike are Method not found on
+// BOTH routes — HTTP 404, -32601, no id, nothing forwarded, no evidence.
+// An id-carrying unknown method stays a proper -32601 with the id echoed.
+func TestNotifications_Rejected(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
 	proxy, store := attribHandler(t, up.URL, nil)
 	native := NewHandler(nil, nil, nil, nil)
 
 	for name, h := range map[string]http.Handler{"proxy": proxy, "native": native} {
-		for _, method := range []string{"notifications/initialized", "notifications/cancelled", "notifications/progress"} {
-			body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": method, "params": map[string]interface{}{"requestId": "1"}})
+		for _, method := range []string{"notifications/initialized", "notifications/cancelled", "notifications/progress", "tools/call"} {
+			body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": method, "params": map[string]interface{}{"requestId": "1", "name": "crm_lookup"}})
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
 			req = stamp(req)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
-			assert.Equal(t, http.StatusAccepted, rec.Code, "%s: %s must be accepted", name, method)
-			assert.Empty(t, rec.Body.String(), "%s: notifications get NO response body (%s)", name, method)
+			assert.Equal(t, http.StatusNotFound, rec.Code, "%s: id-less %s is not a supported notification", name, method)
+			var resp jsonrpcResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), name)
+			require.NotNil(t, resp.Error, name)
+			assert.Equal(t, wire.CodeMethodNotFound, resp.Error.Code, name)
+			assert.Nil(t, resp.ID, "%s: an error for a notification carries no id", name)
 		}
-		body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/call", "params": map[string]interface{}{"name": "crm_lookup"}})
+		assert.False(t, hit, "%s: notifications are never forwarded upstream", name)
+
+		body := mcpBody(t, 7, "totally/unknown", nil)
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
 		req = stamp(req)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		assert.Equal(t, http.StatusBadRequest, rec.Code, "%s: an id-less tools/call is refused, never executed", name)
-		assert.False(t, hit, "%s: notifications are never forwarded upstream", name)
-
-		body = mcpBody(t, 7, "totally/unknown", nil)
-		req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
-		req = stamp(req)
-		rec = httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusNotFound, rec.Code, name)
 		var resp jsonrpcResponse
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), name)
-		require.NotNil(t, resp.Error, "%s: an id-carrying unknown method stays a proper JSON-RPC error", name)
+		require.NotNil(t, resp.Error, name)
 		assert.Equal(t, wire.CodeMethodNotFound, resp.Error.Code, name)
 		assert.Equal(t, json.RawMessage("7"), resp.ID, "%s: the request id is echoed", name)
 	}
-	assert.Empty(t, listRecords(t, store, "default"))
+	assert.Empty(t, listRecords(t, store, "default"), "protocol rejections write no evidence")
 }
 
 // TestLegacyInitialize_Unavailable pins the clean cutover on BOTH routes: a

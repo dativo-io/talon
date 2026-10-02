@@ -214,21 +214,95 @@ func (m *Meta) setKey(k string, v json.RawMessage) *Error {
 		}
 		m.ClientCapabilities = v
 	case MetaClientInfo:
-		var impl Implementation
-		if !isJSONObject(v) || json.Unmarshal(v, &impl) != nil || impl.Name == "" {
-			return invalid(MetaClientInfo + " must be an Implementation object with a name")
+		impl, err := parseImplementation(v)
+		if err != nil {
+			return invalid(MetaClientInfo + ": " + err.Error())
 		}
-		m.ClientInfo = &impl
+		m.ClientInfo = impl
 	case MetaLogLevel:
-		if err := json.Unmarshal(v, &m.LogLevel); err != nil {
-			return invalid(MetaLogLevel + " must be a string")
+		if err := json.Unmarshal(v, &m.LogLevel); err != nil || !validLogLevel(m.LogLevel) {
+			return invalid(MetaLogLevel + " must be one of debug, info, notice, warning, error, critical, alert, emergency")
 		}
 	case MetaProgressToken:
+		if !validProgressToken(v) {
+			return invalid(MetaProgressToken + " must be a string or an integer")
+		}
 		m.ProgressToken = v
 	default:
 		m.Extra[k] = v
 	}
 	return nil
+}
+
+// parseImplementation validates the bounded Implementation wire type:
+// name and version are required non-empty strings; the optional display
+// fields must be strings and icons, when present, an array.
+func parseImplementation(v json.RawMessage) (*Implementation, error) {
+	if !isJSONObject(v) {
+		return nil, fmt.Errorf("must be an Implementation object")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(v, &fields); err != nil {
+		return nil, err
+	}
+	impl := &Implementation{}
+	str := func(key string, dst *string, required bool) error {
+		raw, has := fields[key]
+		if !has {
+			if required {
+				return fmt.Errorf("%s is required", key)
+			}
+			return nil
+		}
+		if err := json.Unmarshal(raw, dst); err != nil || (required && *dst == "") {
+			return fmt.Errorf("%s must be a non-empty string", key)
+		}
+		return nil
+	}
+	for _, f := range []struct {
+		key      string
+		dst      *string
+		required bool
+	}{{"name", &impl.Name, true}, {"version", &impl.Version, true}, {"title", &impl.Title, false}, {"description", &impl.Description, false}, {"websiteUrl", &impl.WebsiteURL, false}} {
+		if err := str(f.key, f.dst, f.required); err != nil {
+			return nil, err
+		}
+	}
+	if icons, has := fields["icons"]; has {
+		t := bytes.TrimSpace(icons)
+		if len(t) == 0 || t[0] != '[' {
+			return nil, fmt.Errorf("icons must be an array")
+		}
+	}
+	return impl, nil
+}
+
+func validLogLevel(l string) bool {
+	switch l {
+	case "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency":
+		return true
+	}
+	return false
+}
+
+// validProgressToken accepts the ProgressToken wire type: string | integer.
+func validProgressToken(v json.RawMessage) bool {
+	t := bytes.TrimSpace(v)
+	if len(t) == 0 {
+		return false
+	}
+	if t[0] == '"' {
+		var s string
+		return json.Unmarshal(t, &s) == nil
+	}
+	var n json.Number
+	dec := json.NewDecoder(bytes.NewReader(t))
+	dec.UseNumber()
+	if dec.Decode(&n) != nil {
+		return false
+	}
+	_, err := n.Int64()
+	return err == nil
 }
 
 // methodNeedsName reports whether Mcp-Name is REQUIRED for the method and

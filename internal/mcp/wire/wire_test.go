@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -112,9 +113,19 @@ func TestAccept_Conformance(t *testing.T) {
 		{"unsupported method", fixture{headers: std("resources/read", "file:///x"), body: `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{` + metaOK + `,"uri":"file:///x"}}`}, Rejected, rejected{404, CodeMethodNotFound, ReasonMethodNotFound}, nil},
 		{"legacy initialize", fixture{headers: map[string]string{}, body: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"old","version":"1"}}}`}, Rejected, rejected{400, CodeInvalidParams, ReasonMetaMissing}, nil},
 		{"legacy initialize with modern headers", fixture{headers: std("initialize", ""), body: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{` + metaOK + `}}`}, Rejected, rejected{404, CodeMethodNotFound, ReasonMethodNotFound}, nil},
-		{"notification accepted", fixture{headers: map[string]string{}, body: `{"jsonrpc":"2.0","method":"notifications/initialized"}`}, Notified, rejected{}, nil},
-		{"notification cancelled accepted", fixture{headers: map[string]string{}, body: `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"1"}}`}, Notified, rejected{}, nil},
-		{"id-less tools/call is not a notification", fixture{headers: std("tools/call", "ticket_lookup"), body: `{"jsonrpc":"2.0","method":"tools/call","params":{` + metaOK + `,"name":"ticket_lookup"}}`}, Rejected, rejected{400, CodeInvalidRequest, ReasonNotificationUnsupported}, nil},
+		{"removed notifications/initialized", fixture{headers: map[string]string{}, body: `{"jsonrpc":"2.0","method":"notifications/initialized"}`}, Rejected, rejected{404, CodeMethodNotFound, ReasonNotificationUnsupported}, nil},
+		{"removed notifications/cancelled", fixture{headers: map[string]string{}, body: `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"1"}}`}, Rejected, rejected{404, CodeMethodNotFound, ReasonNotificationUnsupported}, nil},
+		{"unknown notification", fixture{headers: map[string]string{}, body: `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`}, Rejected, rejected{404, CodeMethodNotFound, ReasonNotificationUnsupported}, nil},
+		{"id-less tools/call is an unsupported notification", fixture{headers: std("tools/call", "ticket_lookup"), body: `{"jsonrpc":"2.0","method":"tools/call","params":{` + metaOK + `,"name":"ticket_lookup"}}`}, Rejected, rejected{404, CodeMethodNotFound, ReasonNotificationUnsupported}, nil},
+		{"malformed clientInfo (no version)", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"x"}}}}`}, Rejected, rejected{400, CodeInvalidParams, ReasonMetaInvalid}, nil},
+		{"malformed clientInfo (title not string)", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"x","version":"1","title":5}}}}`}, Rejected, rejected{400, CodeInvalidParams, ReasonMetaInvalid}, nil},
+		{"malformed clientInfo (icons not array)", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"x","version":"1","icons":{}}}}}`}, Rejected, rejected{400, CodeInvalidParams, ReasonMetaInvalid}, nil},
+		{"valid clientInfo with display fields", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"x","version":"1","title":"X","websiteUrl":"https://x.example","icons":[{"src":"https://x.example/i.png"}]}}}}`}, Ready, rejected{}, nil},
+		{"malformed logLevel", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/logLevel":"loud"}}}`}, Rejected, rejected{400, CodeInvalidParams, ReasonMetaInvalid}, nil},
+		{"valid logLevel", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/logLevel":"warning"}}}`}, Ready, rejected{}, func(t *testing.T, req *Request) { require.Equal(t, "warning", req.Meta.LogLevel) }},
+		{"malformed progressToken (object)", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"progressToken":{"a":1}}}}`}, Rejected, rejected{400, CodeInvalidParams, ReasonMetaInvalid}, nil},
+		{"malformed progressToken (float)", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"progressToken":1.5}}}`}, Rejected, rejected{400, CodeInvalidParams, ReasonMetaInvalid}, nil},
+		{"valid progressToken (int)", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"progressToken":7}}}`}, Ready, rejected{}, nil},
 		{"null id", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":"2.0","id":null,"method":"tools/list","params":{` + metaOK + `}}`}, Rejected, rejected{400, CodeInvalidRequest, ReasonInvalidRequest}, nil},
 		{"batch", fixture{headers: std("tools/list", ""), body: `[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]`}, Rejected, rejected{400, CodeInvalidRequest, ReasonBatchUnsupported}, nil},
 		{"parse error", fixture{headers: std("tools/list", ""), body: `{"jsonrpc":`}, Rejected, rejected{400, CodeParseError, ReasonParseError}, nil},
@@ -122,7 +133,11 @@ func TestAccept_Conformance(t *testing.T) {
 		{"GET", fixture{method: http.MethodGet, headers: std("tools/list", "")}, Rejected, rejected{405, CodeInvalidRequest, ReasonTransportMethod}, nil},
 		{"DELETE", fixture{method: http.MethodDelete, headers: map[string]string{"Mcp-Session-Id": "abc"}}, Rejected, rejected{405, CodeInvalidRequest, ReasonTransportMethod}, nil},
 		{"Accept without json", fixture{accept: "text/html", headers: std("tools/list", ""), body: call}, Rejected, rejected{406, CodeInvalidRequest, ReasonAcceptUnsupported}, nil},
-		{"Accept wildcard ok", fixture{accept: "*/*", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Ready, rejected{}, nil},
+		{"Accept json only", fixture{accept: "application/json", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Rejected, rejected{406, CodeInvalidRequest, ReasonAcceptUnsupported}, nil},
+		{"Accept SSE only", fixture{accept: "text/event-stream", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Rejected, rejected{406, CodeInvalidRequest, ReasonAcceptUnsupported}, nil},
+		{"Accept wildcard only", fixture{accept: "*/*", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Rejected, rejected{406, CodeInvalidRequest, ReasonAcceptUnsupported}, nil},
+		{"Accept both plus extra, params and case", fixture{accept: "text/html, Application/JSON;q=0.9, TEXT/EVENT-STREAM; charset=utf-8", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Ready, rejected{}, nil},
+		{"Accept missing", fixture{accept: " ", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Rejected, rejected{406, CodeInvalidRequest, ReasonAcceptUnsupported}, nil},
 		{"Content-Type text", fixture{ctype: "text/plain", headers: std("tools/list", ""), body: call}, Rejected, rejected{415, CodeInvalidRequest, ReasonContentTypeUnsupported}, nil},
 		{"Origin loopback ok", fixture{origin: "http://localhost:3000", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Ready, rejected{}, nil},
 		{"Origin same host ok", fixture{origin: "http://127.0.0.1:8080", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Ready, rejected{}, nil},
@@ -150,9 +165,6 @@ func TestAccept_Conformance(t *testing.T) {
 				if tc.rej.code == CodeUnsupportedProtocolVersion {
 					require.Equal(t, []any{"2026-07-28"}, body.Error.Data["supported"])
 				}
-			case Notified:
-				require.Equal(t, http.StatusAccepted, rec.Code)
-				require.Empty(t, rec.Body.String(), "a notification gets no body")
 			case Ready:
 				require.NotNil(t, req)
 				if tc.check != nil {
@@ -303,14 +315,75 @@ func TestHeaderParams_ValidateAndOutbound(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestHeaderParams_FromConfig(t *testing.T) {
-	hp, err := HeaderParamsFromConfig(map[string]string{"region": "Region", "nested.zone": "Zone"})
+func TestStripHeaderAnnotations(t *testing.T) {
+	in := json.RawMessage(`{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"},"n":{"type":"object","properties":{"z":{"type":"string","x-mcp-header":"Z"}}},"arr":{"type":"array","items":{"type":"string","x-mcp-header":"A"}}}}`)
+	out := StripHeaderAnnotations(in)
+	require.NotContains(t, string(out), "x-mcp-header")
+	hp, err := HeaderParamsFromSchema(out)
 	require.NoError(t, err)
-	require.Len(t, hp.Decls(), 2)
-	_, err = HeaderParamsFromConfig(map[string]string{"a": "Region", "b": "region"})
-	require.Error(t, err)
-	_, err = HeaderParamsFromConfig(map[string]string{"a..b": "X"})
-	require.Error(t, err)
+	require.True(t, hp.Empty(), "a stripped definition declares nothing")
+	require.Equal(t, json.RawMessage("not json"), StripHeaderAnnotations(json.RawMessage("not json")))
+}
+
+func TestValidateUpstreamResult_TruthTable(t *testing.T) {
+	srv := Implementation{Name: "talon-mcp-proxy", Version: "x"}
+	cases := []struct {
+		name string
+		raw  string
+		err  error
+	}{
+		{"missing resultType", `{"content":[]}`, ErrResultTypeMissing},
+		{"complete", `{"resultType":"complete","content":[]}`, nil},
+		{"input_required", `{"resultType":"input_required","inputRequests":{"q":{"method":"elicitation/create","params":{}}},"requestState":"s"}`, nil},
+		{"task", `{"resultType":"task","task":{"taskId":"t1"}}`, ErrResultTypeUnsupported},
+		{"unknown future value", `{"resultType":"partial"}`, ErrResultTypeUnsupported},
+		{"non-object", `[1]`, errors.New("x")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := ValidateUpstreamResult(json.RawMessage(tc.raw), srv)
+			if tc.err != nil {
+				require.Error(t, err)
+				if errors.Is(tc.err, ErrResultTypeMissing) || errors.Is(tc.err, ErrResultTypeUnsupported) {
+					require.ErrorIs(t, err, tc.err)
+				}
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, srv, out["_meta"].(map[string]any)[MetaServerInfo])
+		})
+	}
+	up, err := ValidateUpstreamResult(json.RawMessage(`{"resultType":"complete","content":[],"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"up","version":"9"},"x":1}}`), srv)
+	require.NoError(t, err)
+	meta := up["_meta"].(map[string]any)
+	require.NotNil(t, meta["io.dativo.talon/upstreamServerInfo"])
+	require.Equal(t, float64(1), meta["x"])
+}
+
+func TestParseListResult_Strict(t *testing.T) {
+	ok, err := ParseListResult(json.RawMessage(`{"resultType":"complete","tools":[{"name":"a"}],"nextCursor":"c2","ttlMs":120000,"cacheScope":"public","com.example/x":true}`))
+	require.NoError(t, err)
+	require.Len(t, ok.Tools, 1)
+	require.Equal(t, "c2", ok.NextCursor)
+	require.Equal(t, 120000, ok.TTLMs)
+	require.Equal(t, true, ok.Rest["com.example/x"])
+	noHints, err := ParseListResult(json.RawMessage(`{"resultType":"complete","tools":[]}`))
+	require.NoError(t, err)
+	require.Equal(t, 0, noHints.TTLMs)
+	require.Equal(t, CacheScopePrivate, noHints.CacheScope)
+	for name, raw := range map[string]string{
+		"legacy array":        `[{"name":"a"}]`,
+		"legacy items key":    `{"resultType":"complete","items":[{"name":"a"}]}`,
+		"missing resultType":  `{"tools":[]}`,
+		"input_required list": `{"resultType":"input_required","tools":[]}`,
+		"tools not array":     `{"resultType":"complete","tools":{"name":"a"}}`,
+		"bad cursor":          `{"resultType":"complete","tools":[],"nextCursor":5}`,
+		"bad ttl":             `{"resultType":"complete","tools":[],"ttlMs":"soon"}`,
+		"bad scope":           `{"resultType":"complete","tools":[],"cacheScope":"shared"}`,
+	} {
+		_, err := ParseListResult(json.RawMessage(raw))
+		require.Error(t, err, name)
+	}
 }
 
 func TestResults(t *testing.T) {
@@ -325,20 +398,6 @@ func TestResults(t *testing.T) {
 	c := Cacheable(Complete(srv, map[string]any{"tools": []any{}}), -5, "weird")
 	require.Equal(t, 0, c["ttlMs"])
 	require.Equal(t, CacheScopePrivate, c["cacheScope"])
-
-	up, err := NormalizeUpstreamResult(json.RawMessage(`{"content":[{"type":"text","text":"ok"}],"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"up","version":"9"},"x":1}}`), srv)
-	require.NoError(t, err)
-	require.Equal(t, ResultTypeComplete, up["resultType"], "absent resultType is made explicit")
-	meta := up["_meta"].(map[string]any)
-	require.Equal(t, srv, meta[MetaServerInfo])
-	require.NotNil(t, meta["io.dativo.talon/upstreamServerInfo"])
-	require.Equal(t, float64(1), meta["x"])
-	ir, err := NormalizeUpstreamResult(json.RawMessage(`{"resultType":"input_required","inputRequests":{"q":{"method":"elicitation/create","params":{}}},"requestState":"s1"}`), srv)
-	require.NoError(t, err)
-	require.Equal(t, ResultTypeInputRequired, ir["resultType"])
-	require.Equal(t, "s1", ir["requestState"])
-	require.Equal(t, ResultTypeInputRequired, ResultType(json.RawMessage(`{"resultType":"input_required"}`)))
-	require.Equal(t, ResultTypeComplete, ResultType(json.RawMessage(`{}`)))
 }
 
 func TestOutboundRequest(t *testing.T) {
@@ -355,7 +414,7 @@ func TestOutboundRequest(t *testing.T) {
 	require.Equal(t, "up_tool", decoded["name"])
 	require.Equal(t, "st", decoded["requestState"])
 	require.NotNil(t, decoded["inputResponses"])
-	hp, _ := HeaderParamsFromConfig(map[string]string{"a": "A"})
+	hp, _ := HeaderParamsFromSchema(json.RawMessage(`{"type":"object","properties":{"a":{"type":"integer","x-mcp-header":"A"}}}`))
 	ph, err := OutboundHeaderParams(hp, json.RawMessage(`{"a":1}`))
 	require.NoError(t, err)
 	req, err := NewUpstreamRequest(t.Context(), "http://127.0.0.1:1/mcp", json.RawMessage(`7`), MethodToolsCall, params, "up tool é", ph)
@@ -371,26 +430,47 @@ func TestOutboundRequest(t *testing.T) {
 }
 
 func TestReadUpstreamResponse(t *testing.T) {
-	jsonResp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: httpBody(`{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":[]}}`)}
-	r, err := ReadUpstreamResponse(jsonResp)
+	id := json.RawMessage(`1`)
+	// ReadUpstreamResponse closes the body itself.
+	mk := func(status int, ct, body string) *http.Response { //nolint:bodyclose // closed by ReadUpstreamResponse
+		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {ct}}, Body: httpBody(body)}
+	}
+	r, err := ReadUpstreamResponse(mk(200, "application/json", `{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":[]}}`), id) //nolint:bodyclose // closed by ReadUpstreamResponse
 	require.NoError(t, err)
 	require.NotNil(t, r.Result)
+	_, err = ReadUpstreamResponse(mk(200, "application/json", `{"jsonrpc":"2.0","id":1.0,"result":{"resultType":"complete"}}`), id) //nolint:bodyclose // closed by ReadUpstreamResponse
+	require.NoError(t, err, "ids compare by value")
 	sse := "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progress\":1}}\n\n: keep-alive\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\n" +
 		"data:  \"result\":{\"resultType\":\"complete\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n\n"
-	sseResp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: httpBody(sse)}
-	r, err = ReadUpstreamResponse(sseResp)
-	require.NoError(t, err)
+	r, err = ReadUpstreamResponse(mk(200, "text/event-stream", sse), id) //nolint:bodyclose // closed by ReadUpstreamResponse
+	require.NoError(t, err, "notifications before the matching response are skipped")
 	require.Contains(t, string(r.Result), "done")
-	errResp := &http.Response{StatusCode: 400, Header: http.Header{"Content-Type": {"application/json"}}, Body: httpBody(`{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"Header mismatch"}}`)}
-	r, err = ReadUpstreamResponse(errResp)
+	r, err = ReadUpstreamResponse(mk(400, "application/json", `{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"Header mismatch"}}`), id) //nolint:bodyclose // closed by ReadUpstreamResponse
 	require.NoError(t, err)
 	require.Equal(t, CodeHeaderMismatch, r.Error.Code)
-	htmlResp := &http.Response{StatusCode: 502, Header: http.Header{"Content-Type": {"text/html"}}, Body: httpBody("<h1>bad gateway</h1>")}
-	_, err = ReadUpstreamResponse(htmlResp)
+	_, err = ReadUpstreamResponse(mk(502, "text/html", "<h1>bad gateway</h1>"), id) //nolint:bodyclose // closed by ReadUpstreamResponse
 	require.ErrorIs(t, err, ErrUpstreamStatus)
-	empty := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: httpBody(": only comments\n\n")}
-	_, err = ReadUpstreamResponse(empty)
-	require.Error(t, err)
+
+	bad := map[string]struct {
+		ct, body string
+	}{
+		"wrong id":                           {"application/json", `{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete"}}`},
+		"missing id":                         {"application/json", `{"jsonrpc":"2.0","result":{"resultType":"complete"}}`},
+		"null id":                            {"application/json", `{"jsonrpc":"2.0","id":null,"result":{"resultType":"complete"}}`},
+		"string id for numeric request":      {"application/json", `{"jsonrpc":"2.0","id":"1","result":{"resultType":"complete"}}`},
+		"jsonrpc 1.0":                        {"application/json", `{"jsonrpc":"1.0","id":1,"result":{"resultType":"complete"}}`},
+		"both result and error":              {"application/json", `{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"x"}}`},
+		"neither result nor error":           {"application/json", `{"jsonrpc":"2.0","id":1}`},
+		"SSE response with another id":       {"text/event-stream", "data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{\"resultType\":\"complete\"}}\n\n"},
+		"SSE malformed response id":          {"text/event-stream", "data: {\"jsonrpc\":\"2.0\",\"id\":{\"x\":1},\"result\":{\"resultType\":\"complete\"}}\n\n"},
+		"SSE malformed event":                {"text/event-stream", "data: {not json\n\n"},
+		"SSE only comments":                  {"text/event-stream", ": only comments\n\n"},
+		"SSE other-id result before correct": {"text/event-stream", "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resultType\":\"complete\"}}\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\"}}\n\n"},
+	}
+	for name, tc := range bad {
+		_, err := ReadUpstreamResponse(mk(200, tc.ct, tc.body), id) //nolint:bodyclose // closed by ReadUpstreamResponse
+		require.Error(t, err, name)
+	}
 }
 
 func httpBody(s string) *nopCloser { return &nopCloser{Reader: strings.NewReader(s)} }

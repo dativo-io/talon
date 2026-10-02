@@ -177,6 +177,7 @@ All `TALON_*` environment variables map to fields in `talon.config.yaml`. Enviro
 | `TALON_MAX_ATTACHMENT_MB` | Max attachment size in MB. | `10` |
 | `TALON_OLLAMA_BASE_URL` | Ollama endpoint. | `http://localhost:11434` |
 | `TALON_ADMIN_KEY` | Admin key for control-plane and dashboard (serve only). | — |
+| `TALON_MCP_ALLOWED_ORIGINS` | Comma-separated browser origins allowed on `/mcp` and `/mcp/proxy` in addition to absent, loopback and same-host `Origin` (DNS-rebinding guard, #447). `*` is ignored; the CORS wildcard never applies to MCP. | — |
 | `OPENAI_API_KEY` | OpenAI key (dev fallback when not in vault). | -- |
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL (e.g. for tests). | -- |
 | `ANTHROPIC_API_KEY` | Anthropic key (dev fallback). | -- |

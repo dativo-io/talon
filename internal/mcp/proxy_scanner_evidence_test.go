@@ -71,7 +71,7 @@ func newProxyWithUpstream(t *testing.T, cls classifier.Facade, upstreamResult st
 		w.Header().Set("Content-Type", "application/json")
 		resp, _ := json.Marshal(map[string]interface{}{
 			"jsonrpc": "2.0", "id": 1,
-			"result": map[string]string{"content": upstreamResult},
+			"result": map[string]string{"resultType": "complete", "content": upstreamResult},
 		})
 		_, _ = w.Write(resp)
 	}))

@@ -56,12 +56,16 @@ func mcpTestRouter(t *testing.T) (http.Handler, *echoTool, *atomic.Int64) {
 	upstreamHits := &atomic.Int64{}
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		if r.Header.Get(wire.HeaderMethod) == wire.MethodToolsList {
-			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","tools":[{"name":"crm_lookup","inputSchema":{"type":"object"}}],"ttlMs":0,"cacheScope":"private"}}`))
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"resultType":"complete","tools":[{"name":"crm_lookup","inputSchema":{"type":"object"}}],"ttlMs":0,"cacheScope":"private"}}`))
 			return
 		}
 		upstreamHits.Add(1) // tools/call dispatches only
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":6,"result":{"resultType":"complete","content":[{"type":"text","text":"ok"}]}}`))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"resultType":"complete","content":[{"type":"text","text":"ok"}]}}`))
 	}))
 	t.Cleanup(up.Close)
 	pcfg := &policy.ProxyPolicyConfig{
@@ -136,10 +140,10 @@ func TestMCPRouter_ProtocolSurface(t *testing.T) {
 		assert.Contains(t, res, "ttlMs", path)
 		assert.Contains(t, res, "cacheScope", path)
 
-		// notification: 202, no body
-		rec, _ = serve(mcpReq(http.MethodPost, path, "agent-key-1", []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), nil))
-		assert.Equal(t, http.StatusAccepted, rec.Code, path)
-		assert.Empty(t, rec.Body.String(), path)
+		// notification: no client-to-server notification exists on this surface
+		rec, out = serve(mcpReq(http.MethodPost, path, "agent-key-1", []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), nil))
+		assert.Equal(t, http.StatusNotFound, rec.Code, path)
+		assert.Equal(t, float64(wire.CodeMethodNotFound), out["error"].(map[string]any)["code"], path)
 
 		// unsupported method: 404 / -32601
 		rec, out = serve(mcpReq(http.MethodPost, path, "agent-key-1", body(3, "resources/read", map[string]any{"uri": "file:///x"}), std("resources/read", "file:///x")))

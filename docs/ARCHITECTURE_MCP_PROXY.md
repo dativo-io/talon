@@ -103,9 +103,7 @@ proxy:
   allowed_tools:
     - name: "zendesk_ticket_search"
       upstream_name: "ticket_search"  # Map to vendor's naming
-      header_params:                  # trusted x-mcp-header declaration (#447):
-        region: Region                #   argument path -> Mcp-Param-{name}; validated
-    - name: "zendesk_ticket_read"     #   inbound, generated outbound from the body
+    - name: "zendesk_ticket_read"
       upstream_name: "get_ticket"
 
   forbidden_tools:
@@ -180,9 +178,10 @@ and is unrelated to the removed MCP transport session.
 
 Every POST is self-describing and is validated **before** any governed
 processing, in this order: HTTP method (POST only; GET/DELETE → 405) →
-`Origin` (absent, loopback, same-origin or `TALON_MCP_ALLOWED_ORIGINS`;
-anything else → 403; no wildcard) → `Accept` must admit `application/json`
-(406) → `Content-Type: application/json` (415) → 1 MiB body cap (413) → one
+`Origin` (absent, loopback, same-origin or `TALON_MCP_ALLOWED_ORIGINS`, the
+same list on both routes; anything else → 403; no wildcard) → `Accept` must
+list both `application/json` and `text/event-stream` (406; wildcards do not
+count) → `Content-Type: application/json` (415) → 1 MiB body cap (413) → one
 JSON-RPC request or notification (no batches, no null ids) → required
 `params._meta` (`io.modelcontextprotocol/protocolVersion`,
 `io.modelcontextprotocol/clientCapabilities`; `clientInfo` optional) →
@@ -191,8 +190,13 @@ JSON-RPC request or notification (no batches, no null ids) → required
 (`UnsupportedProtocolVersion -32022` with `data.supported`) → `Mcp-Method`
 present, single and equal to the body method → `Mcp-Name` present and equal
 to `params.name` for `tools/call` (Base64 sentinel decoded) → method
-allowlist. A `notifications/*` message without an id is accepted with 202
-and no body and never forwarded; any other id-less message is refused (400).
+allowlist. This surface defines **no client-to-server notification**: the
+2026-07-28 core has no `initialize`/`initialized` exchange and cancellation
+on Streamable HTTP is the request stream's lifecycle, so every id-less
+message (including the removed `notifications/initialized` and
+`notifications/cancelled`) is answered with HTTP 404 and `-32601`, nothing
+is dispatched and no evidence is written. No `_meta` or header requirement
+is invented for notifications.
 
 Governed methods are `server/discover` (informational: `supportedVersions`,
 the `tools` capability, `serverInfo`, cache hints — never an authorization),
@@ -209,23 +213,36 @@ denial on a validated request still produces a signed record.
 and schema-declared `Mcp-Param-*` headers exist for intermediaries; Talon
 parses the body and requires the mirrors to agree. A header can never pick a
 different tool than the body (`Mcp-Name: read_ticket` over a
-`delete_customer` body is `-32020`, zero dispatch). Mirrored parameters come
-from a **trusted declaration** only — the native tool's JSON Schema
-`x-mcp-header` annotations, or the proxy's operator-configured
-`allowed_tools[].header_params` — never from the request; the body remains
-the argument value and the header is an integrity duplicate (integers
-compare numerically, Base64 sentinels are decoded, unrecognized `Mcp-Param-*`
-headers are ignored and never forwarded). On the way out the proxy builds a
+`delete_customer` body is `-32020`, zero dispatch). Mirrored parameters
+(`x-mcp-header` → `Mcp-Param-*`) have exactly **one** source of truth per
+route: the definition Talon presents in `tools/list` is the definition it
+validates against and generates from. On the native route that is the
+registered tool's JSON Schema. The proxy has no trusted upstream schema yet
+(captured discovery is #427/#431), so it presents upstream definitions with
+every `x-mcp-header` annotation **stripped** and consequently declares,
+validates and generates no mirrored parameters: inbound `Mcp-Param-*`
+headers are ignored and never forwarded. Where a declaration exists, the
+body remains the argument value and the header is an integrity duplicate
+(integers compare numerically, Base64 sentinels are decoded, unrecognized
+`Mcp-Param-*` headers are ignored and never forwarded). A drift test proves
+a route can never advertise one declaration and validate another. On the way out the proxy builds a
 **fresh** upstream request from the authorized, redacted body: canonical
 upstream name, `_meta` with this protocol version, Talon's own identity, the
 originating client's capabilities and permitted keys (progress token, trace
 context, vendor extensions), the client's `requestState`/`inputResponses`
 preserved verbatim, and `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name`/
 `Mcp-Param-*` generated from that body. Inbound headers are never copied.
-Redirects from the upstream are never followed. Upstream replies may be a
-JSON object or a request-scoped SSE stream; `input_required` (MRTR) results
-pass through losslessly — they are ordinary protocol continuation, never a
-Talon approval.
+Redirects from the upstream are never followed, including after a runtime
+timeout change. Upstream replies may be a JSON object or a request-scoped
+SSE stream and are validated strictly: `jsonrpc: "2.0"`, a valid id equal to
+the request Talon sent (notifications on the stream are skipped; a message
+with another id is a protocol violation), exactly one of `result`/`error`.
+`resultType` truth table: missing → upstream protocol violation; `complete`
+→ continued; `input_required` (MRTR) → passed through losslessly, ordinary
+protocol continuation and never a Talon approval; `task` → unsupported
+(the Tasks extension is not advertised, #448); any other value →
+unsupported. Proxy `tools/list` accepts only the current `ListToolsResult`
+shape (`resultType: complete`, a `tools` array, well-typed hints).
 
 **Stable denial codes (#369):** every Talon-shaped proxy error carries
 `error.data.talon_code` — the machine contract; messages are prose and may
@@ -288,9 +305,8 @@ type UpstreamConfig struct {
 }
 
 type ToolMapping struct {
-    Name         string            `yaml:"name"`           // Talon's tool name
-    UpstreamName string            `yaml:"upstream_name"`  // Vendor's tool name
-    HeaderParams map[string]string `yaml:"header_params"`  // argument path -> Mcp-Param-{name} (protocol metadata only)
+    Name         string `yaml:"name"`           // Talon's tool name
+    UpstreamName string `yaml:"upstream_name"`  // Vendor's tool name
 }
 
 func (p *ProxyServer) HandleToolCall(ctx context.Context, req *JSONRPCRequest) (*JSONRPCResponse, error) {

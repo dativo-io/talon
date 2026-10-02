@@ -27,7 +27,8 @@ import (
 //	Mcp-Name ≠ body                 → -32020 / 400; upstream count still 1
 //	legacy initialize               → rejected; no session minted
 //	GET / DELETE                    → 405
-//	notification                    → 202, no body, not forwarded
+//	notification                    → 404 / -32601 (none supported), not forwarded
+//	upstream x-mcp-header           → stripped from the presented definition; Mcp-Param neither validated nor forwarded
 
 type mcpUpstream struct {
 	srv     *httptest.Server
@@ -121,8 +122,6 @@ func TestE2E_MCP_Protocol2026_07_28(t *testing.T) {
     url: "`+up.srv.URL+`/mcp"
   allowed_tools:
     - name: ticket_lookup
-      header_params:
-        region: Region
     - name: zeta_tool
   forbidden_tools:
     - delete_customer
@@ -177,6 +176,9 @@ func TestE2E_MCP_Protocol2026_07_28(t *testing.T) {
 	if res["ttlMs"] != float64(30000) || res["cacheScope"] != "private" {
 		t.Fatalf("cache hints: ttlMs=%v cacheScope=%v", res["ttlMs"], res["cacheScope"])
 	}
+	if raw, _ := json.Marshal(res["tools"]); strings.Contains(string(raw), "x-mcp-header") {
+		t.Fatalf("presented definitions must not carry x-mcp-header annotations the proxy cannot validate: %s", raw)
+	}
 	// Native route lists too (empty registry in a scaffolded install is fine).
 	if st, _, out := c.post("/mcp", "tools/list", "", `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{`+mcpMeta+`}}`, nil); st != 200 || out["result"] == nil {
 		t.Fatalf("native tools/list: %d %v", st, out)
@@ -192,8 +194,11 @@ func TestE2E_MCP_Protocol2026_07_28(t *testing.T) {
 	if up.calls.Load() != 1 {
 		t.Fatalf("upstream calls = %d, want 1", up.calls.Load())
 	}
-	if up.headers.Get("MCP-Protocol-Version") != "2026-07-28" || up.headers.Get("Mcp-Method") != "tools/call" || up.headers.Get("Mcp-Name") != "ticket_lookup" || up.headers.Get("Mcp-Param-Region") != "eu-west1" {
+	if up.headers.Get("MCP-Protocol-Version") != "2026-07-28" || up.headers.Get("Mcp-Method") != "tools/call" || up.headers.Get("Mcp-Name") != "ticket_lookup" {
 		t.Fatalf("outbound headers not generated from the authorized body: %v", up.headers)
+	}
+	if up.headers.Get("Mcp-Param-Region") != "" {
+		t.Fatalf("an inbound Mcp-Param header must never be forwarded: %v", up.headers)
 	}
 	if up.headers.Get("Mcp-Session-Id") != "" || hdr.Get("Mcp-Session-Id") != "" {
 		t.Fatal("no MCP session may be forwarded or minted")
@@ -213,11 +218,6 @@ func TestE2E_MCP_Protocol2026_07_28(t *testing.T) {
 	st, _, out = c.post("/mcp/proxy", "tools/call", "ticket_lookup", smuggle, map[string]string{"Mcp-Param-Region": "eu-west1"})
 	if st != 400 || mcpErrCode(out) != -32020 {
 		t.Fatalf("name mismatch: %d %v", st, out)
-	}
-	// Mcp-Param mismatch: integrity failure, zero dispatch.
-	st, _, out = c.post("/mcp/proxy", "tools/call", "ticket_lookup", call, map[string]string{"Mcp-Param-Region": "us-east1"})
-	if st != 400 || mcpErrCode(out) != -32020 {
-		t.Fatalf("param mismatch: %d %v", st, out)
 	}
 	if up.calls.Load() != 1 {
 		t.Fatalf("integrity failures dispatched: upstream calls = %d", up.calls.Load())
@@ -253,7 +253,7 @@ func TestE2E_MCP_Protocol2026_07_28(t *testing.T) {
 				t.Fatalf("%s %s = %d, want 405", m, path, resp.StatusCode)
 			}
 		}
-		// Notification: 202, no body.
+		// Notification: none is supported on this surface → 404 / -32601.
 		req, _ := http.NewRequest(http.MethodPost, c.base+path, bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
@@ -264,7 +264,9 @@ func TestE2E_MCP_Protocol2026_07_28(t *testing.T) {
 		}
 		raw, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusAccepted || len(raw) != 0 {
+		var nb map[string]any
+		_ = json.Unmarshal(raw, &nb)
+		if resp.StatusCode != http.StatusNotFound || mcpErrCode(nb) != -32601 {
 			t.Fatalf("%s notification: %d %q", path, resp.StatusCode, raw)
 		}
 	}

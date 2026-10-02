@@ -32,6 +32,7 @@ func proxyFlowUpstream(t *testing.T) *httptest.Server {
 			"jsonrpc": "2.0",
 			"id":      req.ID,
 			"result": map[string]interface{}{
+				"resultType": "complete",
 				"content": []interface{}{
 					map[string]interface{}{"type": "text", "text": "Contact is " + proxyFlowEmail},
 				},
@@ -181,7 +182,7 @@ func TestProxyDataFlow_AbsentWhenNoPII(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": req.ID,
-			"result": map[string]interface{}{"content": []interface{}{map[string]interface{}{"type": "text", "text": "no findings"}}},
+			"result": map[string]interface{}{"resultType": "complete", "content": []interface{}{map[string]interface{}{"type": "text", "text": "no findings"}}},
 		})
 	}))
 	t.Cleanup(srv.Close)

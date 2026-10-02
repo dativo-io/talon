@@ -92,19 +92,38 @@ func proxyServer() wire.Implementation {
 	return wire.Implementation{Name: "talon-mcp-proxy", Version: ServerVersion}
 }
 
-// headerDecl returns the trusted Mcp-Param declaration for a Talon-facing
-// tool name (validated at config load).
-func (h *ProxyHandler) headerDecl(toolName string) *wire.HeaderParams {
-	for _, m := range h.config.Proxy.AllowedTools {
-		if m.Name == toolName {
-			decl, err := wire.HeaderParamsFromConfig(m.HeaderParams)
-			if err != nil {
-				return &wire.HeaderParams{}
-			}
-			return decl
-		}
+// presentedToolDefinition is the exact tool definition this route shows a
+// client: the upstream definition with every x-mcp-header annotation
+// removed. Until trusted upstream discovery (#427/#431) captures schemas,
+// this route has no trusted declaration of mirrored parameters, so it
+// presents none — and therefore validates none inbound and generates none
+// outbound. One function feeds tools/list, the inbound check and the
+// outbound builder so advertisement and validation can never drift.
+func presentedToolDefinition(toolRaw json.RawMessage) (json.RawMessage, *wire.HeaderParams) {
+	var t map[string]json.RawMessage
+	if err := json.Unmarshal(toolRaw, &t); err != nil {
+		return toolRaw, &wire.HeaderParams{}
 	}
-	return &wire.HeaderParams{}
+	if schema, has := t["inputSchema"]; has && len(schema) > 0 {
+		t["inputSchema"] = wire.StripHeaderAnnotations(schema)
+	}
+	out, err := json.Marshal(t)
+	if err != nil {
+		return toolRaw, &wire.HeaderParams{}
+	}
+	decl, err := wire.HeaderParamsFromSchema(t["inputSchema"])
+	if err != nil || decl == nil {
+		decl = &wire.HeaderParams{}
+	}
+	return out, decl
+}
+
+// headerDecl is the declaration used for inbound Mcp-Param validation and
+// outbound generation on this route: derived from the presented definition
+// (presentedToolDefinition), which declares no mirrored parameters.
+func (h *ProxyHandler) headerDecl(string) *wire.HeaderParams {
+	_, decl := presentedToolDefinition(json.RawMessage(`{"inputSchema":{"type":"object"}}`))
+	return decl
 }
 
 // proxyInvocation carries request-scoped attribution for evidence (#350):
@@ -206,11 +225,15 @@ func (h *ProxyHandler) resolveProxyInvocation(r *http.Request) (*proxyInvocation
 }
 
 // SetRuntime overrides timeout and auth for upstream calls.
-func (h *ProxyHandler) SetRuntime(r ProxyRuntimeConfig) {
-	h.runtime = r
-	if h.runtime.UpstreamTimeout > 0 {
-		h.httpClient = &http.Client{Timeout: h.runtime.UpstreamTimeout}
+func (h *ProxyHandler) SetRuntime(cfg ProxyRuntimeConfig) {
+	h.runtime = cfg
+	timeout := cfg.UpstreamTimeout
+	if timeout <= 0 {
+		timeout = DefaultProxyRuntime().UpstreamTimeout
 	}
+	// The hardened client is rebuilt, never replaced by a default one:
+	// redirect denial survives every runtime change.
+	h.httpClient = newUpstreamClient(timeout)
 }
 
 // ServeHTTP handles POST /mcp/proxy JSON-RPC 2.0 and forwards to upstream.
@@ -434,11 +457,11 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_error: "+err.Error(), &flow)
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
 	}
-	upstream, err := wire.ReadUpstreamResponse(upstreamResp)
+	upstream, err := wire.ReadUpstreamResponse(upstreamResp, req.ID)
 	if err != nil {
 		// A response arrived, so egress happened — the flow item is truthful.
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_response_invalid", &flow)
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid", Data: talonErrData(TalonCodeUpstreamError)}}
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid: " + err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
 	}
 	out := jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID}
 	if upstream.Error != nil {
@@ -452,12 +475,18 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 			fmt.Sprintf("upstream_jsonrpc_error: %d %s", upstream.Error.Code, upstream.Error.Message), &flow)
 		return &out
 	}
-	// Lossless result: complete and input_required (MRTR) results pass
-	// through with resultType made explicit and this server's identity.
-	normalized, err := wire.NormalizeUpstreamResult(upstream.Result, proxyServer())
+	// resultType truth table (#447): complete continues, input_required
+	// (MRTR) passes through losslessly, a missing resultType is an upstream
+	// protocol violation, and task or any other value is unsupported on this
+	// surface (the Tasks extension is not advertised, #448).
+	normalized, err := wire.ValidateUpstreamResult(upstream.Result, proxyServer())
 	if err != nil {
-		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_response_invalid", &flow)
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid", Data: talonErrData(TalonCodeUpstreamError)}}
+		reason := "upstream_result_type_unsupported"
+		if errors.Is(err, wire.ErrResultTypeMissing) {
+			reason = "upstream_result_type_missing"
+		}
+		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, reason, &flow)
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid: " + err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
 	}
 	out.Result = normalized
 
@@ -557,73 +586,6 @@ func applyFlowFieldPath(entities []classifier.PIIEntity, fieldPath string) []cla
 	return out
 }
 
-// toolsListExtract holds the result of parsing an upstream tools/list result
-// so we can support MCP-canonical shape and common variants (array-at-top, other keys).
-type toolsListExtract struct {
-	Tools      []json.RawMessage      // tool items (with "name" or "id")
-	Shape      string                 // "object", "array", or "unknown"
-	ToolsKey   string                 // key that held the array in result object (e.g. "tools")
-	ObjectRest map[string]interface{} // other keys to preserve when Shape == "object"
-}
-
-// extractToolsListFromResult parses resp.Result into a list of tool entries and
-// the original shape so we can rebuild the response correctly. Supports:
-//   - MCP-canonical: result = { "tools": [...], "nextCursor": "..." }
-//   - Array-at-top: result = [...]
-//   - Other keys: result = { "items": [...] } or { "list": [...] } (common variants)
-//
-// Returns Shape "unknown" and empty Tools when the result is not recognizable,
-// so the caller can return a safe empty list instead of leaking unfiltered data.
-func extractToolsListFromResult(result interface{}) toolsListExtract {
-	if result == nil {
-		return toolsListExtract{Shape: "unknown"}
-	}
-	resultBytes, err := json.Marshal(result)
-	if err != nil {
-		return toolsListExtract{Shape: "unknown"}
-	}
-
-	// Try object with "tools" (MCP canonical) or common alternate keys.
-	var obj map[string]interface{}
-	if err := json.Unmarshal(resultBytes, &obj); err == nil && len(obj) > 0 {
-		for _, key := range []string{"tools", "items", "list"} {
-			raw, ok := obj[key]
-			if !ok {
-				continue
-			}
-			arr, ok := raw.([]interface{})
-			if !ok {
-				continue
-			}
-			tools := make([]json.RawMessage, 0, len(arr))
-			for _, item := range arr {
-				b, _ := json.Marshal(item)
-				tools = append(tools, b)
-			}
-			rest := make(map[string]interface{}, len(obj)-1)
-			for k, v := range obj {
-				if k != key {
-					rest[k] = v
-				}
-			}
-			return toolsListExtract{Tools: tools, Shape: "object", ToolsKey: key, ObjectRest: rest}
-		}
-	}
-
-	// Try result as array directly.
-	var arr []interface{}
-	if err := json.Unmarshal(resultBytes, &arr); err == nil {
-		tools := make([]json.RawMessage, 0, len(arr))
-		for _, item := range arr {
-			b, _ := json.Marshal(item)
-			tools = append(tools, b)
-		}
-		return toolsListExtract{Tools: tools, Shape: "array"}
-	}
-
-	return toolsListExtract{Shape: "unknown"}
-}
-
 // toolNameFromRaw returns the tool's name for allowlist check (MCP uses "name"; some impls use "id").
 func toolNameFromRaw(raw json.RawMessage) string {
 	var m map[string]interface{}
@@ -662,9 +624,9 @@ func (h *ProxyHandler) handleToolsList(ctx context.Context, req *wire.Request, i
 		}
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
 	}
-	upstream, err := wire.ReadUpstreamResponse(upstreamResp)
+	upstream, err := wire.ReadUpstreamResponse(upstreamResp, req.ID)
 	if err != nil {
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid", Data: talonErrData(TalonCodeUpstreamError)}}
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid: " + err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
 	}
 	if upstream.Error != nil {
 		out := &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: upstream.Error.Code, Message: upstream.Error.Message}}
@@ -673,24 +635,32 @@ func (h *ProxyHandler) handleToolsList(ctx context.Context, req *wire.Request, i
 		}
 		return out
 	}
-
-	var raw interface{}
-	_ = json.Unmarshal(upstream.Result, &raw)
-	extract := extractToolsListFromResult(raw)
-	filtered := h.filterUpstreamTools(extract.Tools)
+	// Only the current ListToolsResult shape is accepted: the upstream side
+	// of a 2026-07-28 route speaks the current protocol too.
+	list, err := wire.ParseListResult(upstream.Result)
+	if err != nil {
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid: " + err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
+	}
+	filtered := h.filterUpstreamTools(list.Tools)
 	span.SetAttributes(
-		attribute.Int("proxy.tools_upstream", len(extract.Tools)),
+		attribute.Int("proxy.tools_upstream", len(list.Tools)),
 		attribute.Int("proxy.tools_filtered", len(filtered)),
-		attribute.String("proxy.tools_result_shape", extract.Shape),
 	)
-	fields, ttl := listFields(extract)
+	fields := map[string]interface{}{}
+	for k, v := range list.Rest {
+		fields[k] = v
+	}
+	if list.NextCursor != "" {
+		fields["nextCursor"] = list.NextCursor
+	}
 	fields["tools"] = filtered
-	result := wire.Cacheable(wire.Complete(proxyServer(), fields), ttl, wire.CacheScopePrivate)
+	result := wire.Cacheable(wire.Complete(proxyServer(), fields), list.TTLMs, wire.CacheScopePrivate)
 	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: result}
 }
 
 // filterUpstreamTools keeps allowed_tools entries whose x-mcp-header
-// annotations are valid, in deterministic name order.
+// annotations are valid, presents each through presentedToolDefinition,
+// in deterministic name order.
 func (h *ProxyHandler) filterUpstreamTools(tools []json.RawMessage) []interface{} {
 	allowedSet := make(map[string]bool, len(h.config.Proxy.AllowedTools))
 	for _, t := range h.config.Proxy.AllowedTools {
@@ -709,33 +679,13 @@ func (h *ProxyHandler) filterUpstreamTools(tools []json.RawMessage) []interface{
 			log.Warn().Str("tool", name).Err(err).Msg("mcp_proxy_tool_excluded_invalid_header_annotation")
 			continue
 		}
+		presented, _ := presentedToolDefinition(toolRaw)
 		var v interface{}
-		_ = json.Unmarshal(toolRaw, &v)
+		_ = json.Unmarshal(presented, &v)
 		filtered = append(filtered, v)
 	}
 	sort.SliceStable(filtered, func(i, j int) bool { return toolNameOf(filtered[i]) < toolNameOf(filtered[j]) })
 	return filtered
-}
-
-// listFields carries the upstream's non-tool result members (e.g.
-// nextCursor) forward and reads its ttlMs hint; resultType, _meta and the
-// cache fields are always set by Talon.
-func listFields(extract toolsListExtract) (fields map[string]interface{}, ttlMs int) {
-	fields = map[string]interface{}{}
-	if extract.Shape != "object" {
-		return fields, 0
-	}
-	for k, v := range extract.ObjectRest {
-		switch k {
-		case "resultType", "_meta", "ttlMs", "cacheScope":
-			continue
-		}
-		fields[k] = v
-	}
-	if v, ok := extract.ObjectRest["ttlMs"].(float64); ok && v > 0 {
-		ttlMs = int(v)
-	}
-	return fields, ttlMs
 }
 
 // validToolHeaderAnnotations applies the client-side x-mcp-header rejection

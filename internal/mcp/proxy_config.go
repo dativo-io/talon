@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/policy"
 	"gopkg.in/yaml.v3"
 )
@@ -86,11 +85,6 @@ func validateAndApplyDefaults(cfg *policy.ProxyPolicyConfig) error {
 	// silently send unauthenticated requests.
 	if cfg.Proxy.Upstream.Auth != nil && strings.TrimSpace(cfg.Proxy.Upstream.Auth.SecretName) == "" {
 		return fmt.Errorf("proxy.upstream.auth.secret_name is required when the auth block is present")
-	}
-	for _, m := range cfg.Proxy.AllowedTools {
-		if _, err := wire.HeaderParamsFromConfig(m.HeaderParams); err != nil {
-			return fmt.Errorf("proxy.allowed_tools[%s].header_params: %w", m.Name, err)
-		}
 	}
 	// Defaults: rate limits
 	if cfg.Proxy.RateLimits.RequestsPerMinute <= 0 {
