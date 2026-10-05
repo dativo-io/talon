@@ -68,10 +68,13 @@ var _ classifier.Facade = (*markerFacade)(nil)
 func newProxyWithUpstream(t *testing.T, cls classifier.Facade, upstreamResult string) (*ProxyHandler, *evidence.Store) {
 	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "echo_tool") {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		resp, _ := json.Marshal(map[string]interface{}{
 			"jsonrpc": "2.0", "id": 1,
-			"result": map[string]string{"content": upstreamResult},
+			"result": map[string]string{"resultType": "complete", "content": upstreamResult},
 		})
 		_, _ = w.Write(resp)
 	}))
@@ -99,6 +102,7 @@ func callProxyEchoTool(t *testing.T, h *ProxyHandler, args map[string]interface{
 		"params": map[string]interface{}{"name": "echo_tool", "arguments": args},
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()

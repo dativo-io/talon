@@ -54,9 +54,12 @@ func authProxy(t *testing.T, upstreamURL string, vault UpstreamSecretGetter) (*P
 func TestProxyUpstreamAuth_HeaderInjected(t *testing.T) {
 	var gotAuth string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "crm_lookup") {
+			return
+		}
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":"ok"}}`))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":"ok"}}`))
 	}))
 	t.Cleanup(up.Close)
 
@@ -75,9 +78,12 @@ func TestProxyUpstreamAuth_HeaderInjected(t *testing.T) {
 func TestProxyUpstreamAuth_Rotation(t *testing.T) {
 	var gotAuth string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "crm_lookup") {
+			return
+		}
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":"ok"}}`))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":"ok"}}`))
 	}))
 	t.Cleanup(up.Close)
 
@@ -146,9 +152,12 @@ func TestProxyUpstreamAuth_ACLDenied(t *testing.T) {
 func TestProxyUpstreamAuth_CustomHeaderAndRawScheme(t *testing.T) {
 	var gotKey string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "crm_lookup") {
+			return
+		}
 		gotKey = r.Header.Get("X-Api-Key")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":"ok"}}`))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":"ok"}}`))
 	}))
 	t.Cleanup(up.Close)
 

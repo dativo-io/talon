@@ -16,6 +16,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
+	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/testutil"
@@ -25,13 +26,16 @@ import (
 func attribUpstream(t *testing.T, hit *bool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "crm_lookup", "user_delete", "not_in_allowlist") {
+			return
+		}
 		*hit = true
 		var req jsonrpcRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0", "id": req.ID,
-			"result": map[string]string{"content": "ok"},
+			"result": map[string]string{"resultType": "complete", "content": "ok"},
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -70,6 +74,7 @@ func attribCallArgs(t *testing.T, h *ProxyHandler, ctx context.Context, headers 
 		"params": map[string]interface{}{"name": tool, "arguments": args},
 	})
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -530,166 +535,127 @@ func talonCodeOf(t *testing.T, e *rpcError) string {
 	return code
 }
 
-func TestProxyUnknownMethod_RejectedFailClosed(t *testing.T) {
-	methods := []string{"resources/read", "prompts/get", "logging/setLevel"}
+// TestProxyUnsupportedMethod_ProtocolRejection pins the 2026-07-28 method
+// allowlist: anything but server/discover, tools/list and tools/call is a
+// protocol -32601 / 404 — no talon_code, no upstream call and, because no
+// trustworthy action was ever extracted, NO governance evidence (#447 keeps
+// protocol rejections out of the policy trail).
+func TestProxyUnsupportedMethod_ProtocolRejection(t *testing.T) {
+	methods := []string{"resources/read", "prompts/get", "logging/setLevel", "initialize", "ping", "subscriptions/listen"}
 	hit := false
 	up := attribUpstream(t, &hit)
 	h, store := attribHandler(t, up.URL, nil)
 
 	for _, method := range methods {
-		body, _ := json.Marshal(map[string]interface{}{
-			"jsonrpc": "2.0", "id": 7, "method": method,
-			"params": map[string]interface{}{"uri": "file:///etc/passwd"},
-		})
+		params := map[string]interface{}{"uri": "file:///etc/passwd", "name": "x"}
+		body := mcpBody(t, 7, method, params)
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+		req = stamp(req)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusNotFound, rec.Code, method)
 		var resp jsonrpcResponse
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 		require.NotNil(t, resp.Error, "method %s must be rejected", method)
-		assert.Equal(t, codeMethodNotFound, resp.Error.Code)
+		assert.Equal(t, wire.CodeMethodNotFound, resp.Error.Code)
 		assert.Contains(t, resp.Error.Message, method)
-		assert.Equal(t, TalonCodeMethodNotAllowed, talonCodeOf(t, resp.Error),
-			"rejections carry the stable #369 code, not just prose")
+		assert.Nil(t, resp.Error.Data, "a protocol rejection carries no talon_code")
+		assert.Equal(t, json.RawMessage("7"), resp.ID)
 	}
 	assert.False(t, hit, "ungoverned methods must never reach the upstream")
-
-	records := listRecords(t, store, "default")
-	require.Len(t, records, len(methods), "each rejection is the request's terminal record")
-	gotReasons := make([]string, 0, len(records))
-	for _, r := range records {
-		assert.Equal(t, "proxy_method_rejected", r.InvocationType)
-		assert.False(t, r.PolicyDecision.Allowed)
-		assert.Equal(t, "vendor-proxy-agent", r.AgentID, "rejections carry full #350 attribution")
-		require.NotEmpty(t, r.PolicyDecision.Reasons, "deny records must name their reason")
-		gotReasons = append(gotReasons, r.PolicyDecision.Reasons[0])
-		primary, ok := explanation.Primary(r.Explanations)
-		require.True(t, ok)
-		assert.Equal(t, explanation.CodePolicyDeniedTool, primary.Code)
-	}
-	wantReasons := make([]string, 0, len(methods))
-	for _, m := range methods {
-		wantReasons = append(wantReasons, "unsupported_method:"+m)
-	}
-	assert.ElementsMatch(t, wantReasons, gotReasons,
-		"every rejection reason names the rejected method")
+	assert.Empty(t, listRecords(t, store, "default"), "protocol rejections write no governance evidence")
 }
 
-// TestProxyMCPHandshake pins #367: the mandatory MCP lifecycle completes
-// against the proxy — initialize answered LOCALLY (tools capability only,
-// protocolVersion echoed, NEVER forwarded upstream), notifications/initialized
-// accepted with 202 and no body, then governed tools/call proceeds normally.
-func TestProxyMCPHandshake(t *testing.T) {
+// TestNotifications_Rejected pins that this surface defines NO client-to-
+// server notification under 2026-07-28: the removed lifecycle notifications
+// (initialized, cancelled) and unknown ones alike are Method not found on
+// BOTH routes — HTTP 404, -32601, no id, nothing forwarded, no evidence.
+// An id-carrying unknown method stays a proper -32601 with the id echoed.
+func TestNotifications_Rejected(t *testing.T) {
 	hit := false
 	up := attribUpstream(t, &hit)
-	h, _ := attribHandler(t, up.URL, nil)
-
-	// 1. initialize — answered locally.
-	initBody, _ := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0", "id": 1, "method": "initialize",
-		"params": map[string]interface{}{
-			"protocolVersion": "2025-03-26",
-			"capabilities":    map[string]interface{}{},
-			"clientInfo":      map[string]interface{}{"name": "mcp-inspector", "version": "1.0"},
-		},
-	})
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(initBody))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code)
-	var initResp jsonrpcResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &initResp))
-	require.Nil(t, initResp.Error, "initialize must succeed: %v", initResp.Error)
-	result, ok := initResp.Result.(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "2025-03-26", result["protocolVersion"], "the client's protocolVersion is echoed")
-	caps, ok := result["capabilities"].(map[string]interface{})
-	require.True(t, ok)
-	_, hasTools := caps["tools"]
-	assert.True(t, hasTools, "the tools capability is advertised")
-	assert.NotContains(t, caps, "resources", "resources are NOT advertised — not part of the governed surface")
-	assert.NotContains(t, caps, "prompts", "prompts are NOT advertised")
-	assert.False(t, hit, "initialize is answered locally — NEVER forwarded upstream")
-
-	// 2. notifications/initialized — 202, no body.
-	notifBody, _ := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0", "method": "notifications/initialized",
-	})
-	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(notifBody))
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusAccepted, rec.Code)
-	assert.Empty(t, rec.Body.String(), "notifications get no response body")
-	assert.False(t, hit, "notifications/initialized is never forwarded upstream")
-
-	// 3. Governed traffic proceeds.
-	_, resp := attribCall(t, h, context.Background(), nil, "crm_lookup")
-	require.Nil(t, resp.Error)
-	assert.True(t, hit, "tools/call still reaches the upstream")
-}
-
-// TestNativeMCPHandshake pins #367 on the native /mcp server: same local
-// initialize + accepted initialized notification.
-func TestNativeMCPHandshake(t *testing.T) {
-	h := &Handler{}
-	initBody, _ := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0", "id": 1, "method": "initialize",
-		"params": map[string]interface{}{"protocolVersion": "2025-06-18"},
-	})
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(initBody))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code)
-	var resp jsonrpcResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Nil(t, resp.Error, "native initialize must succeed")
-	result, ok := resp.Result.(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "2025-06-18", result["protocolVersion"])
-
-	notifBody, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "notifications/initialized"})
-	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(notifBody))
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusAccepted, rec.Code)
-	assert.Empty(t, rec.Body.String())
-}
-
-// TestNotificationsGetNoResponse pins #363 on BOTH endpoints: any JSON-RPC
-// message without an id is a notification and MUST NOT receive a response
-// body — previously only notifications/initialized was handled, and e.g.
-// notifications/cancelled earned a -32601 body with "id": null, which a
-// spec-conformant SDK treats as a protocol error. A request WITH an id and
-// an unknown method keeps its -32601 response, id echoed.
-func TestNotificationsGetNoResponse(t *testing.T) {
-	hit := false
-	up := attribUpstream(t, &hit)
-	proxy, _ := attribHandler(t, up.URL, nil)
-	native := &Handler{}
+	proxy, store := attribHandler(t, up.URL, nil)
+	native := NewHandler(nil, nil, nil, nil)
 
 	for name, h := range map[string]http.Handler{"proxy": proxy, "native": native} {
-		for _, method := range []string{"notifications/cancelled", "notifications/progress", "totally/unknown"} {
-			body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": method})
+		for _, method := range []string{"notifications/initialized", "notifications/cancelled", "notifications/progress", "tools/call"} {
+			body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": method, "params": map[string]interface{}{"requestId": "1", "name": "crm_lookup"}})
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
+			req = stamp(req)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
-			assert.Equal(t, http.StatusAccepted, rec.Code, "%s: id-less %s must be accepted", name, method)
-			assert.Empty(t, rec.Body.String(), "%s: notifications get NO response body (%s)", name, method)
+			assert.Equal(t, http.StatusNotFound, rec.Code, "%s: id-less %s is not a supported notification", name, method)
+			var resp jsonrpcResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), name)
+			require.NotNil(t, resp.Error, name)
+			assert.Equal(t, wire.CodeMethodNotFound, resp.Error.Code, name)
+			assert.Nil(t, resp.ID, "%s: an error for a notification carries no id", name)
 		}
 		assert.False(t, hit, "%s: notifications are never forwarded upstream", name)
 
-		// The same unknown method WITH an id is a request — it keeps its
-		// -32601 response with the id echoed.
-		body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "id": 7, "method": "totally/unknown"})
+		body := mcpBody(t, 7, "totally/unknown", nil)
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
+		req = stamp(req)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusNotFound, rec.Code, name)
 		var resp jsonrpcResponse
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), name)
-		require.NotNil(t, resp.Error, "%s: an id-carrying unknown method stays a proper JSON-RPC error", name)
-		assert.Equal(t, codeMethodNotFound, resp.Error.Code, name)
-		assert.Equal(t, float64(7), resp.ID, "%s: the request id is echoed", name)
+		require.NotNil(t, resp.Error, name)
+		assert.Equal(t, wire.CodeMethodNotFound, resp.Error.Code, name)
+		assert.Equal(t, json.RawMessage("7"), resp.ID, "%s: the request id is echoed", name)
 	}
+	assert.Empty(t, listRecords(t, store, "default"), "protocol rejections write no evidence")
+}
+
+// TestLegacyInitialize_Unavailable pins the clean cutover on BOTH routes: a
+// pre-2026 client's initialize (no headers, no _meta) is rejected with a
+// modern error that names the supported versions; a modern-looking
+// initialize is simply an unknown method; Mcp-Session-Id is ignored and
+// never minted; GET/DELETE session transport is 405.
+func TestLegacyInitialize_Unavailable(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
+	proxy, _ := attribHandler(t, up.URL, nil)
+	native := NewHandler(nil, nil, nil, nil)
+
+	for name, h := range map[string]http.Handler{"proxy": proxy, "native": native} {
+		initBody, _ := json.Marshal(map[string]interface{}{
+			"jsonrpc": "2.0", "id": 1, "method": "initialize",
+			"params": map[string]interface{}{
+				"protocolVersion": "2025-06-18",
+				"capabilities":    map[string]interface{}{},
+				"clientInfo":      map[string]interface{}{"name": "mcp-inspector", "version": "1.0"},
+			},
+		})
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(initBody))
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", "legacy-session")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "%s: legacy initialize is not served", name)
+		var resp jsonrpcResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), name)
+		require.NotNil(t, resp.Error, name)
+		assert.NotContains(t, rec.Body.String(), "\"protocolVersion\":\"2025", "%s: no legacy version is echoed", name)
+		assert.Empty(t, rec.Header().Get("Mcp-Session-Id"), "%s: no session is minted or echoed", name)
+
+		req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(mcpBody(t, 1, "initialize", nil)))
+		req = stamp(req)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusNotFound, rec.Code, "%s: initialize is an unknown method under 2026-07-28", name)
+
+		for _, m := range []string{http.MethodGet, http.MethodDelete} {
+			req = httptest.NewRequestWithContext(context.Background(), m, "/mcp", nil)
+			req.Header.Set("Mcp-Session-Id", "legacy-session")
+			rec = httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusMethodNotAllowed, rec.Code, "%s: %s session transport is gone", name, m)
+		}
+	}
+	assert.False(t, hit, "nothing legacy reaches the upstream")
 }
 
 // TestProxyDenialCodes pins #369 on the two most load-bearing denials:

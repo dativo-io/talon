@@ -209,7 +209,9 @@ GWEOF
   rm -f "$run1_headers" "$run1_body" /tmp/talon_smoke_run2_body.json 2>/dev/null || true
   assert_pass "Wrong admin key → 401" test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: wrong-key" http://127.0.0.1:8080/v1/evidence)" = "401"
   # POST /mcp is tenant-only (TenantKeyMiddleware); use agent key when available
-  local mcp_resp; mcp_resp="$(curl -s -X POST -H "Authorization: Bearer $agent_key" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' http://127.0.0.1:8080/mcp)"
+  # MCP 2026-07-28: every request is self-describing (protocol header +
+  # params._meta, Mcp-Method mirror); there is no initialize handshake.
+  local mcp_resp; mcp_resp="$(curl -s -X POST -H "Authorization: Bearer $agent_key" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/list" -d '{"jsonrpc":"2.0","method":"tools/list","id":1,"params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"talon-smoke","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}' http://127.0.0.1:8080/mcp)"
   if echo "$mcp_resp" | jq -e '.result' &>/dev/null; then
     assert_pass "POST /mcp tools/list 200 with result" true
   else

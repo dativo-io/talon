@@ -13,6 +13,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/testutil"
@@ -64,36 +65,37 @@ func TestProxyHandler_ServeHTTP_methodAndJSON(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
-	// GET not allowed
+	// GET: legacy session stream — 405.
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/mcp/proxy", nil)
+	req = stamp(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	var r jsonrpcResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
 	require.NotNil(t, r.Error)
-	assert.Equal(t, codeInvalidRequest, r.Error.Code)
+	assert.Equal(t, wire.CodeInvalidRequest, r.Error.Code)
 
-	// Invalid JSON
+	// Invalid JSON: 400 + parse error.
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader([]byte("{")))
-	req.Header.Set("Content-Type", "application/json")
+	req = stamp(req)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
 	require.NotNil(t, r.Error)
-	assert.Equal(t, codeParseError, r.Error.Code)
+	assert.Equal(t, wire.CodeParseError, r.Error.Code)
 
-	// Wrong jsonrpc version
+	// Wrong jsonrpc version: 400 + invalid request.
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "1.0", "method": "tools/list", "id": 1})
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	req = stamp(req)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
 	require.NotNil(t, r.Error)
-	assert.Equal(t, codeInvalidRequest, r.Error.Code)
+	assert.Equal(t, wire.CodeInvalidRequest, r.Error.Code)
 }
 
 func TestProxyHandler_toolsCall_missingName(t *testing.T) {
@@ -114,15 +116,19 @@ func TestProxyHandler_toolsCall_missingName(t *testing.T) {
 		"jsonrpc": "2.0", "method": "tools/call", "params": map[string]interface{}{}, "id": 1,
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	// A tools/call without params.name cannot carry the REQUIRED Mcp-Name
+	// mirror: it is a header-validation failure (400 / HeaderMismatch)
+	// before any governance code runs.
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	var r jsonrpcResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
 	require.NotNil(t, r.Error)
-	assert.Equal(t, codeInvalidParams, r.Error.Code)
+	assert.Equal(t, wire.CodeHeaderMismatch, r.Error.Code)
 }
 
 // TestProxyHandler_forbiddenTool_Blocks_ZeroUpstream verifies that explicitly
@@ -156,6 +162,7 @@ func TestProxyHandler_forbiddenTool_Blocks_ZeroUpstream(t *testing.T) {
 			"params": map[string]interface{}{"name": tool, "arguments": map[string]interface{}{}},
 		})
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+		req = stamp(req)
 		req.Header.Set("Content-Type", "application/json")
 		req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 		rec := httptest.NewRecorder()
@@ -188,50 +195,6 @@ func TestProxyHandler_forbiddenTool_Blocks_ZeroUpstream(t *testing.T) {
 	}
 }
 
-func TestExtractToolsListFromResult(t *testing.T) {
-	tests := []struct {
-		name      string
-		result    interface{}
-		wantLen   int
-		wantShape string
-		wantKey   string
-	}{
-		{"nil", nil, 0, "unknown", ""},
-		{"canonical tools", map[string]interface{}{
-			"tools": []interface{}{
-				map[string]interface{}{"name": "a", "description": "x"},
-				map[string]interface{}{"name": "b"},
-			},
-			"nextCursor": "c1",
-		}, 2, "object", "tools"},
-		{"items key", map[string]interface{}{
-			"items": []interface{}{
-				map[string]interface{}{"name": "only"},
-			},
-		}, 1, "object", "items"},
-		{"list key", map[string]interface{}{
-			"list": []interface{}{
-				map[string]interface{}{"id": "by_id"},
-			},
-		}, 1, "object", "list"},
-		{"array at top", []interface{}{
-			map[string]interface{}{"name": "x"},
-		}, 1, "array", ""},
-		{"empty object", map[string]interface{}{}, 0, "unknown", ""},
-		{"object no array key", map[string]interface{}{"other": "x"}, 0, "unknown", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			extract := extractToolsListFromResult(tt.result)
-			assert.Equal(t, tt.wantShape, extract.Shape)
-			assert.Len(t, extract.Tools, tt.wantLen)
-			if tt.wantKey != "" {
-				assert.Equal(t, tt.wantKey, extract.ToolsKey)
-			}
-		})
-	}
-}
-
 func TestToolNameFromRaw(t *testing.T) {
 	tests := []struct {
 		raw  string
@@ -255,25 +218,32 @@ func TestProxyHandler_toolsList_filteringAndShapes(t *testing.T) {
 	// Upstream returns different shapes; we assert filtering and shape preservation.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody struct {
-			Method string `json:"method"`
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
+			Params struct {
+				Cursor string `json:"cursor"`
+			} `json:"params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&reqBody)
 		if reqBody.Method != "tools/list" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		// Respond with MCP-style result: three tools, only "allowed_one" is in policy.
-		resp := map[string]interface{}{
-			"jsonrpc": "2.0", "id": 1,
-			"result": map[string]interface{}{
-				"tools": []interface{}{
-					map[string]interface{}{"name": "allowed_one", "description": "ok"},
-					map[string]interface{}{"name": "forbidden_a"},
-					map[string]interface{}{"name": "forbidden_b"},
-				},
-				"nextCursor": "page2",
-			},
+		// Two upstream pages: three tools on the first (only "allowed_one"
+		// is in policy), an empty terminal page. The capture follows them.
+		result := map[string]interface{}{
+			"resultType": "complete", "ttlMs": 60000, "cacheScope": "public",
+			"tools": []interface{}{},
 		}
+		if reqBody.Params.Cursor == "" {
+			result["tools"] = []interface{}{
+				map[string]interface{}{"name": "allowed_one", "description": "ok"},
+				map[string]interface{}{"name": "forbidden_a"},
+				map[string]interface{}{"name": "forbidden_b"},
+			}
+			result["nextCursor"] = "page2"
+		}
+		resp := map[string]interface{}{"jsonrpc": "2.0", "id": reqBody.ID, "result": result}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
@@ -294,6 +264,7 @@ func TestProxyHandler_toolsList_filteringAndShapes(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -311,95 +282,55 @@ func TestProxyHandler_toolsList_filteringAndShapes(t *testing.T) {
 	require.True(t, ok)
 	assert.Len(t, tools, 1)
 	assert.Equal(t, "allowed_one", tools[0].(map[string]interface{})["name"])
-	assert.Equal(t, "page2", result["nextCursor"])
+	assert.NotContains(t, result, "nextCursor", "Talon presents the captured set as a single page")
+	assert.Equal(t, float64(60000), result["ttlMs"])
+	assert.Equal(t, "private", result["cacheScope"])
 }
 
-func TestProxyHandler_toolsList_arrayShapeAndUnknownSafe(t *testing.T) {
-	// Upstream returns result as array; we must preserve array and filter.
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"jsonrpc": "2.0", "id": 1,
-			"result": []interface{}{
-				map[string]interface{}{"name": "keep", "description": "x"},
-				map[string]interface{}{"name": "drop"},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer upstream.Close()
+// TestProxyHandler_toolsList_NonConformantUpstreamRejected pins that the
+// upstream side of a 2026-07-28 route must speak the current protocol:
+// legacy list shapes (bare array, ad-hoc keys) and results without a
+// resultType are upstream errors — never silently reshaped, never leaked.
+func TestProxyHandler_toolsList_NonConformantUpstreamRejected(t *testing.T) {
+	for name, result := range map[string]string{
+		"bare array":         `[{"name":"keep"},{"name":"secret_tool"}]`,
+		"ad-hoc key":         `{"resultType":"complete","weirdKey":[{"name":"secret_tool"}]}`,
+		"missing resultType": `{"tools":[{"name":"keep"}]}`,
+		"task result":        `{"resultType":"task","task":{"taskId":"t"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req jsonrpcRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":` + result + `}`))
+			}))
+			defer upstream.Close()
+			cfg := &policy.ProxyPolicyConfig{
+				Agent: policy.ProxyAgentConfig{Name: "t", Type: "mcp_proxy"},
+				Proxy: policy.ProxyConfig{
+					Upstream:     policy.UpstreamConfig{URL: upstream.URL},
+					AllowedTools: []policy.ToolMapping{{Name: "keep"}},
+				},
+			}
+			engine, err := policy.NewProxyEngine(context.Background(), cfg)
+			require.NoError(t, err)
+			store, _ := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
+			t.Cleanup(func() { _ = store.Close() })
+			h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
-	cfg := &policy.ProxyPolicyConfig{
-		Agent: policy.ProxyAgentConfig{Name: "t", Type: "mcp_proxy"},
-		Proxy: policy.ProxyConfig{
-			Upstream:     policy.UpstreamConfig{URL: upstream.URL},
-			AllowedTools: []policy.ToolMapping{{Name: "keep"}},
-		},
+			body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+			req = stamp(req)
+			req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+			var r jsonrpcResponse
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
+			require.NotNil(t, r.Error, "non-conformant upstream list must be an error")
+			assert.Equal(t, codeServerError, r.Error.Code)
+			assert.NotContains(t, rec.Body.String(), "secret_tool", "nothing unfiltered leaks")
+		})
 	}
-	engine, err := policy.NewProxyEngine(context.Background(), cfg)
-	require.NoError(t, err)
-	store, _ := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
-	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
-
-	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	var r jsonrpcResponse
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
-	require.Nil(t, r.Error)
-	// Result must be array (shape preserved).
-	arr, ok := r.Result.([]interface{})
-	require.True(t, ok)
-	assert.Len(t, arr, 1)
-	assert.Equal(t, "keep", arr[0].(map[string]interface{})["name"])
-}
-
-func TestProxyHandler_toolsList_unknownShapeReturnsEmpty(t *testing.T) {
-	// Upstream returns unrecognizable result; we must not leak unfiltered data.
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"jsonrpc": "2.0", "id": 1,
-			"result": map[string]interface{}{"weirdKey": []interface{}{map[string]interface{}{"name": "secret_tool"}}},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer upstream.Close()
-
-	cfg := &policy.ProxyPolicyConfig{
-		Agent: policy.ProxyAgentConfig{Name: "t", Type: "mcp_proxy"},
-		Proxy: policy.ProxyConfig{
-			Upstream:     policy.UpstreamConfig{URL: upstream.URL},
-			AllowedTools: []policy.ToolMapping{{Name: "allowed"}},
-		},
-	}
-	engine, err := policy.NewProxyEngine(context.Background(), cfg)
-	require.NoError(t, err)
-	store, _ := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
-	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
-
-	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	var r jsonrpcResponse
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
-	require.Nil(t, r.Error)
-	// Must be safe default: empty tools list, not the upstream "secret_tool".
-	result, ok := r.Result.(map[string]interface{})
-	require.True(t, ok)
-	tools, ok := result["tools"].([]interface{})
-	require.True(t, ok)
-	assert.Len(t, tools, 0)
 }

@@ -347,13 +347,22 @@ resp = client.chat.completions.create(
 curl -X POST http://localhost:8080/mcp \
   -H "Authorization: Bearer your-tenant-key" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/call" \
+  -H "Mcp-Name: web_search" \
   -d '{
     "jsonrpc": "2.0",
     "method": "tools/call",
-    "params": {"name": "web_search", "arguments": {"query": "test"}},
+    "params": {
+      "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}},
+      "name": "web_search", "arguments": {"query": "test"}},
     "id": 1
   }'
 ```
+
+Talon speaks MCP `2026-07-28` only: no `initialize` handshake, no MCP
+session; every request carries the protocol headers and `params._meta`.
 
 ### When to use which pattern
 

@@ -12,6 +12,17 @@ test_section_22_cache() {
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
+  # The rate limiter counts the tenant's evidence records of the last minute
+  # across the smoke run's shared data dir, so a live-key run's earlier
+  # sections can exhaust the tightened 30/min before the cache hit is ever
+  # evaluated. This section's agent gets its own generous limit; the runs
+  # stay in tenant default so the report/dashboard parity check (section
+  # 23) keeps counting them.
+  if command -v yq &>/dev/null; then
+    yq -i '.policies.rate_limits.requests_per_minute = 600' "$dir/agent.talon.yaml" 2>/dev/null || true
+  else
+    sed -i.bak 's/requests_per_minute: *[0-9]\+/requests_per_minute: 600/' "$dir/agent.talon.yaml" 2>/dev/null || true
+  fi
   # Enable cache in infra config (append cache block so it is used; last key wins in YAML)
   if ! grep -q "cache:" "$dir/talon.config.yaml" 2>/dev/null; then
     cat >> "$dir/talon.config.yaml" <<'CACHEEOF'

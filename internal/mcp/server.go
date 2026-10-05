@@ -1,4 +1,6 @@
-// Package mcp implements the Model Context Protocol: JSON-RPC 2.0 server for tools/list and tools/call.
+// Package mcp implements Talon's MCP surfaces (native /mcp and the governance
+// proxy /mcp/proxy) over MCP 2026-07-28 Streamable HTTP. Both routes share
+// the wire package: one parser, one gate, one error vocabulary (#447).
 package mcp
 
 import (
@@ -6,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -18,6 +22,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
+	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
@@ -27,27 +32,13 @@ var tracer = otel.Tracer("github.com/dativo-io/talon/internal/mcp")
 
 const jsonrpcVersion = "2.0"
 
-// JSON-RPC 2.0 types
-type jsonrpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	ID      interface{}     `json:"id"`
-}
-
-// isNotification reports whether a decoded JSON-RPC message carries no id —
-// a notification, which per JSON-RPC 2.0 §4.1 (and the MCP streamable-HTTP
-// transport) MUST NOT receive a response. Shared by both `/mcp` and
-// `/mcp/proxy` ServeHTTPs (#363) so the two endpoints cannot drift. An
-// explicit `"id": null` is treated the same as an absent id — the spec
-// discourages null ids precisely because they are indistinguishable here.
-func isNotification(req *jsonrpcRequest) bool { return req.ID == nil }
-
+// jsonrpcResponse is the internal response shape the governed paths build.
+// The wire package writes it; ID keeps the client's exact id bytes.
 type jsonrpcResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	Result  interface{} `json:"result,omitempty"`
-	Error   *rpcError   `json:"error,omitempty"`
-	ID      interface{} `json:"id"`
+	JSONRPC string          `json:"jsonrpc"`
+	Result  interface{}     `json:"result,omitempty"`
+	Error   *rpcError       `json:"error,omitempty"`
+	ID      json.RawMessage `json:"id"`
 }
 
 type rpcError struct {
@@ -59,22 +50,43 @@ type rpcError struct {
 	Data interface{} `json:"data,omitempty"`
 }
 
-// Standard JSON-RPC 2.0 error codes
+// Application-level JSON-RPC codes used AFTER the protocol gate accepted the
+// request. Protocol rejections never reach these: they use wire's codes.
 const (
-	codeParseError     = -32700
-	codeInvalidRequest = -32600
-	codeMethodNotFound = -32601
-	codeInvalidParams  = -32602
-	codeInternalError  = -32603
-	codeServerError    = -32000
+	codeInvalidParams = wire.CodeInvalidParams
+	codeServerError   = -32000 // Talon governance / execution outcome (grandfathered legacy range)
 )
 
-// Handler implements the native MCP server: tools/list and tools/call over JSON-RPC 2.0.
+// write sends a governed-path response: an application error (HTTP 200,
+// JSON-RPC error) or a result.
+func (r *jsonrpcResponse) write(w http.ResponseWriter) {
+	if r.Error != nil {
+		wire.WriteRPCError(w, r.ID, r.Error.Code, r.Error.Message, r.Error.Data)
+		return
+	}
+	wire.WriteResult(w, r.ID, r.Result)
+}
+
+// nativeServer is the identity this route reports in every result.
+func nativeServer() wire.Implementation {
+	return wire.Implementation{Name: "talon", Version: ServerVersion}
+}
+
+// listTTLMs is the freshness hint for native tools/list and discovery: the
+// registry is fixed for the process lifetime, so a short TTL only bounds
+// how stale a client may be across a restart.
+const listTTLMs = 60_000
+
+// Handler implements the native MCP server: server/discover, tools/list and
+// tools/call over MCP 2026-07-28 Streamable HTTP (#447).
 type Handler struct {
 	registry      *tools.ToolRegistry
 	policyEngine  *policy.Engine
 	evidenceStore *evidence.Store
 	classifier    classifier.Facade
+	// Transport is the shared protocol gate; routes share one implementation
+	// so /mcp and /mcp/proxy cannot speak different MCP versions.
+	Transport *wire.Transport
 }
 
 // NewHandler creates an MCP handler with the given registry, policy engine,
@@ -86,76 +98,81 @@ func NewHandler(registry *tools.ToolRegistry, policyEngine *policy.Engine, evide
 		policyEngine:  policyEngine,
 		evidenceStore: evidenceStore,
 		classifier:    cls,
+		Transport:     newTransport(),
 	}
 }
 
-// ServeHTTP handles POST /mcp JSON-RPC 2.0 requests.
+// newTransport is the one method allowlist both routes serve.
+func newTransport() *wire.Transport {
+	return &wire.Transport{Methods: []string{wire.MethodDiscover, wire.MethodToolsList, wire.MethodToolsCall}}
+}
+
+// ServeHTTP handles POST /mcp. Every request is self-describing: the wire
+// gate validates transport, protocol version, required _meta and header/body
+// integrity before any method runs; nothing is inferred from earlier
+// traffic and a protocol rejection writes no governance evidence.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeRPCError(w, nil, codeInvalidRequest, "method must be POST")
-		return
-	}
 	ctx, span := tracer.Start(r.Context(), "mcp.serve",
 		trace.WithAttributes(
 			attribute.String("http.request.method", r.Method),
 		))
 	defer span.End()
 
-	var req jsonrpcRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeRPCError(w, nil, codeParseError, "invalid JSON: "+err.Error())
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	req, outcome := h.Transport.Accept(w, r)
+	if outcome != wire.Ready {
+		span.SetAttributes(attribute.Bool("mcp.protocol_rejected", outcome == wire.Rejected))
 		return
 	}
-	if req.JSONRPC != jsonrpcVersion {
-		writeRPCError(w, req.ID, codeInvalidRequest, "jsonrpc must be 2.0")
-		return
-	}
-
-	// MCP lifecycle (#367) generalized to every notification (#363): a
-	// JSON-RPC message without an id MUST NOT receive a response body (spec
-	// §4.1; MCP streamable-HTTP transport) — acknowledge with 202 and drop.
-	// Previously only notifications/initialized was handled; any other
-	// notification got a -32601 body with "id": null, which a conformant SDK
-	// treats as a protocol error.
-	if isNotification(&req) {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
+	span.SetAttributes(attribute.String("mcp.method", req.Method))
 
 	var resp *jsonrpcResponse
 	switch req.Method {
-	case "initialize":
-		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: mcpInitializeResult("talon", req.Params)}
-	case "tools/list":
+	case wire.MethodDiscover:
+		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: h.discoverResult()}
+	case wire.MethodToolsList:
 		resp = h.handleToolsList(ctx, req.ID)
-	case "tools/call":
-		resp = h.handleToolsCall(ctx, &req)
-	default:
-		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeMethodNotFound, Message: "method not found: " + req.Method}}
+	case wire.MethodToolsCall:
+		resp = h.handleToolsCall(ctx, w, req)
+		if resp == nil {
+			return // protocol rejection already written
+		}
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	resp.write(w)
 }
 
-func (h *Handler) handleToolsList(ctx context.Context, id interface{}) *jsonrpcResponse {
+// discoverResult advertises exactly what this route implements: the one
+// protocol version, the tools capability (no listChanged: there is no
+// subscriptions/listen stream here), no extensions.
+func (h *Handler) discoverResult() map[string]interface{} {
+	return wire.Discover(nativeServer(), map[string]interface{}{"tools": map[string]interface{}{}}, "", listTTLMs)
+}
+
+func (h *Handler) handleToolsList(ctx context.Context, id json.RawMessage) *jsonrpcResponse {
 	_, span := tracer.Start(ctx, "mcp.tools.list")
 	defer span.End()
 
 	list := h.registry.List()
-	tools := make([]map[string]interface{}, 0, len(list))
+	entries := make([]map[string]interface{}, 0, len(list))
 	for _, t := range list {
-		tools = append(tools, map[string]interface{}{
+		schema, _, err := nativeToolDefinition(t)
+		if err != nil {
+			// A definition with an invalid x-mcp-header annotation is
+			// excluded from the list (streamable-http §Schema Extension).
+			log.Warn().Str("tool", t.Name()).Err(err).Msg("mcp_tool_excluded_invalid_header_annotation")
+			continue
+		}
+		entries = append(entries, map[string]interface{}{
 			"name":        t.Name(),
 			"description": t.Description(),
-			"inputSchema": t.InputSchema(),
+			"inputSchema": schema,
 		})
 	}
-	span.SetAttributes(attribute.Int("tools.count", len(tools)))
-	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: id, Result: map[string]interface{}{"tools": tools}}
+	// Deterministic order: the registry's order is insertion order, which is
+	// stable for a process; sort by name so it is stable across restarts.
+	sort.Slice(entries, func(i, j int) bool { return entries[i]["name"].(string) < entries[j]["name"].(string) })
+	span.SetAttributes(attribute.Int("tools.count", len(entries)))
+	result := wire.Cacheable(wire.Complete(nativeServer(), map[string]interface{}{"tools": entries}), wire.TTL(listTTLMs), wire.CacheScopePrivate)
+	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: id, Result: result}
 }
 
 type toolsCallParams struct {
@@ -164,18 +181,30 @@ type toolsCallParams struct {
 }
 
 //nolint:gocyclo // MCP tools/call: policy, schema validation, execute, evidence — branching required
-func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jsonrpcResponse {
+func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, req *wire.Request) *jsonrpcResponse {
 	ctx, span := tracer.Start(ctx, "mcp.tools.call")
 	defer span.End()
 
-	var params toolsCallParams
-	if len(req.Params) > 0 {
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "invalid params: " + err.Error()}}
-		}
-	}
+	params := toolsCallParams{Name: req.Name, Arguments: req.Arguments}
 	if params.Name == "" {
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "tool name is required"}}
+	}
+	// Mcp-Param-* integrity (#447): when the trusted tool schema declares
+	// mirrored parameters, every recognized header must equal the parsed
+	// argument. A mismatch is a protocol rejection — before policy, before
+	// execution, with no evidence (no trustworthy action exists yet). The
+	// header is never the argument value.
+	if tool, ok := h.registry.Get(params.Name); ok {
+		_, decl, derr := nativeToolDefinition(tool)
+		if derr != nil {
+			wire.WriteError(w, req.ID, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidParams, Reason: wire.ReasonInvalidRequest, Message: "tool definition is invalid: " + derr.Error()})
+			return nil
+		}
+		if perr := wire.ValidateHeaderParams(decl, params.Arguments, req.HeaderParams); perr != nil {
+			span.SetAttributes(attribute.String("mcp.protocol_reason", perr.Reason))
+			wire.WriteError(w, req.ID, perr)
+			return nil
+		}
 	}
 
 	span.SetAttributes(attribute.String("tool.name", params.Name))
@@ -321,7 +350,8 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 
 	tool, ok := h.registry.Get(params.Name)
 	if !ok {
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "tool not found: " + params.Name}}
+		// Unknown tool is a protocol error per server/tools §Error Handling.
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "Unknown tool: " + params.Name}}
 	}
 
 	if schema := tool.InputSchema(); len(schema) > 0 && string(schema) != "null" {
@@ -431,7 +461,34 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: execErr.Error()}}
 	}
 
-	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: map[string]interface{}{"content": result}}
+	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: toolResult(result)}
+}
+
+// nativeToolDefinition is the ONE source of truth for a native tool's
+// presented definition and its mirrored-parameter declaration: the exact
+// schema tools/list shows is the schema inbound Mcp-Param-* validation
+// uses, so advertisement and validation cannot drift.
+func nativeToolDefinition(t tools.Tool) (schema json.RawMessage, decl *wire.HeaderParams, err error) {
+	schema = t.InputSchema()
+	if len(schema) == 0 || string(schema) == "null" {
+		schema = json.RawMessage(`{"type":"object"}`)
+	}
+	decl, err = wire.HeaderParamsFromSchema(schema)
+	return schema, decl, err
+}
+
+// toolResult renders a native tool's JSON result as a CallToolResult: the
+// serialized JSON as a text content block (every client can read it) plus
+// the same value as structuredContent.
+func toolResult(result json.RawMessage) map[string]interface{} {
+	if len(result) == 0 {
+		result = json.RawMessage("null")
+	}
+	return wire.Complete(nativeServer(), map[string]interface{}{
+		"content":           []map[string]interface{}{{"type": "text", "text": string(result)}},
+		"structuredContent": result,
+		"isError":           false,
+	})
 }
 
 func mcpResidualBlockMessage(prefix string, types []string) string {
@@ -505,7 +562,7 @@ func (h *Handler) buildServerDataFlow(
 // scannerBlockedResponse records fail-closed deny evidence for a scan-engine
 // failure (typed failure kind included) and returns the JSON-RPC error to
 // surface to the caller.
-func (h *Handler) scannerBlockedResponse(ctx context.Context, span trace.Span, reqID interface{}, tenantID, agentID, toolName, policyVersion string, scanErr error, trigger, evReason, clientMsg, stage string, durationMS int64, flow *serverFlowState) *jsonrpcResponse {
+func (h *Handler) scannerBlockedResponse(ctx context.Context, span trace.Span, reqID json.RawMessage, tenantID, agentID, toolName, policyVersion string, scanErr error, trigger, evReason, clientMsg, stage string, durationMS int64, flow *serverFlowState) *jsonrpcResponse {
 	correlationID := "mcp_" + uuid.New().String()[:8]
 	blockEv := h.newServerEvidence(tenantID, agentID, correlationID, toolName, evidence.PolicyDecision{
 		Allowed:       false,
@@ -577,16 +634,6 @@ func (h *Handler) newServerEvidence(
 	}
 	ev.DataFlow = h.buildServerDataFlow(tenantID, correlationID, toolName, flow)
 	return ev
-}
-
-func writeRPCError(w http.ResponseWriter, id interface{}, code int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(&jsonrpcResponse{
-		JSONRPC: jsonrpcVersion,
-		ID:      id,
-		Error:   &rpcError{Code: code, Message: message},
-	})
 }
 
 func applyServerFlowFieldPath(entities []classifier.PIIEntity, fieldPath string) []classifier.PIIEntity {

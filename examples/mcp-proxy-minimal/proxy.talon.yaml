@@ -12,6 +12,9 @@ proxy:
 
   # Talon-facing tool name -> vendor's upstream name.
   # Omit upstream_name when the names are identical.
+  # The proxy captures the upstream's validated tools/list as its trusted
+  # protocol definitions: that exact set is what it presents, validates
+  # inbound Mcp-Param-* headers against, and generates outbound ones from.
   allowed_tools:
     - name: ticket_search
     - name: ticket_create

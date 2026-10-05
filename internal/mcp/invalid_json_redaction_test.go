@@ -80,12 +80,15 @@ func TestMCPProxy_InvalidJSONAfterRedaction_FailClosed(t *testing.T) {
 	rawEmail := "user@example.com"
 	var forwardedBody []byte
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "crm_lookup") {
+			return
+		}
 		forwardedBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      1,
-			"result":  map[string]interface{}{"ok": true},
+			"result":  map[string]interface{}{"resultType": "complete", "ok": true},
 		})
 	}))
 	t.Cleanup(upstream.Close)

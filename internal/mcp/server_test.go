@@ -16,6 +16,7 @@ import (
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/testutil"
@@ -40,6 +41,7 @@ func TestHandler_ToolsList(t *testing.T) {
 		"id":      1,
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -75,16 +77,19 @@ func TestHandler_ToolsCall_InvalidParams(t *testing.T) {
 		"id":      2,
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusOK, rec.Code)
+	// No params.name means no Mcp-Name mirror can exist: the request fails
+	// header validation (400 / HeaderMismatch) before governance.
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	var resp jsonrpcResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 	require.NotNil(t, resp.Error)
-	assert.Equal(t, codeInvalidParams, resp.Error.Code)
+	assert.Equal(t, wire.CodeHeaderMismatch, resp.Error.Code)
 }
 
 // stubToolForTest implements tools.Tool for MCP tests.
@@ -123,6 +128,7 @@ func TestHandler_ToolsCall_Success(t *testing.T) {
 		"params": map[string]interface{}{"name": "echo", "arguments": map[string]interface{}{}},
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -161,6 +167,7 @@ func TestHandler_ToolsCall_PolicyDenied(t *testing.T) {
 		"params": map[string]interface{}{"name": "denied_tool", "arguments": map[string]interface{}{}},
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -219,6 +226,7 @@ func TestHandler_ToolsCall_ToolNotFound(t *testing.T) {
 		"params": map[string]interface{}{"name": "missing_tool", "arguments": map[string]interface{}{}},
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -228,7 +236,8 @@ func TestHandler_ToolsCall_ToolNotFound(t *testing.T) {
 	var resp jsonrpcResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 	require.NotNil(t, resp.Error)
-	assert.Contains(t, resp.Error.Message, "not found")
+	assert.Equal(t, codeInvalidParams, resp.Error.Code, "unknown tool is an MCP protocol error (-32602)")
+	assert.Contains(t, resp.Error.Message, "Unknown tool")
 }
 
 // piiToolForTest returns a result containing PII, for output classification tests.
@@ -245,6 +254,7 @@ func serverToolsCall(t *testing.T, h *Handler, name, arguments string) *jsonrpcR
 	t.Helper()
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + name + `","arguments":` + arguments + `}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader([]byte(body)))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()

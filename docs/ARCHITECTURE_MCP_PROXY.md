@@ -166,17 +166,110 @@ Talon cannot classify must not reach the upstream tool; a forbidden tool is
 never forwarded; and both loaders reject unknown proxy keys at startup
 (#346), so a mistyped rule can never silently widen the policy.
 
-**Method surface is fail-closed (#356, #367):** both endpoints speak the
-mandatory MCP lifecycle — `initialize` is answered **locally** (tools
-capability only, the client's `protocolVersion` echoed, never forwarded
-upstream) and `notifications/initialized` is accepted with HTTP 202 — so
-spec-conformant clients (Copilot CLI, Claude Code, MCP Inspector, the SDKs)
-connect normally. Governed traffic is `tools/list` and `tools/call`. Every
-OTHER method (`resources/read`, `prompts/get`, …) is rejected with JSON-RPC
-`-32601`, `error.data.talon_code: TALON_METHOD_NOT_ALLOWED`, and an
-attributed `proxy_method_rejected` evidence record, in **every** mode —
-closing what would otherwise be an unscanned, unaudited data lane. Governed
-resource/prompt reads are a future feature, not a passthrough.
+**Supported MCP protocol: `2026-07-28` only (#447).** Both endpoints share
+one Streamable HTTP implementation (`internal/mcp/wire`): one parser, one
+validation path, one normalized request, one set of protocol error codes.
+There is no `initialize` handshake, no protocol-level session
+(`Mcp-Session-Id` is ignored and never minted), no GET session stream, no
+DELETE, no `Last-Event-ID` resumption, and no older protocol version —
+pre-2026 clients fail loudly with a modern error naming the supported
+version. Talon's `X-Talon-Session-ID` is application/use-case correlation
+and is unrelated to the removed MCP transport session.
+
+Every POST is self-describing and is validated **before** any governed
+processing, in this order: HTTP method (POST only; GET/DELETE → 405) →
+`Origin` (absent, loopback, same-origin or `TALON_MCP_ALLOWED_ORIGINS`, the
+same list on both routes; anything else → 403; no wildcard) → `Accept` must
+list both `application/json` and `text/event-stream` (406; wildcards do not
+count and `q=0` means not acceptable) → `Content-Type: application/json` (415) → 1 MiB body cap (413) → one
+JSON-RPC request or notification (no batches, no null ids) → required
+`params._meta` (`io.modelcontextprotocol/protocolVersion`,
+`io.modelcontextprotocol/clientCapabilities`; `clientInfo` optional) →
+`MCP-Protocol-Version` header present, single and equal to `_meta`
+(`HeaderMismatch -32020`), and exactly `2026-07-28`
+(`UnsupportedProtocolVersion -32022` with `data.supported`) → `Mcp-Method`
+present, single and equal to the body method → `Mcp-Name` present and equal
+to `params.name` for `tools/call` (Base64 sentinel decoded) → method
+allowlist. This surface defines **no client-to-server notification**: the
+2026-07-28 core has no `initialize`/`initialized` exchange and cancellation
+on Streamable HTTP is the request stream's lifecycle, so every id-less
+message (including the removed `notifications/initialized` and
+`notifications/cancelled`) is answered with HTTP 404 and `-32601`, nothing
+is dispatched and no evidence is written. No `_meta` or header requirement
+is invented for notifications.
+
+Governed methods are `server/discover` (informational: `supportedVersions`,
+the `tools` capability, `serverInfo`, cache hints — never an authorization),
+`tools/list` (deterministic order, `ttlMs`/`cacheScope` hints; the proxy
+keeps the upstream `ttlMs` and always answers `cacheScope: private`) and
+`tools/call`. Every OTHER method (`resources/read`, `prompts/get`,
+`subscriptions/listen`, `initialize`, …) is a protocol `-32601` with HTTP
+404 — no `talon_code`, no evidence, nothing forwarded. Protocol rejections
+are never policy decisions: they happen before a trustworthy action exists,
+so they produce security/operational diagnostics only, while a governance
+denial on a validated request still produces a signed record.
+
+**Header/body integrity is a security boundary.** `Mcp-Method`, `Mcp-Name`
+and schema-declared `Mcp-Param-*` headers exist for intermediaries; Talon
+parses the body and requires the mirrors to agree. A header can never pick a
+different tool than the body (`Mcp-Name: read_ticket` over a
+`delete_customer` body is `-32020`, zero dispatch). Mirrored parameters
+(`x-mcp-header` → `Mcp-Param-*`) have exactly **one** source of truth per
+route: the definition Talon presents in `tools/list` is the definition it
+validates against and generates from. On the native route that is the
+registered tool's JSON Schema. On the proxy it is the **captured trusted
+definition set**: the tool definitions of the last successfully validated
+upstream `tools/list` (all pages followed, deterministic order), expiring on
+the upstream's `ttlMs`, with any definition whose `x-mcp-header` annotation
+violates the spec excluded and logged. The same capture drives all three:
+what `tools/list` presents (the `allowed_tools` subset, exact definitions,
+annotations intact, one page, a client cursor is invalid params), what
+inbound `Mcp-Param-*` headers are validated against (the original parsed
+arguments), and what outbound `Mcp-Param-*` headers are generated from (the
+authorized, **redacted** arguments Talon forwards — never the inbound header
+value). A `tools/call` whose definition is not in the capture is the spec's
+protocol error (unknown tool); a call made while no fresh capture exists
+fetches one through the same validation and fails closed, with an
+upstream-error record, if the upstream cannot provide it. The capture is
+protocol metadata only: it never defines policy, materiality or approval
+(#427/#431 own the governed catalog). Where a declaration exists the body
+remains the argument value and the header is an integrity duplicate
+(integers compare numerically, Base64 sentinels are decoded, unrecognized
+`Mcp-Param-*` headers are ignored and never forwarded). A drift test proves
+a route can never advertise one declaration and validate another.
+
+**Intermediary capability rule.** Talon identifies itself to the upstream as
+the MCP client, so the capabilities it sends are the downstream client's
+capabilities **intersected with what Talon can relay faithfully**:
+`elicitation`, `sampling` and `roots` (MRTR input requests are passed
+through to the originating client unchanged, so its answers are its own).
+`extensions` (the Tasks extension above all), `experimental` and unknown
+members are stripped: the upstream must not activate behaviour Talon
+neither advertises in its own `server/discover` nor relays, and an upstream
+`resultType: task` is refused regardless of what the downstream declared. On the way out the proxy builds a
+**fresh** upstream request from the authorized, redacted body: canonical
+upstream name, `_meta` with this protocol version, Talon's own identity, the
+originating client's capabilities and permitted keys (progress token, trace
+context, vendor extensions), the client's `requestState`/`inputResponses`
+preserved verbatim, and `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name`/
+`Mcp-Param-*` generated from that body. Inbound headers are never copied.
+Redirects from the upstream are never followed, including after a runtime
+timeout change. Upstream replies may be a JSON object or a request-scoped
+SSE stream and are validated strictly: `jsonrpc: "2.0"`, a valid id
+**exactly** equal to the request Talon sent (numbers compare as exact
+rationals so `1 == 1.0` but adjacent large integers never collide; strings
+never equal numbers; notifications on the stream are skipped; a message
+with another id is a protocol violation), exactly one of `result`/`error`.
+`resultType` truth table: missing → upstream protocol violation; `complete`
+→ continued; `input_required` (MRTR) → passed through losslessly, ordinary
+protocol continuation and never a Talon approval; `task` → unsupported
+(the Tasks extension is not advertised, #448); any other value →
+unsupported. Proxy `tools/list` accepts only the current `ListToolsResult`
+shape: `resultType: complete`, a `tools` array, and the **required**
+`CacheableResult` hints — `ttlMs` a non-negative JSON number (fractions are
+legal and preserved exactly) and `cacheScope` exactly `public` or `private`.
+Missing or malformed hints are an upstream protocol violation, never
+repaired.
 
 **Stable denial codes (#369):** every Talon-shaped proxy error carries
 `error.data.talon_code` — the machine contract; messages are prose and may
@@ -403,13 +496,23 @@ The proxy listens at `POST /mcp/proxy` (JSON-RPC 2.0). Locally without
 warns); in production send an agent or admin key as a Bearer token.
 
 ```bash
-# Terminal 2: Simulate vendor calling Talon
+# Terminal 2: Simulate vendor calling Talon (MCP 2026-07-28: no handshake,
+# every request carries its protocol metadata and the mirrored headers)
 curl -X POST http://localhost:8080/mcp/proxy \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/call" \
+  -H "Mcp-Name: zendesk_ticket_search" \
   -d '{
     "jsonrpc": "2.0",
     "method": "tools/call",
     "params": {
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "vendor-client", "version": "1.0"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+      },
       "name": "zendesk_ticket_search",
       "arguments": {
         "query": "eSIM activation issue",

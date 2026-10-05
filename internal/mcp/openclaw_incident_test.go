@@ -54,6 +54,7 @@ func proxyCall(t *testing.T, h *ProxyHandler, toolName string, args map[string]i
 		"jsonrpc": "2.0", "method": "tools/call", "params": params, "id": 1,
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = stamp(req)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "test-tenant"))
 	rec := httptest.NewRecorder()
@@ -117,10 +118,13 @@ func TestProxy_ForbiddenToolBlocked_BulkDelete(t *testing.T) {
 }
 
 func TestProxy_AllowedToolForwardedToUpstream(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "search_issues", "list_repos", "get_issue", "unknown_new_tool") {
+			return
+		}
 		resp := map[string]interface{}{
 			"jsonrpc": "2.0",
-			"result":  map[string]interface{}{"content": []map[string]interface{}{{"type": "text", "text": "found 3 issues"}}},
+			"result":  map[string]interface{}{"resultType": "complete", "content": []map[string]interface{}{{"type": "text", "text": "found 3 issues"}}},
 			"id":      1,
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -175,6 +179,17 @@ func TestProxy_EvidenceRecordedOnBlock(t *testing.T) {
 
 func TestProxy_PIIInArgumentsBlocked(t *testing.T) {
 	cfg := openclawProxyCfg()
+	// The upstream publishes its definitions (the proxy captures them before
+	// governance) but must never receive the call itself.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "search_issues", "list_repos", "get_issue") {
+			return
+		}
+		t.Errorf("PII-blocked call must never reach the upstream (%s)", r.Header.Get("Mcp-Method"))
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg.Proxy.Upstream.URL = upstream.URL
 	engine, err := policy.NewProxyEngine(context.Background(), cfg)
 	require.NoError(t, err)
 
@@ -214,10 +229,13 @@ func TestProxy_PIIInArgumentsBlocked(t *testing.T) {
 
 // Gap F (CLOSED): Proxy scans upstream response for PII and redacts before returning.
 func TestProxy_GapF_ResponsePIIScanned(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "search_issues", "list_repos", "get_issue", "unknown_new_tool") {
+			return
+		}
 		resp := map[string]interface{}{
 			"jsonrpc": "2.0",
-			"result":  map[string]interface{}{"content": []map[string]interface{}{{"type": "text", "text": "Customer email: jan.kowalski@gmail.com"}}},
+			"result":  map[string]interface{}{"resultType": "complete", "content": []map[string]interface{}{{"type": "text", "text": "Customer email: jan.kowalski@gmail.com"}}},
 			"id":      1,
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -250,10 +268,13 @@ func TestProxy_GapF_ResponsePIIScanned(t *testing.T) {
 // Gap: Unknown tools (not in allowed_tools, not in forbidden_tools) go to OPA
 // but may be allowed if OPA has no explicit deny rule.
 func TestProxy_UnlistedToolDefaultBehavior(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "search_issues", "list_repos", "get_issue", "unknown_new_tool") {
+			return
+		}
 		resp := map[string]interface{}{
 			"jsonrpc": "2.0",
-			"result":  map[string]interface{}{"content": []map[string]interface{}{{"type": "text", "text": "ok"}}},
+			"result":  map[string]interface{}{"resultType": "complete", "content": []map[string]interface{}{{"type": "text", "text": "ok"}}},
 			"id":      1,
 		}
 		w.Header().Set("Content-Type", "application/json")
