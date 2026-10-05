@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/agent/tools"
+	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/policy"
@@ -240,14 +241,31 @@ type captured struct {
 	body    map[string]any
 }
 
+// defaultUpstreamList is the trusted definition set the fake upstream
+// publishes: lookup_v2 declares a mirrored Region parameter, crm_delete is
+// listed upstream but forbidden by the proxy config.
+const defaultUpstreamList = `[{"name":"lookup_v2","inputSchema":{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"},"q":{"type":"string"}}}},{"name":"crm_delete","inputSchema":{"type":"object"}}]`
+
 func capturingUpstream(t *testing.T, respond func(w http.ResponseWriter, id json.RawMessage)) (*httptest.Server, *captured) {
+	return capturingUpstreamWithList(t, defaultUpstreamList, respond)
+}
+
+// capturingUpstreamWithList answers tools/list with the given tools array
+// (required cache hints added) and hands tools/call to respond, counting
+// only calls.
+func capturingUpstreamWithList(t *testing.T, toolsJSON string, respond func(w http.ResponseWriter, id json.RawMessage)) (*httptest.Server, *captured) {
 	t.Helper()
 	c := &captured{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c.hits.Add(1)
-		c.headers = r.Header.Clone()
 		var req jsonrpcRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		if r.Header.Get(wire.HeaderMethod) == wire.MethodToolsList {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"resultType":"complete","tools":` + toolsJSON + `,"ttlMs":60000,"cacheScope":"public"}}`))
+			return
+		}
+		c.hits.Add(1)
+		c.headers = r.Header.Clone()
 		_ = json.Unmarshal(req.Params, &c.body)
 		respond(w, req.ID)
 	}))
@@ -308,8 +326,8 @@ func TestProxyForwarding_FreshValidatedUpstreamRequest(t *testing.T) {
 	assert.Equal(t, wire.ProtocolVersion, cap.headers.Get(wire.HeaderProtocolVersion))
 	assert.Equal(t, wire.MethodToolsCall, cap.headers.Get(wire.HeaderMethod))
 	assert.Equal(t, "lookup_v2", cap.headers.Get(wire.HeaderName), "Mcp-Name names the canonical upstream tool")
-	assert.Empty(t, cap.headers.Get("Mcp-Param-Region"), "this route declares no mirrored parameters: none generated")
-	assert.Empty(t, cap.headers.Get("Mcp-Param-Evil"), "inbound Mcp-Param headers are never forwarded")
+	assert.Equal(t, "eu-west1", cap.headers.Get("Mcp-Param-Region"), "generated from the authorized body and the captured declaration")
+	assert.Empty(t, cap.headers.Get("Mcp-Param-Evil"), "an unrecognized inbound Mcp-Param header is never forwarded")
 	assert.Empty(t, cap.headers.Get("Mcp-Session-Id"))
 	assert.Equal(t, "application/json, text/event-stream", cap.headers.Get("Accept"))
 
@@ -336,6 +354,8 @@ func TestProxyForwarding_IntegrityFailuresNeverReachUpstream(t *testing.T) {
 	h, store := proxyFixture(t, up.URL)
 	body := mcpBody(t, 1, wire.MethodToolsCall, map[string]any{"name": "crm_lookup", "arguments": map[string]any{"region": "eu-west1"}})
 	cases := map[string]map[string]string{
+		"Mcp-Param mismatch":                    {"Mcp-Param-Region": "us-east1"},
+		"Mcp-Param missing":                     {},
 		"Mcp-Name says forbidden, body allowed": {"Mcp-Param-Region": "eu-west1", wire.HeaderName: "crm_delete"},
 		"Mcp-Name says allowed, body forbidden": {"Mcp-Param-Region": "eu-west1", wire.HeaderName: "crm_lookup"},
 		"Mcp-Method mismatch":                   {"Mcp-Param-Region": "eu-west1", wire.HeaderMethod: "tools/list"},
@@ -382,25 +402,186 @@ func TestProxyForwarding_InputRequiredAndSSEPassThrough(t *testing.T) {
 	assert.NotContains(t, res, "ttlMs", "interim results carry no cache hints")
 }
 
-func TestProxyToolsList_RebuiltRequestAndCacheHints(t *testing.T) {
-	up, cap := capturingUpstream(t, jsonResult(`{"resultType":"complete","tools":[{"name":"lookup_v2","inputSchema":{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}},{"name":"crm_delete","inputSchema":{"type":"object"}},{"name":"broken","inputSchema":{"type":"object","properties":{"n":{"type":"number","x-mcp-header":"N"}}}}],"nextCursor":"c2","ttlMs":120000,"cacheScope":"public"}`))
+func TestProxyToolsList_CapturedDefinitionsAndCacheHints(t *testing.T) {
+	// Two upstream pages; the capture follows nextCursor and presents one
+	// page of exact definitions (annotations intact), allowed tools only,
+	// invalid annotations excluded, the upstream ttlMs preserved exactly.
+	var listCalls atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonrpcRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var p struct {
+			Cursor string `json:"cursor"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
+		listCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if p.Cursor == "" {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"resultType":"complete","tools":[{"name":"lookup_v2","inputSchema":{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}},{"name":"crm_delete","inputSchema":{"type":"object"}}],"nextCursor":"p2","ttlMs":120000.5,"cacheScope":"public"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"resultType":"complete","tools":[{"name":"broken","inputSchema":{"type":"object","properties":{"n":{"type":"number","x-mcp-header":"N"}}}}],"ttlMs":5,"cacheScope":"public"}}`))
+	}))
+	t.Cleanup(up.Close)
 	h, _ := proxyFixture(t, up.URL)
-	rec, out := do(t, h, "/mcp/proxy", mcpBody(t, 1, wire.MethodToolsList, map[string]any{"cursor": "c1"}), map[string]string{"Mcp-Session-Id": "x"})
+	rec, out := do(t, h, "/mcp/proxy", mcpBody(t, 1, wire.MethodToolsList, nil), map[string]string{"Mcp-Session-Id": "x"})
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	assert.Equal(t, wire.MethodToolsList, cap.headers.Get(wire.HeaderMethod))
-	assert.Equal(t, wire.ProtocolVersion, cap.headers.Get(wire.HeaderProtocolVersion))
-	assert.Empty(t, cap.headers.Get(wire.HeaderName), "tools/list carries no Mcp-Name")
-	assert.Equal(t, "c1", cap.body["cursor"], "cursor is rebuilt into the fresh request")
-	assert.NotNil(t, cap.body["_meta"].(map[string]any)[wire.MetaClientCapabilities])
+	assert.EqualValues(t, 2, listCalls.Load(), "both upstream pages captured")
 	res := out["result"].(map[string]any)
 	list := res["tools"].([]any)
 	require.Len(t, list, 1, "crm_delete is not in allowed_tools; broken has an invalid x-mcp-header")
 	assert.Equal(t, "lookup_v2", list[0].(map[string]any)["name"])
-	assert.NotContains(t, rec.Body.String(), "x-mcp-header", "presented definitions carry no annotation this route cannot validate")
-	assert.Equal(t, "c2", res["nextCursor"])
-	assert.Equal(t, float64(120000), res["ttlMs"], "upstream ttlMs is preserved as a hint")
+	assert.Contains(t, rec.Body.String(), `"x-mcp-header":"Region"`, "the exact trusted definition is presented")
+	assert.Equal(t, 120000.5, res["ttlMs"], "upstream ttlMs preserved exactly, fraction included")
 	assert.Equal(t, "private", res["cacheScope"], "a filtered list is never public")
 	assert.Equal(t, "complete", res["resultType"])
+	assert.NotContains(t, res, "nextCursor", "Talon's list is a single page")
+	// A client cursor is invalid params on a single-page list.
+	rec, out = do(t, h, "/mcp/proxy", mcpBody(t, 2, wire.MethodToolsList, map[string]any{"cursor": "p2"}), nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, float64(wire.CodeInvalidParams), errCode(out))
+	// The capture is reused while fresh: no new upstream list.
+	do(t, h, "/mcp/proxy", mcpBody(t, 3, wire.MethodToolsList, nil), nil)
+	assert.EqualValues(t, 2, listCalls.Load())
+}
+
+// Upstream replies for tools/list that violate the current contract are
+// upstream errors: missing hints, malformed hints, legacy shapes.
+func TestProxyToolsList_RequiresCurrentHints(t *testing.T) {
+	for name, result := range map[string]string{
+		"missing ttlMs":      `{"resultType":"complete","tools":[],"cacheScope":"public"}`,
+		"missing cacheScope": `{"resultType":"complete","tools":[],"ttlMs":1000}`,
+		"negative ttlMs":     `{"resultType":"complete","tools":[],"ttlMs":-1,"cacheScope":"public"}`,
+		"string ttlMs":       `{"resultType":"complete","tools":[],"ttlMs":"1000","cacheScope":"public"}`,
+		"bad scope":          `{"resultType":"complete","tools":[],"ttlMs":1000,"cacheScope":"shared"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req jsonrpcRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":` + result + `}`))
+			}))
+			t.Cleanup(up.Close)
+			h, _ := proxyFixture(t, up.URL)
+			rec, out := do(t, h, "/mcp/proxy", mcpBody(t, 1, wire.MethodToolsList, nil), nil)
+			assert.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, float64(codeServerError), errCode(out), name)
+			assert.Nil(t, out["result"], "nothing is repaired or invented")
+		})
+	}
+}
+
+// Mirrored parameters on the proxy: primitive types, nested statically
+// reachable properties, absent optional values, invalid declarations.
+func TestProxyHeaderParams_TypesNestedAbsentInvalid(t *testing.T) {
+	list := `[{"name":"lookup_v2","inputSchema":{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"},"count":{"type":"integer","x-mcp-header":"Count"},"dry":{"type":"boolean","x-mcp-header":"Dry"},"nested":{"type":"object","properties":{"zone":{"type":"string","x-mcp-header":"Zone"}}}}}},{"name":"broken_tool","inputSchema":{"type":"object","properties":{"amt":{"type":"number","x-mcp-header":"Amt"}}}}]`
+	up, cap := capturingUpstreamWithList(t, list, jsonResult(`{"resultType":"complete","content":[]}`))
+	cfg := &policy.ProxyPolicyConfig{
+		Agent: policy.ProxyAgentConfig{Name: "vendor-proxy-agent", Type: "mcp_proxy"},
+		Proxy: policy.ProxyConfig{Upstream: policy.UpstreamConfig{URL: up.URL, Vendor: "crm"}, AllowedTools: []policy.ToolMapping{{Name: "crm_lookup", UpstreamName: "lookup_v2"}, {Name: "broken_tool"}}},
+	}
+	engine, err := policy.NewProxyEngine(context.Background(), cfg)
+	require.NoError(t, err)
+	store, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	h := NewProxyHandler(cfg, engine, store, nil, nil)
+	args := map[string]any{"region": "eu-west1", "count": 42, "dry": true, "nested": map[string]any{"zone": "zone é"}}
+	hdr := map[string]string{"Mcp-Param-Region": "eu-west1", "Mcp-Param-Count": "42.0", "Mcp-Param-Dry": "true", "Mcp-Param-Zone": wire.EncodeHeaderValue("zone é")}
+	rec, _ := do(t, h, "/mcp/proxy", mcpBody(t, 1, wire.MethodToolsCall, map[string]any{"name": "crm_lookup", "arguments": args}), hdr)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.EqualValues(t, 1, cap.hits.Load())
+	assert.Equal(t, "eu-west1", cap.headers.Get("Mcp-Param-Region"))
+	assert.Equal(t, "42", cap.headers.Get("Mcp-Param-Count"), "integers are re-rendered canonically from the body")
+	assert.Equal(t, "true", cap.headers.Get("Mcp-Param-Dry"))
+	assert.Equal(t, wire.EncodeHeaderValue("zone é"), cap.headers.Get("Mcp-Param-Zone"))
+	// Absent optional values: client omits the header; Talon generates none.
+	rec, _ = do(t, h, "/mcp/proxy", mcpBody(t, 2, wire.MethodToolsCall, map[string]any{"name": "crm_lookup", "arguments": map[string]any{"region": "eu-west1"}}), map[string]string{"Mcp-Param-Region": "eu-west1"})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Empty(t, cap.headers.Get("Mcp-Param-Count"))
+	assert.Empty(t, cap.headers.Get("Mcp-Param-Zone"))
+	// Header for an absent value, wrong type, wrong value: all mismatches, zero dispatch.
+	for name, bad := range map[string]map[string]string{
+		"header for absent value": {"Mcp-Param-Region": "eu-west1", "Mcp-Param-Count": "1"},
+		"boolean case":            {"Mcp-Param-Region": "eu-west1"},
+	} {
+		body := map[string]any{"name": "crm_lookup", "arguments": map[string]any{"region": "eu-west1"}}
+		if name == "boolean case" {
+			body["arguments"] = map[string]any{"region": "eu-west1", "dry": true}
+			bad["Mcp-Param-Dry"] = "True"
+		}
+		rec, out := do(t, h, "/mcp/proxy", mcpBody(t, 3, wire.MethodToolsCall, body), bad)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, name)
+		assert.Equal(t, float64(wire.CodeHeaderMismatch), errCode(out), name)
+	}
+	assert.EqualValues(t, 2, cap.hits.Load())
+	// A tool whose definition is invalid is excluded: not listed, not callable.
+	rec, _ = do(t, h, "/mcp/proxy", mcpBody(t, 4, wire.MethodToolsList, nil), nil)
+	assert.NotContains(t, rec.Body.String(), "broken_tool")
+	rec, out := do(t, h, "/mcp/proxy", mcpBody(t, 5, wire.MethodToolsCall, map[string]any{"name": "broken_tool", "arguments": map[string]any{}}), nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, float64(wire.CodeInvalidParams), errCode(out), "excluded definition → Unknown tool")
+	assert.EqualValues(t, 2, cap.hits.Load())
+	assert.Equal(t, 2, countRecords(t, store), "two governed calls, nothing for protocol rejections")
+}
+
+// The generated Mcp-Param header comes from the AUTHORIZED, redacted
+// outbound argument — never from the inbound header value.
+func TestProxyHeaderParams_OutboundFromRedactedBody(t *testing.T) {
+	list := `[{"name":"lookup_v2","inputSchema":{"type":"object","properties":{"email":{"type":"string","x-mcp-header":"Email"}}}}]`
+	up, cap := capturingUpstreamWithList(t, list, jsonResult(`{"resultType":"complete","content":[]}`))
+	cfg := &policy.ProxyPolicyConfig{
+		Agent:       policy.ProxyAgentConfig{Name: "vendor-proxy-agent", Type: "mcp_proxy"},
+		Proxy:       policy.ProxyConfig{Upstream: policy.UpstreamConfig{URL: up.URL, Vendor: "crm"}, AllowedTools: []policy.ToolMapping{{Name: "crm_lookup", UpstreamName: "lookup_v2"}}},
+		PIIHandling: policy.PIIHandlingConfig{RedactionRules: []policy.RedactionRule{{Field: "email", Method: "hash"}}},
+	}
+	engine, err := policy.NewProxyEngine(context.Background(), cfg)
+	require.NoError(t, err)
+	store, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
+	raw := "john.doe@example.com"
+	rec, _ := do(t, h, "/mcp/proxy", mcpBody(t, 1, wire.MethodToolsCall, map[string]any{"name": "crm_lookup", "arguments": map[string]any{"email": raw}}), map[string]string{"Mcp-Param-Email": raw})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.EqualValues(t, 1, cap.hits.Load())
+	forwarded, _ := cap.body["arguments"].(map[string]any)
+	fwdEmail, _ := forwarded["email"].(string)
+	require.NotEqual(t, raw, fwdEmail, "the outbound argument is redacted")
+	assert.Equal(t, wire.EncodeHeaderValue(fwdEmail), cap.headers.Get("Mcp-Param-Email"), "header generated from the redacted body, not the inbound header")
+}
+
+// Outbound client capabilities are the downstream's intersected with what
+// Talon can relay: extensions (Tasks) and experimental never reach the
+// upstream, elicitation (MRTR input Talon relays) does, and an upstream
+// task result is still refused.
+func TestProxyOutboundCapabilities_Intersection(t *testing.T) {
+	up, cap := capturingUpstream(t, jsonResult(`{"resultType":"task","task":{"taskId":"t1"}}`))
+	h, _ := proxyFixture(t, up.URL)
+	params := map[string]any{
+		"_meta": map[string]any{
+			wire.MetaProtocolVersion: wire.ProtocolVersion,
+			wire.MetaClientCapabilities: map[string]any{
+				"elicitation":  map[string]any{"form": map[string]any{}},
+				"extensions":   map[string]any{"io.modelcontextprotocol/tasks": map[string]any{}},
+				"experimental": map[string]any{"x": 1},
+				"roots":        map[string]any{},
+			},
+		},
+		"name": "crm_lookup", "arguments": map[string]any{"region": "eu"},
+	}
+	rec, out := do(t, h, "/mcp/proxy", mcpBody(t, 1, wire.MethodToolsCall, params), map[string]string{"Mcp-Param-Region": "eu"})
+	require.EqualValues(t, 1, cap.hits.Load())
+	sent := cap.body["_meta"].(map[string]any)[wire.MetaClientCapabilities].(map[string]any)
+	assert.Equal(t, map[string]any{"elicitation": map[string]any{"form": map[string]any{}}, "roots": map[string]any{}}, sent, "only relayable capabilities go upstream")
+	assert.NotContains(t, sent, "extensions")
+	assert.NotContains(t, sent, "experimental")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, float64(codeServerError), errCode(out), "a task result is refused even though the downstream advertised Tasks")
+	// Discovery agrees: no extensions advertised to the downstream either.
+	_, disc := do(t, h, "/mcp/proxy", mcpBody(t, 2, wire.MethodDiscover, nil), nil)
+	assert.NotContains(t, disc["result"].(map[string]any)["capabilities"], "extensions")
 }
 
 func TestProxy_NoRedirectFollowing(t *testing.T) {
@@ -481,20 +662,24 @@ func TestHeaderDeclaration_NeverDrifts(t *testing.T) {
 		assert.Equal(t, advertised.Decls(), validated.Decls(), "native %s: advertised == validated", m["name"])
 	}
 
-	up, _ := capturingUpstream(t, jsonResult(`{"resultType":"complete","tools":[{"name":"lookup_v2","inputSchema":{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}}],"ttlMs":0,"cacheScope":"private"}`))
+	up, cap := capturingUpstream(t, jsonResult(`{"resultType":"complete","content":[]}`))
 	proxy, _ := proxyFixture(t, up.URL)
 	_, out = do(t, proxy, "/mcp/proxy", mcpBody(t, 1, wire.MethodToolsList, nil), nil)
-	for _, tl := range out["result"].(map[string]any)["tools"].([]any) {
+	listedProxy := out["result"].(map[string]any)["tools"].([]any)
+	require.NotEmpty(t, listedProxy)
+	for _, tl := range listedProxy {
 		m := tl.(map[string]any)
 		schema, _ := json.Marshal(m["inputSchema"])
 		advertised, err := wire.HeaderParamsFromSchema(schema)
 		require.NoError(t, err)
-		validated := proxy.headerDecl("crm_lookup")
-		assert.Equal(t, advertised.Decls(), validated.Decls(), "proxy %s: advertised == validated", m["name"])
-		assert.True(t, advertised.Empty(), "the proxy presents no mirrored parameters")
+		proxy.captureMu.Lock()
+		validated := proxy.capture.byName[m["name"].(string)].decl
+		proxy.captureMu.Unlock()
+		assert.Equal(t, advertised.Decls(), validated.Decls(), "proxy %s: advertised == validated == generated", m["name"])
+		require.NotEmpty(t, advertised.Decls(), "the fixture declares a mirrored parameter")
 	}
-	// Consequently an inbound Mcp-Param on the proxy is neither validated
-	// nor forwarded: it cannot become a mismatch, and it cannot leak.
-	rec, _ := do(t, proxy, "/mcp/proxy", mcpBody(t, 2, wire.MethodToolsCall, map[string]any{"name": "crm_lookup", "arguments": map[string]any{"region": "eu"}}), map[string]string{"Mcp-Param-Region": "us"})
-	assert.Equal(t, http.StatusOK, rec.Code)
+	// The generated outbound header follows the same declaration.
+	rec, _ := do(t, proxy, "/mcp/proxy", mcpBody(t, 2, wire.MethodToolsCall, map[string]any{"name": "crm_lookup", "arguments": map[string]any{"region": "eu"}}), map[string]string{"Mcp-Param-Region": "eu"})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, "eu", cap.headers.Get("Mcp-Param-Region"))
 }

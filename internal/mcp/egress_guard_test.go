@@ -60,6 +60,9 @@ func TestNoPIIEgressAfterRedaction_MCPProxy(t *testing.T) {
 	rawEmail := "anna.schmidt@example.com"
 	var forwardedBody []byte
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "crm_lookup") {
+			return
+		}
 		forwardedBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -89,6 +92,9 @@ func TestMCPProxyResidualPIIApprovalCannotBypass(t *testing.T) {
 	rawEmail := "anna.schmidt@example.com"
 	upstreamCalls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "crm_lookup") {
+			return
+		}
 		upstreamCalls++
 		var req jsonrpcRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)

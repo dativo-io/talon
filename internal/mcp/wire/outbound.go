@@ -8,9 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"mime"
 	"net/http"
-	"reflect"
 	"strings"
 )
 
@@ -37,11 +37,7 @@ func OutboundMeta(inbound Meta, client Implementation) map[string]json.RawMessag
 	}
 	out[MetaProtocolVersion] = mustJSON(ProtocolVersion)
 	out[MetaClientInfo] = mustJSON(client)
-	caps := inbound.ClientCapabilities
-	if len(caps) == 0 {
-		caps = json.RawMessage("{}")
-	}
-	out[MetaClientCapabilities] = caps
+	out[MetaClientCapabilities] = OutboundCapabilities(inbound.ClientCapabilities)
 	if inbound.LogLevel != "" {
 		out[MetaLogLevel] = mustJSON(inbound.LogLevel)
 	}
@@ -183,14 +179,56 @@ func validateResponse(r *Response, expectID json.RawMessage) error {
 	return nil
 }
 
-// idsEqual compares JSON-RPC ids by value (so 1 and 1.0 agree, "1" and 1
-// do not).
+// idsEqual compares JSON-RPC ids exactly: numbers as exact rationals built
+// from their JSON text (1 == 1.0, -1 == -1.0, 1e3 == 1000, but
+// 9007199254740992 != 9007199254740993), strings as decoded strings, and a
+// string never equals a number. Response-id binding is a security
+// invariant, so float64 round-tripping is not acceptable here.
 func idsEqual(a, b json.RawMessage) bool {
-	var av, bv any
-	if json.Unmarshal(a, &av) != nil || json.Unmarshal(b, &bv) != nil {
+	a, b = bytes.TrimSpace(a), bytes.TrimSpace(b)
+	if len(a) == 0 || len(b) == 0 {
 		return false
 	}
-	return reflect.DeepEqual(av, bv)
+	aStr, bStr := a[0] == '"', b[0] == '"'
+	if aStr != bStr {
+		return false
+	}
+	if aStr {
+		var as, bs string
+		if json.Unmarshal(a, &as) != nil || json.Unmarshal(b, &bs) != nil {
+			return false
+		}
+		return as == bs
+	}
+	ar, okA := new(big.Rat).SetString(string(a))
+	br, okB := new(big.Rat).SetString(string(b))
+	return okA && okB && ar.Cmp(br) == 0
+}
+
+// relayableCapabilities are the client capability members Talon can
+// honour faithfully as an intermediary: MRTR input requests (elicitation,
+// sampling, roots) are passed through to the originating client untouched,
+// so its answers are its own. Everything else — `extensions` (Tasks above
+// all), `experimental`, unknown members — would make the upstream select
+// behaviour Talon neither advertises in server/discover nor relays, so it
+// is stripped.
+var relayableCapabilities = map[string]bool{"elicitation": true, "sampling": true, "roots": true}
+
+// OutboundCapabilities builds the clientCapabilities Talon presents to the
+// upstream: the downstream client's capabilities intersected with what
+// Talon can relay. The result is always a JSON object.
+func OutboundCapabilities(inbound json.RawMessage) json.RawMessage {
+	var caps map[string]json.RawMessage
+	if json.Unmarshal(inbound, &caps) != nil || caps == nil {
+		return json.RawMessage("{}")
+	}
+	out := make(map[string]json.RawMessage, len(caps))
+	for k, v := range caps {
+		if relayableCapabilities[k] {
+			out[k] = v
+		}
+	}
+	return mustJSON(out)
 }
 
 // readSSEResponse scans SSE events for the response to expectID.

@@ -181,7 +181,7 @@ processing, in this order: HTTP method (POST only; GET/DELETE → 405) →
 `Origin` (absent, loopback, same-origin or `TALON_MCP_ALLOWED_ORIGINS`, the
 same list on both routes; anything else → 403; no wildcard) → `Accept` must
 list both `application/json` and `text/event-stream` (406; wildcards do not
-count) → `Content-Type: application/json` (415) → 1 MiB body cap (413) → one
+count and `q=0` means not acceptable) → `Content-Type: application/json` (415) → 1 MiB body cap (413) → one
 JSON-RPC request or notification (no batches, no null ids) → required
 `params._meta` (`io.modelcontextprotocol/protocolVersion`,
 `io.modelcontextprotocol/clientCapabilities`; `clientInfo` optional) →
@@ -217,15 +217,36 @@ different tool than the body (`Mcp-Name: read_ticket` over a
 (`x-mcp-header` → `Mcp-Param-*`) have exactly **one** source of truth per
 route: the definition Talon presents in `tools/list` is the definition it
 validates against and generates from. On the native route that is the
-registered tool's JSON Schema. The proxy has no trusted upstream schema yet
-(captured discovery is #427/#431), so it presents upstream definitions with
-every `x-mcp-header` annotation **stripped** and consequently declares,
-validates and generates no mirrored parameters: inbound `Mcp-Param-*`
-headers are ignored and never forwarded. Where a declaration exists, the
-body remains the argument value and the header is an integrity duplicate
+registered tool's JSON Schema. On the proxy it is the **captured trusted
+definition set**: the tool definitions of the last successfully validated
+upstream `tools/list` (all pages followed, deterministic order), expiring on
+the upstream's `ttlMs`, with any definition whose `x-mcp-header` annotation
+violates the spec excluded and logged. The same capture drives all three:
+what `tools/list` presents (the `allowed_tools` subset, exact definitions,
+annotations intact, one page, a client cursor is invalid params), what
+inbound `Mcp-Param-*` headers are validated against (the original parsed
+arguments), and what outbound `Mcp-Param-*` headers are generated from (the
+authorized, **redacted** arguments Talon forwards — never the inbound header
+value). A `tools/call` whose definition is not in the capture is the spec's
+protocol error (unknown tool); a call made while no fresh capture exists
+fetches one through the same validation and fails closed, with an
+upstream-error record, if the upstream cannot provide it. The capture is
+protocol metadata only: it never defines policy, materiality or approval
+(#427/#431 own the governed catalog). Where a declaration exists the body
+remains the argument value and the header is an integrity duplicate
 (integers compare numerically, Base64 sentinels are decoded, unrecognized
 `Mcp-Param-*` headers are ignored and never forwarded). A drift test proves
-a route can never advertise one declaration and validate another. On the way out the proxy builds a
+a route can never advertise one declaration and validate another.
+
+**Intermediary capability rule.** Talon identifies itself to the upstream as
+the MCP client, so the capabilities it sends are the downstream client's
+capabilities **intersected with what Talon can relay faithfully**:
+`elicitation`, `sampling` and `roots` (MRTR input requests are passed
+through to the originating client unchanged, so its answers are its own).
+`extensions` (the Tasks extension above all), `experimental` and unknown
+members are stripped: the upstream must not activate behaviour Talon
+neither advertises in its own `server/discover` nor relays, and an upstream
+`resultType: task` is refused regardless of what the downstream declared. On the way out the proxy builds a
 **fresh** upstream request from the authorized, redacted body: canonical
 upstream name, `_meta` with this protocol version, Talon's own identity, the
 originating client's capabilities and permitted keys (progress token, trace
@@ -234,15 +255,21 @@ preserved verbatim, and `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name`/
 `Mcp-Param-*` generated from that body. Inbound headers are never copied.
 Redirects from the upstream are never followed, including after a runtime
 timeout change. Upstream replies may be a JSON object or a request-scoped
-SSE stream and are validated strictly: `jsonrpc: "2.0"`, a valid id equal to
-the request Talon sent (notifications on the stream are skipped; a message
+SSE stream and are validated strictly: `jsonrpc: "2.0"`, a valid id
+**exactly** equal to the request Talon sent (numbers compare as exact
+rationals so `1 == 1.0` but adjacent large integers never collide; strings
+never equal numbers; notifications on the stream are skipped; a message
 with another id is a protocol violation), exactly one of `result`/`error`.
 `resultType` truth table: missing → upstream protocol violation; `complete`
 → continued; `input_required` (MRTR) → passed through losslessly, ordinary
 protocol continuation and never a Talon approval; `task` → unsupported
 (the Tasks extension is not advertised, #448); any other value →
 unsupported. Proxy `tools/list` accepts only the current `ListToolsResult`
-shape (`resultType: complete`, a `tools` array, well-typed hints).
+shape: `resultType: complete`, a `tools` array, and the **required**
+`CacheableResult` hints — `ttlMs` a non-negative JSON number (fractions are
+legal and preserved exactly) and `cacheScope` exactly `public` or `private`.
+Missing or malformed hints are an upstream protocol violation, never
+repaired.
 
 **Stable denial codes (#369):** every Talon-shaped proxy error carries
 `error.data.talon_code` — the machine contract; messages are prose and may

@@ -68,6 +68,9 @@ var _ classifier.Facade = (*markerFacade)(nil)
 func newProxyWithUpstream(t *testing.T, cls classifier.Facade, upstreamResult string) (*ProxyHandler, *evidence.Store) {
 	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "echo_tool") {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		resp, _ := json.Marshal(map[string]interface{}{
 			"jsonrpc": "2.0", "id": 1,

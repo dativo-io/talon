@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -207,9 +208,15 @@ func checkAccept(accept string) *Error {
 	bad := newErr(http.StatusNotAcceptable, CodeInvalidRequest, ReasonAcceptUnsupported, "Accept must list both application/json and text/event-stream")
 	var jsonOK, sseOK bool
 	for _, part := range strings.Split(accept, ",") {
-		mt, _, err := mime.ParseMediaType(strings.TrimSpace(part))
+		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
 		if err != nil {
 			continue
+		}
+		if q, has := params["q"]; has {
+			// q=0 means "not acceptable" (RFC 9110 §12.4.2).
+			if f, perr := strconv.ParseFloat(q, 64); perr != nil || f <= 0 {
+				continue
+			}
 		}
 		switch strings.ToLower(mt) {
 		case "application/json":

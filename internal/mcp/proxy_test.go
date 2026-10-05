@@ -218,26 +218,32 @@ func TestProxyHandler_toolsList_filteringAndShapes(t *testing.T) {
 	// Upstream returns different shapes; we assert filtering and shape preservation.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody struct {
-			Method string `json:"method"`
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
+			Params struct {
+				Cursor string `json:"cursor"`
+			} `json:"params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&reqBody)
 		if reqBody.Method != "tools/list" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		// Respond with MCP-style result: three tools, only "allowed_one" is in policy.
-		resp := map[string]interface{}{
-			"jsonrpc": "2.0", "id": 1,
-			"result": map[string]interface{}{
-				"resultType": "complete",
-				"tools": []interface{}{
-					map[string]interface{}{"name": "allowed_one", "description": "ok"},
-					map[string]interface{}{"name": "forbidden_a"},
-					map[string]interface{}{"name": "forbidden_b"},
-				},
-				"nextCursor": "page2",
-			},
+		// Two upstream pages: three tools on the first (only "allowed_one"
+		// is in policy), an empty terminal page. The capture follows them.
+		result := map[string]interface{}{
+			"resultType": "complete", "ttlMs": 60000, "cacheScope": "public",
+			"tools": []interface{}{},
 		}
+		if reqBody.Params.Cursor == "" {
+			result["tools"] = []interface{}{
+				map[string]interface{}{"name": "allowed_one", "description": "ok"},
+				map[string]interface{}{"name": "forbidden_a"},
+				map[string]interface{}{"name": "forbidden_b"},
+			}
+			result["nextCursor"] = "page2"
+		}
+		resp := map[string]interface{}{"jsonrpc": "2.0", "id": reqBody.ID, "result": result}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
@@ -276,7 +282,9 @@ func TestProxyHandler_toolsList_filteringAndShapes(t *testing.T) {
 	require.True(t, ok)
 	assert.Len(t, tools, 1)
 	assert.Equal(t, "allowed_one", tools[0].(map[string]interface{})["name"])
-	assert.Equal(t, "page2", result["nextCursor"])
+	assert.NotContains(t, result, "nextCursor", "Talon presents the captured set as a single page")
+	assert.Equal(t, float64(60000), result["ttlMs"])
+	assert.Equal(t, "private", result["cacheScope"])
 }
 
 // TestProxyHandler_toolsList_NonConformantUpstreamRejected pins that the

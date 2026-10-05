@@ -1,9 +1,12 @@
 package wire
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
+	"strconv"
 )
 
 // ServerInfoMeta renders the per-response identity field.
@@ -25,11 +28,12 @@ func Complete(server Implementation, fields map[string]any) map[string]any {
 	return out
 }
 
-// Cacheable adds the hints every cacheable result MUST carry. ttlMs < 0 is
-// clamped to 0 (immediately stale).
-func Cacheable(result map[string]any, ttlMs int, scope string) map[string]any {
-	if ttlMs < 0 {
-		ttlMs = 0
+// Cacheable adds the hints every cacheable result MUST carry. ttlMs is the
+// exact JSON number to emit (a non-negative value; callers pass either
+// Talon's own hint or a validated upstream value unchanged).
+func Cacheable(result map[string]any, ttlMs json.Number, scope string) map[string]any {
+	if !validTTL(ttlMs) {
+		ttlMs = "0"
 	}
 	if scope != CacheScopePublic {
 		scope = CacheScopePrivate
@@ -37,6 +41,20 @@ func Cacheable(result map[string]any, ttlMs int, scope string) map[string]any {
 	result["ttlMs"] = ttlMs
 	result["cacheScope"] = scope
 	return result
+}
+
+// TTL renders an integer millisecond hint as the JSON number Cacheable emits.
+func TTL(ms int) json.Number {
+	if ms < 0 {
+		ms = 0
+	}
+	return json.Number(strconv.Itoa(ms))
+}
+
+// validTTL reports whether n is a non-negative JSON number.
+func validTTL(n json.Number) bool {
+	r, ok := new(big.Rat).SetString(string(n))
+	return ok && r.Sign() >= 0
 }
 
 // Discover builds the server/discover result from what the route actually
@@ -50,7 +68,7 @@ func Discover(server Implementation, caps map[string]any, instructions string, t
 	if instructions != "" {
 		fields["instructions"] = instructions
 	}
-	return Cacheable(Complete(server, fields), ttlMs, CacheScopePublic)
+	return Cacheable(Complete(server, fields), TTL(ttlMs), CacheScopePublic)
 }
 
 // Upstream result validation errors.
@@ -94,18 +112,23 @@ func ValidateUpstreamResult(raw json.RawMessage, server Implementation) (map[str
 type ListResult struct {
 	Tools      []json.RawMessage
 	NextCursor string
-	TTLMs      int
+	// TTLMs is the upstream's exact ttlMs number (non-negative; fractions
+	// are legal JSON numbers and are preserved, never narrowed).
+	TTLMs      json.Number
 	CacheScope string
 	// Rest keeps any other members (additive extension fields) verbatim.
 	Rest map[string]any
 }
 
 // ParseListResult accepts only the current ListToolsResult shape:
-// resultType complete, a tools array, optional string nextCursor, and
-// well-typed cache hints when present (absent hints read as 0 / private).
+// resultType complete, a tools array, optional string nextCursor, and the
+// REQUIRED CacheableResult hints ttlMs (non-negative JSON number) and
+// cacheScope (public | private). Nothing missing or malformed is repaired.
 func ParseListResult(raw json.RawMessage) (*ListResult, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+	if err := dec.Decode(&obj); err != nil || obj == nil {
 		return nil, fmt.Errorf("%w: not an object", ErrListResultInvalid)
 	}
 	rt, has := obj["resultType"]
@@ -120,7 +143,7 @@ func ParseListResult(raw json.RawMessage) (*ListResult, error) {
 	if !has {
 		return nil, fmt.Errorf("%w: tools array missing", ErrListResultInvalid)
 	}
-	lr := &ListResult{CacheScope: CacheScopePrivate, Rest: map[string]any{}}
+	lr := &ListResult{Rest: map[string]any{}}
 	if err := json.Unmarshal(toolsRaw, &lr.Tools); err != nil {
 		return nil, fmt.Errorf("%w: tools is not an array", ErrListResultInvalid)
 	}
@@ -139,28 +162,31 @@ func ParseListResult(raw json.RawMessage) (*ListResult, error) {
 	return lr, nil
 }
 
-// parseListHints validates the optional pagination and cache members.
+// parseListHints validates the optional cursor and the REQUIRED cache hints.
 func parseListHints(obj map[string]json.RawMessage, lr *ListResult) error {
 	if c, has := obj["nextCursor"]; has {
 		if err := json.Unmarshal(c, &lr.NextCursor); err != nil {
 			return fmt.Errorf("%w: nextCursor must be a string", ErrListResultInvalid)
 		}
 	}
-	if t, has := obj["ttlMs"]; has {
-		var f float64
-		if err := json.Unmarshal(t, &f); err != nil || f != float64(int(f)) {
-			return fmt.Errorf("%w: ttlMs must be an integer", ErrListResultInvalid)
-		}
-		if f > 0 {
-			lr.TTLMs = int(f)
-		}
+	t, has := obj["ttlMs"]
+	if !has {
+		return fmt.Errorf("%w: ttlMs is required on a cacheable result", ErrListResultInvalid)
 	}
-	if sc, has := obj["cacheScope"]; has {
-		var s string
-		if err := json.Unmarshal(sc, &s); err != nil || (s != CacheScopePublic && s != CacheScopePrivate) {
-			return fmt.Errorf("%w: cacheScope must be public or private", ErrListResultInvalid)
-		}
+	tt := bytes.TrimSpace(t)
+	if len(tt) == 0 || (tt[0] != '-' && (tt[0] < '0' || tt[0] > '9')) || !validTTL(json.Number(tt)) {
+		return fmt.Errorf("%w: ttlMs must be a non-negative JSON number", ErrListResultInvalid)
 	}
+	lr.TTLMs = json.Number(tt)
+	sc, has := obj["cacheScope"]
+	if !has {
+		return fmt.Errorf("%w: cacheScope is required on a cacheable result", ErrListResultInvalid)
+	}
+	var s string
+	if err := json.Unmarshal(sc, &s); err != nil || (s != CacheScopePublic && s != CacheScopePrivate) {
+		return fmt.Errorf("%w: cacheScope must be public or private", ErrListResultInvalid)
+	}
+	lr.CacheScope = s
 	return nil
 }
 

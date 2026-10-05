@@ -26,6 +26,9 @@ import (
 func attribUpstream(t *testing.T, hit *bool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "crm_lookup", "user_delete", "not_in_allowlist") {
+			return
+		}
 		*hit = true
 		var req jsonrpcRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)

@@ -138,6 +138,10 @@ func TestAccept_Conformance(t *testing.T) {
 		{"Accept wildcard only", fixture{accept: "*/*", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Rejected, rejected{406, CodeInvalidRequest, ReasonAcceptUnsupported}, nil},
 		{"Accept both plus extra, params and case", fixture{accept: "text/html, Application/JSON;q=0.9, TEXT/EVENT-STREAM; charset=utf-8", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Ready, rejected{}, nil},
 		{"Accept missing", fixture{accept: " ", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Rejected, rejected{406, CodeInvalidRequest, ReasonAcceptUnsupported}, nil},
+		{"Accept q weights", fixture{accept: "application/json;q=1, text/event-stream;q=0.5", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Ready, rejected{}, nil},
+		{"Accept json q=0", fixture{accept: "application/json;q=0, text/event-stream", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Rejected, rejected{406, CodeInvalidRequest, ReasonAcceptUnsupported}, nil},
+		{"Accept SSE q=0", fixture{accept: "application/json, text/event-stream;q=0", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Rejected, rejected{406, CodeInvalidRequest, ReasonAcceptUnsupported}, nil},
+		{"Accept both q=0", fixture{accept: "application/json;q=0, text/event-stream;q=0", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Rejected, rejected{406, CodeInvalidRequest, ReasonAcceptUnsupported}, nil},
 		{"Content-Type text", fixture{ctype: "text/plain", headers: std("tools/list", ""), body: call}, Rejected, rejected{415, CodeInvalidRequest, ReasonContentTypeUnsupported}, nil},
 		{"Origin loopback ok", fixture{origin: "http://localhost:3000", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Ready, rejected{}, nil},
 		{"Origin same host ok", fixture{origin: "http://127.0.0.1:8080", headers: std("server/discover", ""), body: `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + metaOK + `}}`}, Ready, rejected{}, nil},
@@ -365,25 +369,60 @@ func TestParseListResult_Strict(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, ok.Tools, 1)
 	require.Equal(t, "c2", ok.NextCursor)
-	require.Equal(t, 120000, ok.TTLMs)
+	require.Equal(t, json.Number("120000"), ok.TTLMs)
+	require.Equal(t, CacheScopePublic, ok.CacheScope)
 	require.Equal(t, true, ok.Rest["com.example/x"])
-	noHints, err := ParseListResult(json.RawMessage(`{"resultType":"complete","tools":[]}`))
+	frac, err := ParseListResult(json.RawMessage(`{"resultType":"complete","tools":[],"ttlMs":1500.75,"cacheScope":"private"}`))
+	require.NoError(t, err, "ttlMs is a JSON number; fractions are legal")
+	require.Equal(t, json.Number("1500.75"), frac.TTLMs, "preserved exactly, never narrowed")
+	zero, err := ParseListResult(json.RawMessage(`{"resultType":"complete","tools":[],"ttlMs":0,"cacheScope":"private"}`))
 	require.NoError(t, err)
-	require.Equal(t, 0, noHints.TTLMs)
-	require.Equal(t, CacheScopePrivate, noHints.CacheScope)
+	require.Equal(t, json.Number("0"), zero.TTLMs)
 	for name, raw := range map[string]string{
 		"legacy array":        `[{"name":"a"}]`,
-		"legacy items key":    `{"resultType":"complete","items":[{"name":"a"}]}`,
-		"missing resultType":  `{"tools":[]}`,
-		"input_required list": `{"resultType":"input_required","tools":[]}`,
-		"tools not array":     `{"resultType":"complete","tools":{"name":"a"}}`,
-		"bad cursor":          `{"resultType":"complete","tools":[],"nextCursor":5}`,
-		"bad ttl":             `{"resultType":"complete","tools":[],"ttlMs":"soon"}`,
-		"bad scope":           `{"resultType":"complete","tools":[],"cacheScope":"shared"}`,
+		"legacy items key":    `{"resultType":"complete","items":[{"name":"a"}],"ttlMs":0,"cacheScope":"public"}`,
+		"missing resultType":  `{"tools":[],"ttlMs":0,"cacheScope":"public"}`,
+		"input_required list": `{"resultType":"input_required","tools":[],"ttlMs":0,"cacheScope":"public"}`,
+		"tools not array":     `{"resultType":"complete","tools":{"name":"a"},"ttlMs":0,"cacheScope":"public"}`,
+		"missing ttlMs":       `{"resultType":"complete","tools":[],"cacheScope":"public"}`,
+		"missing cacheScope":  `{"resultType":"complete","tools":[],"ttlMs":0}`,
+		"negative ttlMs":      `{"resultType":"complete","tools":[],"ttlMs":-1,"cacheScope":"public"}`,
+		"string ttlMs":        `{"resultType":"complete","tools":[],"ttlMs":"1000","cacheScope":"public"}`,
+		"boolean ttlMs":       `{"resultType":"complete","tools":[],"ttlMs":true,"cacheScope":"public"}`,
+		"null ttlMs":          `{"resultType":"complete","tools":[],"ttlMs":null,"cacheScope":"public"}`,
+		"bad cursor":          `{"resultType":"complete","tools":[],"nextCursor":5,"ttlMs":0,"cacheScope":"public"}`,
+		"bad scope":           `{"resultType":"complete","tools":[],"ttlMs":0,"cacheScope":"shared"}`,
+		"scope wrong case":    `{"resultType":"complete","tools":[],"ttlMs":0,"cacheScope":"Public"}`,
 	} {
 		_, err := ParseListResult(json.RawMessage(raw))
 		require.Error(t, err, name)
 	}
+}
+
+func TestIDsEqual_Exact(t *testing.T) {
+	eq := func(a, b string) bool { return idsEqual(json.RawMessage(a), json.RawMessage(b)) }
+	require.True(t, eq(`1`, `1.0`))
+	require.True(t, eq(`-1`, `-1.0`))
+	require.True(t, eq(`1e3`, `1000`))
+	require.True(t, eq(`9007199254740993`, `9007199254740993`))
+	require.True(t, eq(`"abc"`, `"abc"`))
+	require.False(t, eq(`"1"`, `1`), "string never equals number")
+	require.False(t, eq(`1`, `"1"`))
+	require.False(t, eq(`9007199254740992`, `9007199254740993`), "adjacent large integers stay distinct")
+	require.False(t, eq(`9007199254740992.0`, `9007199254740993`))
+	require.False(t, eq(`1e16`, `10000000000000001`))
+	require.False(t, eq(`"a"`, `"b"`))
+	require.False(t, eq(`1`, `-1`))
+	require.False(t, eq(``, `1`))
+	require.False(t, eq(`{}`, `{}`), "objects are not ids")
+}
+
+func TestOutboundCapabilities(t *testing.T) {
+	out := OutboundCapabilities(json.RawMessage(`{"elicitation":{"form":{}},"sampling":{},"roots":{"listChanged":true},"extensions":{"io.modelcontextprotocol/tasks":{}},"experimental":{"x":1},"com.example/thing":true}`))
+	require.JSONEq(t, `{"elicitation":{"form":{}},"sampling":{},"roots":{"listChanged":true}}`, string(out))
+	require.JSONEq(t, `{}`, string(OutboundCapabilities(json.RawMessage(`{"extensions":{"io.modelcontextprotocol/tasks":{}}}`))))
+	require.JSONEq(t, `{}`, string(OutboundCapabilities(nil)))
+	require.JSONEq(t, `{}`, string(OutboundCapabilities(json.RawMessage(`[1]`))))
 }
 
 func TestResults(t *testing.T) {
@@ -391,13 +430,18 @@ func TestResults(t *testing.T) {
 	d := Discover(srv, map[string]any{"tools": map[string]any{}}, "", 60000)
 	require.Equal(t, ResultTypeComplete, d["resultType"])
 	require.Equal(t, []string{"2026-07-28"}, d["supportedVersions"])
-	require.Equal(t, 60000, d["ttlMs"])
+	require.Equal(t, json.Number("60000"), d["ttlMs"])
 	require.Equal(t, CacheScopePublic, d["cacheScope"])
 	require.Equal(t, srv, d["_meta"].(map[string]any)[MetaServerInfo])
 
-	c := Cacheable(Complete(srv, map[string]any{"tools": []any{}}), -5, "weird")
-	require.Equal(t, 0, c["ttlMs"])
+	c := Cacheable(Complete(srv, map[string]any{"tools": []any{}}), json.Number("-5"), "weird")
+	require.Equal(t, json.Number("0"), c["ttlMs"], "an invalid Talon-side hint falls back to immediately stale")
 	require.Equal(t, CacheScopePrivate, c["cacheScope"])
+	c = Cacheable(Complete(srv, map[string]any{}), json.Number("1500.25"), CacheScopePublic)
+	require.Equal(t, json.Number("1500.25"), c["ttlMs"], "a validated upstream value is emitted exactly")
+	require.Equal(t, json.Number("60000"), TTL(60000))
+	require.Equal(t, json.Number("0"), TTL(-1))
+	require.Equal(t, json.Number("60000"), d["ttlMs"], "discover carries Talon's hint as a JSON number")
 }
 
 func TestOutboundRequest(t *testing.T) {

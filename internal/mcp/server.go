@@ -171,7 +171,7 @@ func (h *Handler) handleToolsList(ctx context.Context, id json.RawMessage) *json
 	// stable for a process; sort by name so it is stable across restarts.
 	sort.Slice(entries, func(i, j int) bool { return entries[i]["name"].(string) < entries[j]["name"].(string) })
 	span.SetAttributes(attribute.Int("tools.count", len(entries)))
-	result := wire.Cacheable(wire.Complete(nativeServer(), map[string]interface{}{"tools": entries}), listTTLMs, wire.CacheScopePrivate)
+	result := wire.Cacheable(wire.Complete(nativeServer(), map[string]interface{}{"tools": entries}), wire.TTL(listTTLMs), wire.CacheScopePrivate)
 	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: id, Result: result}
 }
 

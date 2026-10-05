@@ -25,6 +25,9 @@ const proxyFlowEmail = "anna.schmidt@example.com"
 func proxyFlowUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "crm_lookup") {
+			return
+		}
 		var req jsonrpcRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
@@ -177,6 +180,9 @@ func TestProxyDataFlow_BlockedPIIRequest(t *testing.T) {
 
 func TestProxyDataFlow_AbsentWhenNoPII(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerToolsList(w, r, "crm_lookup") {
+			return
+		}
 		var req jsonrpcRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
