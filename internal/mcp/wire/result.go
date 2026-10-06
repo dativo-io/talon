@@ -169,25 +169,35 @@ func parseListHints(obj map[string]json.RawMessage, lr *ListResult) error {
 			return fmt.Errorf("%w: nextCursor must be a string", ErrListResultInvalid)
 		}
 	}
+	ttl, scope, err := parseCacheHints(obj, ErrListResultInvalid)
+	if err != nil {
+		return err
+	}
+	lr.TTLMs, lr.CacheScope = ttl, scope
+	return nil
+}
+
+// parseCacheHints validates the REQUIRED CacheableResult hints: ttlMs a
+// non-negative JSON number token (kept verbatim), cacheScope exactly public
+// or private. Nothing missing or malformed is repaired.
+func parseCacheHints(obj map[string]json.RawMessage, invalid error) (json.Number, string, error) {
 	t, has := obj["ttlMs"]
 	if !has {
-		return fmt.Errorf("%w: ttlMs is required on a cacheable result", ErrListResultInvalid)
+		return "", "", fmt.Errorf("%w: ttlMs is required on a cacheable result", invalid)
 	}
 	tt := bytes.TrimSpace(t)
 	if len(tt) == 0 || (tt[0] != '-' && (tt[0] < '0' || tt[0] > '9')) || !validTTL(json.Number(tt)) {
-		return fmt.Errorf("%w: ttlMs must be a non-negative JSON number", ErrListResultInvalid)
+		return "", "", fmt.Errorf("%w: ttlMs must be a non-negative JSON number", invalid)
 	}
-	lr.TTLMs = json.Number(tt)
 	sc, has := obj["cacheScope"]
 	if !has {
-		return fmt.Errorf("%w: cacheScope is required on a cacheable result", ErrListResultInvalid)
+		return "", "", fmt.Errorf("%w: cacheScope is required on a cacheable result", invalid)
 	}
 	var s string
 	if err := json.Unmarshal(sc, &s); err != nil || (s != CacheScopePublic && s != CacheScopePrivate) {
-		return fmt.Errorf("%w: cacheScope must be public or private", ErrListResultInvalid)
+		return "", "", fmt.Errorf("%w: cacheScope must be public or private", invalid)
 	}
-	lr.CacheScope = s
-	return nil
+	return json.Number(tt), s, nil
 }
 
 // StripHeaderAnnotations removes every x-mcp-header annotation from a tool
@@ -196,7 +206,9 @@ func parseListHints(obj map[string]json.RawMessage, lr *ListResult) error {
 // the route cannot validate from that same definition.
 func StripHeaderAnnotations(schema json.RawMessage) json.RawMessage {
 	var node any
-	if err := json.Unmarshal(schema, &node); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(schema))
+	dec.UseNumber() // numbers in the schema survive the round trip verbatim
+	if err := dec.Decode(&node); err != nil {
 		return schema
 	}
 	stripAnnotations(node)

@@ -93,6 +93,8 @@ func statusForActionCode(code string) int {
 		return http.StatusConflict
 	case action.CodeStoreUnavailable:
 		return http.StatusServiceUnavailable
+	case action.CodeExecutionUnsupported:
+		return http.StatusNotImplemented
 	}
 	return http.StatusInternalServerError
 }

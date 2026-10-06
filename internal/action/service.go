@@ -251,6 +251,12 @@ func (s *Service) prepareEstablish(req EstablishRequest) (*establishPlan, error)
 	if !ok {
 		return nil, newErr(CodeActionNotFound, "action is not in this AI use case's trusted catalog")
 	}
+	if def.Destination.Type != DestinationTypeHTTP {
+		// Fail closed before any binding: an mcp-sourced definition is
+		// catalogued and inspectable, but no executor for it exists on
+		// this adapter until #431 routes MCP tools/call through here.
+		return nil, newErr(CodeExecutionUnsupported, "this adapter cannot execute an action sourced from an MCP source (destination type "+def.Destination.Type+"); MCP execution convergence is not shipped")
+	}
 	args := req.Arguments
 	if len(args) == 0 {
 		args = json.RawMessage("{}")

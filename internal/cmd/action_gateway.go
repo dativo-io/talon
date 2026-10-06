@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -18,98 +19,127 @@ import (
 
 // actionGateway is the serve-time composition of ActionGovernance (#458):
 // one repository in the evidence database (state + evidence commit in one
-// transaction), one trusted HTTP dispatcher, and one immutable Service per
-// AI use case that declares an action catalog, built from the runtime
-// generation active at startup. Catalog/approval-rule reload is not part
-// of this slice: a changed agent file takes effect at the next start (the
-// live generation keeps serving the catalog it was built with).
+// transaction), one trusted HTTP dispatcher, one approver store, and one
+// immutable Service per AI use case AND runtime generation. The catalog and
+// approval policy a Service governs with are the ones compiled INTO the
+// generation (#427): a request resolves its Service from the generation it
+// captured, so a reload can never change the catalog under an in-flight
+// operation, and a new generation is served as soon as it is active.
 type actionGateway struct {
-	services  map[string]*action.Service // tenant\x00agent
-	repo      *action.Repository
-	approvers *approver.Store
+	holder     *agentcatalog.RuntimeHolder
+	repo       *action.Repository
+	evStore    *evidence.Store
+	dispatcher action.Dispatcher
+	cryptor    *action.PayloadCryptor
+	approvers  *approver.Store
+
+	mu         sync.Mutex
+	generation string
+	services   map[string]*action.Service // tenant\x00agent, for `generation`
 }
 
-func buildActionGateway(ctx context.Context, snap *agentcatalog.RuntimeSnapshot, evStore *evidence.Store, approverDBPath, vaultKey string) (*actionGateway, error) {
+// buildActionGateway composes the gateway over the runtime holder. Without
+// a usable payload key no operation can ever be established: that is a
+// startup error when some agent already declares a catalog, and "no action
+// gateway" otherwise. Attempts interrupted by a previous crash are
+// recovered for every agent of the boot generation that declares a catalog.
+func buildActionGateway(ctx context.Context, holder *agentcatalog.RuntimeHolder, evStore *evidence.Store, approverDBPath, vaultKey string) (*actionGateway, error) {
+	snap := holder.Current()
 	withCatalog := agentsWithCatalog(snap)
-	if len(withCatalog) == 0 {
-		return nil, nil
+	cryptor, err := action.NewPayloadCryptor(vaultKey)
+	if err != nil {
+		if len(withCatalog) == 0 {
+			log.Debug().Err(err).Msg("action_gateway_disabled_no_payload_key")
+			return nil, nil
+		}
+		return nil, fmt.Errorf("action payload encryption: %w", err)
 	}
 	repo, err := action.NewRepository(ctx, evStore.DB())
 	if err != nil {
 		return nil, err
 	}
-	dispatcher := action.NewHTTPDispatcher(&http.Client{Timeout: 35 * time.Second})
-	// Active payloads are sealed under a key derived from the vault key
-	// (explicit version); without it no operation can be established.
-	cryptor, err := action.NewPayloadCryptor(vaultKey)
-	if err != nil {
-		return nil, fmt.Errorf("action payload encryption: %w", err)
-	}
-	ag := &actionGateway{services: map[string]*action.Service{}, repo: repo}
-	for _, ra := range withCatalog {
-		tenant, svc, err := buildActionService(ctx, ra, repo, evStore, dispatcher, cryptor)
-		if err != nil {
-			return nil, err
-		}
-		ag.services[tenant+"\x00"+ra.Name] = svc
-	}
 	store, err := approver.NewStore(approverDBPath)
 	if err != nil {
 		return nil, fmt.Errorf("opening approver store: %w", err)
 	}
-	ag.approvers = store
+	ag := &actionGateway{
+		holder: holder, repo: repo, evStore: evStore, cryptor: cryptor, approvers: store,
+		dispatcher: action.NewHTTPDispatcher(&http.Client{Timeout: 35 * time.Second}),
+		services:   map[string]*action.Service{},
+	}
+	for _, ra := range withCatalog {
+		svc, err := ag.serviceFor(snap, ra)
+		if err != nil {
+			return nil, err
+		}
+		if n, err := svc.RecoverInterrupted(ctx); err != nil {
+			return nil, fmt.Errorf("agent %q: recovering interrupted attempts: %w", ra.Name, err)
+		} else if n > 0 {
+			log.Warn().Str("agent", ra.Name).Int("attempts", n).Msg("action_attempts_recovered_after_restart")
+		}
+		log.Info().Str("agent", ra.Name).Str("tenant", normalizedTenant(ra.TenantID)).Strs("actions", ra.Actions.Names()).Int("sources", len(ra.Actions.Sources())).Str("catalog", shortGeneration(ra.Actions.Digest)).Msg("action_catalog_active")
+	}
 	return ag, nil
 }
 
-// agentsWithCatalog lists the runtime agents that declare an action catalog.
+// agentsWithCatalog lists the runtime agents whose generation carries a
+// compiled action catalog.
 func agentsWithCatalog(snap *agentcatalog.RuntimeSnapshot) []*agentcatalog.RuntimeAgent {
 	if snap == nil {
 		return nil
 	}
 	var out []*agentcatalog.RuntimeAgent
 	for _, ra := range snap.List() {
-		if ra.Policy != nil && ra.Policy.Actions != nil && len(ra.Policy.Actions.Definitions) > 0 {
+		if ra.Actions != nil {
 			out = append(out, ra)
 		}
 	}
 	return out
 }
 
-// buildActionService compiles one agent's catalog and approval policy and
-// recovers attempts interrupted by a previous crash.
-func buildActionService(ctx context.Context, ra *agentcatalog.RuntimeAgent, repo *action.Repository, evStore *evidence.Store, dispatcher action.Dispatcher, cryptor *action.PayloadCryptor) (string, *action.Service, error) {
-	cat, err := action.CompileCatalog(ra.Policy.Actions)
+// serviceFor returns the Service of one agent for one generation. Services
+// are cached per generation; a generation change drops the previous set
+// (a Service is cheap — the catalog and policy were compiled by the
+// generation build).
+func (ag *actionGateway) serviceFor(snap *agentcatalog.RuntimeSnapshot, ra *agentcatalog.RuntimeAgent) (*action.Service, error) {
+	if ra.Actions == nil || ra.Approvals == nil {
+		return nil, fmt.Errorf("agent %q: generation carries no compiled action catalog", ra.Name)
+	}
+	tenant := normalizedTenant(ra.TenantID)
+	key := tenant + "\x00" + ra.Name
+	ag.mu.Lock()
+	defer ag.mu.Unlock()
+	if ag.generation != snap.Generation {
+		ag.generation = snap.Generation
+		ag.services = map[string]*action.Service{}
+	}
+	if svc, ok := ag.services[key]; ok {
+		return svc, nil
+	}
+	svc, err := action.NewService(tenant, ra.Name, ra.Actions, ra.Approvals, ag.repo, ag.evStore, ag.dispatcher, ag.cryptor)
 	if err != nil {
-		return "", nil, fmt.Errorf("agent %q (%s): %w", ra.Name, ra.Path, err)
+		return nil, err
 	}
-	ap, err := action.CompileApprovalPolicy(ra.Policy)
-	if err != nil {
-		return "", nil, fmt.Errorf("agent %q (%s): %w", ra.Name, ra.Path, err)
-	}
-	tenant := strings.TrimSpace(ra.TenantID)
-	if tenant == "" {
-		tenant = "default"
-	}
-	svc, err := action.NewService(tenant, ra.Name, cat, ap, repo, evStore, dispatcher, cryptor)
-	if err != nil {
-		return "", nil, err
-	}
-	if n, err := svc.RecoverInterrupted(ctx); err != nil {
-		return "", nil, fmt.Errorf("agent %q: recovering interrupted attempts: %w", ra.Name, err)
-	} else if n > 0 {
-		log.Warn().Str("agent", ra.Name).Int("attempts", n).Msg("action_attempts_recovered_after_restart")
-	}
-	log.Info().Str("agent", ra.Name).Str("tenant", tenant).Strs("actions", cat.Names()).Msg("action_catalog_active")
-	return tenant, svc, nil
+	ag.services[key] = svc
+	return svc, nil
 }
 
+// resolver resolves the authenticated AI use case's Service from the
+// CURRENT generation; false when the agent is unknown, belongs to another
+// tenant or declares no catalog.
 func (ag *actionGateway) resolver() server.ActionServiceResolver {
 	return func(tenantID, agentID string) (*action.Service, bool) {
-		if tenantID == "" {
-			tenantID = "default"
+		snap := ag.holder.Current()
+		ra, ok := snap.Get(agentID)
+		if !ok || ra.Actions == nil || normalizedTenant(ra.TenantID) != normalizedTenant(tenantID) {
+			return nil, false
 		}
-		svc, ok := ag.services[tenantID+"\x00"+agentID]
-		return svc, ok
+		svc, err := ag.serviceFor(snap, ra)
+		if err != nil {
+			log.Error().Err(err).Str("agent", agentID).Msg("action_service_unavailable")
+			return nil, false
+		}
+		return svc, true
 	}
 }
 
@@ -119,6 +149,6 @@ func (ag *actionGateway) ownerResolver() server.ApprovalOwnerResolver {
 		if err != nil || !ok {
 			return nil, false
 		}
-		return ag.resolver()(tenant, agent)
+		return ag.resolver()(strings.TrimSpace(tenant), agent)
 	}
 }
