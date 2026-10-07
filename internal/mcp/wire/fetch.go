@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
+	"strings"
 )
 
 // Shared upstream exchange (#427 / #447). Every Talon surface that talks to
@@ -103,10 +105,31 @@ var ErrListPagination = errors.New("tools/list pagination does not terminate")
 // ToolList is the complete, validated tools/list of an upstream.
 type ToolList struct {
 	Tools []json.RawMessage
-	// TTLMs / CacheScope are the first page's cache hints, verbatim.
+	// TTLMs / CacheScope are the EFFECTIVE freshness hints of the whole
+	// logical list, derived conservatively across every page: the shortest
+	// ttlMs wins (kept as that page's exact JSON number) and the scope is
+	// private as soon as any page is private. A later page's facts are
+	// never kept alive by an earlier page's longer hint.
 	TTLMs      json.Number
 	CacheScope string
 	Pages      int
+}
+
+// mergeCacheHints folds one validated page's hints into the running
+// effective hints of the list.
+func mergeCacheHints(list *ToolList, page *ListResult, first bool) {
+	if first {
+		list.TTLMs, list.CacheScope = page.TTLMs, page.CacheScope
+		return
+	}
+	cur, okCur := new(big.Rat).SetString(string(list.TTLMs))
+	next, okNext := new(big.Rat).SetString(string(page.TTLMs))
+	if okCur && okNext && next.Cmp(cur) < 0 {
+		list.TTLMs = page.TTLMs
+	}
+	if page.CacheScope == CacheScopePrivate {
+		list.CacheScope = CacheScopePrivate
+	}
 }
 
 // FetchToolList performs tools/list against an upstream, following
@@ -130,9 +153,7 @@ func FetchToolList(ctx context.Context, do Doer, endpoint string, id json.RawMes
 		if err != nil {
 			return nil, &UpstreamError{Kind: UpstreamKindProtocol, Page: page, Err: err}
 		}
-		if page == 0 {
-			out.TTLMs, out.CacheScope = list.TTLMs, list.CacheScope
-		}
+		mergeCacheHints(out, list, page == 0)
 		out.Tools = append(out.Tools, list.Tools...)
 		out.Pages = page + 1
 		if list.NextCursor == "" {
@@ -253,3 +274,31 @@ func HeaderParamsFromDecls(decls []ParamDecl) (*HeaderParams, error) {
 	}
 	return hp, nil
 }
+
+// Request-integrity headers the shared MCP client itself sets on every
+// outbound request. An operator-configured credential header may never
+// name one of them: a collision would let configuration overwrite protocol
+// metadata (version, method/name integrity, mirrored parameters, framing),
+// so it is refused at load — before any request exists.
+var reservedClientHeaders = map[string]bool{
+	strings.ToLower(HeaderProtocolVersion): true,
+	strings.ToLower(HeaderMethod):          true,
+	strings.ToLower(HeaderName):            true,
+	"content-type":                         true,
+	"accept":                               true,
+	"content-length":                       true,
+	"host":                                 true,
+	"transfer-encoding":                    true,
+	"connection":                           true,
+}
+
+// IsReservedClientHeader reports whether a header name (case-insensitive)
+// is owned by the MCP client contract, including every Mcp-Param-* name.
+func IsReservedClientHeader(name string) bool {
+	l := strings.ToLower(strings.TrimSpace(name))
+	return reservedClientHeaders[l] || strings.HasPrefix(l, strings.ToLower(HeaderParamPrefix))
+}
+
+// IsHeaderToken reports RFC 9110 field-name token syntax (exported for the
+// shared upstream-auth validator).
+func IsHeaderToken(s string) bool { return isToken(s) }

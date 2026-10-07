@@ -36,6 +36,8 @@ type fakeSources struct {
 	calls  atomic.Int64
 	seen   []string // tenant/agent pairs
 	now    func() time.Time
+	// ext is an extension id the fake source advertises ("" = none).
+	ext string
 }
 
 func newFakeSources() *fakeSources {
@@ -65,10 +67,15 @@ func (f *fakeSources) DiscoverSources(_ context.Context, tenantID, agentID strin
 		if err != nil {
 			return nil, err
 		}
+		caps := action.SourceCapabilities{Tools: &action.ListCapability{}}
+		if f.ext != "" {
+			caps.Extensions = []action.SourceExtension{{ID: f.ext, Settings: json.RawMessage(`{}`)}}
+		}
 		snap, err := action.NewSourceSnapshot(action.SourceSnapshot{
 			ID: id, Type: action.SourceTypeMCP, URL: src.URL, ConfigDigest: action.SourceConfigDigest(id, src),
 			SupportedVersions: []string{"2026-07-28"}, TTLMs: json.Number(f.ttlMs), CacheScope: "public", DiscoveredAt: f.now(),
-			Tools: []action.DiscoveredTool{{Name: "refund.create", Description: "d", Schema: canonical}},
+			Capabilities: caps,
+			Tools:        []action.DiscoveredTool{{Name: "refund.create", Description: "d", Schema: canonical}},
 		})
 		if err != nil {
 			return nil, err
@@ -123,16 +130,61 @@ func TestBuildBundle_ActionCatalogIsPartOfTheGeneration(t *testing.T) {
 	scan, err := DiscoverAgents(ctx, agentsDir)
 	require.NoError(t, err)
 
-	t.Run("no discoverer: this process builds no catalogs", func(t *testing.T) {
-		agents, err := BuildRuntimeAgents(ctx, scan, BundleDeps{})
+	t.Run("no discoverer: explicit catalogs compile, MCP sources fail closed", func(t *testing.T) {
+		// The explicit catalog is a property of the trusted configuration,
+		// not of the injected infrastructure.
+		explicitOnly := t.TempDir()
+		writeActionsAgent(t, explicitOnly, "notifier", explicitActions)
+		writeActionsAgent(t, explicitOnly, "plain", "")
+		s, err := DiscoverAgents(ctx, explicitOnly)
 		require.NoError(t, err)
+		agents, err := BuildRuntimeAgents(ctx, s, BundleDeps{})
+		require.NoError(t, err)
+		byName := map[string]*RuntimeAgent{}
 		for _, ra := range agents {
-			assert.Nil(t, ra.Actions, ra.Name)
+			byName[ra.Name] = ra
 		}
-		snap := NewRuntimeSnapshot(scan, agents, nil, time.Now())
-		assert.Equal(t, scan.Digest, snap.Generation)
-		_, ok := snap.ActionRefreshAt()
-		assert.False(t, ok)
+		assert.Nil(t, byName["plain"].Actions, "no actions declared → no catalog")
+		require.NotNil(t, byName["notifier"].Actions, "explicit definitions compile without a discoverer")
+		require.NotNil(t, byName["notifier"].Approvals)
+		def, ok := byName["notifier"].Actions.Lookup("notify_customer")
+		require.True(t, ok)
+		assert.Equal(t, action.SourceTypeDeclared, def.Source.Type)
+		snap := NewRuntimeSnapshot(s, agents, nil, time.Now())
+		assert.Equal(t, s.Digest, snap.Generation, "explicit catalogs are a function of the scanned bytes")
+		_, has := snap.ActionRefreshAt()
+		assert.False(t, has)
+
+		// A configured MCP source with no discoverer rejects the whole
+		// generation; the explicit agents of the same scan never activate
+		// on their own.
+		agents, err = BuildRuntimeAgents(ctx, scan, BundleDeps{})
+		require.Error(t, err)
+		assert.Nil(t, agents, "no partial generation")
+		assert.True(t, errors.Is(err, ErrSourceDiscovererRequired), "%v", err)
+		assert.Contains(t, err.Error(), `agent "refunder"`)
+
+		// Mixed explicit + discovered definitions in ONE agent: fail closed
+		// too, the explicit subset is not compiled separately.
+		mixed := t.TempDir()
+		writeActionsAgent(t, mixed, "mixed", discoveredActions("ticket_id, amount")+`    notify_customer:
+      input_schema:
+        type: object
+        additionalProperties: false
+        properties:
+          ticket_id: {type: string}
+      destination: {type: http, url: "https://notify.internal/v1"}
+`)
+		ms, err := DiscoverAgents(ctx, mixed)
+		require.NoError(t, err)
+		agents, err = BuildRuntimeAgents(ctx, ms, BundleDeps{})
+		require.Error(t, err)
+		assert.Nil(t, agents)
+		assert.True(t, errors.Is(err, ErrSourceDiscovererRequired))
+		// With a discoverer the same mixed agent compiles both into one catalog.
+		agents, err = BuildRuntimeAgents(ctx, ms, BundleDeps{Sources: newFakeSources()})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"create_refund_request", "notify_customer"}, agents[0].Actions.Names())
 	})
 
 	t.Run("discoverer: explicit and discovered catalogs compile into the bundle", func(t *testing.T) {
@@ -352,4 +404,27 @@ func TestReloader_ConfigEditWithSourcesActivatesImmediately(t *testing.T) {
 	ra, _ := next.Get("refunder")
 	def, _ := ra.Actions.Lookup("create_refund_request")
 	assert.Equal(t, action.Review{Shown: []string{"ticket_id"}, NonMaterial: []string{"amount"}}, def.Review, "the Talon overlay was applied")
+}
+
+// A changed advertised capability is an observably different source
+// generation: a new runtime generation activates, while the definition
+// identity (and therefore every bound authorization) is unchanged.
+func TestReloader_CapabilityChangeIsANewGenerationNotANewIdentity(t *testing.T) {
+	f := newSourceReloadFixture(t)
+	ctx := context.Background()
+	boot := f.holder.Current()
+	bootRA, _ := boot.Get("refunder")
+	bootDef, _ := bootRA.Actions.Lookup("create_refund_request")
+
+	f.fake.mu.Lock()
+	f.fake.ext = "io.modelcontextprotocol/tasks"
+	f.fake.mu.Unlock()
+	f.advance(61 * time.Second)
+	assert.Equal(t, ReloadActivated, f.reloader.ReloadOnce(ctx))
+	next := f.holder.Current()
+	assert.NotEqual(t, boot.Generation, next.Generation)
+	ra, _ := next.Get("refunder")
+	def, _ := ra.Actions.Lookup("create_refund_request")
+	assert.Equal(t, bootDef.DefinitionDigest, def.DefinitionDigest, "capabilities are facts, not authority")
+	assert.Equal(t, "io.modelcontextprotocol/tasks", ra.Actions.Sources()[0].Capabilities.Extensions[0].ID, "recorded as a source fact only")
 }

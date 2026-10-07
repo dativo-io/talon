@@ -346,7 +346,7 @@ actions:
       type: mcp
       url: https://refunds.internal/mcp      # https, or http for loopback; redirects never followed
       auth:
-        secret_name: refunds-mcp-key         # vault entry; header/scheme optional (Authorization / Bearer)
+        secret_name: refunds-mcp-key         # vault entry; header/scheme optional (Authorization / Bearer); the header may not be a protocol-owned name (MCP-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Param-*, Content-Type, Accept)
       timeout: 15s                           # discovery deadline (default 15s, max 2m)
   definitions:
     create_refund_request:                   # canonical name — the only callable identity

@@ -20,19 +20,21 @@ type CatalogView struct {
 
 // SourceView is the safe projection of one trusted source.
 type SourceView struct {
-	ID                string           `json:"id"`
-	Type              string           `json:"type"`
-	URL               string           `json:"url"`
-	ConfigDigest      string           `json:"config_digest"`
-	Generation        string           `json:"generation"`
-	ServerInfo        SourceServerInfo `json:"server_info"`
-	SupportedVersions []string         `json:"supported_versions,omitempty"`
-	TTLMs             json.Number      `json:"ttl_ms"`
-	CacheScope        string           `json:"cache_scope"`
-	DiscoveredAt      time.Time        `json:"discovered_at"`
-	RefreshAt         time.Time        `json:"refresh_at"`
-	ToolCount         int              `json:"tool_count"`
-	Excluded          []ExcludedTool   `json:"excluded,omitempty"`
+	ID                 string             `json:"id"`
+	Type               string             `json:"type"`
+	URL                string             `json:"url"`
+	ConfigDigest       string             `json:"config_digest"`
+	Generation         string             `json:"generation"`
+	ServerInfo         SourceServerInfo   `json:"server_info"`
+	SupportedVersions  []string           `json:"supported_versions,omitempty"`
+	Capabilities       SourceCapabilities `json:"capabilities"`
+	CapabilitiesDigest string             `json:"capabilities_digest"`
+	TTLMs              json.Number        `json:"ttl_ms"`
+	CacheScope         string             `json:"cache_scope"`
+	DiscoveredAt       time.Time          `json:"discovered_at"`
+	RefreshAt          time.Time          `json:"refresh_at"`
+	ToolCount          int                `json:"tool_count"`
+	Excluded           []ExcludedTool     `json:"excluded,omitempty"`
 }
 
 // SourceRef is the source identity a definition carries.
@@ -75,6 +77,9 @@ type DefinitionView struct {
 	Review           ReviewView         `json:"review"`
 	ProjectionDigest string             `json:"projection_digest"`
 	MirroredParams   []MirroredParam    `json:"mirrored_params,omitempty"`
+	Title            string             `json:"title,omitempty"`
+	Hints            *ToolHints         `json:"hints,omitempty"`
+	OutputSchema     json.RawMessage    `json:"output_schema,omitempty"`
 	BindingProfile   string             `json:"binding_profile"`
 	ExecutionProfile string             `json:"execution_profile"`
 	Destination      DestinationView    `json:"destination"`
@@ -122,6 +127,9 @@ func (c *Catalog) DefinitionView(name string, ap *ApprovalPolicy) (DefinitionVie
 		Review:           ReviewView{Fields: append([]string{}, d.Review.Shown...), NonMaterial: append([]string(nil), d.Review.NonMaterial...)},
 		ProjectionDigest: d.ProjectionDigest,
 		MirroredParams:   append([]MirroredParam(nil), d.MirroredParams...),
+		Title:            d.Title,
+		Hints:            cloneHints(d.Hints),
+		OutputSchema:     append(json.RawMessage(nil), d.OutputSchema...),
 		BindingProfile:   d.BindingProfile,
 		ExecutionProfile: d.ExecutionProfile,
 		Destination: DestinationView{

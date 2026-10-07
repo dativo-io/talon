@@ -105,7 +105,13 @@ type Definition struct {
 	// MirroredParams are the source's validated x-mcp-header declarations:
 	// protocol metadata preserved for the MCP adapter, never policy.
 	MirroredParams []MirroredParam
-	Destination    Destination
+	// Title, Hints and OutputSchema are the source's bounded presentation
+	// metadata (declared definitions have none). Hints, never policy: they
+	// enter MetadataDigest only.
+	Title        string
+	Hints        *ToolHints
+	OutputSchema json.RawMessage
+	Destination  Destination
 	// DestinationID is the stable material-destination identity bound into
 	// the operation digest: method + URL for http, source id + endpoint for
 	// mcp; never credentials.
@@ -140,19 +146,21 @@ type Destination struct {
 // CatalogSource is the inspectable, credential-free summary of one trusted
 // source as compiled into a catalog.
 type CatalogSource struct {
-	ID                string           `json:"id"`
-	Type              string           `json:"type"`
-	URL               string           `json:"url"`
-	ConfigDigest      string           `json:"config_digest"`
-	Generation        string           `json:"generation"`
-	ServerInfo        SourceServerInfo `json:"server_info"`
-	SupportedVersions []string         `json:"supported_versions,omitempty"`
-	TTLMs             json.Number      `json:"ttl_ms"`
-	CacheScope        string           `json:"cache_scope"`
-	DiscoveredAt      time.Time        `json:"discovered_at"`
-	RefreshAt         time.Time        `json:"refresh_at"`
-	ToolCount         int              `json:"tool_count"`
-	Excluded          []ExcludedTool   `json:"excluded,omitempty"`
+	ID                 string             `json:"id"`
+	Type               string             `json:"type"`
+	URL                string             `json:"url"`
+	ConfigDigest       string             `json:"config_digest"`
+	Generation         string             `json:"generation"`
+	ServerInfo         SourceServerInfo   `json:"server_info"`
+	SupportedVersions  []string           `json:"supported_versions,omitempty"`
+	Capabilities       SourceCapabilities `json:"capabilities"`
+	CapabilitiesDigest string             `json:"capabilities_digest"`
+	TTLMs              json.Number        `json:"ttl_ms"`
+	CacheScope         string             `json:"cache_scope"`
+	DiscoveredAt       time.Time          `json:"discovered_at"`
+	RefreshAt          time.Time          `json:"refresh_at"`
+	ToolCount          int                `json:"tool_count"`
+	Excluded           []ExcludedTool     `json:"excluded,omitempty"`
 }
 
 // Catalog is the compiled, immutable action set of one agent.
@@ -347,6 +355,7 @@ func catalogSource(id string, cfg policy.ActionSourceConfig, snap *SourceSnapsho
 	return CatalogSource{
 		ID: id, Type: SourceTypeMCP, URL: cfg.URL, ConfigDigest: want, Generation: snap.Generation,
 		ServerInfo: snap.ServerInfo, SupportedVersions: append([]string(nil), snap.SupportedVersions...),
+		Capabilities: snap.Capabilities, CapabilitiesDigest: snap.Capabilities.Digest(),
 		TTLMs: snap.TTLMs, CacheScope: snap.CacheScope, DiscoveredAt: snap.DiscoveredAt, RefreshAt: snap.RefreshAt(),
 		ToolCount: len(snap.Tools), Excluded: append([]ExcludedTool(nil), snap.Excluded...),
 	}, nil
@@ -427,6 +436,9 @@ func compileDiscoveredDefinition(name string, cfg policy.ActionDefinitionConfig,
 		Properties:       props,
 		Review:           review,
 		MirroredParams:   append([]MirroredParam(nil), tool.MirroredParams...),
+		Title:            tool.Title,
+		Hints:            cloneHints(tool.Hints),
+		OutputSchema:     append(json.RawMessage(nil), tool.OutputSchema...),
 		Destination:      Destination{Type: DestinationTypeMCP, URL: src.URL},
 		DestinationID:    "mcp:" + snap.ID + " " + src.URL,
 		ExecutionProfile: ExecutionProfileTalonForwarded,
@@ -478,8 +490,24 @@ func finishDefinition(def *Definition) {
 		ProjectionVersionV1,
 		"shown=" + strings.Join(def.Review.Shown, ","), "non_material=" + strings.Join(def.Review.NonMaterial, ","),
 	}, "\n")))
-	def.MetadataDigest = Digest([]byte("description=" + def.Description + "\nmirrors=" + mirroredParamsKey(def.MirroredParams)))
+	def.MetadataDigest = Digest([]byte("mirrors=" + mirroredParamsKey(def.MirroredParams) + "\npresentation=" + presentationKey(def.Title, def.Description, def.Hints, def.OutputSchema)))
 	def.DefinitionDigest = definitionIdentity(def)
+}
+
+func cloneHints(h *ToolHints) *ToolHints {
+	if h == nil {
+		return nil
+	}
+	c := *h
+	if h.Destructive != nil {
+		v := *h.Destructive
+		c.Destructive = &v
+	}
+	if h.OpenWorld != nil {
+		v := *h.OpenWorld
+		c.OpenWorld = &v
+	}
+	return &c
 }
 
 // compileInputSchema enforces the closed-object contract and compiles the

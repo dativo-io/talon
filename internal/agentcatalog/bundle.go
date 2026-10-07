@@ -2,6 +2,7 @@ package agentcatalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/dativo-io/talon/internal/action"
@@ -22,9 +23,9 @@ type BundleDeps struct {
 	Providers map[string]llm.Provider
 	// Sources discovers the trusted MCP action sources of an agent so its
 	// action catalog can be compiled INTO the generation (#427). This is
-	// the one action-catalog build seam of runtime composition: nil means
-	// this process builds no action catalogs (native-only CLI runs), and
-	// every RuntimeAgent.Actions stays nil. serve always sets it.
+	// the one action-catalog build seam of runtime composition. Explicit
+	// catalogs compile with or without it; an agent that configures MCP
+	// sources fails closed when it is nil.
 	Sources SourceDiscoverer
 }
 
@@ -70,13 +71,25 @@ func BuildBundle(ctx context.Context, ca CatalogAgent, deps BundleDeps) (*Runtim
 	return ra, nil
 }
 
+// ErrSourceDiscovererRequired: the agent binds actions to trusted MCP
+// sources but this process has no source discoverer. The catalog is a
+// property of the trusted configuration, so the generation fails closed —
+// the explicit subset never activates on its own.
+var ErrSourceDiscovererRequired = errors.New("agent configures actions.sources but this process has no MCP source discoverer (BundleDeps.Sources); the action catalog cannot be built")
+
 // buildActionCatalog compiles the agent's trusted action catalog into the
-// bundle: discover every configured source (network, bounded), then compile
-// explicit and discovered definitions with the Talon overlay, then the
-// approval-relevant policy. Any failure rejects the whole generation — a
-// partial catalog never activates, and a reload keeps last-known-good.
+// bundle. The catalog is a property of the agent's trusted configuration
+// and of the generation, never of which infrastructure a process injected:
+//
+//	no actions declared                     → no catalog (nil)
+//	explicit definitions only               → compiled ALWAYS, no discoverer needed
+//	MCP sources configured, discoverer set  → every source discovered, complete catalog
+//	MCP sources configured, no discoverer   → fail closed (ErrSourceDiscovererRequired)
+//
+// Any failure rejects the whole generation — a partial catalog never
+// activates, and a reload keeps last-known-good.
 func buildActionCatalog(ctx context.Context, ca CatalogAgent, deps BundleDeps, ra *RuntimeAgent) error {
-	if deps.Sources == nil || ca.Policy == nil || ca.Policy.Actions == nil || len(ca.Policy.Actions.Definitions) == 0 {
+	if ca.Policy == nil || ca.Policy.Actions == nil || len(ca.Policy.Actions.Definitions) == 0 {
 		return nil
 	}
 	tenant := ca.TenantID
@@ -85,6 +98,9 @@ func buildActionCatalog(ctx context.Context, ca CatalogAgent, deps BundleDeps, r
 	}
 	var snapshots map[string]*action.SourceSnapshot
 	if len(ca.Policy.Actions.Sources) > 0 {
+		if deps.Sources == nil {
+			return fmt.Errorf("agent %q (%s): %w", ca.Name, ca.Path, ErrSourceDiscovererRequired)
+		}
 		var err error
 		snapshots, err = deps.Sources.DiscoverSources(ctx, tenant, ca.Name, ca.Policy.Actions)
 		if err != nil {

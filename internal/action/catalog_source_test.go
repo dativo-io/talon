@@ -219,6 +219,13 @@ func TestCompileCatalog_DriftMatrix(t *testing.T) {
 		{name: "x-mcp-header change", tool: func(d *DiscoveredTool) {
 			d.MirroredParams = []MirroredParam{{Header: "Currency", Path: []string{"currency"}, Type: "string"}}
 		}, identity: false, catalogDigest: true},
+		{name: "tool annotations change", tool: func(d *DiscoveredTool) { d.Hints = &ToolHints{ReadOnly: true} }, identity: false, catalogDigest: true},
+		{name: "title change", tool: func(d *DiscoveredTool) { d.Title = "Refund!" }, identity: false, catalogDigest: true},
+		{name: "outputSchema change", tool: func(d *DiscoveredTool) { d.OutputSchema = json.RawMessage(`{"type":"object"}`) }, identity: false, catalogDigest: true},
+		{name: "capabilities change", snap: func(s *SourceSnapshot) {
+			s.Capabilities = SourceCapabilities{Tools: &ListCapability{ListChanged: true}}
+			*s = *mustSnapshot(s)
+		}, identity: false, catalogDigest: true},
 		{name: "serverInfo change", snap: func(s *SourceSnapshot) { s.ServerInfo = SourceServerInfo{Name: "x", Version: "y"} }},
 		{name: "ttl change", snap: func(s *SourceSnapshot) { s.TTLMs = "1" }},
 	}
@@ -489,4 +496,117 @@ func TestService_MCPSourcedDefinitionIsNotExecutable(t *testing.T) {
 	assert.Equal(t, ResultProvenanceNotDispatched, out.Provenance)
 	assert.Equal(t, "dispatch_destination_unsupported", out.Code)
 	assert.False(t, out.RequestWritten)
+}
+
+// Source capabilities, extensions and tool presentation metadata are
+// captured source FACTS: deterministic, part of the source/catalog
+// generation, never part of the definition identity and never authority.
+func TestSourceCapabilities_DeterministicAndNonAuthoritative(t *testing.T) {
+	caps := func(order bool) SourceCapabilities {
+		exts := []SourceExtension{
+			{ID: "io.modelcontextprotocol/tasks", Settings: json.RawMessage(`{"requests":{"tools":{"call":{"optional":true}}}}`)},
+			{ID: "com.example/audit", Settings: json.RawMessage(`{}`)},
+		}
+		exp := []string{"com.example/beta", "com.example/alpha"}
+		if order {
+			exts[0], exts[1] = exts[1], exts[0]
+			exp[0], exp[1] = exp[1], exp[0]
+		}
+		return SourceCapabilities{Tools: &ListCapability{ListChanged: true}, Resources: &ResourceCapability{Subscribe: true}, Completions: true, Experimental: exp, Extensions: exts, Instructions: "be nice"}
+	}
+	snapA, err := NewSourceSnapshot(SourceSnapshot{ID: "s", Capabilities: caps(false), Tools: []DiscoveredTool{refundTool()}})
+	require.NoError(t, err)
+	snapB, err := NewSourceSnapshot(SourceSnapshot{ID: "s", Capabilities: caps(true), Tools: []DiscoveredTool{refundTool()}})
+	require.NoError(t, err)
+	assert.Equal(t, snapA.Capabilities.Digest(), snapB.Capabilities.Digest(), "member/element order does not matter")
+	assert.Equal(t, snapA.Generation, snapB.Generation)
+	assert.Equal(t, "com.example/audit", snapA.Capabilities.Extensions[0].ID, "sorted")
+	assert.Equal(t, []string{"com.example/alpha", "com.example/beta"}, snapA.Capabilities.Experimental)
+
+	// A Tasks extension is recorded as a fact and changes the generation —
+	// and nothing else: the definition identity and every authority field
+	// are untouched.
+	cfg := discoveredCfg()
+	plain := snapshotFor(t, "refunds", cfg.Sources["refunds"], refundTool())
+	withTasks := snapshotFor(t, "refunds", cfg.Sources["refunds"], refundTool())
+	withTasks.Capabilities = caps(false)
+	withTasks, err = NewSourceSnapshot(*withTasks)
+	require.NoError(t, err)
+	catPlain, err := CompileCatalog(cfg, map[string]*SourceSnapshot{"refunds": plain})
+	require.NoError(t, err)
+	catTasks, err := CompileCatalog(cfg, map[string]*SourceSnapshot{"refunds": withTasks})
+	require.NoError(t, err)
+	assert.NotEqual(t, catPlain.Digest, catTasks.Digest, "changed capability facts → observably different source generation")
+	a, _ := catPlain.Lookup("create_refund_request")
+	b, _ := catTasks.Lookup("create_refund_request")
+	assert.Equal(t, a.DefinitionDigest, b.DefinitionDigest, "capabilities never enter authorization identity")
+	assert.Equal(t, a.Review, b.Review)
+	assert.Equal(t, a.ExecutionProfile, b.ExecutionProfile)
+	assert.Equal(t, a.Destination, b.Destination)
+	src := catTasks.Sources()[0]
+	assert.Equal(t, withTasks.Capabilities.Digest(), src.CapabilitiesDigest)
+	assert.Equal(t, "io.modelcontextprotocol/tasks", src.Capabilities.Extensions[1].ID, "recorded, not adopted")
+}
+
+func TestToolPresentation_MetadataOnly(t *testing.T) {
+	cfg := discoveredCfg()
+	base := compileDiscovered(t, cfg)
+	baseDef, _ := base.Lookup("create_refund_request")
+	require.Nil(t, baseDef.Hints)
+
+	falseV := false
+	decorated := refundTool()
+	decorated.Title = "Create refund"
+	decorated.Hints = &ToolHints{Title: "Refund", ReadOnly: true, Destructive: &falseV, Idempotent: true}
+	decorated.OutputSchema = json.RawMessage(`{"properties":{"refund_id":{"type":"string"}},"type":"object"}`)
+	cat := compileDiscovered(t, cfg, decorated)
+	def, _ := cat.Lookup("create_refund_request")
+
+	assert.Equal(t, "Create refund", def.Title)
+	require.NotNil(t, def.Hints)
+	assert.True(t, def.Hints.ReadOnly)
+	assert.NotNil(t, def.Hints.Destructive)
+	assert.JSONEq(t, string(decorated.OutputSchema), string(def.OutputSchema))
+	assert.Equal(t, baseDef.DefinitionDigest, def.DefinitionDigest, "hints are hints: `readOnlyHint`/`destructiveHint:false` change no authorization identity")
+	assert.NotEqual(t, baseDef.MetadataDigest, def.MetadataDigest)
+	assert.NotEqual(t, base.Digest, cat.Digest, "presentation facts are part of the catalog generation")
+	// The Talon overlay still decides everything with authority.
+	assert.Equal(t, baseDef.Review, def.Review)
+	assert.Equal(t, ExecutionProfileTalonForwarded, def.ExecutionProfile)
+	ap, err := CompileApprovalPolicy(&policy.Policy{Policies: policy.PoliciesConfig{Approvals: &policy.ApprovalsConfig{Rules: map[string]policy.ApprovalRuleConfig{
+		"r": {Actions: []string{"create_refund_request"}, ApproverGroups: []string{"support-leads"}},
+	}}}})
+	require.NoError(t, err)
+	assert.Equal(t, VerdictRequireApproval, ap.Evaluate(def.Name).Outcome, "a read-only/non-destructive hint does not make a governed action safe")
+	// The projection carries the metadata, safely.
+	view, ok := cat.DefinitionView("create_refund_request", ap)
+	require.True(t, ok)
+	assert.Equal(t, "Create refund", view.Title)
+	assert.True(t, view.Hints.ReadOnly)
+	assert.NotEmpty(t, view.OutputSchema)
+	view.Hints.ReadOnly = false
+	again, _ := cat.DefinitionView("create_refund_request", ap)
+	assert.True(t, again.Hints.ReadOnly, "views are copies")
+}
+
+// Only authority facts enter the definition identity: the digest input is
+// pinned so an informational field can never slip in unnoticed.
+func TestDefinitionIdentity_AuthorityFactsOnly(t *testing.T) {
+	cat := compileDiscovered(t, discoveredCfg())
+	def, _ := cat.Lookup("create_refund_request")
+	want := Digest([]byte(strings.Join([]string{
+		"name=" + def.Name, "source=" + def.Source.Type + ":" + def.Source.ID, "source_config=" + def.Source.ConfigDigest,
+		"upstream=" + def.UpstreamName, "schema=" + def.SchemaDigest, "projection=" + def.ProjectionDigest,
+		"destination=" + def.DestinationID, "success=",
+		"profile=" + def.ExecutionProfile, "binding=" + def.BindingProfile,
+	}, "\n")))
+	assert.Equal(t, want, def.DefinitionDigest)
+}
+
+func mustSnapshot(s *SourceSnapshot) *SourceSnapshot {
+	out, err := NewSourceSnapshot(*s)
+	if err != nil {
+		panic(err)
+	}
+	return out
 }

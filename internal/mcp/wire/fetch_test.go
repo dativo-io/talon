@@ -56,8 +56,53 @@ func TestFetchToolList_FollowsEveryPage(t *testing.T) {
 	assert.Len(t, list.Tools, 2)
 	assert.Equal(t, 3, list.Pages)
 	assert.EqualValues(t, 3, calls.Load())
-	assert.Equal(t, json.Number("120000.5"), list.TTLMs, "first page hints, verbatim")
-	assert.Equal(t, CacheScopePublic, list.CacheScope)
+	assert.Equal(t, json.Number("1"), list.TTLMs, "the shortest page ttlMs wins, verbatim")
+	assert.Equal(t, CacheScopePrivate, list.CacheScope, "one private page makes the logical list private")
+}
+
+// A multi-page list is ONE logical list: its freshness is as conservative
+// as its least fresh page, whatever the page order.
+func TestFetchToolList_ConservativeFreshness(t *testing.T) {
+	cases := map[string]struct {
+		pages     map[string]string
+		wantTTL   json.Number
+		wantScope string
+	}{
+		"shorter later ttl wins": {pages: map[string]string{
+			"":   `{"resultType":"complete","tools":[],"nextCursor":"p2","ttlMs":60000,"cacheScope":"public"}`,
+			"p2": `{"resultType":"complete","tools":[],"ttlMs":10000,"cacheScope":"public"}`,
+		}, wantTTL: "10000", wantScope: CacheScopePublic},
+		"shorter earlier ttl kept": {pages: map[string]string{
+			"":   `{"resultType":"complete","tools":[],"nextCursor":"p2","ttlMs":10000,"cacheScope":"public"}`,
+			"p2": `{"resultType":"complete","tools":[],"ttlMs":60000,"cacheScope":"public"}`,
+		}, wantTTL: "10000", wantScope: CacheScopePublic},
+		"fraction compared numerically": {pages: map[string]string{
+			"":   `{"resultType":"complete","tools":[],"nextCursor":"p2","ttlMs":100.5,"cacheScope":"public"}`,
+			"p2": `{"resultType":"complete","tools":[],"ttlMs":100.25,"cacheScope":"public"}`,
+		}, wantTTL: "100.25", wantScope: CacheScopePublic},
+		"private later page": {pages: map[string]string{
+			"":   `{"resultType":"complete","tools":[],"nextCursor":"p2","ttlMs":5,"cacheScope":"public"}`,
+			"p2": `{"resultType":"complete","tools":[],"ttlMs":5,"cacheScope":"private"}`,
+		}, wantTTL: "5", wantScope: CacheScopePrivate},
+		"private earlier page": {pages: map[string]string{
+			"":   `{"resultType":"complete","tools":[],"nextCursor":"p2","ttlMs":5,"cacheScope":"private"}`,
+			"p2": `{"resultType":"complete","tools":[],"ttlMs":5,"cacheScope":"public"}`,
+		}, wantTTL: "5", wantScope: CacheScopePrivate},
+		"zero ttl on any page": {pages: map[string]string{
+			"":   `{"resultType":"complete","tools":[],"nextCursor":"p2","ttlMs":99999,"cacheScope":"public"}`,
+			"p2": `{"resultType":"complete","tools":[],"ttlMs":0,"cacheScope":"public"}`,
+		}, wantTTL: "0", wantScope: CacheScopePublic},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int64
+			srv := listUpstream(t, tc.pages, &calls)
+			list, err := FetchToolList(context.Background(), srv.Client(), srv.URL, json.RawMessage("1"), testMeta())
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantTTL, list.TTLMs)
+			assert.Equal(t, tc.wantScope, list.CacheScope)
+		})
+	}
 }
 
 func TestFetchToolList_Failures(t *testing.T) {

@@ -420,7 +420,7 @@ func TestProxyToolsList_CapturedDefinitionsAndCacheHints(t *testing.T) {
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"resultType":"complete","tools":[{"name":"lookup_v2","inputSchema":{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}}},{"name":"crm_delete","inputSchema":{"type":"object"}}],"nextCursor":"p2","ttlMs":120000.5,"cacheScope":"public"}}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"resultType":"complete","tools":[{"name":"broken","inputSchema":{"type":"object","properties":{"n":{"type":"number","x-mcp-header":"N"}}}}],"ttlMs":5,"cacheScope":"public"}}`))
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"resultType":"complete","tools":[{"name":"broken","inputSchema":{"type":"object","properties":{"n":{"type":"number","x-mcp-header":"N"}}}}],"ttlMs":60000.25,"cacheScope":"public"}}`))
 	}))
 	t.Cleanup(up.Close)
 	h, _ := proxyFixture(t, up.URL)
@@ -432,7 +432,7 @@ func TestProxyToolsList_CapturedDefinitionsAndCacheHints(t *testing.T) {
 	require.Len(t, list, 1, "crm_delete is not in allowed_tools; broken has an invalid x-mcp-header")
 	assert.Equal(t, "lookup_v2", list[0].(map[string]any)["name"])
 	assert.Contains(t, rec.Body.String(), `"x-mcp-header":"Region"`, "the exact trusted definition is presented")
-	assert.Equal(t, 120000.5, res["ttlMs"], "upstream ttlMs preserved exactly, fraction included")
+	assert.Equal(t, 60000.25, res["ttlMs"], "the logical list is as fresh as its least fresh page: the shortest upstream ttlMs, preserved exactly, fraction included")
 	assert.Equal(t, "private", res["cacheScope"], "a filtered list is never public")
 	assert.Equal(t, "complete", res["resultType"])
 	assert.NotContains(t, res, "nextCursor", "Talon's list is a single page")

@@ -46,9 +46,9 @@ func newCLIUpstream(t *testing.T) *cliUpstream {
 		var result string
 		switch req.Method {
 		case wire.MethodDiscover:
-			result = `{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":1,"cacheScope":"public","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"refunds-upstream","version":"3.1"}}}`
+			result = `{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{"listChanged":true},"extensions":{"io.modelcontextprotocol/tasks":{}}},"instructions":"refunds only","ttlMs":1,"cacheScope":"public","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"refunds-upstream","version":"3.1"}}}`
 		case wire.MethodToolsList:
-			result = `{"resultType":"complete","tools":[{"name":"refund.create","description":"Create a refund","inputSchema":{"type":"object","properties":{"ticket_id":{"type":"string"},"amount":{"type":"number"},"region":{"type":"string","x-mcp-header":"Region"}},"required":["ticket_id","amount"]}}],"ttlMs":30000,"cacheScope":"public"}`
+			result = `{"resultType":"complete","tools":[{"name":"refund.create","title":"Create refund","description":"Create a refund","annotations":{"readOnlyHint":false,"destructiveHint":true,"talon/approver_groups":["anyone"]},"inputSchema":{"type":"object","properties":{"ticket_id":{"type":"string"},"amount":{"type":"number"},"region":{"type":"string","x-mcp-header":"Region"}},"required":["ticket_id","amount"]},"outputSchema":{"type":"object","properties":{"refund_id":{"type":"string"}}}}],"ttlMs":30000,"cacheScope":"public"}`
 		default:
 			t.Errorf("unexpected upstream method %q (discovery never calls tools)", req.Method)
 		}
@@ -139,6 +139,22 @@ func TestActionsCLI_ListShowValidate(t *testing.T) {
 	require.Len(t, listed.Catalog.Sources, 1)
 	assert.Equal(t, "refunds-upstream", listed.Catalog.Sources[0].ServerInfo.Name)
 	assert.EqualValues(t, 2, up.calls.Load(), "server/discover + one tools/list page")
+	// Source facts are represented safely: capabilities/extensions and tool
+	// presentation metadata appear as metadata, never as authority.
+	src := listed.Catalog.Sources[0]
+	require.NotNil(t, src.Capabilities.Tools)
+	assert.True(t, src.Capabilities.Tools.ListChanged)
+	require.Len(t, src.Capabilities.Extensions, 1)
+	assert.Equal(t, "io.modelcontextprotocol/tasks", src.Capabilities.Extensions[0].ID)
+	assert.Equal(t, "refunds only", src.Capabilities.Instructions)
+	assert.NotEmpty(t, src.CapabilitiesDigest)
+	refund := listed.Catalog.Actions[0]
+	assert.Equal(t, "Create refund", refund.Title)
+	require.NotNil(t, refund.Hints)
+	assert.True(t, *refund.Hints.Destructive)
+	assert.Contains(t, string(refund.OutputSchema), "refund_id")
+	assert.NotContains(t, out, "anyone", "hostile annotation members are dropped")
+	assert.Equal(t, "REQUIRE_APPROVAL", refund.Verdict)
 
 	// Human output names the same facts.
 	out, err = runActions(t, "list", "--policy", agentPath)

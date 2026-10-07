@@ -234,9 +234,12 @@ upstream-error record, if the upstream cannot provide it. The capture is
 protocol metadata only: it never defines policy, materiality or approval.
 The governed catalog is `internal/action` (#427): its trusted MCP sources are
 discovered through the same `internal/mcp/wire` client code the capture uses
-(one `server/discover` + `tools/list` paginator, one error classification,
+(one `server/discover` + `tools/list` paginator with conservative multi-page
+freshness, one error classification, one upstream-auth header contract,
 redirects refused), compiled with the Talon overlay into the runtime
-generation, and inspected with `talon actions`. Until #431 routes
+generation, and inspected with `talon actions`. The capture's `ttlMs` is
+therefore the shortest page hint, and `proxy.upstream.auth.header` is
+refused at load when it names a protocol-owned header. Until #431 routes
 `tools/call` through ActionGovernance the capture stays as protocol
 compatibility machinery for this route, and the catalog is the business-action
 authority. Where a declaration exists the body

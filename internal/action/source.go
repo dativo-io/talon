@@ -81,16 +81,92 @@ type MirroredParam struct {
 	Type   string   `json:"type,omitempty"`
 }
 
+// ToolHints are the source's self-declared tool annotations (MCP
+// ToolAnnotations). They are HINTS the source makes about itself: safe,
+// bounded presentation facts a canonical tools/list can project (#431).
+// They never influence a verdict, approver groups, materiality, binding,
+// execution profile or destination — `destructiveHint: false` does not make
+// a consequential action safe; only the Talon overlay decides.
+type ToolHints struct {
+	Title       string `json:"title,omitempty"`
+	ReadOnly    bool   `json:"read_only_hint"`
+	Destructive *bool  `json:"destructive_hint,omitempty"`
+	Idempotent  bool   `json:"idempotent_hint"`
+	OpenWorld   *bool  `json:"open_world_hint,omitempty"`
+}
+
 // DiscoveredTool is one validated tool definition of a source, normalized
-// to the catalog's neutral representation.
+// to the catalog's neutral representation: the business argument contract,
+// the protocol declarations, and the bounded presentation metadata the
+// source declares about itself. Icons and unknown members are not carried.
 type DiscoveredTool struct {
 	Name        string
+	Title       string
 	Description string
 	// Schema is the canonical input schema with protocol annotations
 	// (x-mcp-header) stripped: the business argument contract.
 	Schema json.RawMessage
+	// OutputSchema is the canonical result schema the source declares, if
+	// any. Presentation/protocol metadata only: it authorizes nothing and
+	// results are not validated against it in this slice.
+	OutputSchema json.RawMessage
 	// MirroredParams are the validated x-mcp-header declarations.
 	MirroredParams []MirroredParam
+	// Hints are the source's tool annotations (nil when none declared).
+	Hints *ToolHints
+}
+
+// SourceCapabilities is the bounded, credential-free, NON-AUTHORITATIVE
+// record of what a source advertised in server/discover: an observed source
+// fact a later canonical route can answer from the captured generation
+// without rediscovering. Nothing here is Talon policy: an advertised
+// extension (Tasks included) is recorded, never adopted — Talon advertises
+// and supports only what it implements.
+type SourceCapabilities struct {
+	Tools       *ListCapability     `json:"tools,omitempty"`
+	Resources   *ResourceCapability `json:"resources,omitempty"`
+	Prompts     *ListCapability     `json:"prompts,omitempty"`
+	Completions bool                `json:"completions,omitempty"`
+	Logging     bool                `json:"logging,omitempty"`
+	// Experimental lists the advertised experimental capability names
+	// (sorted); their settings are not carried.
+	Experimental []string `json:"experimental,omitempty"`
+	// Extensions lists the advertised extensions (sorted by id) with their
+	// canonical, size-bounded settings objects.
+	Extensions []SourceExtension `json:"extensions,omitempty"`
+	// Instructions is the source's self-description for clients.
+	Instructions string `json:"instructions,omitempty"`
+}
+
+// ListCapability is a list feature with optional change notifications.
+type ListCapability struct {
+	ListChanged bool `json:"list_changed,omitempty"`
+}
+
+// ResourceCapability is the resources feature.
+type ResourceCapability struct {
+	ListChanged bool `json:"list_changed,omitempty"`
+	Subscribe   bool `json:"subscribe,omitempty"`
+}
+
+// SourceExtension is one advertised extension and its canonical settings.
+type SourceExtension struct {
+	ID       string          `json:"id"`
+	Settings json.RawMessage `json:"settings"`
+}
+
+// Digest names the captured capability facts deterministically (canonical
+// JSON of the sorted, bounded representation).
+func (c SourceCapabilities) Digest() string {
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return Digest([]byte("capabilities:unencodable"))
+	}
+	canonical, err := Canonicalize(raw)
+	if err != nil {
+		return Digest(raw)
+	}
+	return Digest(canonical)
 }
 
 // ExcludedTool is a source tool that did not validate and therefore cannot
@@ -111,14 +187,18 @@ type SourceSnapshot struct {
 	ConfigDigest      string
 	ServerInfo        SourceServerInfo
 	SupportedVersions []string
-	Tools             []DiscoveredTool // sorted by name, unique
-	Excluded          []ExcludedTool   // sorted by name
+	// Capabilities are the source's advertised capabilities/extensions
+	// (observed facts; part of the generation, never authority).
+	Capabilities SourceCapabilities
+	Tools        []DiscoveredTool // sorted by name, unique
+	Excluded     []ExcludedTool   // sorted by name
 	// TTLMs / CacheScope are the upstream's tools/list freshness hints.
 	TTLMs        json.Number
 	CacheScope   string
 	DiscoveredAt time.Time
-	// Generation digests every tool's name, business schema, mirrored
-	// params and description, in sorted order.
+	// Generation digests the advertised capabilities and every tool's
+	// name, business schema, mirrored params, description, title, hints and
+	// output schema, in sorted order.
 	Generation string
 }
 
@@ -169,8 +249,8 @@ func ValidateSourceConfig(id string, cfg policy.ActionSourceConfig) error {
 	if u.User != nil {
 		return fmt.Errorf("url must not embed credentials; use auth.secret_name")
 	}
-	if cfg.Auth != nil && strings.TrimSpace(cfg.Auth.SecretName) == "" {
-		return fmt.Errorf("auth.secret_name is required when the auth block is present")
+	if err := policy.ValidateUpstreamAuth(cfg.Auth); err != nil {
+		return err
 	}
 	if _, err := SourceTimeout(cfg); err != nil {
 		return err
@@ -200,23 +280,43 @@ func NewSourceSnapshot(snap SourceSnapshot) (*SourceSnapshot, error) {
 	sort.Slice(snap.Tools, func(i, j int) bool { return snap.Tools[i].Name < snap.Tools[j].Name })
 	sort.Slice(snap.Excluded, func(i, j int) bool { return snap.Excluded[i].Name < snap.Excluded[j].Name })
 	seen := map[string]bool{}
-	for _, t := range snap.Tools {
-		if seen[t.Name] {
-			return nil, fmt.Errorf("source %q: duplicate upstream tool name %q", snap.ID, t.Name)
+	for i := range snap.Tools {
+		name := snap.Tools[i].Name
+		if seen[name] {
+			return nil, fmt.Errorf("source %q: duplicate upstream tool name %q", snap.ID, name)
 		}
-		seen[t.Name] = true
+		seen[name] = true
 	}
 	for _, e := range snap.Excluded {
 		if seen[e.Name] {
 			return nil, fmt.Errorf("source %q: upstream tool name %q is both valid and excluded", snap.ID, e.Name)
 		}
 	}
+	sort.Strings(snap.Capabilities.Experimental)
+	sort.Slice(snap.Capabilities.Extensions, func(i, j int) bool { return snap.Capabilities.Extensions[i].ID < snap.Capabilities.Extensions[j].ID })
 	var b strings.Builder
-	for _, t := range snap.Tools {
-		fmt.Fprintf(&b, "tool=%s\nschema=%s\nmirrors=%s\ndescription=%s\n", t.Name, Digest(t.Schema), mirroredParamsKey(t.MirroredParams), Digest([]byte(t.Description)))
+	fmt.Fprintf(&b, "capabilities=%s\n", snap.Capabilities.Digest())
+	for i := range snap.Tools {
+		t := &snap.Tools[i]
+		fmt.Fprintf(&b, "tool=%s\nschema=%s\nmirrors=%s\npresentation=%s\n", t.Name, Digest(t.Schema), mirroredParamsKey(t.MirroredParams), presentationKey(t.Title, t.Description, t.Hints, t.OutputSchema))
 	}
 	snap.Generation = Digest([]byte(b.String()))
 	return &snap, nil
+}
+
+// presentationKey renders the descriptive/presentation facts of a tool
+// deterministically (metadata digest input, never authorization identity).
+func presentationKey(title, description string, hints *ToolHints, outputSchema json.RawMessage) string {
+	h := "none"
+	if hints != nil {
+		raw, _ := json.Marshal(hints)
+		h = Digest(raw)
+	}
+	out := "none"
+	if len(outputSchema) > 0 {
+		out = Digest(outputSchema)
+	}
+	return strings.Join([]string{"title=" + Digest([]byte(title)), "description=" + Digest([]byte(description)), "hints=" + h, "output=" + out}, ",")
 }
 
 // mirroredParamsKey renders mirrored declarations deterministically.

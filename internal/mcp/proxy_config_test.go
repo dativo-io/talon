@@ -273,3 +273,23 @@ func TestDefaultProxyRuntime(t *testing.T) {
 	r := DefaultProxyRuntime()
 	assert.Equal(t, 30*time.Second, r.UpstreamTimeout)
 }
+
+// A proxy upstream credential header that collides with a protocol-owned
+// header is refused at load, through the shared upstream-auth contract.
+func TestLoadProxyConfig_RejectsReservedAuthHeader(t *testing.T) {
+	for _, header := range []string{"Mcp-Method", "mcp-protocol-version", "Mcp-Param-Region", "Content-Type", "Accept", "Bad Header"} {
+		t.Run(header, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "proxy.talon.yaml")
+			y := "agent:\n  name: p\n  type: mcp_proxy\nproxy:\n  upstream:\n    url: https://up.example/mcp\n    auth:\n      secret_name: k\n      header: \"" + header + "\"\n  allowed_tools:\n    - name: a\n"
+			require.NoError(t, os.WriteFile(path, []byte(y), 0o600))
+			_, err := LoadProxyConfig(context.Background(), path)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "proxy.upstream.auth.header")
+		})
+	}
+	path := filepath.Join(t.TempDir(), "proxy.talon.yaml")
+	y := "agent:\n  name: p\n  type: mcp_proxy\nproxy:\n  upstream:\n    url: https://up.example/mcp\n    auth:\n      secret_name: k\n      header: X-Api-Key\n  allowed_tools:\n    - name: a\n"
+	require.NoError(t, os.WriteFile(path, []byte(y), 0o600))
+	_, err := LoadProxyConfig(context.Background(), path)
+	require.NoError(t, err, "a legitimate custom credential header is accepted")
+}
