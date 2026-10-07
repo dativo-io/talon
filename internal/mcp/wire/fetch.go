@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -115,6 +116,29 @@ type ToolList struct {
 	Pages      int
 }
 
+// MergeCacheHints combines the freshness hints of two validated cacheable
+// results that form ONE logical capture: the shorter ttlMs wins (compared
+// numerically, kept as the exact JSON number of the winning result) and the
+// scope is private as soon as either is private. The single rule for a
+// paginated list and for a source snapshot assembled from server/discover
+// plus tools/list.
+func MergeCacheHints(ttlA json.Number, scopeA string, ttlB json.Number, scopeB string) (ttl json.Number, scope string) {
+	ttl = ttlA
+	a, okA := new(big.Rat).SetString(string(ttlA))
+	b, okB := new(big.Rat).SetString(string(ttlB))
+	switch {
+	case !okA:
+		ttl = ttlB
+	case okB && b.Cmp(a) < 0:
+		ttl = ttlB
+	}
+	scope = scopeA
+	if scopeA == CacheScopePrivate || scopeB == CacheScopePrivate {
+		scope = CacheScopePrivate
+	}
+	return ttl, scope
+}
+
 // mergeCacheHints folds one validated page's hints into the running
 // effective hints of the list.
 func mergeCacheHints(list *ToolList, page *ListResult, first bool) {
@@ -122,14 +146,7 @@ func mergeCacheHints(list *ToolList, page *ListResult, first bool) {
 		list.TTLMs, list.CacheScope = page.TTLMs, page.CacheScope
 		return
 	}
-	cur, okCur := new(big.Rat).SetString(string(list.TTLMs))
-	next, okNext := new(big.Rat).SetString(string(page.TTLMs))
-	if okCur && okNext && next.Cmp(cur) < 0 {
-		list.TTLMs = page.TTLMs
-	}
-	if page.CacheScope == CacheScopePrivate {
-		list.CacheScope = CacheScopePrivate
-	}
+	list.TTLMs, list.CacheScope = MergeCacheHints(list.TTLMs, list.CacheScope, page.TTLMs, page.CacheScope)
 }
 
 // FetchToolList performs tools/list against an upstream, following
@@ -302,3 +319,42 @@ func IsReservedClientHeader(name string) bool {
 // IsHeaderToken reports RFC 9110 field-name token syntax (exported for the
 // shared upstream-auth validator).
 func IsHeaderToken(s string) bool { return isToken(s) }
+
+// MCP _meta key grammar (2026-07-28 MetaObject): an optional prefix of
+// dot-separated labels (each starting with a letter and ending with a
+// letter or digit, interior letters/digits/hyphens) followed by "/", then a
+// name that begins and ends with an alphanumeric and may contain hyphens,
+// underscores and dots in between. Extension identifiers are the same
+// grammar with the prefix REQUIRED ("{vendor-prefix}/{extension-name}").
+var (
+	metaLabelRe = regexp.MustCompile(`^[A-Za-z]([A-Za-z0-9-]*[A-Za-z0-9])?$`)
+	metaNameRe  = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$`)
+)
+
+// ValidMetaKey reports whether key follows the _meta key grammar.
+func ValidMetaKey(key string) bool {
+	if key == "" || len(key) > 256 {
+		return false
+	}
+	name := key
+	if i := strings.LastIndexByte(key, '/'); i >= 0 {
+		prefix, rest := key[:i], key[i+1:]
+		if prefix == "" {
+			return false
+		}
+		for _, label := range strings.Split(prefix, ".") {
+			if !metaLabelRe.MatchString(label) {
+				return false
+			}
+		}
+		name = rest
+	}
+	return metaNameRe.MatchString(name)
+}
+
+// ValidExtensionID reports whether id is a prefixed extension identifier
+// ("io.modelcontextprotocol/tasks", "com.example/foo"): the _meta key
+// grammar with the vendor prefix required.
+func ValidExtensionID(id string) bool {
+	return strings.Contains(id, "/") && ValidMetaKey(id)
+}

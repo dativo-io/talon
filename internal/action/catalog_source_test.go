@@ -610,3 +610,78 @@ func mustSnapshot(s *SourceSnapshot) *SourceSnapshot {
 	}
 	return out
 }
+
+// Exclusions are captured source facts: they enter the source generation
+// (name + stable code) so the operator view and the runtime generation
+// follow them, and never the definition identity of a governed action.
+func TestSourceGeneration_IncludesExclusions(t *testing.T) {
+	cfg := discoveredCfg()
+	build := func(excluded ...ExcludedTool) (*Catalog, *SourceSnapshot) {
+		snap := snapshotFor(t, "refunds", cfg.Sources["refunds"], refundTool())
+		snap.Excluded = excluded
+		snap = mustSnapshot(snap)
+		cat, err := CompileCatalog(cfg, map[string]*SourceSnapshot{"refunds": snap})
+		require.NoError(t, err)
+		return cat, snap
+	}
+	a, snapA := build()
+	b, snapB := build(ExcludedTool{Name: "broken.admin", Code: ExcludeHeaderAnnotationInvalid, Reason: "x-mcp-header: type number"})
+	assert.NotEqual(t, snapA.Generation, snapB.Generation, "an unmapped malformed tool is an observably different source")
+	assert.NotEqual(t, a.Digest, b.Digest)
+	defA, _ := a.Lookup("create_refund_request")
+	defB, _ := b.Lookup("create_refund_request")
+	assert.Equal(t, defA.DefinitionDigest, defB.DefinitionDigest, "existing authorization stays valid")
+	c, snapC := build()
+	assert.Equal(t, snapA.Generation, snapC.Generation, "removing it restores the original generation")
+	assert.Equal(t, a.Digest, c.Digest)
+	_, s1 := build(ExcludedTool{Name: "z", Code: ExcludeSchemaMissing}, ExcludedTool{Name: "a", Code: ExcludeDefinitionOversized})
+	_, s2 := build(ExcludedTool{Name: "a", Code: ExcludeDefinitionOversized}, ExcludedTool{Name: "z", Code: ExcludeSchemaMissing})
+	assert.Equal(t, s1.Generation, s2.Generation, "order-independent")
+	_, s3 := build(ExcludedTool{Name: "z", Code: ExcludeSchemaMissing, Reason: "different prose"}, ExcludedTool{Name: "a", Code: ExcludeDefinitionOversized})
+	assert.Equal(t, s1.Generation, s3.Generation, "prose is not identity; the code is")
+	_, err := NewSourceSnapshot(SourceSnapshot{ID: "s", Excluded: []ExcludedTool{{Name: "a"}}})
+	assert.Error(t, err, "an exclusion without a code is not a captured fact")
+}
+
+// ttlMs → duration is clamped BEFORE conversion: exact decimal comparison,
+// no float round-trip, no overflow, never negative, never beyond the cap.
+func TestTTLDuration_Bounded(t *testing.T) {
+	cases := map[string]struct {
+		ttl  json.Number
+		want time.Duration
+	}{
+		"one ms":                  {"1", time.Millisecond},
+		"zero":                    {"0", 0},
+		"half ms":                 {"0.5", 500 * time.Microsecond},
+		"one day":                 {"86400000", MaxSourceTTL},
+		"just under cap":          {"86399999.75", 86399999750 * time.Microsecond},
+		"far above int64 range":   {"99999999999999999999999999999", MaxSourceTTL},
+		"exponent notation":       {"1e3", time.Second},
+		"exponent above cap":      {"1e300", MaxSourceTTL},
+		"negative":                {"-5", 0},
+		"garbage":                 {"x", 0},
+		"sub-nanosecond fraction": {"0.0000001", 0},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := TTLDuration(tc.ttl)
+			assert.Equal(t, tc.want, got)
+			assert.GreaterOrEqual(t, got, time.Duration(0))
+			assert.LessOrEqual(t, got, MaxSourceTTL)
+		})
+	}
+	s := &SourceSnapshot{TTLMs: "1e300", DiscoveredAt: time.Unix(100, 0)}
+	assert.Equal(t, time.Unix(100, 0).Add(MaxSourceTTL), s.RefreshAt(), "no multi-century refresh")
+}
+
+func FuzzTTLDuration(f *testing.F) {
+	for _, seed := range []string{"0", "1", "0.5", "86400000", "1e300", "-1", "9223372036854775807", "1e-9", "abc", ""} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, ttl string) {
+		d := TTLDuration(json.Number(ttl))
+		if d < 0 || d > MaxSourceTTL {
+			t.Fatalf("ttl %q → %v out of [0, %v]", ttl, d, MaxSourceTTL)
+		}
+	})
+}

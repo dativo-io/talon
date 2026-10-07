@@ -34,9 +34,11 @@ type RuntimeAgent struct {
 	Router *llm.Router
 	// Actions is this agent's compiled trusted action catalog (#427):
 	// explicit definitions plus the definitions discovered from its trusted
-	// MCP sources at generation build, immutable afterwards. Nil when the
-	// agent declares no actions or when this process builds no catalogs
-	// (BundleDeps.Sources unset) — a nil catalog resolves nothing.
+	// MCP sources at generation build, immutable afterwards. The invariant:
+	// no actions declared → nil; explicit definitions only → compiled in
+	// every build, no SourceDiscoverer needed; MCP sources configured →
+	// SourceDiscoverer required, the generation fails closed without one.
+	// A nil catalog resolves nothing.
 	Actions *action.Catalog
 	// Approvals is the approval-relevant policy compiled with the catalog
 	// (same generation, same agent file).

@@ -14,6 +14,7 @@ import (
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/approver"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/server"
 )
 
@@ -125,30 +126,47 @@ func (ag *actionGateway) serviceFor(snap *agentcatalog.RuntimeSnapshot, ra *agen
 }
 
 // resolver resolves the authenticated AI use case's Service from the
-// CURRENT generation; false when the agent is unknown, belongs to another
-// tenant or declares no catalog.
+// generation its key authenticated against: the CURRENT generation must be
+// that one (#267 — one request, one generation), otherwise the request is
+// refused with generation_changed before any domain call. The resolved
+// Service is bound to its immutable generation, so a reload that activates
+// after resolution never changes the catalog under the request.
 func (ag *actionGateway) resolver() server.ActionServiceResolver {
-	return func(tenantID, agentID string) (*action.Service, bool) {
+	return func(id requestctx.AgentIdentity) (*action.Service, error) {
 		snap := ag.holder.Current()
-		ra, ok := snap.Get(agentID)
-		if !ok || ra.Actions == nil || normalizedTenant(ra.TenantID) != normalizedTenant(tenantID) {
-			return nil, false
+		if id.Generation != "" && snap.Generation != id.Generation {
+			return nil, &server.ActionServiceError{
+				Code:    server.CodeGenerationChanged,
+				Message: fmt.Sprintf("runtime generation changed between authentication and action resolution (authenticated %s, current %s); re-authenticate and retry", shortGeneration(id.Generation), shortGeneration(snap.Generation)),
+			}
 		}
-		svc, err := ag.serviceFor(snap, ra)
-		if err != nil {
-			log.Error().Err(err).Str("agent", agentID).Msg("action_service_unavailable")
-			return nil, false
-		}
-		return svc, true
+		return ag.serviceIn(snap, id.TenantID, id.AgentID)
 	}
 }
 
+// serviceIn resolves one agent's Service within one generation.
+func (ag *actionGateway) serviceIn(snap *agentcatalog.RuntimeSnapshot, tenantID, agentID string) (*action.Service, error) {
+	ra, ok := snap.Get(agentID)
+	if !ok || ra.Actions == nil || normalizedTenant(ra.TenantID) != normalizedTenant(tenantID) {
+		return nil, &server.ActionServiceError{Code: action.CodeActionNotFound, Message: "this AI use case declares no action catalog (agent.talon.yaml actions.definitions)"}
+	}
+	return ag.serviceFor(snap, ra)
+}
+
+// ownerResolver resolves the Service owning an approval for a REVIEWER
+// decision. Reviewer credentials are tenant-scoped, not generation-bound,
+// so the current generation is used; the domain revalidates the trusted
+// definition/policy binding before it commits any decision or claim.
 func (ag *actionGateway) ownerResolver() server.ApprovalOwnerResolver {
 	return func(ctx context.Context, tenantScope, approvalID string) (*action.Service, bool) {
 		tenant, agent, ok, err := ag.repo.OwnerOfApproval(ctx, tenantScope, approvalID)
 		if err != nil || !ok {
 			return nil, false
 		}
-		return ag.resolver()(strings.TrimSpace(tenant), agent)
+		svc, err := ag.serviceIn(ag.holder.Current(), strings.TrimSpace(tenant), agent)
+		if err != nil {
+			return nil, false
+		}
+		return svc, true
 	}
 }

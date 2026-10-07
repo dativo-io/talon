@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -153,7 +154,7 @@ type rejectionState struct {
 // Source refresh pacing.
 const (
 	minSourceRefresh   = time.Second
-	maxSourceRefresh   = 24 * time.Hour
+	maxSourceRefresh   = action.MaxSourceTTL
 	sourceRetryBackoff = 30 * time.Second
 )
 

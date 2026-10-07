@@ -3,6 +3,7 @@ package action
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/url"
 	"regexp"
 	"sort"
@@ -169,11 +170,23 @@ func (c SourceCapabilities) Digest() string {
 	return Digest(canonical)
 }
 
+// Exclusion codes: the bounded, stable reason a source tool could not be
+// normalized. The code is generation identity; Reason is operator prose.
+const (
+	ExcludeSchemaMissing           = "schema_missing"
+	ExcludeHeaderAnnotationInvalid = "header_annotation_invalid"
+	ExcludeSchemaUnbounded         = "schema_unbounded"
+	ExcludeOutputSchemaInvalid     = "output_schema_invalid"
+	ExcludeDefinitionOversized     = "definition_oversized"
+)
+
 // ExcludedTool is a source tool that did not validate and therefore cannot
 // be mapped (a mapped exclusion is a compile error; an unmapped one is
-// inspectable only).
+// inspectable only). Exclusions are captured source facts: they enter the
+// source generation (name + code), never a definition identity.
 type ExcludedTool struct {
 	Name   string `json:"name"`
+	Code   string `json:"code"`
 	Reason string `json:"reason"`
 }
 
@@ -192,14 +205,45 @@ type SourceSnapshot struct {
 	Capabilities SourceCapabilities
 	Tools        []DiscoveredTool // sorted by name, unique
 	Excluded     []ExcludedTool   // sorted by name
-	// TTLMs / CacheScope are the upstream's tools/list freshness hints.
+	// TTLMs / CacheScope are the EFFECTIVE freshness hints of the whole
+	// capture: server/discover and tools/list are one logical snapshot, so
+	// the shorter ttlMs wins and the scope is private if either is private.
 	TTLMs        json.Number
 	CacheScope   string
 	DiscoveredAt time.Time
-	// Generation digests the advertised capabilities and every tool's
-	// name, business schema, mirrored params, description, title, hints and
-	// output schema, in sorted order.
+	// Generation digests the advertised capabilities, every tool's name,
+	// business schema, mirrored params, description, title, hints and
+	// output schema, and every exclusion's name and code, in sorted order.
 	Generation string
+}
+
+// MaxSourceTTL caps how long a source freshness hint can defer a refresh:
+// a larger protocol hint stays valid as a hint, but operational polling is
+// capped here (the reloader applies the same bound).
+const MaxSourceTTL = 24 * time.Hour
+
+var maxSourceTTLMs = new(big.Rat).SetInt64(int64(MaxSourceTTL / time.Millisecond))
+
+// TTLDuration converts a validated ttlMs hint into a bounded duration with
+// exact decimal semantics: non-numeric or ≤ 0 → 0 (immediately stale),
+// ≥ MaxSourceTTL → MaxSourceTTL, otherwise the exact value (fractional
+// milliseconds included) truncated to nanoseconds. The clamp happens
+// BEFORE any conversion to time.Duration, so no hint can overflow, wrap or
+// go negative.
+func TTLDuration(ttlMs json.Number) time.Duration {
+	ms, ok := new(big.Rat).SetString(string(ttlMs))
+	if !ok || ms.Sign() <= 0 {
+		return 0
+	}
+	if ms.Cmp(maxSourceTTLMs) >= 0 {
+		return MaxSourceTTL
+	}
+	ns := new(big.Rat).Mul(ms, big.NewRat(int64(time.Millisecond), 1))
+	q := new(big.Int).Quo(ns.Num(), ns.Denom()) // floor for positive values
+	if !q.IsInt64() {
+		return MaxSourceTTL
+	}
+	return time.Duration(q.Int64())
 }
 
 var sourceIDRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
@@ -287,9 +331,13 @@ func NewSourceSnapshot(snap SourceSnapshot) (*SourceSnapshot, error) {
 		}
 		seen[name] = true
 	}
-	for _, e := range snap.Excluded {
+	for i := range snap.Excluded {
+		e := &snap.Excluded[i]
 		if seen[e.Name] {
 			return nil, fmt.Errorf("source %q: upstream tool name %q is both valid and excluded", snap.ID, e.Name)
+		}
+		if e.Code == "" {
+			return nil, fmt.Errorf("source %q: excluded tool %q has no exclusion code", snap.ID, e.Name)
 		}
 	}
 	sort.Strings(snap.Capabilities.Experimental)
@@ -299,6 +347,9 @@ func NewSourceSnapshot(snap SourceSnapshot) (*SourceSnapshot, error) {
 	for i := range snap.Tools {
 		t := &snap.Tools[i]
 		fmt.Fprintf(&b, "tool=%s\nschema=%s\nmirrors=%s\npresentation=%s\n", t.Name, Digest(t.Schema), mirroredParamsKey(t.MirroredParams), presentationKey(t.Title, t.Description, t.Hints, t.OutputSchema))
+	}
+	for i := range snap.Excluded {
+		fmt.Fprintf(&b, "excluded=%s\ncode=%s\n", snap.Excluded[i].Name, snap.Excluded[i].Code)
 	}
 	snap.Generation = Digest([]byte(b.String()))
 	return &snap, nil
@@ -329,15 +380,12 @@ func mirroredParamsKey(params []MirroredParam) string {
 	return strings.Join(parts, ",")
 }
 
-// RefreshAt is when the snapshot's freshness hint expires (ttlMs 0 or an
-// unusable hint = immediately).
+// RefreshAt is when the snapshot's effective freshness hint expires (ttlMs
+// 0 or an unusable hint = immediately; hints beyond MaxSourceTTL are capped
+// before conversion).
 func (s *SourceSnapshot) RefreshAt() time.Time {
 	if s == nil {
 		return time.Time{}
 	}
-	ms, err := s.TTLMs.Float64()
-	if err != nil || ms <= 0 {
-		return s.DiscoveredAt
-	}
-	return s.DiscoveredAt.Add(time.Duration(ms * float64(time.Millisecond)))
+	return s.DiscoveredAt.Add(TTLDuration(s.TTLMs))
 }

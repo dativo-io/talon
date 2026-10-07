@@ -155,12 +155,16 @@ func (d *Discoverer) Discover(ctx context.Context, tenantID, agentID, id string,
 	if len(list.Tools) > d.limits.MaxTools {
 		return nil, fmt.Errorf("tools/list: %d tool definitions exceed the limit of %d", len(list.Tools), d.limits.MaxTools)
 	}
+	// One logical capture: the snapshot is as fresh as its least fresh
+	// part (server/discover and the whole tools/list), and as restricted
+	// as its most restricted part.
+	ttl, scope := wire.MergeCacheHints(disc.TTLMs, disc.CacheScope, list.TTLMs, list.CacheScope)
 	snap := action.SourceSnapshot{
 		ID: id, Type: action.SourceTypeMCP, URL: cfg.URL, ConfigDigest: action.SourceConfigDigest(id, cfg),
 		ServerInfo:        action.SourceServerInfo{Name: disc.ServerInfo.Name, Version: disc.ServerInfo.Version},
 		SupportedVersions: append([]string(nil), disc.SupportedVersions...),
 		Capabilities:      capabilities,
-		TTLMs:             list.TTLMs, CacheScope: list.CacheScope, DiscoveredAt: d.now(),
+		TTLMs:             ttl, CacheScope: scope, DiscoveredAt: d.now(),
 	}
 	for i, raw := range list.Tools {
 		tool, excluded, err := d.normalizeTool(raw)
@@ -211,60 +215,155 @@ func (d *Discoverer) doer(ctx context.Context, tenantID, agentID string, cfg pol
 }
 
 // captureCapabilities converts the validated server/discover capabilities
-// object into the bounded neutral record. Known members are typed; an
-// extension's settings are kept as a canonical, size-bounded object;
-// experimental entries are kept by name; unknown members are dropped. The
-// result is an observed source fact and nothing more.
+// object into the bounded neutral record under the 2026-07-28 shapes:
+//
+//	tools / prompts     object, optional boolean listChanged
+//	resources           object, optional boolean listChanged / subscribe
+//	logging / completions  JSON object
+//	experimental        object of JSON objects (names kept, settings not)
+//	extensions          object of JSON objects keyed by a prefixed
+//	                    extension id ("{vendor-prefix}/{extension-name}")
+//
+// absent → absent; present and valid → captured; present and malformed →
+// the source fails (nothing is repaired). A valid extension Talon does not
+// implement is captured as a fact, never adopted.
 func (d *Discoverer) captureCapabilities(disc *wire.DiscoverResult) (action.SourceCapabilities, error) {
-	var raw struct {
-		Tools *struct {
-			ListChanged bool `json:"listChanged"`
-		} `json:"tools"`
-		Resources *struct {
-			ListChanged bool `json:"listChanged"`
-			Subscribe   bool `json:"subscribe"`
-		} `json:"resources"`
-		Prompts *struct {
-			ListChanged bool `json:"listChanged"`
-		} `json:"prompts"`
-		Completions  json.RawMessage            `json:"completions"`
-		Logging      json.RawMessage            `json:"logging"`
-		Experimental map[string]json.RawMessage `json:"experimental"`
-		Extensions   map[string]json.RawMessage `json:"extensions"`
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(disc.Capabilities, &members); err != nil || members == nil {
+		return action.SourceCapabilities{}, fmt.Errorf("capabilities is not an object")
 	}
-	if err := json.Unmarshal(disc.Capabilities, &raw); err != nil {
-		return action.SourceCapabilities{}, fmt.Errorf("capabilities object is malformed: %w", err)
+	out := action.SourceCapabilities{}
+	var err error
+	if out.Tools, err = listCapability(members, "tools"); err != nil {
+		return action.SourceCapabilities{}, err
 	}
-	out := action.SourceCapabilities{Completions: isObject(raw.Completions), Logging: isObject(raw.Logging)}
-	if raw.Tools != nil {
-		out.Tools = &action.ListCapability{ListChanged: raw.Tools.ListChanged}
+	if out.Prompts, err = listCapability(members, "prompts"); err != nil {
+		return action.SourceCapabilities{}, err
 	}
-	if raw.Prompts != nil {
-		out.Prompts = &action.ListCapability{ListChanged: raw.Prompts.ListChanged}
+	if raw, has := members["resources"]; has {
+		var rc struct {
+			ListChanged *bool `json:"listChanged"`
+			Subscribe   *bool `json:"subscribe"`
+		}
+		if !isObject(raw) || json.Unmarshal(raw, &rc) != nil {
+			return action.SourceCapabilities{}, fmt.Errorf("capabilities.resources must be an object with boolean listChanged/subscribe")
+		}
+		out.Resources = &action.ResourceCapability{ListChanged: rc.ListChanged != nil && *rc.ListChanged, Subscribe: rc.Subscribe != nil && *rc.Subscribe}
 	}
-	if raw.Resources != nil {
-		out.Resources = &action.ResourceCapability{ListChanged: raw.Resources.ListChanged, Subscribe: raw.Resources.Subscribe}
+	if out.Logging, err = objectFlag(members, "logging"); err != nil {
+		return action.SourceCapabilities{}, err
 	}
-	if len(raw.Experimental) > d.limits.MaxExtensions || len(raw.Extensions) > d.limits.MaxExtensions {
-		return action.SourceCapabilities{}, fmt.Errorf("capabilities advertise more than %d extensions/experimental entries", d.limits.MaxExtensions)
+	if out.Completions, err = objectFlag(members, "completions"); err != nil {
+		return action.SourceCapabilities{}, err
 	}
-	for name := range raw.Experimental {
-		out.Experimental = append(out.Experimental, name)
+	if out.Experimental, err = d.experimentalNames(members); err != nil {
+		return action.SourceCapabilities{}, err
 	}
-	sort.Strings(out.Experimental)
-	for id, settings := range raw.Extensions {
+	if out.Extensions, err = d.extensions(members); err != nil {
+		return action.SourceCapabilities{}, err
+	}
+	out.Instructions = truncateRunes(disc.Instructions, d.limits.MaxInstructionBytes)
+	return out, nil
+}
+
+// objectFlag reports a member that must be a JSON object when present.
+func objectFlag(members map[string]json.RawMessage, name string) (bool, error) {
+	raw, has := members[name]
+	if !has {
+		return false, nil
+	}
+	if !isObject(raw) {
+		return false, fmt.Errorf("capabilities.%s must be a JSON object", name)
+	}
+	return true, nil
+}
+
+// listCapability parses a {listChanged?: boolean} member.
+func listCapability(members map[string]json.RawMessage, name string) (*action.ListCapability, error) {
+	raw, has := members[name]
+	if !has {
+		return nil, nil
+	}
+	var lc struct {
+		ListChanged *bool `json:"listChanged"`
+	}
+	if !isObject(raw) || json.Unmarshal(raw, &lc) != nil {
+		return nil, fmt.Errorf("capabilities.%s must be an object with an optional boolean listChanged", name)
+	}
+	return &action.ListCapability{ListChanged: lc.ListChanged != nil && *lc.ListChanged}, nil
+}
+
+// experimentalNames keeps the names of advertised experimental
+// capabilities: each value must be a JSON object; names are bounded
+// printable strings (experimental keys have no prefixed-id grammar).
+func (d *Discoverer) experimentalNames(members map[string]json.RawMessage) ([]string, error) {
+	raw, has := members["experimental"]
+	if !has {
+		return nil, nil
+	}
+	var exp map[string]json.RawMessage
+	if !isObject(raw) || json.Unmarshal(raw, &exp) != nil {
+		return nil, fmt.Errorf("capabilities.experimental must be an object")
+	}
+	if len(exp) > d.limits.MaxExtensions {
+		return nil, fmt.Errorf("capabilities.experimental advertises more than %d entries", d.limits.MaxExtensions)
+	}
+	names := make([]string, 0, len(exp))
+	for name, settings := range exp {
+		if !validExperimentalName(name) {
+			return nil, fmt.Errorf("capabilities.experimental name %q is not a bounded printable identifier", name)
+		}
 		if !isObject(settings) {
-			return action.SourceCapabilities{}, fmt.Errorf("extension %q settings must be an object", id)
+			return nil, fmt.Errorf("capabilities.experimental[%q] must be a JSON object", name)
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// extensions keeps the advertised extensions with canonical, size-bounded
+// settings; ids must follow the prefixed MCP extension-id grammar.
+func (d *Discoverer) extensions(members map[string]json.RawMessage) ([]action.SourceExtension, error) {
+	raw, has := members["extensions"]
+	if !has {
+		return nil, nil
+	}
+	var exts map[string]json.RawMessage
+	if !isObject(raw) || json.Unmarshal(raw, &exts) != nil {
+		return nil, fmt.Errorf("capabilities.extensions must be an object")
+	}
+	if len(exts) > d.limits.MaxExtensions {
+		return nil, fmt.Errorf("capabilities.extensions advertises more than %d entries", d.limits.MaxExtensions)
+	}
+	out := make([]action.SourceExtension, 0, len(exts))
+	for id, settings := range exts {
+		if !wire.ValidExtensionID(id) {
+			return nil, fmt.Errorf("capabilities.extensions id %q is not a prefixed extension identifier ({vendor-prefix}/{extension-name})", id)
+		}
+		if !isObject(settings) {
+			return nil, fmt.Errorf("capabilities.extensions[%q] settings must be a JSON object", id)
 		}
 		canonical, err := action.Canonicalize(settings)
 		if err != nil || len(canonical) > d.limits.MaxExtensionBytes {
-			return action.SourceCapabilities{}, fmt.Errorf("extension %q settings are not a bounded canonical object (limit %d bytes)", id, d.limits.MaxExtensionBytes)
+			return nil, fmt.Errorf("capabilities.extensions[%q] settings are not a bounded canonical object (limit %d bytes)", id, d.limits.MaxExtensionBytes)
 		}
-		out.Extensions = append(out.Extensions, action.SourceExtension{ID: id, Settings: canonical})
+		out = append(out, action.SourceExtension{ID: id, Settings: canonical})
 	}
-	sort.Slice(out.Extensions, func(i, j int) bool { return out.Extensions[i].ID < out.Extensions[j].ID })
-	out.Instructions = truncateRunes(disc.Instructions, d.limits.MaxInstructionBytes)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+func validExperimentalName(s string) bool {
+	if s == "" || len(s) > 128 {
+		return false
+	}
+	for _, r := range s {
+		if r <= 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func isObject(raw json.RawMessage) bool {
@@ -308,31 +407,31 @@ func (d *Discoverer) normalizeTool(raw json.RawMessage) (*action.DiscoveredTool,
 	if !action.ValidUpstreamName(t.Name) {
 		return nil, nil, fmt.Errorf("invalid tool name %q", t.Name)
 	}
-	exclude := func(reason string) (*action.DiscoveredTool, *action.ExcludedTool, error) {
-		return nil, &action.ExcludedTool{Name: t.Name, Reason: reason}, nil
+	exclude := func(code, reason string) (*action.DiscoveredTool, *action.ExcludedTool, error) {
+		return nil, &action.ExcludedTool{Name: t.Name, Code: code, Reason: reason}, nil
 	}
 	if len(raw) > d.limits.MaxToolBytes {
-		return exclude(fmt.Sprintf("definition is %d bytes, over the %d-byte limit", len(raw), d.limits.MaxToolBytes))
+		return exclude(action.ExcludeDefinitionOversized, fmt.Sprintf("definition is %d bytes, over the %d-byte limit", len(raw), d.limits.MaxToolBytes))
 	}
 	if len(t.InputSchema) == 0 || string(t.InputSchema) == "null" {
-		return exclude("inputSchema is missing")
+		return exclude(action.ExcludeSchemaMissing, "inputSchema is missing")
 	}
 	decl, err := wire.HeaderParamsFromSchema(t.InputSchema)
 	if err != nil {
-		return exclude("invalid x-mcp-header declaration: " + err.Error())
+		return exclude(action.ExcludeHeaderAnnotationInvalid, "invalid x-mcp-header declaration: "+err.Error())
 	}
 	canonical, err := action.Canonicalize(wire.StripHeaderAnnotations(t.InputSchema))
 	if err != nil {
-		return exclude("inputSchema is not a bounded canonical JSON document: " + err.Error())
+		return exclude(action.ExcludeSchemaUnbounded, "inputSchema is not a bounded canonical JSON document: "+err.Error())
 	}
 	tool := &action.DiscoveredTool{Name: t.Name, Title: t.Title, Description: t.Description, Schema: canonical}
 	if len(t.OutputSchema) > 0 && string(t.OutputSchema) != "null" {
 		if !isObject(t.OutputSchema) {
-			return exclude("outputSchema is not a JSON object")
+			return exclude(action.ExcludeOutputSchemaInvalid, "outputSchema is not a JSON object")
 		}
 		out, err := action.Canonicalize(t.OutputSchema)
 		if err != nil {
-			return exclude("outputSchema is not a bounded canonical JSON document: " + err.Error())
+			return exclude(action.ExcludeOutputSchemaInvalid, "outputSchema is not a bounded canonical JSON document: "+err.Error())
 		}
 		tool.OutputSchema = out
 	}

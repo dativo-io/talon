@@ -28,8 +28,32 @@ import (
 //	POST /v1/approvals/{approval_id}/decisions          reviewer decision    (approver credential ONLY)
 
 // ActionServiceResolver returns the ActionGovernance service for one
-// authenticated AI use case, or false when the agent declares no catalog.
-type ActionServiceResolver func(tenantID, agentID string) (*action.Service, bool)
+// authenticated AI use case, bound to the runtime generation the identity
+// authenticated against (#267 invariant, applied to the Action Gateway):
+//
+//	id.Generation != current generation → *ActionServiceError{generation_changed}
+//	agent unknown / no catalog           → *ActionServiceError{action_not_found}
+//
+// A Service resolved against a matching immutable generation completes the
+// current request even if a reload activates afterwards; the invariant is
+// "authenticated generation == Service generation at resolution", not
+// "no reload during the response". An identity without a generation (not
+// generation-bound auth) resolves against the current generation.
+type ActionServiceResolver func(id requestctx.AgentIdentity) (*action.Service, error)
+
+// CodeGenerationChanged: the runtime generation changed between the agent
+// key's authentication and the action's resolution. Nothing was evaluated,
+// bound, persisted or dispatched; the caller re-authenticates and retries.
+const CodeGenerationChanged = "generation_changed"
+
+// ActionServiceError is why no Service was resolved (a stable code and a
+// message; never a domain mutation).
+type ActionServiceError struct {
+	Code    string
+	Message string
+}
+
+func (e *ActionServiceError) Error() string { return e.Code + ": " + e.Message }
 
 // ApprovalOwnerResolver returns the service owning an approval id within
 // the authenticated reviewer's trusted tenant scope. An approval outside
@@ -125,9 +149,21 @@ func (s *Server) actionService(w http.ResponseWriter, r *http.Request) (*action.
 		writeActionError(w, http.StatusNotFound, action.CodeActionNotFound, "no action catalog is configured", nil)
 		return nil, false
 	}
-	svc, ok := s.actionServices(id.TenantID, id.AgentID)
-	if !ok {
-		writeActionError(w, http.StatusNotFound, action.CodeActionNotFound, "this AI use case declares no action catalog (agent.talon.yaml actions.definitions)", nil)
+	svc, err := s.actionServices(id)
+	if err != nil {
+		var se *ActionServiceError
+		if errors.As(err, &se) {
+			switch se.Code {
+			case CodeGenerationChanged:
+				w.Header().Set("Retry-After", "1")
+				writeActionError(w, http.StatusConflict, CodeGenerationChanged, se.Message, nil)
+			default:
+				writeActionError(w, http.StatusNotFound, action.CodeActionNotFound, se.Message, nil)
+			}
+			return nil, false
+		}
+		log.Error().Err(err).Str("agent", id.AgentID).Msg("action_service_unavailable")
+		writeActionError(w, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		return nil, false
 	}
 	return svc, true

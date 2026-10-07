@@ -447,10 +447,10 @@ func TestDiscover_CapabilityShapesAndBounds(t *testing.T) {
 		limit func(*Discoverer)
 		want  string
 	}{
-		"extension settings not an object": {caps: `{"tools":{},"extensions":{"x/y":"yes"}}`, want: `extension "x/y" settings must be an object`},
+		"extension settings not an object": {caps: `{"tools":{},"extensions":{"x/y":"yes"}}`, want: `capabilities.extensions["x/y"] settings must be a JSON object`},
 		"too many extensions": {caps: `{"tools":{},"extensions":{"a/a":{},"b/b":{},"c/c":{}}}`, limit: func(d *Discoverer) {
 			d.WithLimits(Limits{MaxTools: 10, MaxToolBytes: 1 << 16, MaxExtensions: 2, MaxExtensionBytes: 1 << 12, MaxInstructionBytes: 1 << 12})
-		}, want: "more than 2 extensions"},
+		}, want: "more than 2 entries"},
 		"oversized extension settings": {caps: `{"tools":{},"extensions":{"a/a":{"blob":"` + strings.Repeat("x", 100) + `"}}}`, limit: func(d *Discoverer) {
 			d.WithLimits(Limits{MaxTools: 10, MaxToolBytes: 1 << 16, MaxExtensions: 8, MaxExtensionBytes: 64, MaxInstructionBytes: 1 << 12})
 		}, want: "not a bounded canonical object"},
@@ -562,4 +562,91 @@ func TestDiscover_ReservedAuthHeaderRefusedBeforeRequest(t *testing.T) {
 	assert.Equal(t, "|Bearer "+secret, f.auth.Load().(string))
 	// The config digest stays a function of the reference, deterministic.
 	assert.Equal(t, action.SourceConfigDigest("src", cfg), action.SourceConfigDigest("src", cfg))
+}
+
+// Known capability members must have their 2026-07-28 shapes: absent is
+// absent, valid is captured, malformed fails the source (nothing repaired).
+func TestDiscover_CapabilityShapesStrict(t *testing.T) {
+	base := `"supportedVersions":["2026-07-28"],"ttlMs":1,"cacheScope":"public"`
+	run := func(caps string) (*action.SourceSnapshot, error) {
+		f := newFakeSource(t)
+		f.discover = `{"resultType":"complete",` + base + `,"capabilities":` + caps + `}`
+		return New(nil).Discover(context.Background(), "default", "a", "src", f.cfg())
+	}
+	t.Run("valid shapes captured", func(t *testing.T) {
+		snap, err := run(`{"tools":{},"prompts":{"listChanged":true},"resources":{"subscribe":true},"completions":{},"logging":{},"experimental":{"x":{}},"extensions":{"io.modelcontextprotocol/tasks":{},"com.example/foo":{"k":1}}}`)
+		require.NoError(t, err)
+		c := snap.Capabilities
+		require.NotNil(t, c.Tools)
+		assert.False(t, c.Tools.ListChanged)
+		assert.True(t, c.Prompts.ListChanged)
+		assert.True(t, c.Resources.Subscribe)
+		assert.False(t, c.Resources.ListChanged)
+		assert.True(t, c.Completions)
+		assert.True(t, c.Logging)
+		assert.Equal(t, []string{"x"}, c.Experimental)
+		assert.Equal(t, "com.example/foo", c.Extensions[0].ID)
+		assert.Equal(t, "io.modelcontextprotocol/tasks", c.Extensions[1].ID, "a valid extension Talon does not implement is a captured fact")
+		snap2, err := run(`{"tools":{"listChanged":true}}`)
+		require.NoError(t, err)
+		assert.True(t, snap2.Capabilities.Tools.ListChanged)
+		assert.Nil(t, snap2.Capabilities.Prompts)
+		assert.False(t, snap2.Capabilities.Completions)
+	})
+	for name, caps := range map[string]string{
+		"completions array":        `{"tools":{},"completions":[]}`,
+		"logging string":           `{"tools":{},"logging":"yes"}`,
+		"resources array":          `{"tools":{},"resources":[]}`,
+		"prompts boolean":          `{"tools":{},"prompts":true}`,
+		"tools listChanged string": `{"tools":{"listChanged":"yes"}}`,
+		"resources subscribe int":  `{"tools":{},"resources":{"subscribe":1}}`,
+		"experimental value array": `{"tools":{},"experimental":{"x":[]}}`,
+		"experimental not object":  `{"tools":{},"experimental":[]}`,
+		"experimental empty name":  `{"tools":{},"experimental":{"":{}}}`,
+		"extension value array":    `{"tools":{},"extensions":{"io.modelcontextprotocol/tasks":[]}}`,
+		"extensions not object":    `{"tools":{},"extensions":[]}`,
+		"extension id unprefixed":  `{"tools":{},"extensions":{"tasks":{}}}`,
+		"extension id leading /":   `{"tools":{},"extensions":{"/foo":{}}}`,
+		"extension id empty label": `{"tools":{},"extensions":{"io..bad/x":{}}}`,
+		"extension id control":     `{"tools":{},"extensions":{"io.example/ba\u0001d":{}}}`,
+		"extension id bad name":    `{"tools":{},"extensions":{"io.example/-bad":{}}}`,
+	} {
+		t.Run("reject "+name, func(t *testing.T) {
+			_, err := run(caps)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "capabilities")
+		})
+	}
+}
+
+// The snapshot is ONE logical capture: its freshness is the shorter of the
+// server/discover and tools/list hints and the more restrictive scope.
+func TestDiscover_SnapshotFreshnessCombinesDiscoverAndList(t *testing.T) {
+	cases := map[string]struct {
+		discTTL, listTTL     string
+		discScope, listScope string
+		wantTTL, wantScope   string
+	}{
+		"discover 5s / list 1h":           {"5000", "3600000", "public", "public", "5000", "public"},
+		"discover 1h / list 5s":           {"3600000", "5000", "public", "public", "5000", "public"},
+		"discover public / list private":  {"5", "5", "public", "private", "5", "private"},
+		"discover private / list public":  {"5", "5", "private", "public", "5", "private"},
+		"fractional compared numerically": {"10.5", "10.25", "public", "public", "10.25", "public"},
+		"zero on discover":                {"0", "99999", "public", "public", "0", "public"},
+		"zero on list":                    {"99999", "0", "public", "public", "0", "public"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeSource(t)
+			f.discover = `{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":` + tc.discTTL + `,"cacheScope":"` + tc.discScope + `"}`
+			f.pages[""] = `{"resultType":"complete","tools":[],"ttlMs":` + tc.listTTL + `,"cacheScope":"` + tc.listScope + `"}`
+			snap, err := New(nil).Discover(context.Background(), "default", "a", "src", f.cfg())
+			require.NoError(t, err)
+			assert.Equal(t, json.Number(tc.wantTTL), snap.TTLMs)
+			assert.Equal(t, tc.wantScope, snap.CacheScope)
+			if tc.wantTTL == "0" {
+				assert.Equal(t, snap.DiscoveredAt, snap.RefreshAt(), "zero ttl is immediately stale (the reloader floors polling)")
+			}
+		})
+	}
 }

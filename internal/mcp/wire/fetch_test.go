@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -281,4 +282,28 @@ func TestStripHeaderAnnotations_LosslessNumbers(t *testing.T) {
 	out := StripHeaderAnnotations(json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer","maximum":9007199254740993,"x-mcp-header":"N"}}}`))
 	assert.Contains(t, string(out), "9007199254740993")
 	assert.NotContains(t, string(out), "x-mcp-header")
+}
+
+func TestMergeCacheHints(t *testing.T) {
+	ttl, scope := MergeCacheHints("5000", CacheScopePublic, "3600000", CacheScopePublic)
+	assert.Equal(t, json.Number("5000"), ttl)
+	assert.Equal(t, CacheScopePublic, scope)
+	ttl, scope = MergeCacheHints("3600000", CacheScopePrivate, "10.25", CacheScopePublic)
+	assert.Equal(t, json.Number("10.25"), ttl)
+	assert.Equal(t, CacheScopePrivate, scope)
+	ttl, _ = MergeCacheHints("1e3", CacheScopePublic, "999.5", CacheScopePublic)
+	assert.Equal(t, json.Number("999.5"), ttl, "compared numerically across notations")
+}
+
+func TestMetaKeyGrammar(t *testing.T) {
+	for _, ok := range []string{"io.modelcontextprotocol/tasks", "com.example/foo", "com.example/foo.bar-baz_1", "a/b", "io.my-vendor.x9/ext"} {
+		assert.True(t, ValidExtensionID(ok), ok)
+		assert.True(t, ValidMetaKey(ok), ok)
+	}
+	for _, bad := range []string{"tasks", "/foo", "io..bad/x", "io.bad./x", "-io.x/y", "io.x-/y", "io.x/", "io.x/-y", "io.x/y-", "io.x/y z", "io.x/y\x01", "", "io.x/" + strings.Repeat("y", 300)} {
+		assert.False(t, ValidExtensionID(bad), "%q", bad)
+	}
+	assert.True(t, ValidMetaKey("progressToken"), "an unprefixed name is a valid _meta key")
+	assert.False(t, ValidExtensionID("progressToken"), "but not an extension id")
+	assert.False(t, ValidMetaKey("-x"))
 }
