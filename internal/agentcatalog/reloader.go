@@ -2,6 +2,8 @@ package agentcatalog
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -77,6 +80,8 @@ type ReloadConfig struct {
 	// empty registry that would deny everything by accident. Native-only
 	// serve leaves this false (a keyless generation is legitimate).
 	RequireNonEmpty bool
+	// Clock is the reloader's time source (tests); nil = time.Now UTC.
+	Clock func() time.Time
 }
 
 // ReloadState is the runtime-status seam (#270 / GET /v1/agents/fleet): the
@@ -90,6 +95,13 @@ type ReloadState struct {
 	RejectedAt       time.Time    `json:"rejected_at,omitempty"`
 	RejectedCauses   []string     `json:"rejected_causes,omitempty"`
 	Issues           []FleetIssue `json:"fleet_issues,omitempty"`
+	// SourcesRejected marks a rejection whose config bytes are unchanged:
+	// a trusted action source (#427) could not be re-discovered or no
+	// longer compiles; last-known-good keeps serving its catalog.
+	SourcesRejected bool `json:"action_sources_rejected,omitempty"`
+	// NextSourceRefresh is when discovered action sources are next
+	// re-read (absent when no agent binds to one).
+	NextSourceRefresh *time.Time `json:"next_action_source_refresh,omitempty"`
 }
 
 // Reloader re-reads the agent-config source on an interval and activates
@@ -103,11 +115,19 @@ const maxRecordedDigests = 256
 
 type Reloader struct {
 	cfg ReloadConfig
+	now func() time.Time
 
 	mu          sync.Mutex // serializes ReloadOnce: one activation at a time
-	lastGood    string
+	lastGood    string     // generation id of the active snapshot
+	lastScan    string     // scan digest of the active snapshot (config change detector)
 	activatedAt time.Time
-	rejection   *rejectionState // CURRENT observed broken state (for View); nil when healthy
+	// refreshKnown/refreshAt pace the re-discovery of trusted action
+	// sources (#427): due when the earliest upstream freshness hint of the
+	// active generation expires (floored/capped), or after a bounded
+	// backoff following a failed refresh.
+	refreshKnown bool
+	refreshAt    time.Time
+	rejection    *rejectionState // CURRENT observed broken state (for View); nil when healthy
 	// unrecorded holds every DISTINCT broken state observed whose signed
 	// rejection could not yet be persisted (#269 review round 4): each is
 	// retried on every tick until it lands, so a temporary evidence-store
@@ -119,11 +139,24 @@ type Reloader struct {
 }
 
 type rejectionState struct {
-	digest string
-	at     time.Time
-	causes []string
-	issues []FleetIssue
+	// key dedups distinct broken states; digest is the scanned config
+	// generation the evidence names (they differ only for a source-only
+	// rejection, where the config bytes are unchanged but the causes are
+	// what distinguishes one broken state from another).
+	key        string
+	digest     string
+	at         time.Time
+	causes     []string
+	issues     []FleetIssue
+	sourceOnly bool
 }
+
+// Source refresh pacing.
+const (
+	minSourceRefresh   = time.Second
+	maxSourceRefresh   = action.MaxSourceTTL
+	sourceRetryBackoff = 30 * time.Second
+)
 
 // NewReloader seeds the last-known-good generation from the holder's current
 // snapshot (the boot generation).
@@ -142,14 +175,41 @@ func NewReloader(cfg ReloadConfig) *Reloader {
 	}
 	r := &Reloader{
 		cfg:        cfg,
+		now:        cfg.Clock,
 		unrecorded: make(map[string]*rejectionState),
 		recorded:   make(map[string]struct{}),
 	}
+	if r.now == nil {
+		r.now = func() time.Time { return time.Now().UTC() }
+	}
 	if snap := cfg.Holder.Current(); snap != nil {
 		r.lastGood = snap.Generation
+		r.lastScan = snap.ScanDigest
 		r.activatedAt = snap.BuiltAt
+		r.scheduleRefresh(snap)
 	}
 	return r
+}
+
+// scheduleRefresh derives the next action-source refresh from the
+// generation's own freshness hints, floored so a zero ttl cannot turn every
+// tick into a discovery storm and capped so a huge ttl cannot freeze the
+// catalog for the life of the process.
+func (r *Reloader) scheduleRefresh(snap *RuntimeSnapshot) {
+	at, ok := snap.ActionRefreshAt()
+	r.refreshKnown = ok
+	if !ok {
+		r.refreshAt = time.Time{}
+		return
+	}
+	now := r.now()
+	if at.Before(now.Add(minSourceRefresh)) {
+		at = now.Add(minSourceRefresh)
+	}
+	if at.After(now.Add(maxSourceRefresh)) {
+		at = now.Add(maxSourceRefresh)
+	}
+	r.refreshAt = at
 }
 
 // Run ticks ReloadOnce every interval until ctx is done.
@@ -175,12 +235,17 @@ func (r *Reloader) State() ReloadState {
 
 func (r *Reloader) stateLocked() ReloadState {
 	s := ReloadState{ActiveGeneration: r.lastGood, ActivatedAt: r.activatedAt}
+	if r.refreshKnown {
+		t := r.refreshAt
+		s.NextSourceRefresh = &t
+	}
 	if r.rejection != nil {
 		s.Rejected = true
 		s.RejectedDigest = r.rejection.digest
 		s.RejectedAt = r.rejection.at
 		s.RejectedCauses = append([]string(nil), r.rejection.causes...)
 		s.Issues = append([]FleetIssue(nil), r.rejection.issues...)
+		s.SourcesRejected = r.rejection.sourceOnly
 	}
 	return s
 }
@@ -206,6 +271,12 @@ func (r *Reloader) View() FleetView {
 // ReloadOnce runs one pass: scan → validate → activate-or-keep-last-known-good.
 // Mutex-serialized; readers never take the mutex — they read the holder's
 // atomic pointer, so activation is one pointer store and rollback another.
+//
+// Two triggers lead to a candidate build: changed agent-file bytes, or a
+// due refresh of the trusted action sources (#427) with unchanged bytes.
+// Either way the COMPLETE candidate (bundles including discovered catalogs,
+// registry) is built off to the side; it activates only when its
+// generation differs from the active one.
 func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -216,40 +287,48 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	r.flushUnrecorded(ctx)
 
 	scan, scanErr := r.cfg.Source.Scan(ctx)
+	now := r.now()
+	refreshDue := r.refreshKnown && !now.Before(r.refreshAt)
 
-	// Fast path: unchanged bytes. Clears an active rejection when the
-	// operator reverted the broken edit (explicit outcome, #267 review).
-	if scan.Digest == r.lastGood {
-		if r.rejection != nil {
-			log.Info().Str("generation", shortDigest(r.lastGood)).Msg("agent_config_recovered_to_last_known_good")
-			r.rejection = nil
-			// A recovery ENDS the broken incident: reset the dedup memory so the
-			// SAME broken digest, if reintroduced later, is recorded as a NEW
-			// incident rather than silently deduplicated (#300 review round 5,
-			// blocker 6). unrecorded is left intact — evidence still owed for any
-			// state that never persisted is flushed on subsequent ticks.
-			r.recorded = make(map[string]struct{})
-			return ReloadRecovered
+	// Fast path: unchanged bytes and no source refresh due. Clears an
+	// active CONFIG rejection when the operator reverted the broken edit
+	// (explicit outcome, #267 review); a source-only rejection stays
+	// visible until the sources are re-read successfully.
+	if scan.Digest == r.lastScan && !refreshDue {
+		if r.rejection != nil && !r.rejection.sourceOnly {
+			return r.recover()
 		}
 		return ReloadUnchanged
 	}
+	sourceOnly := scan.Digest == r.lastScan
 
 	// Rejection paths: invalid scan, empty set under RequireNonEmpty, or a
 	// build failure below. Last-known-good keeps serving in every case.
 	if scanErr != nil {
-		return r.reject(ctx, scan, causesFrom(scan, scanErr))
+		return r.reject(ctx, scan, causesFrom(scan, scanErr), false)
 	}
 	if r.cfg.RequireNonEmpty && len(scan.Agents) == 0 {
-		return r.reject(ctx, scan, []string{fmt.Sprintf("%s: scan found zero agents — an empty set never activates in gateway mode", scan.Source)})
+		return r.reject(ctx, scan, []string{fmt.Sprintf("%s: scan found zero agents — an empty set never activates in gateway mode", scan.Source)}, false)
 	}
 
 	bundles, err := BuildRuntimeAgents(ctx, scan, r.cfg.Deps)
 	if err != nil {
-		return r.reject(ctx, scan, []string{err.Error()})
+		return r.reject(ctx, scan, []string{err.Error()}, sourceOnly)
 	}
 	registry, err := r.cfg.BuildRegistry(ctx, scan, r.cfg.Holder.Current())
 	if err != nil {
-		return r.reject(ctx, scan, []string{err.Error()})
+		return r.reject(ctx, scan, []string{err.Error()}, sourceOnly)
+	}
+
+	next := NewRuntimeSnapshot(scan, bundles, registry, now)
+	r.scheduleRefresh(next)
+	if next.Generation == r.lastGood {
+		// Same files and the same discovered facts: there is nothing to
+		// activate; the refresh only renewed the schedule.
+		if r.rejection != nil {
+			return r.recover()
+		}
+		return ReloadUnchanged
 	}
 
 	// Activate: ONE pointer swap publishes catalog + bundles + registry
@@ -257,30 +336,49 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	// cannot be written, the pointer rolls back — a signed activation must
 	// describe an activation that actually occurred (#267 review). A crash
 	// between swap and record leaves an UNRECORDED activation; the next tick
-	// IN THE SAME PROCESS self-heals (digest != lastGood → re-activation).
-	// Across a process RESTART the on-disk generation becomes the boot
-	// generation, seeded directly as lastGood, so no config_reload record is
-	// emitted for it — boot generations are not reload events by design.
-	next := NewRuntimeSnapshot(scan, bundles, registry, time.Now().UTC())
+	// IN THE SAME PROCESS self-heals (generation != lastGood →
+	// re-activation). Across a process RESTART the on-disk generation
+	// becomes the boot generation, seeded directly as lastGood, so no
+	// config_reload record is emitted for it — boot generations are not
+	// reload events by design.
 	old := r.cfg.Holder.Current()
 	r.cfg.Holder.Swap(next)
-	if err := r.writeReloadEvidence(ctx, scan.Digest, true, []string{fmt.Sprintf("activated %d agent(s) from %s", len(scan.Agents), scan.Source)}); err != nil {
+	reason := fmt.Sprintf("activated %d agent(s) from %s", len(scan.Agents), scan.Source)
+	if sourceOnly {
+		reason += " after trusted action sources changed"
+	}
+	if err := r.writeReloadEvidence(ctx, next.Generation, true, []string{reason}); err != nil {
 		r.cfg.Holder.Swap(old)
-		log.Error().Err(err).Str("generation", shortDigest(scan.Digest)).Msg("config_reload_activation_evidence_failed_rolled_back")
+		r.scheduleRefresh(old)
+		log.Error().Err(err).Str("generation", shortDigest(next.Generation)).Msg("config_reload_activation_evidence_failed_rolled_back")
 		// Best-effort rollback record; the critical log above is the floor.
-		_ = r.writeReloadEvidence(ctx, scan.Digest, false, []string{"activation rolled back: evidence write failed: " + err.Error()})
-		r.rejection = &rejectionState{digest: scan.Digest, at: time.Now().UTC(), causes: []string{"activation evidence write failed: " + err.Error()}}
+		_ = r.writeReloadEvidence(ctx, next.Generation, false, []string{"activation rolled back: evidence write failed: " + err.Error()})
+		r.rejection = &rejectionState{key: next.Generation, digest: next.Generation, at: now, causes: []string{"activation evidence write failed: " + err.Error()}}
 		return ReloadRolledBack
 	}
-	r.lastGood = scan.Digest
+	r.lastGood = next.Generation
+	r.lastScan = scan.Digest
 	r.activatedAt = next.BuiltAt
 	r.rejection = nil
 	// Activation ENDS any prior broken incident: reset the dedup memory so a
 	// broken digest seen before this good generation is recorded afresh if it
 	// reoccurs (#300 review round 5, blocker 6). unrecorded is left intact.
 	r.recorded = make(map[string]struct{})
-	log.Info().Int("agents", len(scan.Agents)).Str("generation", shortDigest(scan.Digest)).Str("source", scan.Source).Msg("agent_config_reload_activated")
+	log.Info().Int("agents", len(scan.Agents)).Str("generation", shortDigest(next.Generation)).Str("source", scan.Source).Bool("action_sources_refreshed", sourceOnly).Msg("agent_config_reload_activated")
 	return ReloadActivated
+}
+
+// recover ends a broken incident without a swap: the observed state is the
+// active generation again. The dedup memory resets so the SAME broken
+// state, if reintroduced later, is recorded as a NEW incident rather than
+// silently deduplicated (#300 review round 5, blocker 6). unrecorded is
+// left intact — evidence still owed for any state that never persisted is
+// flushed on subsequent ticks.
+func (r *Reloader) recover() ReloadOutcome {
+	log.Info().Str("generation", shortDigest(r.lastGood)).Bool("action_sources", r.rejection.sourceOnly).Msg("agent_config_recovered_to_last_known_good")
+	r.rejection = nil
+	r.recorded = make(map[string]struct{})
+	return ReloadRecovered
 }
 
 // reject keeps last-known-good serving and ensures ONE signed rejection per
@@ -289,45 +387,62 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 // and a state whose write fails is queued (unrecorded) for retry on every
 // later tick — so no distinct broken state loses its record, even one
 // replaced by a newer edit during an evidence outage (#269 review round 4).
-func (r *Reloader) reject(ctx context.Context, scan *ScanResult, causes []string) ReloadOutcome {
+//
+// A source-only rejection (unchanged config bytes, failed action-source
+// refresh) is keyed by its causes — the bytes alone cannot distinguish one
+// upstream failure from the next — and schedules a bounded retry.
+func (r *Reloader) reject(ctx context.Context, scan *ScanResult, causes []string, sourceOnly bool) ReloadOutcome {
 	digest := scan.Digest
+	key := digest
+	if sourceOnly {
+		key = digest + "+sources:" + shortDigest(causesDigest(causes))
+		r.refreshAt = r.now().Add(sourceRetryBackoff)
+	}
 	// Preserve the incident-start time across polls of the SAME continuous broken
-	// digest: RejectedAt marks WHEN the incident began, not the last poll, so the
+	// state: RejectedAt marks WHEN the incident began, not the last poll, so the
 	// attention queue can order incidents by onset (#300 review round 6, P2).
-	at := time.Now().UTC()
-	if r.rejection != nil && r.rejection.digest == digest {
+	at := r.now()
+	if r.rejection != nil && r.rejection.key == key {
 		at = r.rejection.at
 	}
-	rej := &rejectionState{digest: digest, at: at, causes: causes, issues: append([]FleetIssue(nil), scan.Issues...)}
+	rej := &rejectionState{key: key, digest: digest, at: at, causes: causes, issues: append([]FleetIssue(nil), scan.Issues...), sourceOnly: sourceOnly}
 	r.rejection = rej // current observed state (for View)
 
-	if _, done := r.recorded[digest]; done {
+	if _, done := r.recorded[key]; done {
 		log.Debug().Str("rejected_digest", shortDigest(digest)).Msg("agent_config_reload_still_rejected")
 		return ReloadRejectedDuplicate
 	}
-	if _, pending := r.unrecorded[digest]; pending {
+	if _, pending := r.unrecorded[key]; pending {
 		// Observed before; its retry ran in flushUnrecorded at tick start.
 		return ReloadRejected
 	}
 	// A newly-observed distinct broken state.
-	log.Warn().Strs("causes", causes).Str("generation", shortDigest(r.lastGood)).Msg("agent_config_reload_rejected_keeping_last_known_good")
+	log.Warn().Strs("causes", causes).Str("generation", shortDigest(r.lastGood)).Bool("action_sources", sourceOnly).Msg("agent_config_reload_rejected_keeping_last_known_good")
 	if err := r.writeReloadEvidence(ctx, digest, false, causes); err != nil {
 		log.Error().Err(err).Msg("config_reload_rejection_evidence_failed_will_retry")
-		r.unrecorded[digest] = rej
+		r.unrecorded[key] = rej
 		return ReloadRejected
 	}
-	r.markRecorded(digest)
+	r.markRecorded(key)
 	return ReloadRejected
+}
+
+func causesDigest(causes []string) string {
+	h := sha256.New()
+	for _, c := range causes {
+		fmt.Fprintf(h, "%s\n", c)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // flushUnrecorded retries the signed rejection write for every distinct
 // broken state still awaiting persistence; successes move to the recorded
 // set. Called at the start of every ReloadOnce.
 func (r *Reloader) flushUnrecorded(ctx context.Context) {
-	for digest, rej := range r.unrecorded {
-		if err := r.writeReloadEvidence(ctx, digest, false, rej.causes); err == nil {
-			delete(r.unrecorded, digest)
-			r.markRecorded(digest)
+	for key, rej := range r.unrecorded {
+		if err := r.writeReloadEvidence(ctx, rej.digest, false, rej.causes); err == nil {
+			delete(r.unrecorded, key)
+			r.markRecorded(key)
 		}
 	}
 }

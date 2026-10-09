@@ -136,7 +136,7 @@ func newHarness(t *testing.T) *harness {
 
 func newHarnessWith(t *testing.T, down *downstream, store *evidence.Store, pol *policy.Policy, vaultKey string) *harness {
 	t.Helper()
-	cat, err := CompileCatalog(pol.Actions)
+	cat, err := CompileCatalog(pol.Actions, nil)
 	require.NoError(t, err)
 	ap, err := CompileApprovalPolicy(pol)
 	require.NoError(t, err)
@@ -436,7 +436,7 @@ func TestOutcome_PreConnectFailureIsRetryable(t *testing.T) {
 	addr := l.Addr().String()
 	_ = l.Close()
 	pol := testPolicy("http://" + addr)
-	cat, err := CompileCatalog(pol.Actions)
+	cat, err := CompileCatalog(pol.Actions, nil)
 	require.NoError(t, err)
 	// Catalog swap simulates "destination unreachable" with an otherwise
 	// identical definition digest: rebuild the service with the same
@@ -710,7 +710,7 @@ func TestDefinitionChange_InvalidatesAuthorization(t *testing.T) {
 		res := h.establish(t, "op-p", "create_refund_request", refundArgs)
 		pol := testPolicy(h.down.srv.URL)
 		changeReview(pol)
-		cat, err := CompileCatalog(pol.Actions)
+		cat, err := CompileCatalog(pol.Actions, nil)
 		require.NoError(t, err)
 		h.svc.Catalog = cat // simulates a reload/restart with only review.fields changed
 		_, err = h.svc.Decide(context.Background(), DecideRequest{ApprovalID: res.Operation.Approval.ID, Approve: true, Reviewer: lead("lead-1")})
@@ -729,7 +729,7 @@ func TestDefinitionChange_InvalidatesAuthorization(t *testing.T) {
 		h.approve(t, res, lead("lead-1"))
 		pol := testPolicy(h.down.srv.URL)
 		changeReview(pol)
-		cat, err := CompileCatalog(pol.Actions)
+		cat, err := CompileCatalog(pol.Actions, nil)
 		require.NoError(t, err)
 		h.svc.Catalog = cat
 		_, err = h.svc.Execute(context.Background(), "op-a")

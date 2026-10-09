@@ -82,9 +82,10 @@ func validateAndApplyDefaults(cfg *policy.ProxyPolicyConfig) error {
 	}
 	// Upstream auth (#358): when the block is present, secret_name is
 	// required — a half-configured auth block must fail startup, never
-	// silently send unauthenticated requests.
-	if cfg.Proxy.Upstream.Auth != nil && strings.TrimSpace(cfg.Proxy.Upstream.Auth.SecretName) == "" {
-		return fmt.Errorf("proxy.upstream.auth.secret_name is required when the auth block is present")
+	// silently send unauthenticated requests — and the credential header
+	// may not collide with a protocol-owned header (shared contract).
+	if err := policy.ValidateUpstreamAuth(cfg.Proxy.Upstream.Auth); err != nil {
+		return fmt.Errorf("proxy.upstream.%w", err)
 	}
 	// Defaults: rate limits
 	if cfg.Proxy.RateLimits.RequestsPerMinute <= 0 {

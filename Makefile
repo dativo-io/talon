@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-action-catalog-smoke test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -52,6 +52,9 @@ test-e2e: ## Run e2e tests (builds binary in TestMain). Uses -count=1 so cache i
 
 test-mcp-smoke: ## MCP 2026-07-28 protocol smoke (#447): discover/list/call/integrity against the built binary with a mock upstream (no keys)
 	@bash scripts/mcp-smoke.sh
+
+test-action-catalog-smoke: ## Trusted action catalog smoke (#427): CLI inspection, catalog in the runtime generation, mcp-sourced action not executable, source refresh/last-known-good against the built binary (no keys)
+	@bash scripts/action-catalog-smoke.sh
 
 test-openshell-smoke: ## OpenShell composition smoke (#482): fixture supervisor replays the pinned v0.1.2 middleware contract against the built binary (no OpenShell install, no keys)
 	@bash scripts/openshell-smoke.sh

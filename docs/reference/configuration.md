@@ -337,7 +337,27 @@ compliance:
 
 ### Action catalog and approvals (`agent.talon.yaml`)
 
-Governed consequential actions (#458) are declared per AI use case: `actions.definitions` (JSON Schema input, reviewer projection, http destination) and `policies.approvals` (`expires_after`, `rules` with `actions` and `approver_groups`); `capabilities.forbidden_tools` is the DENY source. Full contract and endpoints: [Action Gateway](action-gateway.md). The catalog is compiled at `talon serve` start; a change takes effect at the next start.
+Governed consequential actions (#458/#427) are declared per AI use case: `actions.definitions` (explicit: JSON Schema input, reviewer projection, http destination; or discovered: `source` + `upstream_name` + reviewer projection), `actions.sources` (trusted MCP sources: `type: mcp`, `url`, vault-backed `auth.secret_name`, optional `timeout`) and `policies.approvals` (`expires_after`, `rules` with `actions` and `approver_groups`); `capabilities.forbidden_tools` is the DENY source. Full contract, discovery rules and endpoints: [Action Gateway](action-gateway.md). The catalog is compiled into each runtime generation: agent-file edits activate on `agents_reload_interval`, discovered sources are re-read when their `ttlMs` expires, and a failed discovery keeps last-known-good serving.
+
+```yaml
+actions:
+  sources:
+    refunds:
+      type: mcp
+      url: https://refunds.internal/mcp      # https, or http for loopback; redirects never followed
+      auth:
+        secret_name: refunds-mcp-key         # vault entry; header/scheme optional (Authorization / Bearer); the header may not be a protocol-owned name (MCP-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Param-*, Content-Type, Accept)
+      timeout: 15s                           # discovery deadline (default 15s, max 2m)
+  definitions:
+    create_refund_request:                   # canonical name — the only callable identity
+      source: refunds
+      upstream_name: refund.create           # tool name at the source (default: the canonical name)
+      review:
+        fields: [ticket_id, amount, currency]
+        non_material: [note]
+```
+
+Inspect what compiles with `talon actions list --agent <name>`, `talon actions show --agent <name> <action>` and `talon actions validate --agent <name> --action <name> --input <file>` (a candidate compiled by the CLI; the running server's active generation is reported by `GET /v1/agents/fleet`).
 
 ### Gateway block
 

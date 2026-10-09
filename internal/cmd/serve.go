@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
+	"github.com/dativo-io/talon/internal/action/mcpsource"
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/agentcatalog"
@@ -212,7 +213,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// process-wide surfaces — one extra Rego compile (and, for external
 	// scanner engines, one extra health probe) at startup, in exchange for
 	// one pipeline with no drift.
-	deps := agentcatalog.BundleDeps{Config: cfg, Providers: providers}
+	// Trusted action sources (#427): every generation discovers its MCP
+	// sources through this ONE discoverer and compiles the agent's action
+	// catalog into the bundle, so the catalog is part of the atomic
+	// generation and never a separately mutable object.
+	sourceDiscoverer := mcpsource.New(secretsStore)
+	sourceDiscoverer.Version = resolvedVersion()
+	deps := agentcatalog.BundleDeps{Config: cfg, Providers: providers, Sources: sourceDiscoverer}
 	var runtimeSnapshot *agentcatalog.RuntimeSnapshot
 	switch {
 	case fleetScan != nil:
@@ -550,8 +557,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	evidenceGen := evidence.NewGenerator(evidenceStore)
 
-	// Action Gateway (#458): built from the startup runtime generation.
-	actionGW, err := buildActionGateway(ctx, runtimeHolder.Current(), evidenceStore, cfg.EvidenceDBPath(), cfg.SecretsKey)
+	// Action Gateway (#458): services resolve from the CURRENT runtime
+	// generation's compiled catalog (#427), so a reload reaches it.
+	actionGW, err := buildActionGateway(ctx, runtimeHolder, evidenceStore, cfg.EvidenceDBPath(), cfg.SecretsKey)
 	if err != nil {
 		return fmt.Errorf("initializing action gateway: %w", err)
 	}
