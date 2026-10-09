@@ -331,14 +331,18 @@ func NewSourceSnapshot(snap SourceSnapshot) (*SourceSnapshot, error) {
 		}
 		seen[name] = true
 	}
+	// A tool name identifies exactly one source definition, valid or not:
+	// a name that is both valid and excluded, or excluded twice, is an
+	// ambiguous (malformed) source.
 	for i := range snap.Excluded {
 		e := &snap.Excluded[i]
 		if seen[e.Name] {
-			return nil, fmt.Errorf("source %q: upstream tool name %q is both valid and excluded", snap.ID, e.Name)
+			return nil, fmt.Errorf("source %q: duplicate upstream tool name %q", snap.ID, e.Name)
 		}
 		if e.Code == "" {
 			return nil, fmt.Errorf("source %q: excluded tool %q has no exclusion code", snap.ID, e.Name)
 		}
+		seen[e.Name] = true
 	}
 	sort.Strings(snap.Capabilities.Experimental)
 	sort.Slice(snap.Capabilities.Extensions, func(i, j int) bool { return snap.Capabilities.Extensions[i].ID < snap.Capabilities.Extensions[j].ID })

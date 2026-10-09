@@ -641,6 +641,20 @@ func TestSourceGeneration_IncludesExclusions(t *testing.T) {
 	assert.Equal(t, s1.Generation, s3.Generation, "prose is not identity; the code is")
 	_, err := NewSourceSnapshot(SourceSnapshot{ID: "s", Excluded: []ExcludedTool{{Name: "a"}}})
 	assert.Error(t, err, "an exclusion without a code is not a captured fact")
+
+	// A name identifies exactly one source definition, valid or not.
+	_, err = NewSourceSnapshot(SourceSnapshot{ID: "s", Excluded: []ExcludedTool{{Name: "a", Code: ExcludeSchemaMissing}, {Name: "a", Code: ExcludeHeaderAnnotationInvalid}}})
+	require.Error(t, err, "excluded twice")
+	assert.Contains(t, err.Error(), `duplicate upstream tool name "a"`)
+	_, err = NewSourceSnapshot(SourceSnapshot{ID: "s", Tools: []DiscoveredTool{{Name: "a", Schema: json.RawMessage(`{"type":"object"}`)}}, Excluded: []ExcludedTool{{Name: "a", Code: ExcludeSchemaMissing}}})
+	require.Error(t, err, "valid and excluded")
+	assert.Contains(t, err.Error(), `duplicate upstream tool name "a"`)
+	x1, err := NewSourceSnapshot(SourceSnapshot{ID: "s", Excluded: []ExcludedTool{{Name: "a", Code: ExcludeSchemaMissing}, {Name: "b", Code: ExcludeDefinitionOversized}}})
+	require.NoError(t, err)
+	x2, err := NewSourceSnapshot(SourceSnapshot{ID: "s", Excluded: []ExcludedTool{{Name: "b", Code: ExcludeDefinitionOversized}, {Name: "a", Code: ExcludeSchemaMissing}}})
+	require.NoError(t, err)
+	assert.Equal(t, x1.Generation, x2.Generation, "input order never changes the generation")
+	assert.Equal(t, "a", x2.Excluded[0].Name)
 }
 
 // ttlMs → duration is clamped BEFORE conversion: exact decimal comparison,
