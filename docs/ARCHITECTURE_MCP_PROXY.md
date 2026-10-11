@@ -231,8 +231,18 @@ value). A `tools/call` whose definition is not in the capture is the spec's
 protocol error (unknown tool); a call made while no fresh capture exists
 fetches one through the same validation and fails closed, with an
 upstream-error record, if the upstream cannot provide it. The capture is
-protocol metadata only: it never defines policy, materiality or approval
-(#427/#431 own the governed catalog). Where a declaration exists the body
+protocol metadata only: it never defines policy, materiality or approval.
+The governed catalog is `internal/action` (#427): its trusted MCP sources are
+discovered through the same `internal/mcp/wire` client code the capture uses
+(one `server/discover` + `tools/list` paginator with conservative multi-page
+freshness, one error classification, one upstream-auth header contract,
+redirects refused), compiled with the Talon overlay into the runtime
+generation, and inspected with `talon actions`. The capture's `ttlMs` is
+therefore the shortest page hint, and `proxy.upstream.auth.header` is
+refused at load when it names a protocol-owned header. Until #431 routes
+`tools/call` through ActionGovernance the capture stays as protocol
+compatibility machinery for this route, and the catalog is the business-action
+authority. Where a declaration exists the body
 remains the argument value and the header is an integrity duplicate
 (integers compare numerically, Base64 sentinels are decoded, unrecognized
 `Mcp-Param-*` headers are ignored and never forwarded). A drift test proves

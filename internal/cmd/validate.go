@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -104,9 +105,17 @@ func deepValidatePolicy(ctx context.Context, pol *policy.Policy) error {
 	// The action catalog compiles with the same fail-closed rules serve
 	// applies (closed 2020-12 schema, exact reviewer projection, trusted
 	// destination), so a catalog serve would refuse is refused here first.
+	// Trusted MCP sources are not discovered here (validate is offline and
+	// makes no network call): their static configuration and mapping are
+	// checked, and the undiscovered sources are reported truthfully —
+	// `talon actions list --agent <name>` discovers and compiles them.
 	if pol.Actions != nil && len(pol.Actions.Definitions) > 0 {
-		if _, err := action.CompileCatalog(pol.Actions); err != nil {
-			return fmt.Errorf("action catalog: %w", err)
+		if _, err := action.CompileCatalog(pol.Actions, nil); err != nil {
+			var undiscovered *action.SourceNotDiscoveredError
+			if !errors.As(err, &undiscovered) {
+				return fmt.Errorf("action catalog: %w", err)
+			}
+			log.Info().Strs("sources", undiscovered.IDs).Msg("action_sources_not_discovered_offline")
 		}
 		if _, err := action.CompileApprovalPolicy(pol); err != nil {
 			return fmt.Errorf("action approval policy: %w", err)

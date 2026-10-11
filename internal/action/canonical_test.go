@@ -72,17 +72,17 @@ func TestCompileCatalog_FailsClosed(t *testing.T) {
 		"bad_success": {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "https://api.example/x", Success: &policy.ActionSuccessConfig{StatusCodes: []int{302}}}},
 		"has_id":      {InputSchema: map[string]any{"$id": "https://evil.example/s", "type": "object", "additionalProperties": false}, Destination: dest()},
 	} {
-		_, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{name: cfg}})
+		_, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{name: cfg}}, nil)
 		require.Error(t, err, name)
 	}
-	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"ok": good, "loop": {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "http://127.0.0.1:9/x"}}}})
+	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"ok": good, "loop": {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "http://127.0.0.1:9/x"}}}}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"loop", "ok"}, cat.Names())
 	d, _ := cat.Lookup("ok")
 	require.Equal(t, "POST", d.Destination.Method)
 	require.Equal(t, ExecutionProfileTalonForwarded, d.ExecutionProfile)
 	require.Equal(t, []string{"a"}, d.Review.Shown, "absent review shows every field")
-	cat2, _ := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"loop": {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "http://127.0.0.1:9/x"}}, "ok": good}})
+	cat2, _ := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"loop": {InputSchema: good.InputSchema, Destination: policy.ActionDestinationConfig{Type: "http", URL: "http://127.0.0.1:9/x"}}, "ok": good}}, nil)
 	require.Equal(t, cat.Digest, cat2.Digest, "catalog digest is order-independent")
 }
 
@@ -92,7 +92,7 @@ func TestCompileCatalog_FailsClosed(t *testing.T) {
 func TestCompileReview_Sufficiency(t *testing.T) {
 	props := map[string]any{"recipient": map[string]any{"type": "string"}, "amount": map[string]any{"type": "number"}, "currency": map[string]any{"type": "string"}}
 	mk := func(r *policy.ActionReviewConfig) (*Definition, error) {
-		cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Review: r, Destination: dest()}}})
+		cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Review: r, Destination: dest()}}}, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +119,7 @@ func TestCompileReview_Sufficiency(t *testing.T) {
 	_, hasCurrency := proj["currency"]
 	require.False(t, hasCurrency, "non-material fields are omitted")
 	// Success contract is part of the definition digest too.
-	withSuccess, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Destination: policy.ActionDestinationConfig{Type: "http", URL: "https://api.example/x", Success: &policy.ActionSuccessConfig{StatusCodes: []int{200}}}}}})
+	withSuccess, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Destination: policy.ActionDestinationConfig{Type: "http", URL: "https://api.example/x", Success: &policy.ActionSuccessConfig{StatusCodes: []int{200}}}}}}, nil)
 	require.NoError(t, err)
 	ws, _ := withSuccess.Lookup("pay")
 	require.NotEqual(t, full.DefinitionDigest, ws.DefinitionDigest)
@@ -135,11 +135,11 @@ func TestCompileReview_MaskedIsRejected(t *testing.T) {
 		"masked alongside others": {Fields: []string{"recipient"}, Masked: []string{"iban"}, NonMaterial: []string{"amount"}},
 		"masked unknown field":    {Fields: []string{"recipient", "amount", "iban"}, Masked: []string{"nope"}},
 	} {
-		_, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Review: r, Destination: dest()}}})
+		_, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Review: r, Destination: dest()}}}, nil)
 		require.Error(t, err, name)
 		require.Contains(t, err.Error(), "review.masked", name)
 	}
-	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Review: &policy.ActionReviewConfig{Fields: []string{"recipient", "amount", "iban"}}, Destination: dest()}}})
+	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"pay": {InputSchema: objSchema(props), Review: &policy.ActionReviewConfig{Fields: []string{"recipient", "amount", "iban"}}, Destination: dest()}}}, nil)
 	require.NoError(t, err)
 	d, _ := cat.Lookup("pay")
 	proj := d.ReviewProjection([]byte(`{"amount":10000,"iban":"DE89370400440532013000","recipient":"acct-1"}`))
@@ -175,7 +175,7 @@ func TestSchemaDialect_PinnedTo2020(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: base(tc.dialect), Destination: dest()}}})
+			cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: base(tc.dialect), Destination: dest()}}}, nil)
 			if !tc.ok {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), "$schema")
@@ -206,7 +206,7 @@ func TestCompileSchema_NoExternalResolution(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"a": map[string]any{"$ref": ref}}}
-			_, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: schema, Destination: dest()}}})
+			_, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: schema, Destination: dest()}}}, nil)
 			require.Error(t, err)
 			require.ErrorIs(t, err, ErrExternalRef)
 		})
@@ -218,7 +218,7 @@ func TestCompileSchema_NoExternalResolution(t *testing.T) {
 		"$defs":      map[string]any{"money": map[string]any{"type": "number", "minimum": 0}},
 		"properties": map[string]any{"amount": map[string]any{"$ref": "#/$defs/money"}},
 	}
-	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: schema, Destination: dest()}}})
+	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: schema, Destination: dest()}}}, nil)
 	require.NoError(t, err)
 	d, _ := cat.Lookup("x")
 	require.NoError(t, d.ValidateArguments([]byte(`{"amount":5}`)))
@@ -241,7 +241,7 @@ func TestSchemaConformanceSubset(t *testing.T) {
 			"customer":  map[string]any{"type": "object", "additionalProperties": false, "required": []any{"id"}, "properties": map[string]any{"id": map[string]any{"type": "string"}}},
 		},
 	}
-	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: schema, Destination: dest()}}})
+	cat, err := CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: schema, Destination: dest()}}}, nil)
 	require.NoError(t, err)
 	d, _ := cat.Lookup("x")
 	ok := []string{
@@ -273,7 +273,7 @@ func TestSchemaConformanceSubset(t *testing.T) {
 		require.NoError(t, err)
 		require.Error(t, d.ValidateArguments(c), name)
 	}
-	_, err = CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"a": map[string]any{"type": "nonsense"}}}, Destination: dest()}}})
+	_, err = CompileCatalog(&policy.ActionsConfig{Definitions: map[string]policy.ActionDefinitionConfig{"x": {InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"a": map[string]any{"type": "nonsense"}}}, Destination: dest()}}}, nil)
 	require.Error(t, err, "invalid keyword values fail at compile, never silently pass")
 	require.True(t, strings.Contains(err.Error(), "compile"))
 }

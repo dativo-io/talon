@@ -92,6 +92,11 @@ func NewHTTPDispatcher(client *http.Client) *HTTPDispatcher {
 // Dispatch implements Dispatcher.
 func (d *HTTPDispatcher) Dispatch(ctx context.Context, req DispatchRequest) Outcome {
 	def := req.Definition
+	if def == nil || def.Destination.Type != DestinationTypeHTTP {
+		// The http dispatcher executes http destinations only; anything
+		// else is refused before a request exists (never a hidden effect).
+		return Outcome{Status: AttemptFailed, Provenance: ResultProvenanceNotDispatched, Code: "dispatch_destination_unsupported"}
+	}
 	timeout := d.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second

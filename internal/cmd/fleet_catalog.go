@@ -153,8 +153,11 @@ func normalizedTenant(t string) string {
 
 // buildCLICatalog compiles the scanned set into the ONE runtime catalog the
 // CLI runner resolves against (no gateway registry — native execution only).
-func buildCLICatalog(ctx context.Context, cfg *config.Config, scan *agentcatalog.ScanResult, providers map[string]llm.Provider) (*agentcatalog.RuntimeHolder, error) {
-	bundles, err := agentcatalog.BuildRuntimeAgents(ctx, scan, agentcatalog.BundleDeps{Config: cfg, Providers: providers})
+// sources is the trusted-action source discoverer (#427): the CLI builds the
+// same generation serve builds, so an agent with MCP sources is discovered
+// here too and fails closed without a discoverer.
+func buildCLICatalog(ctx context.Context, cfg *config.Config, scan *agentcatalog.ScanResult, providers map[string]llm.Provider, sources agentcatalog.SourceDiscoverer) (*agentcatalog.RuntimeHolder, error) {
+	bundles, err := agentcatalog.BuildRuntimeAgents(ctx, scan, agentcatalog.BundleDeps{Config: cfg, Providers: providers, Sources: sources})
 	if err != nil {
 		return nil, fmt.Errorf("compiling agent runtime bundles: %w", err)
 	}

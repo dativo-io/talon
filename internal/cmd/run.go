@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/dativo-io/talon/internal/action/mcpsource"
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
@@ -122,16 +123,18 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	providers := buildProviders(cfg)
 	pricingTable := loadPricingTable(cfg, pricingBaseDir)
 	injectPricingInProviders(providers, pricingTable)
-	catalog, err := buildCLICatalog(ctx, cfg, scan, providers)
-	if err != nil {
-		return err
-	}
-
 	secretsStore, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if err != nil {
 		return fmt.Errorf("initializing secrets: %w", err)
 	}
 	defer secretsStore.Close()
+
+	sourceDiscoverer := mcpsource.New(secretsStore)
+	sourceDiscoverer.Version = resolvedVersion()
+	catalog, err := buildCLICatalog(ctx, cfg, scan, providers, sourceDiscoverer)
+	if err != nil {
+		return err
+	}
 
 	evidenceStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {

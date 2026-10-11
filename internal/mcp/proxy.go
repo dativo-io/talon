@@ -146,11 +146,9 @@ func (h *ProxyHandler) trustedDefinitions(ctx context.Context, req *wire.Request
 	return cap, nil
 }
 
-// maxListPages bounds how many upstream list pages one capture follows.
-const maxListPages = 32
-
-// fetchDefinitions performs upstream tools/list (following nextCursor) and
-// builds a capture from the validated result.
+// fetchDefinitions performs upstream tools/list through the shared wire
+// fetch (every page, strict validation, bounded pagination) and builds a
+// capture from the validated result.
 func (h *ProxyHandler) fetchDefinitions(ctx context.Context, req *wire.Request, inv *proxyInvocation) (*definitionCapture, *captureFailure) {
 	allowedSet := make(map[string]bool, len(h.config.Proxy.AllowedTools))
 	for _, t := range h.config.Proxy.AllowedTools {
@@ -159,40 +157,26 @@ func (h *ProxyHandler) fetchDefinitions(ctx context.Context, req *wire.Request, 
 			allowedSet[t.UpstreamName] = true
 		}
 	}
-	cap := &definitionCapture{byName: map[string]*capturedTool{}, ttlMs: "0"}
-	cursor := ""
-	seen := map[string]bool{}
-	for page := 0; page < maxListPages; page++ {
-		list, fail := h.upstreamList(ctx, req, inv, cursor)
-		if fail != nil {
-			return nil, fail
+	do := wire.DoerFunc(func(r *http.Request) (*http.Response, error) { return h.doUpstream(r.Context(), r, inv) })
+	list, err := wire.FetchToolList(ctx, do, h.config.Proxy.Upstream.URL, req.ID, wire.OutboundMeta(req.Meta, proxyServer()))
+	if err != nil {
+		return nil, h.captureFailureFor(req, err)
+	}
+	cap := &definitionCapture{byName: map[string]*capturedTool{}, ttlMs: list.TTLMs}
+	for _, toolRaw := range list.Tools {
+		name := toolNameFromRaw(toolRaw)
+		if name == "" {
+			continue
 		}
-		if page == 0 {
-			cap.ttlMs = list.TTLMs
+		decl, err := capturedDeclaration(toolRaw)
+		if err != nil {
+			// Spec: a definition with an invalid x-mcp-header annotation
+			// is excluded (from tools/list and from tools/call); log the
+			// tool and the reason.
+			log.Warn().Str("tool", name).Err(err).Msg("mcp_proxy_tool_excluded_invalid_header_annotation")
+			continue
 		}
-		for _, toolRaw := range list.Tools {
-			name := toolNameFromRaw(toolRaw)
-			if name == "" {
-				continue
-			}
-			decl, err := capturedDeclaration(toolRaw)
-			if err != nil {
-				// Spec: a definition with an invalid x-mcp-header annotation
-				// is excluded (from tools/list and from tools/call); log the
-				// tool and the reason.
-				log.Warn().Str("tool", name).Err(err).Msg("mcp_proxy_tool_excluded_invalid_header_annotation")
-				continue
-			}
-			cap.byName[name] = &capturedTool{name: name, raw: toolRaw, decl: decl}
-		}
-		if list.NextCursor == "" {
-			break
-		}
-		if seen[list.NextCursor] || page == maxListPages-1 {
-			return nil, &captureFailure{reason: "upstream_response_invalid", resp: &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid: tools/list pagination does not terminate", Data: talonErrData(TalonCodeUpstreamError)}}}
-		}
-		seen[list.NextCursor] = true
-		cursor = list.NextCursor
+		cap.byName[name] = &capturedTool{name: name, raw: toolRaw, decl: decl}
 	}
 	for name, ct := range cap.byName {
 		if allowedSet[name] {
@@ -202,6 +186,43 @@ func (h *ProxyHandler) fetchDefinitions(ctx context.Context, req *wire.Request, 
 	sort.Slice(cap.presented, func(i, j int) bool { return cap.presented[i].name < cap.presented[j].name })
 	cap.expires = captureExpiry(cap.ttlMs)
 	return cap, nil
+}
+
+// captureFailureFor maps a classified upstream failure to the evidence
+// reason and the JSON-RPC answer the proxy returns: an unreachable upstream
+// leaves egress unconfirmed, a vault failure stays a generic configuration
+// error, an upstream JSON-RPC error is relayed, and every contract
+// violation is an invalid upstream response.
+func (h *ProxyHandler) captureFailureFor(req *wire.Request, err error) *captureFailure {
+	upstreamErr := func(reason, msg string) *captureFailure {
+		return &captureFailure{reason: reason, resp: &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: msg, Data: talonErrData(TalonCodeUpstreamError)}}}
+	}
+	var ue *wire.UpstreamError
+	if !errors.As(err, &ue) {
+		return upstreamErr("upstream_response_invalid", "upstream response invalid: "+err.Error())
+	}
+	switch ue.Kind {
+	case wire.UpstreamKindRequest:
+		return upstreamErr("outbound_request_invalid", ue.Err.Error())
+	case wire.UpstreamKindTransport:
+		if errors.Is(ue, errSecretRetrieval) {
+			// Fail-closed vault failure (#358): generic message, no detail leak.
+			f := upstreamErr("secret retrieval error", "Service configuration error")
+			f.transport = true
+			return f
+		}
+		f := upstreamErr("upstream_error: "+ue.Err.Error(), ue.Err.Error())
+		f.transport = true
+		return f
+	case wire.UpstreamKindRPC:
+		out := &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: ue.RPC.Code, Message: ue.RPC.Message}}
+		if len(ue.RPC.Data) > 0 {
+			out.Error.Data = ue.RPC.Data
+		}
+		return &captureFailure{reason: fmt.Sprintf("upstream_jsonrpc_error: %d %s", ue.RPC.Code, ue.RPC.Message), resp: out}
+	default:
+		return upstreamErr("upstream_response_invalid", "upstream response invalid: "+ue.Err.Error())
+	}
 }
 
 // captureExpiry turns the upstream ttlMs hint into the capture's deadline;
@@ -228,47 +249,6 @@ func capturedDeclaration(toolRaw json.RawMessage) (*wire.HeaderParams, error) {
 		return &wire.HeaderParams{}, nil
 	}
 	return wire.HeaderParamsFromSchema(t.InputSchema)
-}
-
-// upstreamList sends one tools/list page to the upstream and validates the
-// reply strictly.
-func (h *ProxyHandler) upstreamList(ctx context.Context, req *wire.Request, inv *proxyInvocation, cursor string) (*wire.ListResult, *captureFailure) {
-	upstreamErr := func(reason, msg string) *captureFailure {
-		return &captureFailure{reason: reason, resp: &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: msg, Data: talonErrData(TalonCodeUpstreamError)}}}
-	}
-	outParams := wire.EncodeListParams(wire.OutboundMeta(req.Meta, proxyServer()), cursor)
-	httpReq, err := wire.NewUpstreamRequest(ctx, h.config.Proxy.Upstream.URL, req.ID, wire.MethodToolsList, outParams, "", nil)
-	if err != nil {
-		return nil, upstreamErr("outbound_request_invalid", err.Error())
-	}
-	upstreamResp, err := h.doUpstream(ctx, httpReq, inv) //nolint:bodyclose // closed by wire.ReadUpstreamResponse
-	if err != nil {
-		if errors.Is(err, errSecretRetrieval) {
-			// Fail-closed vault failure (#358): generic message, no detail leak.
-			f := upstreamErr("secret retrieval error", "Service configuration error")
-			f.transport = true
-			return nil, f
-		}
-		f := upstreamErr("upstream_error: "+err.Error(), err.Error())
-		f.transport = true
-		return nil, f
-	}
-	upstream, err := wire.ReadUpstreamResponse(upstreamResp, req.ID)
-	if err != nil {
-		return nil, upstreamErr("upstream_response_invalid", "upstream response invalid: "+err.Error())
-	}
-	if upstream.Error != nil {
-		out := &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: upstream.Error.Code, Message: upstream.Error.Message}}
-		if len(upstream.Error.Data) > 0 {
-			out.Error.Data = upstream.Error.Data
-		}
-		return nil, &captureFailure{reason: fmt.Sprintf("upstream_jsonrpc_error: %d %s", upstream.Error.Code, upstream.Error.Message), resp: out}
-	}
-	list, err := wire.ParseListResult(upstream.Result)
-	if err != nil {
-		return nil, upstreamErr("upstream_response_invalid", "upstream response invalid: "+err.Error())
-	}
-	return list, nil
 }
 
 // captureFailure is why a definition capture could not be completed: the

@@ -112,6 +112,24 @@ func (ap *ApprovalPolicy) Evaluate(action string) Verdict {
 	return Verdict{Outcome: VerdictAllow, Reason: "no approval rule matches; action is catalogued"}
 }
 
+// MatchingRules lists every approval rule whose pattern matches the action,
+// in rule-id order (inspection; Evaluate uses the first match).
+func (ap *ApprovalPolicy) MatchingRules(action string) []ApprovalRule {
+	if ap == nil {
+		return nil
+	}
+	var out []ApprovalRule
+	for _, r := range ap.Rules {
+		for _, pat := range r.Actions {
+			if matchAction(pat, action) {
+				out = append(out, r)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func matchAction(pattern, name string) bool {
 	if strings.HasSuffix(pattern, "*") {
 		return strings.HasPrefix(name, strings.TrimSuffix(pattern, "*"))

@@ -39,9 +39,14 @@ const (
 	CodeAttemptAlreadyInProgress  = "attempt_already_in_progress"
 	CodeAttemptNotAuthorized      = "attempt_not_authorized"
 	CodePayloadUnavailable        = "payload_unavailable"
-	CodeNotFound                  = "not_found"
-	CodeInvalidRequest            = "invalid_request"
-	CodeStoreUnavailable          = "store_unavailable"
+	// CodeExecutionUnsupported: the definition is catalogued but this
+	// adapter has no executor for its destination type (mcp-sourced
+	// actions wait for the MCP route convergence, #431). Nothing is bound
+	// or persisted.
+	CodeExecutionUnsupported = "execution_unsupported"
+	CodeNotFound             = "not_found"
+	CodeInvalidRequest       = "invalid_request"
+	CodeStoreUnavailable     = "store_unavailable"
 )
 
 // Error is a typed domain failure with a stable code.

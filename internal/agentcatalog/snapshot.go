@@ -1,9 +1,13 @@
 package agentcatalog
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"sync/atomic"
 	"time"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/llm"
@@ -28,6 +32,17 @@ type RuntimeAgent struct {
 	// Router carries this agent's routing rules + cost limits over the
 	// SHARED provider clients.
 	Router *llm.Router
+	// Actions is this agent's compiled trusted action catalog (#427):
+	// explicit definitions plus the definitions discovered from its trusted
+	// MCP sources at generation build, immutable afterwards. The invariant:
+	// no actions declared → nil; explicit definitions only → compiled in
+	// every build, no SourceDiscoverer needed; MCP sources configured →
+	// SourceDiscoverer required, the generation fails closed without one.
+	// A nil catalog resolves nothing.
+	Actions *action.Catalog
+	// Approvals is the approval-relevant policy compiled with the catalog
+	// (same generation, same agent file).
+	Approvals *action.ApprovalPolicy
 }
 
 // ScanMeta is the discovery provenance a snapshot carries for the fleet
@@ -48,8 +63,14 @@ type ScanMeta struct {
 // observed from different generations. A request or run captures the
 // snapshot once at entry and uses it through evidence.
 type RuntimeSnapshot struct {
-	// Generation is the scan digest of the activated set.
+	// Generation identifies the activated set: the scan digest of the
+	// agent files, combined with every discovered action-catalog digest
+	// when any agent binds to a trusted MCP source (#427) — the same files
+	// with changed upstream facts are a different generation.
 	Generation string
+	// ScanDigest is the digest of the scanned agent files alone (the
+	// reloader's change detector for configuration edits).
+	ScanDigest string
 	BuiltAt    time.Time
 	// Registry is the gateway identity registry for this generation (nil in
 	// keyless modes — plain serve without a minted key, quickstart).
@@ -67,6 +88,7 @@ type RuntimeSnapshot struct {
 func NewRuntimeSnapshot(scan *ScanResult, agents []*RuntimeAgent, registry *gateway.IdentityRegistry, builtAt time.Time) *RuntimeSnapshot {
 	s := &RuntimeSnapshot{
 		Generation: scan.Digest,
+		ScanDigest: scan.Digest,
 		BuiltAt:    builtAt,
 		Registry:   registry,
 		Scan:       ScanMeta{Source: scan.Source, Issues: append([]FleetIssue(nil), scan.Issues...)},
@@ -76,7 +98,44 @@ func NewRuntimeSnapshot(scan *ScanResult, agents []*RuntimeAgent, registry *gate
 		s.agents[ra.Name] = ra
 		s.ordered = append(s.ordered, ra)
 	}
+	s.Generation = generationID(scan.Digest, s.ordered)
 	return s
+}
+
+// generationID folds the discovered action catalogs into the generation
+// identity. Without any discovered source the generation IS the scan
+// digest (explicit catalogs are a function of the scanned bytes), so
+// existing consumers keep their invariant.
+func generationID(scanDigest string, agents []*RuntimeAgent) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "scan\x00%s\n", scanDigest)
+	discovered := false
+	for _, ra := range agents {
+		if ra.Actions == nil || len(ra.Actions.Sources()) == 0 {
+			continue
+		}
+		discovered = true
+		fmt.Fprintf(h, "actions\x00%s\x00%s\n", ra.Name, ra.Actions.Digest)
+	}
+	if !discovered {
+		return scanDigest
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ActionRefreshAt reports the earliest instant any agent's discovered
+// action source goes stale by its own freshness hint. ok is false when no
+// agent of this generation binds to a discovered source.
+func (s *RuntimeSnapshot) ActionRefreshAt() (at time.Time, ok bool) {
+	if s == nil {
+		return time.Time{}, false
+	}
+	for _, ra := range s.ordered {
+		if t, has := ra.Actions.RefreshAt(); has && (!ok || t.Before(at)) {
+			at, ok = t, true
+		}
+	}
+	return at, ok
 }
 
 // Get resolves one agent by name. Nil-safe (a nil snapshot resolves nothing —

@@ -873,26 +873,67 @@ func isBedrockModelName(model string) bool {
 }
 
 // ActionsConfig is the trusted action catalog declared in agent.talon.yaml
-// (#427). v1 supports explicit declarations only (no MCP discovery).
+// (#427). Definitions are either explicit (input_schema + http destination)
+// or discovered from a trusted MCP source (source + upstream_name, Talon
+// review overlay). Both compile into the same transport-neutral definition.
 type ActionsConfig struct {
+	// Sources are the trusted origins MCP-discovered definitions bind to.
+	// Everything here is Talon-configured: the source id, the endpoint, and
+	// the credential reference. The upstream never defines any of it.
+	Sources     map[string]ActionSourceConfig     `yaml:"sources,omitempty" json:"sources,omitempty"`
 	Definitions map[string]ActionDefinitionConfig `yaml:"definitions" json:"definitions"`
 }
 
-// ActionDefinitionConfig declares one governed action. The complete
-// normalized argument payload is the binding (no exclusions in v1); the
-// execution profile is always talon_forwarded to the declared destination.
+// ActionSourceConfig is one trusted MCP source (#427). The upstream server
+// is authoritative only for bounded source metadata (tool names,
+// descriptions, input schemas, x-mcp-header declarations, cache hints,
+// informational serverInfo); never for policy, materiality, destination or
+// identity.
+type ActionSourceConfig struct {
+	Type string `yaml:"type" json:"type"` // mcp
+	// URL is the trusted MCP endpoint (https, or http for loopback). A
+	// redirect from it is never followed.
+	URL string `yaml:"url" json:"url"`
+	// Auth is the vault-backed credential reference, same shape as the MCP
+	// proxy's upstream auth. The secret value never enters the catalog,
+	// its digests, evidence or output.
+	Auth *UpstreamAuthConfig `yaml:"auth,omitempty" json:"auth,omitempty"`
+	// Timeout bounds one discovery pass (server/discover + all tools/list
+	// pages). Duration string; default 15s, maximum 2m.
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// ActionDefinitionConfig declares one governed action. Exactly one shape:
+//
+//	explicit:   input_schema + destination (http)
+//	discovered: source (+ upstream_name); the input schema comes from the
+//	            trusted source's validated tools/list and the Talon review
+//	            overlay is required to classify every argument field
+//
+// The complete normalized argument payload is the binding (no exclusions);
+// the execution profile is always talon_forwarded.
 type ActionDefinitionConfig struct {
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
-	// InputSchema is the JSON Schema for the arguments. Required and must
-	// describe an object: an approval-governed side effect needs an
-	// intentional contract, never an empty schema.
-	InputSchema map[string]interface{} `yaml:"input_schema" json:"input_schema"`
+	// Source names an actions.sources entry; present only for discovered
+	// definitions.
+	Source string `yaml:"source,omitempty" json:"source,omitempty"`
+	// UpstreamName is the tool name at the source when it differs from the
+	// canonical Talon action name. The canonical name is the only identity
+	// a caller may use.
+	UpstreamName string `yaml:"upstream_name,omitempty" json:"upstream_name,omitempty"`
+	// InputSchema is the JSON Schema for the arguments of an explicit
+	// definition. Required there and must describe an object: an
+	// approval-governed side effect needs an intentional contract, never
+	// an empty schema. Forbidden for discovered definitions.
+	InputSchema map[string]interface{} `yaml:"input_schema,omitempty" json:"input_schema,omitempty"`
 	// Review lists the argument fields shown to a reviewer (all material
 	// fields are bound regardless; this is projection only).
 	Review *ActionReviewConfig `yaml:"review,omitempty" json:"review,omitempty"`
-	// Destination is the trusted downstream Talon forwards the authorized
-	// attempt to. Credentials are never part of the definition.
-	Destination ActionDestinationConfig `yaml:"destination" json:"destination"`
+	// Destination is the trusted downstream Talon forwards an explicit
+	// definition's authorized attempt to. Credentials are never part of the
+	// definition. Forbidden for discovered definitions (their destination
+	// is the source).
+	Destination ActionDestinationConfig `yaml:"destination,omitempty" json:"destination,omitempty"`
 }
 
 // ActionReviewConfig is the reviewer projection definition (#427/#433).

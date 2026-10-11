@@ -210,10 +210,36 @@
     },
     "actions": {
       "type": "object",
-      "description": "Trusted action catalog (#427/#458): governed side-effecting actions a runtime may attempt. Callers invoke catalogued actions by name with arguments only; they can never define schema, review projection, destination or execution mode. Binding = complete normalized arguments; execution = talon_forwarded to the declared destination.",
+      "description": "Trusted action catalog (#427/#458): governed side-effecting actions a runtime may attempt. Callers invoke catalogued actions by name with arguments only; they can never define schema, review projection, destination or execution mode. A definition is either explicit (input_schema + http destination) or discovered from a trusted MCP source (source + upstream_name with a Talon review overlay); both compile into one transport-neutral definition. Binding = complete normalized arguments; execution = talon_forwarded.",
       "required": ["definitions"],
       "additionalProperties": false,
       "properties": {
+        "sources": {
+          "type": "object",
+          "description": "Trusted MCP sources that discovered definitions bind to (#427). Source id, endpoint and credential reference are Talon-configured; the upstream only supplies tool names, descriptions, input schemas, x-mcp-header declarations and cache hints — never policy, materiality or identity.",
+          "maxProperties": 32,
+          "propertyNames": {"pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+          "additionalProperties": {
+            "type": "object",
+            "required": ["type", "url"],
+            "additionalProperties": false,
+            "properties": {
+              "type": {"type": "string", "enum": ["mcp"]},
+              "url": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "MCP endpoint (https, or http for loopback only). Redirects are never followed."},
+              "auth": {
+                "type": "object",
+                "required": ["secret_name"],
+                "additionalProperties": false,
+                "properties": {
+                  "secret_name": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Vault entry holding the upstream credential. The value never enters the catalog, its digests, evidence or output."},
+                  "header": {"type": "string", "minLength": 1, "maxLength": 128},
+                  "scheme": {"type": "string", "maxLength": 32}
+                }
+              },
+              "timeout": {"type": "string", "pattern": "^[0-9]+(ms|s|m)$", "description": "Discovery deadline for server/discover plus every tools/list page (default 15s, maximum 2m)."}
+            }
+          }
+        },
         "definitions": {
           "type": "object",
           "minProperties": 1,
@@ -221,11 +247,13 @@
           "propertyNames": {"pattern": "^[a-z][a-z0-9_]{0,63}$"},
           "additionalProperties": {
             "type": "object",
-            "required": ["input_schema", "destination"],
+            "description": "Exactly one shape: explicit (input_schema + destination) or discovered (source, optional upstream_name). Mixing or omitting both is rejected at catalog compile.",
             "additionalProperties": false,
             "properties": {
               "description": {"type": "string", "maxLength": 512},
-              "input_schema": {"type": "object", "description": "JSON Schema for the arguments; must describe an object."},
+              "source": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$", "description": "actions.sources entry this definition is discovered from."},
+              "upstream_name": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Tool name at the source when it differs from the canonical action name. Only the canonical name is callable."},
+              "input_schema": {"type": "object", "description": "JSON Schema (2020-12) for the arguments of an explicit definition; must describe an object. Not allowed with source."},
               "review": {
                 "type": "object",
                 "additionalProperties": false,
