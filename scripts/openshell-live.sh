@@ -31,6 +31,10 @@
 #                               containers (auto-detected)
 #   TALON_OPENSHELL_CACHE       artifact cache dir (default ~/.cache/talon-openshell)
 #   TALON_OPENSHELL_KEEP=1      keep the work dir and logs on success
+#   TALON_OPENSHELL_WORKLOAD_IMAGE
+#                               digest-pinned (@sha256:) curl-capable workload
+#                               image replacing the default fixture; the
+#                               in-sandbox precondition still has to pass
 #   TALON_OPENSHELL_PREFLIGHT_ONLY=1
 #                               stop before starting the gateway: verifies the
 #                               pinned artifacts, builds talon, generates the
@@ -56,6 +60,25 @@ declare -A GW_SHA=(
   [aarch64]="801214322227f64f2d3faa6989daaa5e6cd9ef1ab768b5860496deeb1158c27b"
 )
 RELEASE_BASE="https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_VERSION}"
+
+# Workload fixture. The sandbox image is a TEST FIXTURE, never OpenShell's
+# mutable default (nvcr.io/nvidia/base/ubuntu:24.04 has no curl, which made the
+# first real run die with "curl: not found" inside CASE A). It is pinned by
+# multi-arch index digest, contains exactly the client the lane drives
+# (/usr/bin/curl, busybox /bin/sh and /bin/sleep), and is verified inside the
+# REAL sandbox before CASE A. Talon has no dependency on this image; production
+# users run their own agent images. The three places that name the client
+# binary (provider profile, network policy, request) all use $CURL_BIN.
+# curlimages/curl 8.22.0, index digest from Docker Hub (linux amd64/arm64/arm/386/ppc64le).
+WORKLOAD_IMAGE_REPO="docker.io/curlimages/curl"
+WORKLOAD_IMAGE_TAG="8.22.0"
+WORKLOAD_IMAGE_DIGEST="sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777"
+WORKLOAD_IMAGE="${TALON_OPENSHELL_WORKLOAD_IMAGE:-$WORKLOAD_IMAGE_REPO:$WORKLOAD_IMAGE_TAG@$WORKLOAD_IMAGE_DIGEST}"
+[[ "$WORKLOAD_IMAGE" == *@sha256:* ]] || { echo "FAIL live workload image must be digest pinned (got $WORKLOAD_IMAGE)" >&2; exit 1; }
+WORKLOAD_IMAGE_DIGEST="${WORKLOAD_IMAGE##*@}"
+CURL_BIN="${TALON_OPENSHELL_CURL_BIN:-/usr/bin/curl}"
+SH_BIN="/bin/sh"
+SLEEP_BIN="/bin/sleep"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -377,7 +400,7 @@ endpoints:
     protocol: rest
     access: read-write
     enforcement: enforce
-binaries: [/usr/bin/curl]
+binaries: [$CURL_BIN]
 EOT
 "${CLI[@]}" profile import -f "$WORK/profile.yaml" --global >>"$LOGS/setup.log" 2>&1 || die "profile import"
 "${CLI[@]}" provider create --name mock-openai --type talon-live-openai --global-profile --credential "OPENAI_API_KEY=$PROVIDER_SECRET" >>"$LOGS/setup.log" 2>&1 || die "provider create"
@@ -399,16 +422,41 @@ network_policies:
         access: read-write
         enforcement: enforce
     binaries:
-      - path: /usr/bin/curl
+      - path: $CURL_BIN
 EOT
-create_sandbox() { # name
-  "${CLI[@]}" sandbox create --name "$1" --policy "$WORK/policy.yaml" --provider mock-openai --no-tty --detach -- sleep infinity >>"$LOGS/setup.log" 2>&1 || die "sandbox create $1"
+create_sandbox() { # name — ALWAYS from the pinned fixture; never OpenShell's default image.
+  # busybox sleep has no "infinity"; the largest 32-bit second count is ~68 years.
+  "${CLI[@]}" sandbox create --name "$1" --from "$WORKLOAD_IMAGE" --policy "$WORK/policy.yaml" --provider mock-openai --no-tty --detach -- "$SLEEP_BIN" 2147483647 >>"$LOGS/setup.log" 2>&1 || die "sandbox create $1 from $WORKLOAD_IMAGE"
   SANDBOXES+=("$1")
 }
 create_sandbox "$SANDBOX_A"
 SANDBOX_A_ID="$("${CLI[@]}" sandbox list --ids 2>>"$LOGS/setup.log" | head -n 1)"
 [[ -n "$SANDBOX_A_ID" ]] || die "could not read the sandbox id"
-log "sandbox $SANDBOX_A id=$SANDBOX_A_ID"
+log "sandbox $SANDBOX_A id=$SANDBOX_A_ID from $WORKLOAD_IMAGE"
+
+# ---------------------------------------------------------------- workload fixture precondition
+# Prove the fixture before any governance case, inside the REAL sandbox: the
+# client binary exists at exactly the path the provider profile and the
+# network policy name, the shell and sleep exist, and the image the driver
+# resolved carries the pinned digest. A mismatch here is a fixture failure,
+# not a Talon or OpenShell governance failure, and must not surface later as
+# an empty HTTP code.
+sandbox_sh() { # sandbox script
+  "${CLI[@]}" sandbox exec --name "$1" --no-tty --no-login-shell --timeout 60 -- "$SH_BIN" -c "$2" 2>>"$LOGS/setup.log"
+}
+FIXTURE="$(sandbox_sh "$SANDBOX_A" 'printf "curl=%s\nsh=%s\nsleep=%s\nuser=%s\n" "$(command -v curl || echo missing)" "$(command -v sh || echo missing)" "$(command -v sleep || echo missing)" "$(id -u 2>/dev/null || echo unknown)"; curl --version 2>/dev/null | head -n1' || true)"
+printf '%s\n' "$FIXTURE" >>"$LOGS/setup.log"
+DETECTED_CURL="$(sed -n 's/^curl=//p' <<<"$FIXTURE" | head -n1)"
+DETECTED_SH="$(sed -n 's/^sh=//p' <<<"$FIXTURE" | head -n1)"
+DETECTED_SLEEP="$(sed -n 's/^sleep=//p' <<<"$FIXTURE" | head -n1)"
+CURL_VERSION_LINE="$(grep -m1 '^curl ' <<<"$FIXTURE" || true)"
+[[ "$DETECTED_CURL" == "$CURL_BIN" ]] || die "workload fixture: expected curl at $CURL_BIN, image $WORKLOAD_IMAGE reported '${DETECTED_CURL:-missing}' (sandbox output: $FIXTURE)"
+[[ "$DETECTED_SH" == "$SH_BIN" ]] || die "workload fixture: expected sh at $SH_BIN, image reported '${DETECTED_SH:-missing}'"
+[[ "$DETECTED_SLEEP" == "$SLEEP_BIN" ]] || die "workload fixture: expected sleep at $SLEEP_BIN, image reported '${DETECTED_SLEEP:-missing}'"
+[[ -n "$CURL_VERSION_LINE" ]] || die "workload fixture: curl --version produced no output in the sandbox"
+RESOLVED_DIGESTS="$(docker image inspect --format '{{join .RepoDigests " "}}' "$WORKLOAD_IMAGE_REPO@$WORKLOAD_IMAGE_DIGEST" 2>>"$LOGS/setup.log" || true)"
+grep -qF "$WORKLOAD_IMAGE_DIGEST" <<<"$RESOLVED_DIGESTS" || die "workload fixture: docker resolved digests '$RESOLVED_DIGESTS' do not include the pinned $WORKLOAD_IMAGE_DIGEST"
+pass "workload fixture: $WORKLOAD_IMAGE present in the real sandbox with curl=$DETECTED_CURL sh=$DETECTED_SH sleep=$DETECTED_SLEEP ($CURL_VERSION_LINE); docker resolved digest matches the pin"
 # Bind the REAL sandbox identity to the Talon use case; the binding rides the
 # normal agent reload (no restart).
 python3 - "$AGENT_FILE" "$AGENT" "$SANDBOX_A_ID" <<'PY' || die "binding edit"
@@ -426,10 +474,10 @@ for ((i=0; i<40; i++)); do
 done
 grep -q "agent_config_reload_activated" "$LOGS/talon-serve.log" || die "talon did not activate the binding generation"
 
-sandbox_request() { # sandbox body -> prints "<http_code>\n<response body>"
+sandbox_request() { # sandbox body -> prints "<http_code>\n<response body>"; stdout only, no file writes in the sandbox
   local sb="$1" body="$2"
   "${CLI[@]}" sandbox exec --name "$sb" --no-tty --no-login-shell --timeout 60 --env "TALON_BODY=$body" -- \
-    sh -c 'code=$(curl -sS -o /tmp/resp -w "%{http_code}" --max-time 40 -X POST "http://host.openshell.internal:'"$MOCK_PORT"'/v1/chat/completions" -H "Authorization: Bearer $OPENAI_API_KEY" -H "content-type: application/json" --data "$TALON_BODY"); echo "$code"; cat /tmp/resp 2>/dev/null; echo' 2>>"$LOGS/setup.log"
+    "$SH_BIN" -c 'out=$('"$CURL_BIN"' -sS --max-time 40 -w "\n__CODE__%{http_code}" -X POST "http://host.openshell.internal:'"$MOCK_PORT"'/v1/chat/completions" -H "Authorization: Bearer $OPENAI_API_KEY" -H "content-type: application/json" --data "$TALON_BODY"); echo "${out##*__CODE__}"; printf "%s\n" "${out%__CODE__*}"' 2>>"$LOGS/setup.log"
 }
 
 # ---------------------------------------------------------------- CASE A — allowed
@@ -526,7 +574,10 @@ ALL PASS openshell live smoke
   openshell gateway:  $("$GW_BIN" --version)   sha256 ${GW_SHA[$ARCH]}
   talon commit:       $(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo untracked)
   driver:             docker $(docker version --format '{{.Server.Version}}') on $(uname -r) ($ARCH)
-  images:             $(docker ps -a --format '{{.Image}}' | grep -i openshell | sort -u | tr '\n' ' ')
+  workload image:     $WORKLOAD_IMAGE
+  resolved digests:   $RESOLVED_DIGESTS
+  sandbox binaries:   curl=$DETECTED_CURL sh=$DETECTED_SH sleep=$DETECTED_SLEEP ($CURL_VERSION_LINE)
+  openshell images:   $(docker ps -a --format '{{.Image}}' | grep -i openshell | sort -u | tr '\n' ' ')
   host address:       $HOST_IP (talon middleware https://$HOST_IP:$TALON_GRPC_PORT, mock provider :$MOCK_PORT)
   ocsf (gateway):     $LOGS/gateway-ocsf.jsonl ($(wc -l <"$LOGS/gateway-ocsf.jsonl" 2>/dev/null || echo 0) lines)
 EOT

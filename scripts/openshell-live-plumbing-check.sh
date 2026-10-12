@@ -28,4 +28,11 @@ fi
 grep -qE '^\s*set -euo pipefail' "$WF" || { echo "FAIL plumbing: $WF has no 'set -euo pipefail'" >&2; exit 1; }
 grep -qF "grep -q '^ALL PASS openshell live smoke' openshell-live.log" "$WF" || { echo "FAIL plumbing: $WF has no ALL PASS verdict gate" >&2; exit 1; }
 grep -qF 'ALL PASS openshell live smoke' scripts/openshell-live.sh || { echo "FAIL plumbing: the harness no longer prints the verdict the workflow gates on" >&2; exit 1; }
-echo "PASS openshell live plumbing: a failing harness is a failing job"
+# 4. the workload fixture is explicit and digest pinned; no default OpenShell image can creep back in.
+grep -qF -- '--from "$WORKLOAD_IMAGE"' scripts/openshell-live.sh || { echo "FAIL plumbing: create_sandbox no longer passes --from \"\$WORKLOAD_IMAGE\"; the lane would fall back to OpenShell's default image" >&2; exit 1; }
+grep -qE '^WORKLOAD_IMAGE_DIGEST="sha256:[0-9a-f]{64}"$' scripts/openshell-live.sh || { echo "FAIL plumbing: WORKLOAD_IMAGE_DIGEST is not a sha256 digest" >&2; exit 1; }
+grep -qF '[[ "$WORKLOAD_IMAGE" == *@sha256:* ]] ||' scripts/openshell-live.sh || { echo "FAIL plumbing: the digest-pin guard on WORKLOAD_IMAGE is gone" >&2; exit 1; }
+if grep -nE 'sandbox create' scripts/openshell-live.sh | grep -vF -- '--from "$WORKLOAD_IMAGE"' | grep -vE '^\s*[0-9]+:\s*#'; then
+  echo "FAIL plumbing: a sandbox create without --from \"\$WORKLOAD_IMAGE\" exists in the harness" >&2; exit 1
+fi
+echo "PASS openshell live plumbing: a failing harness is a failing job; the workload fixture is explicit and digest pinned"

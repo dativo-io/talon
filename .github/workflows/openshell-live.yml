@@ -58,6 +58,12 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/openshell-live-plumbing-check.sh
+      - name: Mock provider regression tests (race)
+        run: |
+          # The harness's provider is the boundary every case asserts on; a
+          # broken provider must fail here, before any Docker work.
+          set -euo pipefail
+          go test -race -count=1 ./tests/openshell-live/mockprovider/...
       - name: Runtime facts
         run: |
           set -euo pipefail
