@@ -30,56 +30,82 @@ type record struct {
 
 type state struct {
 	mu      sync.Mutex
+	calls   int
+	records []record
+}
+
+// view is the serialized shape of the state.
+type view struct {
 	Calls   int      `json:"calls"`
 	Records []record `json:"records"`
 }
 
-func (s *state) snapshot() []byte {
+// record appends one provider call under the lock and returns the record
+// plus a snapshot of the state taken in the SAME critical section, so the
+// count, the record list and what gets persisted/served can never
+// disagree. sync.Mutex is not reentrant: nothing here calls back into a
+// locking method.
+func (s *state) record(r *http.Request, body []byte) (record, view) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, _ := json.MarshalIndent(struct {
-		Calls   int      `json:"calls"`
-		Records []record `json:"records"`
-	}{s.Calls, s.Records}, "", "  ")
+	s.calls++
+	rec := record{Seq: s.calls, Path: r.URL.Path, Method: r.Method, Authorization: r.Header.Get("Authorization"), Body: string(body), ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	s.records = append(s.records, rec)
+	return rec, s.viewLocked()
+}
+
+// viewLocked copies the state; the caller holds s.mu.
+func (s *state) viewLocked() view {
+	return view{Calls: s.calls, Records: append([]record(nil), s.records...)}
+}
+
+func (s *state) snapshot() view {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.viewLocked()
+}
+
+func (s *state) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls, s.records = 0, nil
+}
+
+func (v view) json() []byte {
+	b, _ := json.MarshalIndent(v, "", "  ")
 	return b
 }
 
-func main() {
-	listen := flag.String("listen", "127.0.0.1:18090", "address to serve on (must be reachable from the OpenShell sandbox containers)")
-	stateFile := flag.String("state-file", "", "optional path rewritten with the JSON state after every provider call")
-	maxBody := flag.Int64("max-body", 4<<20, "maximum accepted request body in bytes")
-	flag.Parse()
-
-	st := &state{}
+// newHandler builds the provider mux: the OpenAI-compatible route plus the
+// harness's state/reset routes. stateFile, when set, is rewritten after
+// every provider call with the snapshot taken in that call's critical
+// section (serialized by a dedicated mutex so writes never interleave).
+func newHandler(st *state, stateFile string, maxBody int64) http.Handler {
+	var fileMu sync.Mutex
 	mux := http.NewServeMux()
 	mux.HandleFunc("/__state", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(st.snapshot())
+		_, _ = w.Write(st.snapshot().json())
 	})
 	mux.HandleFunc("/__reset", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
-		st.mu.Lock()
-		st.Calls, st.Records = 0, nil
-		st.mu.Unlock()
+		st.reset()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, *maxBody+1))
-		if err != nil || int64(len(body)) > *maxBody {
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
+		if err != nil || int64(len(body)) > maxBody {
 			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		st.mu.Lock()
-		st.Calls++
-		rec := record{Seq: st.Calls, Path: r.URL.Path, Method: r.Method, Authorization: r.Header.Get("Authorization"), Body: string(body), ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-		st.Records = append(st.Records, rec)
-		snap := st.snapshot()
-		st.mu.Unlock()
-		if *stateFile != "" {
-			_ = os.WriteFile(*stateFile, snap, 0o600)
+		rec, snap := st.record(r, body)
+		if stateFile != "" {
+			fileMu.Lock()
+			_ = os.WriteFile(stateFile, snap.json(), 0o600) //nolint:gosec // operator-provided --state-file path of the test harness
+			fileMu.Unlock()
 		}
 		log.Printf("provider call %d: %s %s body=%d bytes auth=%s", rec.Seq, rec.Method, rec.Path, len(body), describeAuth(rec.Authorization))
 		w.Header().Set("Content-Type", "application/json")
@@ -88,7 +114,15 @@ func main() {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mock provider: unknown route "+r.URL.Path, http.StatusNotFound)
 	})
-	srv := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	return mux
+}
+
+func main() {
+	listen := flag.String("listen", "127.0.0.1:18090", "address to serve on (must be reachable from the OpenShell sandbox containers)")
+	stateFile := flag.String("state-file", "", "optional path rewritten with the JSON state after every provider call")
+	maxBody := flag.Int64("max-body", 4<<20, "maximum accepted request body in bytes")
+	flag.Parse()
+	srv := &http.Server{Addr: *listen, Handler: newHandler(&state{}, *stateFile, *maxBody), ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("mock provider listening on %s", *listen)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)

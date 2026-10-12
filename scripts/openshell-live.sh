@@ -40,6 +40,9 @@
 #                               generated registration (no Docker needed)
 set -euo pipefail
 PREFLIGHT_ONLY="${TALON_OPENSHELL_PREFLIGHT_ONLY:-0}"
+# TALON_OPENSHELL_SELFTEST_FAIL=1 makes the harness exit non-zero immediately:
+# the workflow's own plumbing check (a failing harness must be a red job).
+if [[ "${TALON_OPENSHELL_SELFTEST_FAIL:-0}" == "1" ]]; then echo "FAIL self-test: deliberate harness failure requested" >&2; exit 1; fi
 
 OPENSHELL_VERSION="v0.1.3"
 # sha256 from the release's openshell-checksums-sha256.txt and
@@ -93,27 +96,38 @@ if [[ "$HOST_IP" == 127.* && "$PREFLIGHT_ONLY" != "1" ]]; then echo "MISSING hos
 MOCK_BIND="0.0.0.0"; [[ "$PREFLIGHT_ONLY" == "1" ]] && MOCK_BIND="127.0.0.1"
 
 # ---------------------------------------------------------------- artifacts
+# The release TARBALLS are cached; every run re-verifies their sha256 against
+# the pins above and extracts the binaries fresh into the run's work dir, so
+# a cache hit never bypasses verification and the binary used always comes
+# from a tarball that matched the official checksum manifest on this run.
 CACHE="${TALON_OPENSHELL_CACHE:-$HOME/.cache/talon-openshell}/$OPENSHELL_VERSION"
 mkdir -p "$CACHE"
-fetch_pinned() { # name url sha dest
-  local name="$1" url="$2" sha="$3" dest="$4"
-  if [[ ! -x "$dest" ]]; then
-    log "downloading $name ($OPENSHELL_VERSION)"
-    curl -fsSL --retry 3 -o "$CACHE/$name.tgz" "$url"
-    echo "$sha  $CACHE/$name.tgz" | sha256sum -c - >/dev/null || die "checksum mismatch for $name (expected $sha)"
-    tar -xzf "$CACHE/$name.tgz" -C "$CACHE"
-    [[ -x "$dest" ]] || die "$name archive did not contain $(basename "$dest")"
-  fi
-}
-fetch_pinned "openshell-cli" "$RELEASE_BASE/openshell-${ARCH}-unknown-linux-musl.tar.gz" "${CLI_SHA[$ARCH]}" "$CACHE/openshell"
-fetch_pinned "openshell-gateway" "$RELEASE_BASE/openshell-gateway-${ARCH}-unknown-linux-gnu.tar.gz" "${GW_SHA[$ARCH]}" "$CACHE/openshell-gateway"
-CLI_BIN="$CACHE/openshell"; GW_BIN="$CACHE/openshell-gateway"
-[[ "$("$CLI_BIN" --version)" == *"0.1.3"* ]] || die "unexpected CLI version: $("$CLI_BIN" --version)"
-[[ "$("$GW_BIN" --version)" == *"0.1.3"* ]] || die "unexpected gateway version: $("$GW_BIN" --version)"
-
-# ---------------------------------------------------------------- workspace
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/talon-openshell-live.XXXXXX")"
 LOGS="$WORK/logs"; mkdir -p "$LOGS"
+BIN="$WORK/bin"; mkdir -p "$BIN"
+fetch_pinned() { # name url sha binary
+  local name="$1" url="$2" sha="$3" binary="$4"
+  local tgz="$CACHE/$name.tgz"
+  if [[ -f "$tgz" ]] && ! echo "$sha  $tgz" | sha256sum -c - >/dev/null 2>&1; then
+    log "cached $name tarball does not match the pinned checksum; discarding it"
+    rm -f "$tgz"
+  fi
+  if [[ ! -f "$tgz" ]]; then
+    log "downloading $name ($OPENSHELL_VERSION)"
+    curl -fsSL --retry 3 -o "$tgz.part" "$url" && mv "$tgz.part" "$tgz"
+  fi
+  echo "$sha  $tgz" | sha256sum -c - >/dev/null || { rm -f "$tgz"; die "checksum mismatch for $name (expected $sha)"; }
+  tar -xzf "$tgz" -C "$BIN" "$binary" || die "$name archive did not contain $binary"
+  [[ -x "$BIN/$binary" ]] || die "$binary is not executable after extraction"
+}
+fetch_pinned "openshell-cli" "$RELEASE_BASE/openshell-${ARCH}-unknown-linux-musl.tar.gz" "${CLI_SHA[$ARCH]}" "openshell"
+fetch_pinned "openshell-gateway" "$RELEASE_BASE/openshell-gateway-${ARCH}-unknown-linux-gnu.tar.gz" "${GW_SHA[$ARCH]}" "openshell-gateway"
+CLI_BIN="$BIN/openshell"; GW_BIN="$BIN/openshell-gateway"
+[[ "$("$CLI_BIN" --version)" == *"0.1.3"* ]] || die "unexpected CLI version: $("$CLI_BIN" --version)"
+[[ "$("$GW_BIN" --version)" == *"0.1.3"* ]] || die "unexpected gateway version: $("$GW_BIN" --version)"
+log "verified release artifacts: cli sha256 ${CLI_SHA[$ARCH]}, gateway sha256 ${GW_SHA[$ARCH]} ($ARCH)"
+
+# ---------------------------------------------------------------- workspace
 TALON_HOME="$WORK/talon-home"; mkdir -p "$TALON_HOME"
 RUN_ID="talon-live-$$-$RANDOM"
 GATEWAY_ID="talon-live-gw-$$"
@@ -147,7 +161,9 @@ cleanup() {
   trap - EXIT
   for sb in "${SANDBOXES[@]:-}"; do [[ -n "$sb" ]] && "${CLI[@]}" sandbox delete "$sb" >>"$LOGS/setup.log" 2>&1 || true; done
   for pid in "$GW_PID" "$TALON_PID" "$MOCK_PID"; do [[ -n "$pid" ]] && { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }; done
-  if [[ "$status" -eq 0 && "${TALON_OPENSHELL_KEEP:-0}" != "1" ]]; then rm -rf "$WORK"; else echo "work dir retained: $WORK" >&2; fi
+  # Secret-bearing material (tls/, jwt/, talon-home/, provider-state.json)
+  # stays in $WORK and is never part of the collected logs; CI uploads $LOGS only.
+  if [[ "$status" -eq 0 && "${TALON_OPENSHELL_KEEP:-0}" != "1" ]]; then rm -rf "$WORK"; else echo "work dir retained: $WORK (logs: $LOGS)" >&2; fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -171,12 +187,49 @@ KID="$RUN_ID-k1"; printf '%s\n' "$KID" >"$JWT_DIR/kid"
 # would fetch <gateway>/.well-known/jwks.json over TLS instead).
 PUB_X="$(openssl pkey -pubin -in "$JWT_DIR/public.pem" -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n')"
 printf '{"keys":[{"kty":"OKP","crv":"Ed25519","kid":"%s","x":"%s"}]}\n' "$KID" "$PUB_X" >"$WORK/openshell-jwks.json"
-# Talon's middleware TLS identity: the host IP (what the gateway and every
-# supervisor dial) plus host.openshell.internal.
+# Talon's middleware TLS identity, in OpenShell's real trust topology: an
+# operator CA (tls_ca_cert_path on the registration; rustls/webpki requires
+# a real CA trust anchor, a self-signed leaf is "unknown certificate") signs
+# Talon's server certificate, whose SANs are exactly what the gateway and
+# every supervisor dial (the host address and host.openshell.internal) and
+# whose EKU is serverAuth. Keys are ephemeral; nothing under tls/ is uploaded.
 TLS_DIR="$WORK/tls"; mkdir -p "$TLS_DIR"
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=talon-openshell-middleware" \
-  -addext "subjectAltName=IP:$HOST_IP,DNS:host.openshell.internal" \
-  -keyout "$TLS_DIR/talon-key.pem" -out "$TLS_DIR/talon-cert.pem" >>"$LOGS/setup.log" 2>&1 || die "openssl cert"
+cat >"$TLS_DIR/ca.cnf" <<'EOT'
+[req]
+distinguished_name = dn
+x509_extensions = v3_ca
+prompt = no
+[dn]
+CN = talon-openshell-live test CA
+[v3_ca]
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+EOT
+cat >"$TLS_DIR/server.cnf" <<EOT
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = talon-openshell-middleware
+[v3_server]
+basicConstraints = critical, CA:FALSE
+keyUsage = critical, digitalSignature
+extendedKeyUsage = serverAuth
+subjectAltName = IP:$HOST_IP, DNS:host.openshell.internal
+authorityKeyIdentifier = keyid
+EOT
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -config "$TLS_DIR/ca.cnf" \
+  -keyout "$TLS_DIR/ca-key.pem" -out "$TLS_DIR/ca.pem" >>"$LOGS/setup.log" 2>&1 || die "openssl CA"
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -config "$TLS_DIR/server.cnf" \
+  -keyout "$TLS_DIR/talon-key.pem" -out "$TLS_DIR/talon.csr" >>"$LOGS/setup.log" 2>&1 || die "openssl server CSR"
+openssl x509 -req -in "$TLS_DIR/talon.csr" -CA "$TLS_DIR/ca.pem" -CAkey "$TLS_DIR/ca-key.pem" -CAcreateserial -days 2 \
+  -extfile "$TLS_DIR/server.cnf" -extensions v3_server -out "$TLS_DIR/talon-cert.pem" >>"$LOGS/setup.log" 2>&1 || die "openssl sign server cert"
+openssl verify -CAfile "$TLS_DIR/ca.pem" "$TLS_DIR/talon-cert.pem" >>"$LOGS/setup.log" 2>&1 || die "server certificate does not chain to the test CA"
+# A second, unrelated CA for the negative proof (wrong trust anchor → TLS fails).
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -config "$TLS_DIR/ca.cnf" \
+  -keyout "$TLS_DIR/other-ca-key.pem" -out "$TLS_DIR/other-ca.pem" >>"$LOGS/setup.log" 2>&1 || die "openssl other CA"
+log "tls: CA $(openssl x509 -in "$TLS_DIR/ca.pem" -noout -fingerprint -sha256 | cut -d= -f2), server SAN IP:$HOST_IP DNS:host.openshell.internal"
 
 # ---------------------------------------------------------------- mock provider
 # Sandboxes reach the host as host.openshell.internal (the docker driver maps
@@ -261,31 +314,47 @@ rotation = "never"
 [[openshell.supervisor.middleware]]
 name = "talon"
 grpc_endpoint = "https://$HOST_IP:$TALON_GRPC_PORT"
-tls_ca_cert_path = "$TLS_DIR/talon-cert.pem"
+tls_ca_cert_path = "$TLS_DIR/ca.pem"
 audience = "$AUDIENCE"
 max_payload_bytes = 1048576
 timeout = "10s"
 EOT
 "$GW_BIN" config preflight --path "$GW_CFG" >>"$LOGS/setup.log" 2>&1 || die "openshell-gateway config preflight rejected $GW_CFG"
 pass "openshell-gateway config preflight accepted the talon registration"
+# Talon's manifest is what the real gateway sees at startup: fetch it the way
+# the gateway does (TLS to the registered endpoint, pinned operator CA, normal
+# SAN verification). The wrong CA must fail — no InsecureSkipVerify anywhere.
+go build -o "$WORK/describe" ./tests/openshell-live/describe >>"$LOGS/setup.log" 2>&1 || die "go build describe"
+if "$WORK/describe" -endpoint "https://$HOST_IP:$TALON_GRPC_PORT" -ca "$TLS_DIR/other-ca.pem" >>"$LOGS/setup.log" 2>&1; then
+  die "Describe succeeded with an unrelated CA; TLS verification is not effective"
+fi
+pass "tls: Describe with the wrong CA is refused"
+"$WORK/describe" -endpoint "https://$HOST_IP:$TALON_GRPC_PORT" -ca "$TLS_DIR/ca.pem" >>"$LOGS/setup.log" 2>&1 || die "Describe over TLS with the registered CA failed"
+pass "tls: Describe with the registered CA and the dialed SAN negotiated protocol 1.0 and returned the HTTP_REQUEST/PRE_CREDENTIALS manifest"
 if [[ "$PREFLIGHT_ONLY" == "1" ]]; then
-  # Talon's manifest is what the real gateway will see at startup: fetch it
-  # the way the gateway does (TLS to the registered endpoint, pinned CA).
-  go run ./tests/openshell-live/describe -endpoint "https://$HOST_IP:$TALON_GRPC_PORT" -ca "$TLS_DIR/talon-cert.pem" >>"$LOGS/setup.log" 2>&1 || die "Describe over TLS with the registered CA failed"
-  pass "Describe over TLS with the registered CA negotiated protocol 1.0 and returned the HTTP_REQUEST/PRE_CREDENTIALS manifest"
-  echo "PREFLIGHT ONLY: artifacts verified, talon started with the middleware listener, gateway registration accepted; the gateway/sandbox stages need Docker"
+  echo "PREFLIGHT ONLY: artifacts verified, talon started with the middleware listener, TLS trust proven both ways, gateway registration accepted; the gateway/sandbox stages need Docker"
   exit 0
 fi
 env -u OPENSHELL_DRIVERS -u OPENSHELL_COMPUTE_DRIVER "$GW_BIN" --compute-driver docker --config "$GW_CFG" --name "$GATEWAY_ID" \
   --bind-address 127.0.0.1 --port "$GW_PORT" --health-port "$GW_HEALTH_PORT" --metrics-port 0 --disable-tls \
   --db-url "sqlite://$WORK/gateway.db" --log-level "${TALON_OPENSHELL_LOG_LEVEL:-info}" >"$LOGS/gateway.log" 2>&1 &
 GW_PID=$!
+gateway_startup_hint() { # diagnostics only: classify the likely stage from the gateway and talon logs
+  local gw="$LOGS/gateway.log" tl="$LOGS/talon-serve.log"
+  if grep -qiE "tls|certificate|handshake" "$gw" "$tl" 2>/dev/null; then echo "transport/TLS (certificate chain, SAN or CA mismatch)"
+  elif grep -qiE "protocol metadata|protocol version|capabilit" "$gw" 2>/dev/null; then echo "extension protocol negotiation"
+  elif grep -qiE "manifest|expected_audience|binding" "$gw" 2>/dev/null; then echo "manifest validation"
+  elif grep -qiE "could not connect|connection refused|unreachable" "$gw" 2>/dev/null; then echo "transport (endpoint unreachable)"
+  else echo "unclassified (see gateway log)"; fi
+}
 for ((i=0; i<240; i++)); do
-  kill -0 "$GW_PID" 2>/dev/null || die "openshell-gateway exited during startup (Describe/negotiation against talon failed?)"
+  if ! kill -0 "$GW_PID" 2>/dev/null; then
+    die "openshell-gateway exited during startup; likely stage: $(gateway_startup_hint)"
+  fi
   curl -fsS --max-time 1 "http://127.0.0.1:$GW_HEALTH_PORT/healthz" >/dev/null 2>&1 && break
   sleep 0.5
 done
-curl -fsS --max-time 1 "http://127.0.0.1:$GW_HEALTH_PORT/healthz" >/dev/null 2>&1 || die "openshell-gateway not healthy"
+curl -fsS --max-time 1 "http://127.0.0.1:$GW_HEALTH_PORT/healthz" >/dev/null 2>&1 || die "openshell-gateway not healthy; likely stage: $(gateway_startup_hint)"
 pass "gateway v0.1.3 started with talon registered (Describe + protocol negotiation succeeded)"
 
 # ---------------------------------------------------------------- provider profile, provider, policy, sandboxes
@@ -423,13 +492,32 @@ DELEGATED="$(jq '[.records[] | select(.enforcement.provenance=="delegated_expect
 [[ "${DELEGATED:-0}" -ge 3 ]] || die "expected >=3 delegated_expected records, found ${DELEGATED:-0}"
 VERIFIED="$(jq '[.records[] | select(.workload_identity.status=="verified" and .workload_identity.runtime=="openshell" and .upstream_auth_mode=="external_runtime")] | length' "$EXPORT")"
 [[ "${VERIFIED:-0}" -ge 3 ]] || die "expected >=3 verified openshell identity records with external_runtime auth mode, found ${VERIFIED:-0}"
+# The verified identity must be the REAL gateway's token for the REAL sandbox:
+# issuer "openshell-gateway:<gateway_id>" (the gateway_jwt registration) and
+# subject spiffe://openshell/sandbox/<id as reported by the released CLI>.
+REAL_ID="$(jq --arg iss "openshell-gateway:$GATEWAY_ID" --arg sub "spiffe://openshell/sandbox/$SANDBOX_A_ID" '[.records[] | select(.workload_identity.status=="verified" and .workload_identity.issuer==$iss and .workload_identity.subject==$sub)] | length' "$EXPORT")"
+[[ "${REAL_ID:-0}" -ge 3 ]] || die "expected >=3 records verified for issuer openshell-gateway:$GATEWAY_ID and subject spiffe://openshell/sandbox/$SANDBOX_A_ID, found ${REAL_ID:-0}"
 jq -e '[.records[] | select(.enforcement.provenance=="talon_enforced" and .workload_identity.runtime=="openshell")] | length == 0' "$EXPORT" >/dev/null || die "a delegated decision was labelled talon_enforced"
 ALLOW_ID="$(jq -r '[.records[] | select(.enforcement.provenance=="delegated_expected" and .policy_decision.allowed==true)][0].id // empty' "$EXPORT")"
 [[ -n "$ALLOW_ID" ]] || die "no allowed delegated record id found"
 ( cd "$TALON_HOME" && "$TALON" audit verify "$ALLOW_ID" ) >>"$LOGS/setup.log" 2>&1 || die "talon audit verify $ALLOW_ID"
 if grep -rqF "$PROVIDER_SECRET" "$TALON_HOME" "$LOGS/talon-serve.log" "$EXPORT" 2>/dev/null; then die "provider secret found in Talon state, evidence or logs"; fi
 grep -qF "$TALON_VAULT_DECOY" <<<"$(provider_state)" && die "Talon's vault value reached the provider"
-pass "evidence: $DELEGATED delegated_expected records, verified identity, offline verification OK, provider secret absent from Talon"
+pass "evidence: $DELEGATED delegated_expected records, identity verified for the real gateway and sandbox ($SANDBOX_A_ID), offline verification OK, provider secret absent from Talon"
+
+# ---------------------------------------------------------------- log hygiene
+# Only $LOGS is ever collected by CI. Prove it carries no secret material:
+# provider key, Talon keys, the gateway's or Talon's private keys, or any
+# bearer token value.
+hygiene_check() {
+  local leak=0 needle
+  for needle in "$PROVIDER_SECRET" "$TALON_SECRETS_KEY" "$TALON_SIGNING_KEY" "$TALON_ADMIN_KEY" "PRIVATE KEY-----" "Bearer ey"; do
+    if grep -rqF -- "$needle" "$LOGS" 2>/dev/null; then echo "HYGIENE secret-shaped material found in logs: $(printf '%s' "$needle" | cut -c1-12)…" >&2; leak=1; fi
+  done
+  return $leak
+}
+hygiene_check || die "log hygiene check failed"
+pass "log hygiene: collected logs carry no provider secret, Talon key, private key or bearer token"
 
 # ---------------------------------------------------------------- record environment
 cat <<EOT

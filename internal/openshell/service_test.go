@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -188,9 +189,10 @@ func gatewayMetadata() *extensionv1.PeerMetadata {
 	}
 }
 
-// Reciprocal negotiation: an incompatible or silent gateway is refused with
-// FailedPrecondition before any manifest is returned, so the gateway cannot
-// start against Talon; a newer compatible minor and unknown extra gateway
+// Reciprocal negotiation with the exact v0.1.3 semantics
+// (extension_protocol.rs): an incompatible, silent or malformed gateway is
+// refused with FailedPrecondition before any manifest is returned, so the
+// gateway cannot start against Talon; minor skew and valid additive
 // capabilities are accepted.
 func TestDescribe_PeerNegotiation(t *testing.T) {
 	s := newSigner(t, "k1")
@@ -200,48 +202,89 @@ func TestDescribe_PeerNegotiation(t *testing.T) {
 		_, err := c.CallUnary(context.Background(), connect.NewRequest(&middlewarev1.MiddlewareDescribeRequest{Gateway: gw}))
 		return err
 	}
+	with := func(mut func(*extensionv1.PeerMetadata)) *extensionv1.PeerMetadata {
+		g := gatewayMetadata()
+		mut(g)
+		return g
+	}
 	accepted := map[string]*extensionv1.PeerMetadata{
-		"v0.1.3 gateway": gatewayMetadata(),
-		"newer compatible minor": func() *extensionv1.PeerMetadata {
-			g := gatewayMetadata()
-			g.ProtocolVersion.Minor = 7
-			return g
-		}(),
-		"extra additive gateway capability": func() *extensionv1.PeerMetadata {
-			g := gatewayMetadata()
+		"v0.1.3 gateway (protocol 1.0)": gatewayMetadata(),
+		"newer compatible minor (1.7)":  with(func(g *extensionv1.PeerMetadata) { g.ProtocolVersion.Minor = 7 }),
+		"valid unknown additive supported capability": with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell.supervisor-middleware.optional-future")
+		}),
+		"additional valid non-required capability from another family": with(func(g *extensionv1.PeerMetadata) {
 			g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell.compute.launch-authentication")
-			return g
-		}(),
+		}),
+		"implementation identity is diagnostic": with(func(g *extensionv1.PeerMetadata) {
+			g.ImplementationName, g.ImplementationVersion = "someone-else/gateway", "9.9.9-custom"
+		}),
 	}
 	for name, gw := range accepted {
 		t.Run("accept "+name, func(t *testing.T) { require.NoError(t, call(gw)) })
 	}
+	long := strings.Repeat("a", 129)
 	rejected := map[string]struct {
 		gw   *extensionv1.PeerMetadata
 		code string
 	}{
-		"no metadata (legacy gateway)": {nil, CodePeerMetadataMissing},
-		"no protocol version":          {&extensionv1.PeerMetadata{ImplementationName: "openshell/gateway"}, CodePeerMetadataMissing},
-		"other major": {func() *extensionv1.PeerMetadata {
-			g := gatewayMetadata()
-			g.ProtocolVersion.Major = 2
-			return g
-		}(), CodePeerProtocolVersion},
-		"gateway requires what talon lacks": {func() *extensionv1.PeerMetadata {
-			g := gatewayMetadata()
+		"nil metadata (legacy gateway)": {nil, CodePeerMetadataMissing},
+		"nil protocol version":          {&extensionv1.PeerMetadata{ImplementationName: "openshell/gateway", ImplementationVersion: "0.1.3"}, CodePeerMetadataMissing},
+		"other major":                   {with(func(g *extensionv1.PeerMetadata) { g.ProtocolVersion.Major = 2 }), CodePeerProtocolVersion},
+		"empty implementation_name":     {with(func(g *extensionv1.PeerMetadata) { g.ImplementationName = "" }), CodePeerMetadataInvalid},
+		"blank implementation_name":     {with(func(g *extensionv1.PeerMetadata) { g.ImplementationName = "   " }), CodePeerMetadataInvalid},
+		"empty implementation_version":  {with(func(g *extensionv1.PeerMetadata) { g.ImplementationVersion = "" }), CodePeerMetadataInvalid},
+		"control char in implementation_name": {with(func(g *extensionv1.PeerMetadata) {
+			g.ImplementationName = "openshell/gateway\x01"
+		}), CodePeerMetadataInvalid},
+		"control char in implementation_version": {with(func(g *extensionv1.PeerMetadata) {
+			g.ImplementationVersion = "0.1.3\n"
+		}), CodePeerMetadataInvalid},
+		"implementation_name over 128 bytes":    {with(func(g *extensionv1.PeerMetadata) { g.ImplementationName = long }), CodePeerMetadataInvalid},
+		"implementation_version over 128 bytes": {with(func(g *extensionv1.PeerMetadata) { g.ImplementationVersion = long }), CodePeerMetadataInvalid},
+		"more than 128 capabilities": {with(func(g *extensionv1.PeerMetadata) {
+			for i := 0; i < 129; i++ {
+				g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell.supervisor-middleware.cap-"+strconv.Itoa(i))
+			}
+		}), CodePeerMetadataInvalid},
+		"empty capability": {with(func(g *extensionv1.PeerMetadata) { g.SupportedCapabilities = append(g.SupportedCapabilities, "") }), CodePeerMetadataInvalid},
+		"capability over 128 bytes": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell.x."+long)
+		}), CodePeerMetadataInvalid},
+		"capability without prefix": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, "talon.supervisor-middleware.contract")
+		}), CodePeerMetadataInvalid},
+		"capability with uppercase": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell.Supervisor.contract")
+		}), CodePeerMetadataInvalid},
+		"capability with whitespace": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell.supervisor middleware.contract")
+		}), CodePeerMetadataInvalid},
+		"capability with empty segment": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell..foo")
+		}), CodePeerMetadataInvalid},
+		"capability with too few segments": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell.foo")
+		}), CodePeerMetadataInvalid},
+		"capability with underscore": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell.supervisor_middleware.contract")
+		}), CodePeerMetadataInvalid},
+		"capability with illegal punctuation": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell.supervisor-middleware.contract!")
+		}), CodePeerMetadataInvalid},
+		"duplicate supported capability": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, ContractCapability)
+		}), CodePeerMetadataInvalid},
+		"duplicate required capability": {with(func(g *extensionv1.PeerMetadata) {
+			g.RequiredCapabilities = append(g.RequiredCapabilities, ContractCapability)
+		}), CodePeerMetadataInvalid},
+		"gateway requires what talon lacks": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = append(g.SupportedCapabilities, "openshell.supervisor-middleware.websocket")
 			g.RequiredCapabilities = append(g.RequiredCapabilities, "openshell.supervisor-middleware.websocket")
-			return g
-		}(), CodePeerCapabilityMissing},
-		"gateway lacks the contract capability": {func() *extensionv1.PeerMetadata {
-			g := gatewayMetadata()
-			g.SupportedCapabilities = []string{"something.else"}
-			return g
-		}(), CodePeerCapabilityMissing},
-		"malformed capability": {func() *extensionv1.PeerMetadata {
-			g := gatewayMetadata()
-			g.SupportedCapabilities = append(g.SupportedCapabilities, "bad cap\n")
-			return g
-		}(), CodePeerMetadataInvalid},
+		}), CodePeerCapabilityMissing},
+		"gateway lacks the contract capability": {with(func(g *extensionv1.PeerMetadata) {
+			g.SupportedCapabilities = []string{"openshell.supervisor-middleware.something-else"}
+		}), CodePeerCapabilityMissing},
 	}
 	for name, tc := range rejected {
 		t.Run("reject "+name, func(t *testing.T) {
@@ -252,6 +295,16 @@ func TestDescribe_PeerNegotiation(t *testing.T) {
 			require.Equal(t, connect.CodeFailedPrecondition, ce.Code())
 			require.Contains(t, ce.Message(), tc.code)
 		})
+	}
+}
+
+// validCapability is the exact v0.1.3 grammar.
+func TestValidCapability(t *testing.T) {
+	for _, ok := range []string{"openshell.supervisor-middleware.contract", "openshell.compute.launch-authentication", "openshell.a.b", "openshell.x9.y-1.z"} {
+		require.True(t, validCapability(ok), ok)
+	}
+	for _, bad := range []string{"", "openshell.foo", "openshell..foo", "openshell.foo.", "Openshell.a.b", "openshell.A.b", "openshell.a_b.c", "openshell.a.b c", "talon.a.b", "openshell.a.b." + strings.Repeat("c", 200)} {
+		require.False(t, validCapability(bad), bad)
 	}
 }
 

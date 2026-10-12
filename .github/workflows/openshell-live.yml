@@ -1,11 +1,19 @@
 # Real-OpenShell live lane (#482): Talon as supervisor middleware of the
 # released NVIDIA/OpenShell v0.1.3 gateway and sandbox (docker driver), with a
-# deterministic mock provider. Runs on changes to the OpenShell integration,
-# on demand, and weekly. Ordinary unit CI never requires this privileged setup.
+# deterministic mock provider. Runs on changes to the code that can break the
+# composition, on demand, and weekly. Ordinary unit CI never requires this
+# privileged setup. The job is red whenever the harness is: the run step uses
+# an explicit pipefail and a second step requires the harness's own ALL PASS
+# line, so a broken pipeline can never show as success.
 name: OpenShell Live
 
 on:
   workflow_dispatch:
+    inputs:
+      plumbing_selftest:
+        description: "Run the harness in deliberate-failure mode to prove a failing harness yields a red job"
+        type: boolean
+        default: false
   schedule:
     - cron: "17 5 * * 1"
   pull_request:
@@ -13,8 +21,17 @@ on:
       - "internal/openshell/**"
       - "internal/workload/**"
       - "internal/gateway/delegated.go"
+      - "internal/gateway/decision.go"
+      - "internal/gateway/config.go"
+      - "internal/gateway/identity.go"
+      - "internal/cmd/serve.go"
+      - "internal/policy/agent.talon.schema.json"
       - "scripts/openshell-live.sh"
+      - "scripts/openshell-live-plumbing-check.sh"
       - "tests/openshell-live/**"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/openshell-live.yml"
 
 permissions:
@@ -26,6 +43,9 @@ jobs:
     name: Talon + OpenShell v0.1.3 (docker driver)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,28 +54,63 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Pipeline plumbing guard (a failing harness must be a failing job)
+        run: |
+          set -euo pipefail
+          bash scripts/openshell-live-plumbing-check.sh
       - name: Runtime facts
         run: |
+          set -euo pipefail
           docker version
           uname -r
           cat /sys/kernel/security/lsm || true
       - name: Log in to GHCR (sandbox and supervisor images)
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-      - name: Cache OpenShell release artifacts
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+      - name: Cache OpenShell release tarballs (re-verified by sha256 on every run)
         uses: actions/cache@v4
         with:
           path: ~/.cache/talon-openshell
-          key: openshell-v0.1.3-${{ runner.arch }}
+          key: openshell-v0.1.3-tarballs-${{ runner.arch }}
       - name: Live smoke
         env:
           TALON_OPENSHELL_KEEP: "1"
-        run: make test-openshell-live 2>&1 | tee openshell-live.log
-      - name: Collect logs
+          TALON_OPENSHELL_SELFTEST_FAIL: ${{ inputs.plumbing_selftest == true && '1' || '0' }}
+        run: |
+          # The harness's exit status is the job's status: explicit pipefail,
+          # never a shell default.
+          set -euo pipefail
+          make test-openshell-live 2>&1 | tee openshell-live.log
+      - name: Require the harness verdict
         if: always()
         run: |
+          # Independent of the step above: success means the harness itself
+          # printed its final verdict. A red Live smoke step already fails the
+          # job; this guards the pipeline plumbing too.
+          set -euo pipefail
+          test -f openshell-live.log
+          grep -q '^ALL PASS openshell live smoke' openshell-live.log
+      - name: Collect sanitized logs
+        if: always()
+        run: |
+          # Only the harness's log directory is collected; tls/, jwt/,
+          # talon-home/ and provider-state.json stay on the runner. The harness
+          # also asserts the logs carry no secret material before ALL PASS.
+          set -euo pipefail
           mkdir -p artifacts
           cp openshell-live.log artifacts/ 2>/dev/null || true
-          for d in /tmp/talon-openshell-live.*; do [ -d "$d/logs" ] && cp -r "$d/logs" "artifacts/$(basename "$d")" || true; done
+          for d in /tmp/talon-openshell-live.*; do
+            [ -d "$d/logs" ] || continue
+            dest="artifacts/$(basename "$d")"
+            mkdir -p "$dest"
+            find "$d/logs" -maxdepth 1 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.out' \) -exec cp {} "$dest/" \;
+          done
+          # Artifact hygiene: no private keys, no bearer tokens, no key material shapes.
+          if grep -rqE 'PRIVATE KEY-----|Bearer ey|sk-live-openshell-injected-' artifacts; then
+            echo "artifact hygiene violation: secret-shaped material in collected logs" >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

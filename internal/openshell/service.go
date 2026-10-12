@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog/log"
@@ -202,18 +203,26 @@ const (
 	CodePeerMetadataInvalid   = "peer_metadata_invalid"
 )
 
-// Capability/identity bounds mirror OpenShell's extension_protocol.rs.
+// Bounds and grammar ported from OpenShell v0.1.3
+// crates/openshell-core/src/extension_protocol.rs (validate_text,
+// normalize_capabilities, valid_capability). Kept local on purpose: no
+// dependency on OpenShell source, just the same contract.
 const (
 	maxPeerCapabilities   = 128
 	maxPeerCapabilityByte = 128
 	maxPeerTextBytes      = 128
+	capabilityPrefix      = "openshell."
 )
 
 // NegotiatePeer applies the extension-protocol handshake rules to the
-// gateway's metadata (mirrors openshell_core::extension_protocol::negotiate
-// from the extension's side): metadata and protocol version required, same
-// major, every capability the gateway requires must be one Talon supports,
-// and every capability Talon requires must be one the gateway supports.
+// gateway's metadata from the extension's side (the mirror of
+// openshell_core::extension_protocol::negotiate): metadata and protocol
+// version required, same major (minor skew allowed), implementation
+// name/version non-blank, ≤128 bytes and control-free, capability lists
+// ≤128 well-formed unique entries, every capability the gateway requires
+// must be one Talon supports, and every capability Talon requires must be
+// one the gateway supports. Implementation identity is diagnostic only and
+// is never compared against a fixed name.
 func NegotiatePeer(gw *extensionv1.PeerMetadata) *NegotiationError {
 	if gw == nil {
 		return &NegotiationError{Code: CodePeerMetadataMissing, Message: "gateway did not provide extension protocol metadata; upgrade the gateway and Talon together"}
@@ -225,16 +234,19 @@ func NegotiatePeer(gw *extensionv1.PeerMetadata) *NegotiationError {
 	if pv.GetMajor() != ProtocolMajor {
 		return &NegotiationError{Code: CodePeerProtocolVersion, Message: fmt.Sprintf("gateway speaks extension protocol %d.%d; talon supports %d.%d", pv.GetMajor(), pv.GetMinor(), ProtocolMajor, ProtocolMinor)}
 	}
-	if len(gw.GetImplementationName()) > maxPeerTextBytes || len(gw.GetImplementationVersion()) > maxPeerTextBytes {
-		return &NegotiationError{Code: CodePeerMetadataInvalid, Message: "gateway implementation metadata exceeds the protocol bounds"}
+	if err := validateText("implementation_name", gw.GetImplementationName()); err != nil {
+		return err
 	}
-	supported, err := capabilitySet(gw.GetSupportedCapabilities())
-	if err != nil {
-		return &NegotiationError{Code: CodePeerMetadataInvalid, Message: "gateway supported_capabilities: " + err.Error()}
+	if err := validateText("implementation_version", gw.GetImplementationVersion()); err != nil {
+		return err
 	}
-	required, err := capabilitySet(gw.GetRequiredCapabilities())
+	supported, err := normalizeCapabilities("supported_capabilities", gw.GetSupportedCapabilities())
 	if err != nil {
-		return &NegotiationError{Code: CodePeerMetadataInvalid, Message: "gateway required_capabilities: " + err.Error()}
+		return err
+	}
+	required, err := normalizeCapabilities("required_capabilities", gw.GetRequiredCapabilities())
+	if err != nil {
+		return err
 	}
 	talonSupports := map[string]bool{ContractCapability: true}
 	for cap := range required {
@@ -248,23 +260,65 @@ func NegotiatePeer(gw *extensionv1.PeerMetadata) *NegotiationError {
 	return nil
 }
 
-func capabilitySet(list []string) (map[string]bool, error) {
+// validateText mirrors validate_text: not blank after trimming, at most
+// maxPeerTextBytes bytes, no control characters.
+func validateText(field, value string) *NegotiationError {
+	switch {
+	case strings.TrimSpace(value) == "":
+		return &NegotiationError{Code: CodePeerMetadataInvalid, Message: "gateway " + field + " must not be empty"}
+	case len(value) > maxPeerTextBytes:
+		return &NegotiationError{Code: CodePeerMetadataInvalid, Message: fmt.Sprintf("gateway %s must be at most %d bytes", field, maxPeerTextBytes)}
+	case strings.ContainsFunc(value, unicode.IsControl):
+		return &NegotiationError{Code: CodePeerMetadataInvalid, Message: "gateway " + field + " must not contain control characters"}
+	}
+	return nil
+}
+
+// normalizeCapabilities mirrors normalize_capabilities: at most
+// maxPeerCapabilities entries, each a valid capability, no duplicates.
+func normalizeCapabilities(field string, list []string) (map[string]bool, *NegotiationError) {
 	if len(list) > maxPeerCapabilities {
-		return nil, fmt.Errorf("more than %d capabilities", maxPeerCapabilities)
+		return nil, &NegotiationError{Code: CodePeerMetadataInvalid, Message: fmt.Sprintf("gateway %s must contain at most %d entries", field, maxPeerCapabilities)}
 	}
 	out := make(map[string]bool, len(list))
 	for _, c := range list {
-		if c == "" || len(c) > maxPeerCapabilityByte || strings.TrimSpace(c) != c {
-			return nil, fmt.Errorf("invalid capability %q", c)
+		if !validCapability(c) {
+			return nil, &NegotiationError{Code: CodePeerMetadataInvalid, Message: fmt.Sprintf("gateway %s: %q must be a lowercase namespaced identifier (openshell.<family>.<name>, segments of a-z, 0-9, -)", field, c)}
 		}
-		for _, r := range c {
-			if r <= 0x20 || r == 0x7f {
-				return nil, fmt.Errorf("capability contains control or whitespace characters")
-			}
+		if out[c] {
+			return nil, &NegotiationError{Code: CodePeerMetadataInvalid, Message: fmt.Sprintf("gateway %s contains duplicate %q", field, c)}
 		}
 		out[c] = true
 	}
 	return out, nil
+}
+
+func capabilityByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-'
+}
+
+// validCapability mirrors valid_capability: non-empty, ≤128 bytes, starts
+// with "openshell.", at least three dot-separated segments, every segment
+// non-empty and made of lowercase ASCII letters, digits or '-'.
+func validCapability(value string) bool {
+	if value == "" || len(value) > maxPeerCapabilityByte || !strings.HasPrefix(value, capabilityPrefix) {
+		return false
+	}
+	segments := strings.Split(value, ".")
+	if len(segments) < 3 {
+		return false
+	}
+	for _, seg := range segments {
+		if seg == "" {
+			return false
+		}
+		for i := 0; i < len(seg); i++ {
+			if !capabilityByte(seg[i]) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // validateConfig rejects any policy-local config: Talon takes no
