@@ -26,6 +26,7 @@ import (
 	"connectrpc.com/connect"
 	"golang.org/x/net/http2"
 
+	extensionv1 "github.com/dativo-io/talon/internal/openshell/proto/gen/extensionv1"
 	middlewarev1 "github.com/dativo-io/talon/internal/openshell/proto/gen/middlewarev1"
 )
 
@@ -39,7 +40,7 @@ import (
 //
 // OpenShell itself is NOT started here: installing it needs OS packages and
 // a Docker/Kubernetes compute driver. Instead a FIXTURE SUPERVISOR replays
-// the pinned v0.1.2 supervisor-middleware contract exactly as documented —
+// the pinned v0.1.3 supervisor-middleware contract exactly as documented —
 // it mints the gateway-signed extension JWT, calls EvaluateHttpRequest over
 // real gRPC, forwards ONLY on ALLOW with the replaced body and its own
 // provider credential, and emits an OCSF denial line for a destination its
@@ -318,12 +319,23 @@ gateway:
 
 	// 2. OpenShell gateway startup: Describe.
 	dc := connect.NewClient[middlewarev1.MiddlewareDescribeRequest, middlewarev1.MiddlewareManifest](sup.client, sup.talonURL+"/openshell.middleware.v1.SupervisorMiddleware/Describe", connect.WithGRPC())
-	manifest, err := dc.CallUnary(context.Background(), connect.NewRequest(&middlewarev1.MiddlewareDescribeRequest{}))
+	// A legacy gateway without peer metadata is refused (the real gateway
+	// then refuses to start); the v0.1.3 gateway metadata is accepted.
+	if _, err := dc.CallUnary(context.Background(), connect.NewRequest(&middlewarev1.MiddlewareDescribeRequest{})); err == nil {
+		t.Fatal("describe without gateway peer metadata must be refused")
+	}
+	manifest, err := dc.CallUnary(context.Background(), connect.NewRequest(&middlewarev1.MiddlewareDescribeRequest{Gateway: &extensionv1.PeerMetadata{
+		ProtocolVersion: &extensionv1.ProtocolVersion{Major: 1, Minor: 0}, ImplementationName: "openshell/gateway", ImplementationVersion: "0.1.3",
+		SupportedCapabilities: []string{"openshell.supervisor-middleware.contract"}, RequiredCapabilities: []string{"openshell.supervisor-middleware.contract"},
+	}}))
 	if err != nil {
 		t.Fatalf("describe: %v", err)
 	}
 	if manifest.Msg.GetName() != "talon" || manifest.Msg.GetExpectedAudience() != osAudience || len(manifest.Msg.GetBindings()) != 1 {
 		t.Fatalf("manifest: %v", manifest.Msg)
+	}
+	if ext := manifest.Msg.GetExtension(); ext.GetProtocolVersion().GetMajor() != 1 || len(ext.GetSupportedCapabilities()) != 1 {
+		t.Fatalf("extension metadata: %v", ext)
 	}
 
 	// 3. Allowed + transformed: PII is redacted and the provider receives

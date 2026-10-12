@@ -20,7 +20,7 @@ import (
 //
 // OpenShell enforces network/filesystem/process containment itself and
 // never consults Talon for it. The only trace an external system gets is
-// OpenShell's OCSF event export (v0.1.2: OCSF 1.8.0 JSONL, classes 4001
+// OpenShell's OCSF event export (v0.1.3, unchanged since v0.1.2: OCSF 1.8.0 JSONL, classes 4001
 // Network Activity and 4002 HTTP Activity for denials). Talon can IMPORT
 // those facts into its signed timeline so one use case's history shows
 // what OpenShell blocked next to what Talon decided — labelled honestly:

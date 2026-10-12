@@ -694,7 +694,7 @@ Signed evidence records which of these happened in `classification.response_scan
 
 ### OpenShell delegated boundary (`gateway.openshell`)
 
-Optional (#482). When enabled, `talon serve --gateway` additionally serves NVIDIA OpenShell's supervisor-middleware gRPC contract (pinned to OpenShell v0.1.2) so OpenShell can ask Talon to decide model requests its sandbox network policy admits, **before** OpenShell injects the provider credential. Talon does not dispatch, retry or fall back on this path and never sees the provider key. Full guide: [docs/integration/openshell.md](../integration/openshell.md).
+Optional (#482). When enabled, `talon serve --gateway` additionally serves NVIDIA OpenShell's supervisor-middleware gRPC contract (pinned to and live-tested against OpenShell v0.1.3; extension protocol 1.0 negotiated at `Describe`) so OpenShell can ask Talon to decide model requests its sandbox network policy admits, **before** OpenShell injects the provider credential. Talon does not dispatch, retry or fall back on this path and never sees the provider key. Full guide: [docs/integration/openshell.md](../integration/openshell.md).
 
 ```yaml
 gateway:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerates the Go types for the pinned OpenShell supervisor-middleware
-# wire contract (internal/openshell/proto/v0.1.2/*.proto, upstream tag
-# v0.1.2). buf runs as a Go tool, so no protoc installation is required.
+# wire contract (internal/openshell/proto/v0.1.3/*.proto, upstream tag
+# v0.1.3). buf runs as a Go tool, so no protoc installation is required.
 # Generated code is checked in; run this only when the pinned protos change.
 set -euo pipefail
 cd "$(dirname "$0")/../internal/openshell/proto"

@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-action-catalog-smoke test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-action-catalog-smoke test-openshell-live test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -56,10 +56,13 @@ test-mcp-smoke: ## MCP 2026-07-28 protocol smoke (#447): discover/list/call/inte
 test-action-catalog-smoke: ## Trusted action catalog smoke (#427): CLI inspection, catalog in the runtime generation, mcp-sourced action not executable, source refresh/last-known-good against the built binary (no keys)
 	@bash scripts/action-catalog-smoke.sh
 
-test-openshell-smoke: ## OpenShell composition smoke (#482): fixture supervisor replays the pinned v0.1.2 middleware contract against the built binary (no OpenShell install, no keys)
+test-openshell-smoke: ## OpenShell composition smoke (#482): fixture supervisor replays the pinned v0.1.3 middleware contract against the built binary (no OpenShell install, no keys)
 	@bash scripts/openshell-smoke.sh
 
-openshell-proto: ## Regenerate Go types from the pinned OpenShell v0.1.2 protos (buf via go run; generated code is checked in)
+test-openshell-live: ## REAL OpenShell v0.1.3 live smoke (#482): pinned released gateway + CLI + sandbox (docker driver) with Talon as supervisor middleware and a mock provider; needs Docker >= 28 on Linux, no keys
+	@bash scripts/openshell-live.sh
+
+openshell-proto: ## Regenerate Go types from the pinned OpenShell v0.1.3 protos (buf via go run; generated code is checked in)
 	@bash scripts/openshell-proto-gen.sh
 
 test-smoke: build ## Run black-box smoke test (prereqs: TALON_SECRETS_KEY, OPENAI_API_KEY; see tests/smoke_test.sh)
