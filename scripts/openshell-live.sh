@@ -404,8 +404,18 @@ binaries: [$CURL_BIN]
 EOT
 "${CLI[@]}" profile import -f "$WORK/profile.yaml" --global >>"$LOGS/setup.log" 2>&1 || die "profile import"
 "${CLI[@]}" provider create --name mock-openai --type talon-live-openai --global-profile --credential "OPENAI_API_KEY=$PROVIDER_SECRET" >>"$LOGS/setup.log" 2>&1 || die "provider create"
+# filesystem_policy is a FIXTURE need, not a governance statement: OpenShell's
+# proxy-mode baseline grants read/execute under /usr, /lib, /etc, /app,
+# /var/log and /proc only. The Alpine-based fixture keeps busybox (sh, sleep)
+# under a real /bin directory, which Landlock would otherwise deny at exec
+# ("failed to spawn sandbox entrypoint process '/bin/sleep': Permission
+# denied", OpenShell Live run 38270547122). include_workdir stays true, the
+# default an omitted block would have.
 cat >"$WORK/policy.yaml" <<EOT
 version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only: [/bin]
 network_middlewares:
   talon-governance:
     middleware: talon
