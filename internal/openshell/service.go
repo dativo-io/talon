@@ -1,8 +1,9 @@
 // Package openshell is the transport adapter that lets Talon act as an
 // NVIDIA OpenShell supervisor middleware (#482).
 //
-// Pinned upstream contract: OpenShell v0.1.2, proto package
-// openshell.middleware.v1 (internal/openshell/proto/v0.1.2). OpenShell
+// Pinned upstream contract: OpenShell v0.1.3, proto package
+// openshell.middleware.v1 (internal/openshell/proto/v0.1.3, byte-identical to
+// the v0.1.2 wire contract; see PROVENANCE.md). OpenShell
 // checks its own network policy first, calls this service for admitted
 // HTTP requests to the destinations its policy binds Talon to, and injects
 // the provider credential only AFTER Talon answers ALLOW. A DENY always
@@ -24,6 +25,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog/log"
@@ -38,8 +40,18 @@ import (
 // Pinned upstream facts.
 const (
 	// UpstreamVersion is the OpenShell release whose proto this adapter
-	// implements.
-	UpstreamVersion = "v0.1.2"
+	// implements and was tested against.
+	UpstreamVersion = "v0.1.3"
+	// Extension protocol (openshell.extension.v1) this adapter speaks. The
+	// gateway refuses an extension with another major or without a version;
+	// Talon refuses a gateway likewise (reciprocal, fail closed).
+	ProtocolMajor uint32 = 1
+	ProtocolMinor uint32 = 0
+	// ContractCapability is the one capability both peers require of each
+	// other for the supervisor-middleware family.
+	ContractCapability = "openshell.supervisor-middleware.contract"
+	// ImplementationName is Talon's stable extension identity (diagnostic).
+	ImplementationName = "talon"
 	// RuntimeType is the runtime name used in agent bindings and evidence.
 	RuntimeType = "openshell"
 	// ExtensionTokenType is the JOSE typ of the supervisor's caller token.
@@ -136,7 +148,19 @@ func (s *Service) Handler() http.Handler {
 	return mux
 }
 
-func (s *Service) describe(_ context.Context, _ *connect.Request[middlewarev1.MiddlewareDescribeRequest]) (*connect.Response[middlewarev1.MiddlewareManifest], error) {
+// describe answers the gateway's startup probe. Negotiation is reciprocal
+// and fails closed: a gateway without peer metadata, with another protocol
+// major, requiring a capability Talon lacks, or lacking a capability Talon
+// requires is refused with FailedPrecondition — the gateway then refuses to
+// start rather than run against an incompatible middleware. The manifest
+// advertises ONLY what this adapter implements: one binding,
+// HTTP_REQUEST/PRE_CREDENTIALS. Response (PRE_RETURN) and WebSocket bindings
+// exist in the v0.1.3 contract and are deliberately absent here.
+func (s *Service) describe(_ context.Context, req *connect.Request[middlewarev1.MiddlewareDescribeRequest]) (*connect.Response[middlewarev1.MiddlewareManifest], error) {
+	if err := NegotiatePeer(req.Msg.GetGateway()); err != nil {
+		log.Warn().Str("reason", err.Code).Msg("openshell_gateway_negotiation_refused")
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
 	return connect.NewResponse(&middlewarev1.MiddlewareManifest{
 		Name:             s.cfg.MiddlewareName,
 		ExpectedAudience: s.cfg.Identity.Audience,
@@ -146,11 +170,155 @@ func (s *Service) describe(_ context.Context, _ *connect.Request[middlewarev1.Mi
 			MaxPayloadBytes: s.maxPayload,
 			RequestTimeout:  durationpb.New(s.cfg.RequestTimeoutDuration()),
 		}},
-		Extension: &extensionv1.PeerMetadata{
-			ImplementationName:    "talon",
-			ImplementationVersion: s.version,
-		},
+		Extension: PeerMetadata(s.version),
 	}), nil
+}
+
+// PeerMetadata is the extension metadata Talon presents: protocol 1.0, its
+// identity, and the family contract capability as both supported and
+// required (OpenShell's own extension_metadata shape).
+func PeerMetadata(version string) *extensionv1.PeerMetadata {
+	return &extensionv1.PeerMetadata{
+		ProtocolVersion:       &extensionv1.ProtocolVersion{Major: ProtocolMajor, Minor: ProtocolMinor},
+		ImplementationName:    ImplementationName,
+		ImplementationVersion: version,
+		SupportedCapabilities: []string{ContractCapability},
+		RequiredCapabilities:  []string{ContractCapability},
+	}
+}
+
+// NegotiationError is a stable, secret-free negotiation refusal.
+type NegotiationError struct {
+	Code    string
+	Message string
+}
+
+func (e *NegotiationError) Error() string { return e.Code + ": " + e.Message }
+
+// Negotiation refusal codes.
+const (
+	CodePeerMetadataMissing   = "peer_metadata_missing"
+	CodePeerProtocolVersion   = "peer_protocol_version_incompatible"
+	CodePeerCapabilityMissing = "peer_capability_missing"
+	CodePeerMetadataInvalid   = "peer_metadata_invalid"
+)
+
+// Bounds and grammar ported from OpenShell v0.1.3
+// crates/openshell-core/src/extension_protocol.rs (validate_text,
+// normalize_capabilities, valid_capability). Kept local on purpose: no
+// dependency on OpenShell source, just the same contract.
+const (
+	maxPeerCapabilities   = 128
+	maxPeerCapabilityByte = 128
+	maxPeerTextBytes      = 128
+	capabilityPrefix      = "openshell."
+)
+
+// NegotiatePeer applies the extension-protocol handshake rules to the
+// gateway's metadata from the extension's side (the mirror of
+// openshell_core::extension_protocol::negotiate): metadata and protocol
+// version required, same major (minor skew allowed), implementation
+// name/version non-blank, ≤128 bytes and control-free, capability lists
+// ≤128 well-formed unique entries, every capability the gateway requires
+// must be one Talon supports, and every capability Talon requires must be
+// one the gateway supports. Implementation identity is diagnostic only and
+// is never compared against a fixed name.
+func NegotiatePeer(gw *extensionv1.PeerMetadata) *NegotiationError {
+	if gw == nil {
+		return &NegotiationError{Code: CodePeerMetadataMissing, Message: "gateway did not provide extension protocol metadata; upgrade the gateway and Talon together"}
+	}
+	pv := gw.GetProtocolVersion()
+	if pv == nil {
+		return &NegotiationError{Code: CodePeerMetadataMissing, Message: "gateway did not provide an extension protocol version"}
+	}
+	if pv.GetMajor() != ProtocolMajor {
+		return &NegotiationError{Code: CodePeerProtocolVersion, Message: fmt.Sprintf("gateway speaks extension protocol %d.%d; talon supports %d.%d", pv.GetMajor(), pv.GetMinor(), ProtocolMajor, ProtocolMinor)}
+	}
+	if err := validateText("implementation_name", gw.GetImplementationName()); err != nil {
+		return err
+	}
+	if err := validateText("implementation_version", gw.GetImplementationVersion()); err != nil {
+		return err
+	}
+	supported, err := normalizeCapabilities("supported_capabilities", gw.GetSupportedCapabilities())
+	if err != nil {
+		return err
+	}
+	required, err := normalizeCapabilities("required_capabilities", gw.GetRequiredCapabilities())
+	if err != nil {
+		return err
+	}
+	talonSupports := map[string]bool{ContractCapability: true}
+	for cap := range required {
+		if !talonSupports[cap] {
+			return &NegotiationError{Code: CodePeerCapabilityMissing, Message: "gateway requires capability " + cap + ", which talon does not implement"}
+		}
+	}
+	if !supported[ContractCapability] {
+		return &NegotiationError{Code: CodePeerCapabilityMissing, Message: "gateway does not advertise the required capability " + ContractCapability}
+	}
+	return nil
+}
+
+// validateText mirrors validate_text: not blank after trimming, at most
+// maxPeerTextBytes bytes, no control characters.
+func validateText(field, value string) *NegotiationError {
+	switch {
+	case strings.TrimSpace(value) == "":
+		return &NegotiationError{Code: CodePeerMetadataInvalid, Message: "gateway " + field + " must not be empty"}
+	case len(value) > maxPeerTextBytes:
+		return &NegotiationError{Code: CodePeerMetadataInvalid, Message: fmt.Sprintf("gateway %s must be at most %d bytes", field, maxPeerTextBytes)}
+	case strings.ContainsFunc(value, unicode.IsControl):
+		return &NegotiationError{Code: CodePeerMetadataInvalid, Message: "gateway " + field + " must not contain control characters"}
+	}
+	return nil
+}
+
+// normalizeCapabilities mirrors normalize_capabilities: at most
+// maxPeerCapabilities entries, each a valid capability, no duplicates.
+func normalizeCapabilities(field string, list []string) (map[string]bool, *NegotiationError) {
+	if len(list) > maxPeerCapabilities {
+		return nil, &NegotiationError{Code: CodePeerMetadataInvalid, Message: fmt.Sprintf("gateway %s must contain at most %d entries", field, maxPeerCapabilities)}
+	}
+	out := make(map[string]bool, len(list))
+	for _, c := range list {
+		if !validCapability(c) {
+			return nil, &NegotiationError{Code: CodePeerMetadataInvalid, Message: fmt.Sprintf("gateway %s: %q must be a lowercase namespaced identifier (openshell.<family>.<name>, segments of a-z, 0-9, -)", field, c)}
+		}
+		if out[c] {
+			return nil, &NegotiationError{Code: CodePeerMetadataInvalid, Message: fmt.Sprintf("gateway %s contains duplicate %q", field, c)}
+		}
+		out[c] = true
+	}
+	return out, nil
+}
+
+func capabilityByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-'
+}
+
+// validCapability mirrors valid_capability: non-empty, ≤128 bytes, starts
+// with "openshell.", at least three dot-separated segments, every segment
+// non-empty and made of lowercase ASCII letters, digits or '-'.
+func validCapability(value string) bool {
+	if value == "" || len(value) > maxPeerCapabilityByte || !strings.HasPrefix(value, capabilityPrefix) {
+		return false
+	}
+	segments := strings.Split(value, ".")
+	if len(segments) < 3 {
+		return false
+	}
+	for _, seg := range segments {
+		if seg == "" {
+			return false
+		}
+		for i := 0; i < len(seg); i++ {
+			if !capabilityByte(seg[i]) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // validateConfig rejects any policy-local config: Talon takes no

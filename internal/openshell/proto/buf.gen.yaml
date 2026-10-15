@@ -1,4 +1,4 @@
-# Generates Go types for the pinned OpenShell v0.1.2 wire contract.
+# Generates Go types for the pinned OpenShell v0.1.3 wire contract.
 # Run via scripts/openshell-proto-gen.sh (buf executed as a Go tool; no
 # protoc install required). Generated code is checked in.
 version: v2

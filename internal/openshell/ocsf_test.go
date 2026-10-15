@@ -10,7 +10,7 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 )
 
-// Shape from OpenShell v0.1.2 docs/observability/logging.mdx (OCSF 1.8.0).
+// Shape from OpenShell v0.1.3 docs/observability/logging.mdx (OCSF 1.8.0; unchanged since v0.1.2).
 const ocsfNetworkDenied = `{"class_uid":4001,"activity_name":"Open","severity_id":3,"status":"Failure","action":"Denied","disposition":"Blocked","status_detail":"no matching policy","message":"CONNECT denied httpbin.org:443","time":1790766000000,"dst_endpoint":{"domain":"httpbin.org","port":443},"actor":{"process":{"name":"/usr/bin/curl","pid":63}},"container":{"uid":"sb-0001"},"firewall_rule":{"name":"-","type":"opa"}}`
 
 const ocsfHTTPAllowed = `{"class_uid":4002,"activity_name":"Post","action":"Allowed","disposition":"Allowed","message":"POST https://api.openai.com/v1/chat/completions","dst_endpoint":{"domain":"api.openai.com","port":443},"container":{"uid":"sb-0001"}}`

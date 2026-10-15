@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # OpenShell composition smoke (#482): deterministic, clean-checkout proof of
 # the composed model channel using a FIXTURE supervisor that replays the
-# pinned OpenShell v0.1.2 supervisor-middleware contract. No OpenShell
+# pinned OpenShell v0.1.3 supervisor-middleware contract. No OpenShell
 # install, no Docker, no provider keys, no spend.
 #
 # Proves (see tests/e2e/openshell_test.go for the exact assertions):
