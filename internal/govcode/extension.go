@@ -106,10 +106,29 @@ func Must(code string) Extension {
 	return e
 }
 
-// Allowed builds the extension attached to an allowed outcome: no code of
-// failure, decision allow, and the evidence reference of the record.
+// CodeAllowed is the code of an allowed outcome; it is not a failure code
+// and is not part of the registry of refusals.
+const CodeAllowed = "allowed"
+
+// Allowed builds the extension attached to an allowed outcome: decision
+// allow, provenance observed (Talon saw the call complete), and the
+// evidence reference of the terminal record. An allowed result says the
+// call was authorized and answered; it does not by itself prove a business
+// effect succeeded downstream.
 func Allowed(ev *EvidenceRef) Extension {
-	return Extension{SchemaVersion: SchemaVersion, Code: "allowed", Decision: DecisionAllow, Evidence: ev}
+	return Extension{SchemaVersion: SchemaVersion, Code: CodeAllowed, Decision: DecisionAllow, Evidence: ev, Provenance: "observed"}
+}
+
+// WithEvidence attaches the committed record and, when the record carries
+// one, its actual primary explanation code as reasonCode: the in-band
+// reason is what was signed, never a parallel vocabulary. Without a record
+// the registry's default category stays.
+func (e Extension) WithEvidence(ref *EvidenceRef, signedReason string) Extension {
+	e.Evidence = ref
+	if ref != nil && ref.Committed && signedReason != "" {
+		e.ReasonCode = signedReason
+	}
+	return e
 }
 
 func decisionFor(s Spec) string {
@@ -158,22 +177,29 @@ func (e Extension) Validate() error {
 }
 
 // validateHead checks the schema version, the code registration and the
-// decision class.
+// coherence of decision and retryability with the registry: an adapter
+// cannot present a denial as retryable or an unknown outcome as a failure.
 func (e Extension) validateHead() error {
 	if e.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("%w: schemaVersion %d", ErrExtensionInvalid, e.SchemaVersion)
 	}
-	if e.Code != "allowed" {
-		if _, ok := Lookup(e.Code); !ok {
-			return fmt.Errorf("%w: unregistered code %q", ErrExtensionInvalid, e.Code)
+	if e.Code == CodeAllowed {
+		if e.Decision != DecisionAllow || e.Retryable {
+			return fmt.Errorf("%w: allowed outcome must be decision allow and not retryable", ErrExtensionInvalid)
 		}
-	}
-	switch e.Decision {
-	case DecisionAllow, DecisionDeny, DecisionPending, DecisionFailed, DecisionUnknown:
 		return nil
-	default:
-		return fmt.Errorf("%w: decision %q", ErrExtensionInvalid, e.Decision)
 	}
+	spec, ok := Lookup(e.Code)
+	if !ok {
+		return fmt.Errorf("%w: unregistered code %q", ErrExtensionInvalid, e.Code)
+	}
+	if e.Decision != decisionFor(spec) {
+		return fmt.Errorf("%w: decision %q does not match code %q (%s)", ErrExtensionInvalid, e.Decision, e.Code, decisionFor(spec))
+	}
+	if e.Retryable != spec.Retryable {
+		return fmt.Errorf("%w: retryable=%v contradicts the registry for %q", ErrExtensionInvalid, e.Retryable, e.Code)
+	}
+	return nil
 }
 
 // validate enforces the reference invariants: a bounded id, never an id

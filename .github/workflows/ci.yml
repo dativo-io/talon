@@ -70,6 +70,13 @@ jobs:
       - name: Run e2e tests
         run: go test -tags=e2e -timeout 5m ./tests/e2e/...
 
+      - name: MCP governance-contract smoke (#372, offline, no keys)
+        # Named PR gate for the governance extension's truth semantics:
+        # committed signed evidence, forbidden action, protocol errors and an
+        # ambiguous effect against the built binary. make test-smoke needs a
+        # provider key and is not an ordinary-PR gate; this target is.
+        run: make test-mcp-governance-smoke
+
       - name: Check coverage
         run: |
           COVERAGE=$(go tool cover -func=coverage-${{ matrix.go-version }}.out | grep total | awk '{print $3}' | sed 's/%//')

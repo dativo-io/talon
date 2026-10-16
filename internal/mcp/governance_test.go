@@ -235,8 +235,8 @@ func TestGovernance_LegacyAliasAgreesWithRegistry(t *testing.T) {
 	}
 	// A pre-dispatch outcome whose record did not commit becomes
 	// evidence_commit_failed without an id; a post-dispatch one keeps its code.
-	pre := governedError(json.RawMessage(`1`), govcode.PolicyDenied, "m", govcode.NotCommitted(), "", true)
+	pre := governedError(json.RawMessage(`1`), govcode.PolicyDenied, "m", &evidenceOutcome{ref: govcode.NotCommitted()}, "", true)
 	assert.Equal(t, govcode.EvidenceCommitFailed, pre.Error.Data.(map[string]any)[govcode.ExtensionID].(govcode.Extension).Code)
-	post := governedError(json.RawMessage(`1`), govcode.UpstreamOutcomeUnknown, "m", govcode.NotCommitted(), "", false)
+	post := governedError(json.RawMessage(`1`), govcode.UpstreamOutcomeUnknown, "m", &evidenceOutcome{ref: govcode.NotCommitted()}, "", false)
 	assert.Equal(t, govcode.UpstreamOutcomeUnknown, post.Error.Data.(map[string]any)[govcode.ExtensionID].(govcode.Extension).Code)
 }

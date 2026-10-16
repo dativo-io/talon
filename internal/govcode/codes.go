@@ -54,8 +54,11 @@ type Spec struct {
 	// Retryable is conservative: true only when the same request may
 	// legitimately be repeated later without a human or operator change.
 	Retryable bool
-	// Explanation is the evidence explanation code family this outcome
-	// records (internal/explanation / action lifecycle vocabulary).
+	// Explanation is the DEFAULT explanation category reported for this
+	// code when no signed record exists to quote. When an evidence
+	// reference is present the extension's reasonCode is the record's
+	// actual primary explanation code (Extension.WithEvidence), so the
+	// in-band reason always agrees with what was signed.
 	Explanation string
 	// Producers lists the shipped emitters, or ProducerTarget.
 	Producers []string

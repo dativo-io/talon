@@ -68,3 +68,21 @@ func TestProjection_EvidenceReferenceIsACommittedRecord(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, CodeOperationConflict, conflict.ActionLifecycle.RefusalCode)
 }
+
+// An evidence/transaction outage AFTER dispatch (the completion transaction
+// cannot open) returns store_unavailable with NO projection: the caller
+// receives no evidence reference it could mistake for a committed record,
+// the attempt stays armed, and recovery later resolves it as unknown.
+// committedEvidence is transient per call, so nothing from the failed
+// transaction can leak into a later projection.
+func TestExecute_EvidenceOutageAfterDispatch_NoProjectionNoRef(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	res := h.establish(t, "op-outage-1", "notify_customer", `{"ticket_id":"T-9"}`)
+	require.Equal(t, OpAuthorized, res.Operation.Status)
+	h.svc.hookBeforeComplete = func(Outcome) { _ = h.store.Close() } // the DB is gone before completion commits
+	out, err := h.svc.Execute(ctx, "op-outage-1")
+	require.Nil(t, out, "no projection — and therefore no evidence reference — for a transaction that did not commit")
+	require.Equal(t, CodeStoreUnavailable, CodeOf(err))
+	require.EqualValues(t, 1, h.down.calls.Load(), "the effect was dispatched exactly once before the outage")
+}

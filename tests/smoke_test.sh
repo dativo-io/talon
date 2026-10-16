@@ -44,7 +44,9 @@
 #   26 pii-enrichment | 27 runtime-governance | 28 control-plane | 29 consistency |
 #   30 graph-events | 31 quickstart | 32 egress | 33 auditor-documents |
 #   34 compliance-dashboard | 35 failover | 36 external-scanner (llama/llm engine;
-#   hermetic llama stand-in by default, TALON_SMOKE_OLLAMA_URL opts into real Ollama).
+#   hermetic llama stand-in by default, TALON_SMOKE_OLLAMA_URL opts into real Ollama) |
+#   37 mcp-governance (#372 governance-contract smoke: the same assertions as
+#   `make test-mcp-governance-smoke`, no provider key; mandatory, counted).
 #
 # QA notes (from brief):
 # - Section 10/18 (Tamper test): Evidence DB is TALON_DATA_DIR/evidence.db; corrupt
@@ -707,7 +709,7 @@ for _section_file in \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
   33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh \
-  36_external_scanner.sh; do
+  36_external_scanner.sh 37_mcp_governance.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -800,6 +802,7 @@ main() {
   run_section "34_compliance_dashboard" test_section_34_compliance_dashboard
   run_section "35_failover" test_section_35_failover
   run_section "36_external_scanner" test_section_36_external_scanner
+  run_section "37_mcp_governance" test_section_37_mcp_governance
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency
