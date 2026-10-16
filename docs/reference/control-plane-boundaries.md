@@ -6,7 +6,7 @@ Companion pages: [Talon object model](object-model.md) (canonical objects and li
 
 ## 1. Positioning and doctrine
 
-Talon is the **control layer for company AI use cases**: company policy compiled into use-case-specific, always-enforced controls, applied to model calls and consequential actions at boundaries Talon owns or that a trusted runtime delegates to it, with signed, verifiable evidence of what was enforced. The stable object is the **AI use case** (`agent`); providers, models, MCP servers, frameworks, workflows and sandboxes are inputs or adapters.
+Talon is the **control layer for company AI use cases**: company policy compiled into use-case-specific, always-enforced controls, applied to model calls and consequential actions at boundaries Talon owns or that a trusted runtime delegates to it. Talon records signed, verifiable evidence of its decisions, of the effects it directly observed, and of enforcement it delegated or received as external assertions, each with explicit provenance (`talon_enforced`, `delegated_expected`, `external_asserted`, `client_asserted`; attempt outcomes `observed | not_dispatched | unknown`). A delegated decision is not an observed enforcement, and an unsigned imported fact is never `external_verified`. The stable object is the **AI use case** (`agent`); providers, models, MCP servers, frameworks, workflows and sandboxes are inputs or adapters.
 
 ```text
 organization/company policy
@@ -70,7 +70,7 @@ forbidden: adapter→adapter over localhost, internal HTTP/gRPC, parallel policy
 | ActionGovernance | definition resolution, normalization and digest, operation identity and conflict, verdict, approval binding, attempt claim/arm/complete, outcome provenance, lifecycle evidence | generation, repositories, action dispatcher, approver resolver, cryptor, evidence | HTTP, Cobra, MCP, UI | SHIPPED (`internal/action`, HTTP destinations only) |
 | Approval kernel (typed) | durable request and decision, reviewer authorization, expiry and invalidation, concurrency, projection linkage, decision evidence | repositories, approver resolver, evidence | dispatch, plan semantics | SHIPPED for `action_execution` inside the action domain; TARGET as one kernel also serving `plan_review` ([#426](https://github.com/dativo-io/talon/issues/426), [#430](https://github.com/dativo-io/talon/issues/430)) |
 | Native run controller | durable run and checkpoints, approval waits, claim-revalidate-dispatch, restart recovery | ModelGovernance, ActionGovernance, approval kernel | localhost adapters | TARGET ([#430](https://github.com/dativo-io/talon/issues/430)); today the native runner uses its own plan-review and tool-approval stores |
-| Evidence | signed append-only records, lifecycle verifier, exports and projections | repositories, signing key | adapters | SHIPPED (spec 1.12; `talon audit verify` runs the lifecycle verifier) |
+| Evidence | signed, tamper-evident lifecycle records (verifiable, not immutable; gap-checked, not proven complete), lifecycle verifier, exports and projections | repositories, signing key | adapters | SHIPPED (spec 1.12; `talon audit verify` runs the lifecycle verifier) |
 | HTTP model gateway | OpenAI-compatible ingress, agent-key auth, provider-native errors | ModelGovernance | action domain | SHIPPED |
 | Action Gateway HTTP | `/v1/action-operations*`, `/v1/approvals*`, status mapping, generation binding | ActionGovernance | — | SHIPPED (`talon_forwarded`) |
 | MCP adapter | 2026-07-28 wire, header/body integrity, `server/discover`, `tools/list`, `tools/call`, upstream transport | TARGET: ActionGovernance | its own policy path | SHIPPED wire ([#447](https://github.com/dativo-io/talon/issues/447)); TARGET governance convergence ([#431](https://github.com/dativo-io/talon/issues/431)) |
@@ -184,112 +184,153 @@ approval decision committed → optional signal → owning runtime/controller re
 
 ## 8. Native sequence (diagram 2)
 
-Boxes marked `TARGET` exist only as #430 design today; everything else is current behavior. The chain is identical whether the wake-up signal arrives or the process restarts.
+`break` frames are terminal: nothing below a `break` executes on that path. Steps marked `TARGET #430` describe the durable run controller design; the shipped native runner still uses the legacy plan store with its auto-dispatch poller and the in-memory tool-approval store, and those legacy paths are not what this diagram promises. Everything else is current behavior of the shared domains.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Op as operator / app
     participant RT as native runtime (adapter)
-    participant MG as ModelGovernance
     participant AK as approval kernel
-    participant AG as ActionGovernance
     participant RC as run controller (TARGET #430)
-    participant D as action dispatcher
+    participant MG as ModelGovernance
+    participant AG as ActionGovernance
+    participant D as trusted dispatcher
     participant EV as evidence
     Op->>RT: talon run / POST /v1/agents/run (use case, session)
-    RT->>RT: build native plan from the compiled generation
-    opt plan review required
-        RT->>AK: RequestPlanReview(plan version) [plan_review]
+    RT->>RT: build native plan from the compiled runtime generation
+    opt plan review required — pending (plan_review)
+        RT->>AK: RequestPlanReview(exact plan version)
         AK->>EV: approval_requested
-        Note over RT,AK: run persists a checkpoint and waits; today: plan store + 2s auto-dispatch poller (legacy)
-        AK-->>RC: approved (signal is optional)
-        RC->>RC: reload durable run, revalidate plan version and policy
+        Note over RT,RC: run pauses on a durable checkpoint (TARGET #430), no model call while pending
+        AK->>EV: approval_decided by an authenticated reviewer — zero execution
+        break rejected / expired / cancelled / invalidated — terminal
+            RT-->>Op: run ends without model execution
+        end
+        RC->>RC: approved and currently usable: reload durable run, revalidate plan version and current policy
+        RC->>RT: resume the exact plan (optional wake-up is not authorization, restart scan finds it too)
     end
-    RT->>MG: governed model call (policy, PII, budget, fallback)
-    MG->>EV: model-call evidence
-    MG-->>RT: ALLOW / transformed / DENY
-    Note over RT: model proposes a tool call: context only, not an operation
-    RT->>AG: attempt one catalogued action (operation_id, normalized args)
-    AG->>AG: resolve definition, digest, verdict DENY > REQUIRE_APPROVAL > ALLOW
-    AG->>EV: operation_established (+ approval_requested when required)
-    alt DENY
-        AG-->>RT: denied, zero dispatch
-    else REQUIRE_APPROVAL
-        AG->>AK: RequestActionApproval(exact operation) [action_execution]
-        Note over RT,RC: run checkpoint waits; today: in-memory tool approval + admin-key decision (legacy)
-        AK->>EV: approval_decided (reviewer; no dispatch)
-        AK-->>RC: approved (signal optional; restart scan also finds it)
-        RC->>AG: claim attempt (revalidate definition, policy, approval usability)
-    else ALLOW
-        RT->>AG: claim attempt
+    RT->>MG: governed model call (effective policy, PII, budget, retries, policy-valid fallback)
+    MG->>EV: model-call evidence (talon_enforced)
+    break model DENY — terminal
+        MG-->>RT: denied, no provider call
     end
-    AG->>EV: attempt_claimed, attempt_armed
-    AG->>D: dispatch once (talon_forwarded)
-    alt known result
-        D-->>AG: status in success contract / known failure
-        AG->>EV: attempt_completed (succeeded | failed)
+    MG-->>RT: ALLOW or transformed response
+    Note over RT: model proposes a tool call: context and evidence only, not an operation
+    RT->>AG: attempt one catalogued action (operation_id, normalized arguments)
+    AG->>AG: resolve trusted definition, digest, same id + changed digest → operation_conflict, verdict DENY > REQUIRE_APPROVAL > ALLOW
+    AG->>EV: operation_established
+    break DENY — terminal
+        AG->>EV: operation denied (committed evidence)
+        AG-->>RT: denied, zero attempt claims, zero dispatch
+    end
+    opt REQUIRE_APPROVAL — pending (action_execution)
+        AG->>AK: RequestActionApproval(exact operation digest)
+        AK->>EV: approval_requested
+        Note over RT,RC: run pauses on a durable checkpoint (TARGET #430), no dispatch while pending
+        AK->>EV: approval_decided by an authenticated reviewer — zero dispatch
+        break rejected / expired / cancelled / invalidated — terminal
+            AG->>EV: operation cancelled
+            AG-->>RT: authorization path ended, zero dispatch
+        end
+        RC->>RC: approved and currently usable: reload the authoritative operation
+        RC->>AG: request attempt claim
+    end
+    Note over AG: ALLOW, or approved and currently usable, is the only way to reach this point
+    AG->>AG: revalidate current trusted definition, effective policy and approval usability
+    break unusable authorization (approval_binding_stale, approval_expired, attempt_already_in_progress, operation terminal) — terminal
+        AG-->>RT: refused, zero dispatch
+    end
+    AG->>EV: attempt_claimed, attempt_armed (durable marker before any effect)
+    AG->>D: dispatch at most once (talon_forwarded, idempotency identity)
+    alt observed result
+        D-->>AG: status in the success contract, or a known failure
+        AG->>EV: attempt_completed (succeeded | failed, failed may be re-claimed under the same approval)
     else ambiguous after dispatch
-        AG->>EV: attempt_completed (unknown) — retry blocked
+        AG->>EV: attempt_completed (unknown, terminal, automatic retry blocked until reconciliation, TARGET #146)
     end
-    AG-->>RT: result or unknown
-    Note over RT,EV: restart at any point: armed attempt → unknown, unarmed → failed; run resumes from its checkpoint (TARGET)
+    AG-->>RT: succeeded | failed | unknown
+    Note over RT,EV: restart at any point: armed attempt → unknown, unarmed → failed, the run resumes only from its durable checkpoint and revalidates before any new attempt (TARGET #430)
 ```
 
 ## 9. External and MCP sequence (diagram 3)
 
-The Action Gateway path is SHIPPED. The MCP path reaches ActionGovernance only after [#431](https://github.com/dativo-io/talon/issues/431); Tasks only after [#448](https://github.com/dativo-io/talon/issues/448); `externally_executed` only after [#434](https://github.com/dativo-io/talon/issues/434). The Task is a projection, never the operation.
+`break` frames are terminal. SHIPPED: the Action Gateway path with the external-runtime polling contract and `talon_forwarded` HTTP dispatch. TARGET: MCP reaching ActionGovernance at all ([#431](https://github.com/dativo-io/talon/issues/431)), Tasks continuation ([#448](https://github.com/dativo-io/talon/issues/448)), `externally_executed` ([#434](https://github.com/dativo-io/talon/issues/434)), reconciliation of `unknown` ([#146](https://github.com/dativo-io/talon/issues/146)). A Task is a projection over the operation and approval, never the operation.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant C as MCP client / n8n / raw HTTP client
-    participant AD as adapter (MCP 2026-07-28 | Action Gateway HTTP)
+    participant AD as adapter (Action Gateway HTTP — SHIPPED | MCP 2026-07-28 — TARGET #431)
     participant AG as ActionGovernance
     participant AK as approval kernel
     participant R as authenticated reviewer
-    participant D as dispatcher (talon_forwarded) / external runtime (externally_executed)
+    participant D as trusted dispatcher (talon_forwarded)
+    participant X as external runtime execution (externally_executed, TARGET #434)
     participant EV as evidence
-    C->>AD: attempt (tools/call | POST /v1/action-operations)
-    AD->>AD: protocol + auth: version, header/body agreement (-32020 before governance), agent key or workload identity, generation binding (generation_changed)
-    AD->>AG: establish(operation_id, canonical action, normalized args)
-    AG->>AG: trusted catalog definition, digest, same id + changed digest → operation_conflict
+    C->>AD: attempt (POST /v1/action-operations | tools/call)
+    AD->>AD: protocol and auth: 2026-07-28 version, Mcp-* header/body agreement, agent key or verified workload identity, runtime generation binding
+    break protocol or security failure — terminal (-32020 header/body mismatch, 401, 409 generation_changed)
+        AD-->>C: protocol error, no governance evidence fabricated, zero dispatch
+    end
+    AD->>AG: establish(operation_id, canonical action, normalized arguments)
+    AG->>AG: trusted catalog definition, digest, same id + same digest → current state, same id + changed digest → operation_conflict
     AG->>EV: operation_established
-    alt DENY
-        AG-->>AD: denied (403 / stable code), zero dispatch
-    else ALLOW
-        AG-->>AD: authorized
-    else REQUIRE_APPROVAL
-        AG->>AK: RequestActionApproval (exact operation)
+    break DENY — terminal
+        AG->>EV: operation denied (committed evidence)
+        AD-->>C: canonical denial (403 / stable code), zero authorized attempts, zero dispatch
+    end
+    alt ALLOW — authorized execution
+        AD-->>C: authorized, the runtime may claim an attempt
+    else REQUIRE_APPROVAL — pending
+        AG->>AK: RequestActionApproval(exact operation digest)
         AK->>EV: approval_requested
-        alt Action Gateway or n8n (SHIPPED polling)
+        alt Action Gateway / external runtime — SHIPPED polling contract
             AD-->>C: 202 approval_required + operation_id + approval_id
             loop runtime owns waiting
-                C->>AD: GET operation / approval (Retry-After)
+                C->>AD: GET operation / approval (Retry-After), polling creates no authorization
             end
-        else MCP client advertises Tasks (TARGET #448)
-            AD-->>C: CreateTaskResult (task over the same operation); tasks/get polls, tasks/update never approves
-        else MCP client without Tasks (TARGET #431)
-            AD-->>C: honest non-execution, zero dispatch, no background dispatch
+        else MCP client advertising Tasks in the current request — TARGET #448
+            AD->>AD: durable protocol Task bound to the same operation and approval (task id ≠ operation id)
+            AD-->>C: CreateTaskResult (resultType task), zero upstream dispatch while pending
+            loop tasks/get polls canonical state
+                C->>AD: tasks/get → projection only, tasks/update, inputResponses and MRTR input cannot authorize
+            end
+        else MCP client without Tasks — non-execution (TARGET #431/#372)
+            break honest non-execution — terminal
+                AD-->>C: approval cannot be awaited on this transport, zero dispatch, request not held open, no hidden continuation, no background dispatch
+            end
         end
-        R->>AK: approve | reject (approver credential; admin and agent keys refused)
+        R->>AK: approve | reject (approver credential, admin keys, agent keys, workload identities and MCP metadata refused)
         AK->>EV: approval_decided — zero dispatch
-        C->>AD: continue the same exact operation
+        break rejected / expired / cancelled / invalidated — terminal
+            AG->>EV: operation cancelled
+            AD-->>C: terminal state on the next poll or tasks/get, zero dispatch
+        end
+        Note over C,AD: approved and currently usable: the runtime or task controller explicitly resumes the same exact operation
     end
-    C->>AD: claim attempt (POST .../attempts | tools/call continuation)
-    AD->>AG: claim: revalidate definition, policy, approval usability; one winner
-    AG->>EV: attempt_claimed, attempt_armed
-    alt talon_forwarded (SHIPPED HTTP; MCP upstream TARGET #431)
-        AG->>D: dispatch once with idempotency identity
-        D-->>AG: known status | ambiguous
-        AG->>EV: attempt_completed (succeeded | failed | unknown, provenance observed)
-    else externally_executed (TARGET #434)
-        AG-->>C: attempt permitted
-        C->>D: runtime performs the effect with its own credential
+    C->>AD: request attempt claim (POST .../attempts | task controller continuation)
+    AD->>AG: claim
+    AG->>AG: revalidate exact operation, current trusted definition and effective policy, approval usability, one winner among concurrent claims
+    break unusable authorization — terminal (approval_binding_stale, approval_expired, attempt_already_in_progress, operation succeeded or unknown)
+        AD-->>C: refused, zero dispatch
+    end
+    AG->>EV: attempt_claimed, attempt_armed (durable marker before any effect)
+    alt talon_forwarded — SHIPPED for HTTP destinations (MCP upstream dispatcher TARGET #431)
+        AG->>D: dispatch at most once with idempotency identity
+        alt observed result
+            D-->>AG: status in the success contract, or a known failure
+            AG->>EV: attempt_completed (succeeded | failed, provenance observed)
+        else ambiguous after dispatch
+            AG->>EV: attempt_completed (unknown, automatic retry blocked until reconciliation, TARGET #146)
+        end
+    else externally_executed — TARGET #434
+        AD-->>C: attempt permitted
+        C->>X: runtime performs the effect with its own credential and transport
         C->>AD: authenticated outcome report
-        AG->>EV: attempt_completed (provenance client_asserted; unknown if report missing or ambiguous)
+        AG->>EV: attempt_completed (provenance client_asserted until reconciled, unknown when the report is missing or ambiguous, Talon never claims to have observed the effect)
     end
-    AD-->>C: result | unknown (unknown blocks retry until reconciliation, TARGET #146)
+    AD-->>C: succeeded | failed | unknown
 ```
 
 ## 10. MCP 2026-07-28 boundary
