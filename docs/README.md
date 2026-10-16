@@ -43,22 +43,27 @@ Smoke-check the builder path: `make verify-newcomer` (from repo root).
 
 Choose the shortest path for your situation:
 
-1. **"I need to operate my AI use cases: budgets, reliability, one policy, session visibility."**
+1. **"I need to apply company policy and authorize consequential actions before execution."**
+   - Choose the boundary: [Integration paths](guides/choosing-integration-path.md)
+   - Exact action and human decision: [Action Gateway](reference/action-gateway.md) (shipped on HTTP; MCP/native convergence remains roadmap)
+   - Runtime policy: [Policy cookbook](guides/policy-cookbook.md) · [Control-plane boundaries](reference/control-plane-boundaries.md)
+   - Containment integration: [OpenShell v0.1.3](integration/openshell.md) (delegated request-side enforcement)
+2. **"I need to operate my AI use cases: budgets, reliability, one policy, session visibility."**
    - Cost: [Cap AI spend per agent](guides/cost-governance-by-agent.md)
    - Reliability: [Provider fallback chains](reference/configuration.md#provider-fallback-chains-error-driven-failover)
    - Policy: [Policy cookbook](guides/policy-cookbook.md) · [Policy packs](guides/policy-packs.md)
    - Sessions: [Governing coding agents](guides/governing-coding-agents.md) · [Manual governed session](tutorials/manual-governed-session.md)
    - Objects and lifecycles: [Talon object model](reference/object-model.md)
    - The big picture: [Talon as a control plane](explanation/control-plane.md) · architecture: [Control-plane boundaries](reference/control-plane-boundaries.md)
-2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
+3. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
    - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
    - Third-party vendor: [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md), then [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md)
-3. **"I need to prove what happened — to a customer, auditor, or my own board."**
+4. **"I need to prove what happened — to a customer, auditor, or my own board."**
    - Start: [Sample auditor pack](../examples/auditor-pack/README.md)
    - Learn the flow: [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) — init with EU policy packs to a downloaded RoPA in ~15 minutes
    - Verify everything: [How to verify turnkey compliance reports](guides/verify-turnkey-compliance-reports.md) — full checklist before a demo or release
    - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md) · [How to clear DECLARATION MISSING blocks](guides/ropa-declarations.md)
-4. **"I want to understand exactly what Talon enforces."**
+5. **"I want to understand exactly what Talon enforces."**
    - Start: [What Talon does to your request](explanation/what-talon-does-to-your-request.md)
    - Then: [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md)
 
@@ -105,6 +110,8 @@ Choose the shortest path for your situation:
 | [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md) | Proof | Fill `talon.config.yaml` and `agent.talon.yaml` declarations; regenerate RoPA/Annex IV without placeholders. |
 
 ### Reference (technical description)
+
+**Protocol and enforcement compatibility:** `/mcp` and `/mcp/proxy` implement **MCP `2026-07-28` only** (#447). No older protocol, `initialize` or protocol-level session is accepted. The HTTP Action Gateway already ships bound actions and approvals; MCP/native execution convergence (#431/#430), Tasks and external action execution are targets. Global shadow/log-only/passthrough policy postures were removed (#442): active policy is always enforced.
 
 | Doc | Description |
 |-----|-------------|

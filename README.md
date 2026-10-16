@@ -1,13 +1,13 @@
 # Dativo Talon
 
-**The control plane for your company's AI use cases.**
+**Enforce company AI policy across AI use cases — before model access and consequential actions, with verifiable proof.**
 
 [![CI](https://github.com/dativo-io/talon/actions/workflows/ci.yml/badge.svg)](https://github.com/dativo-io/talon/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/dativo-io/talon/actions/workflows/codeql.yml/badge.svg)](https://github.com/dativo-io/talon/actions/workflows/codeql.yml)
 [![Latest Release](https://img.shields.io/github/v/release/dativo-io/talon)](https://github.com/dativo-io/talon/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Every AI use case a company ships — a customer-support assistant, a coding assistant, a document summarizer — reinvents the same operational plumbing: its own cost controls, its own retry behavior, its own data policy, its own incident trail. The result is use cases you can't reliably operate, and agentic projects that stall because nobody can control them. Talon is one self-hosted Go binary in front of OpenAI, Anthropic, AWS Bedrock, Azure OpenAI, local Ollama, and any OpenAI-compatible endpoint: point every use case at it and each one gets budget caps enforced **before** the provider is called, policy-checked failover when a provider degrades, central policy defaults with explicit exceptions for PII, tools, and data destinations, and a per-use-case view of what each did and spent — with a signed, verifiable evidence record behind every decision. Operate the whole fleet — discover, inspect, stop, and reconfigure every use case — from one gateway. Apache 2.0.
+Every AI use case — a customer-support assistant, a coding assistant, a document summarizer — needs to obey the same company rules even when teams choose different models or runtimes. **Dativo Talon** is an Apache-2.0, self-hosted control plane that resolves company policy plus use-case-specific rules and enforces them at supported boundaries. On routed model traffic, it governs provider access, data, budgets, retry/fallback and sessions. On consequential actions, the shipped **HTTP Action Gateway** binds the exact action and arguments, supports `DENY > REQUIRE_APPROVAL > ALLOW`, and records the authorized attempt with signed evidence. The MCP and native action paths have not yet converged on that exact-action contract; Talon does not control local effects that bypass its boundary.
 
 [![A live terminal demo of real Talon CLI and API calls — the local model is down so a customer request fails over, skipping a provider the use case isn't allowed to use; customer email and IBAN are redacted before the provider; a forbidden admin tool is rejected by a company boundary; a projected-cost budget stops the next call before spend; and `talon agents` shows the fleet, with every decision signed](docs/assets/talon_hero.gif)](examples/product-demo/)
 
@@ -25,9 +25,20 @@ Every AI use case a company ships — a customer-support assistant, a coding ass
    + proof         audit list --session → verify offline: 8 records · 8 valid · 0 invalid
 ```
 
-**Operate three use cases →** [Product demo](examples/product-demo/) (real providers, ~$0.05) · **See it in 60 seconds, no key →** [Quickstart](#try-it-in-60-seconds-no-api-key) · **Deep proof, one session →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot a real use case →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
+**Operate three use cases →** [Product demo](examples/product-demo/) (real providers, ~$0.05) · **Authorize one exact HTTP action →** [Action Gateway](docs/reference/action-gateway.md) · **See it in 60 seconds, no key →** [Quickstart](#try-it-in-60-seconds-no-api-key) · **Deep proof, one session →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot a real use case →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
 
 ---
+
+## Where Talon can enforce today
+
+| Boundary | Shipped behavior | Important limit |
+|---|---|---|
+| **LLM gateway** | Organization + per-use-case policy, PII and egress checks, budget denial before provider access, retries and policy-valid fallback, signed evidence | Only requests routed through Talon; active policy is always enforced (no global shadow/log-only) |
+| **HTTP Action Gateway** | Trusted exact-action catalog, immutable operation/payload binding, authenticated human approval, at-most-once `talon_forwarded` HTTP dispatch, signed lifecycle evidence | MCP-sourced actions may be catalogued but cannot dispatch through this adapter yet; native and MCP tool execution remain separate (#431/#430) |
+| **MCP** | Tool interception on the **2026-07-28 protocol only**, with signed denials | No previous MCP version or `initialize`; `tools/call` does not yet use ActionGovernance |
+| **OpenShell v0.1.3** | Delegated *request-side* policy via supervisor middleware before credential injection | OpenShell enforces; Talon cannot verify its enforcement or inspect provider responses on that path |
+
+Start with the [integration chooser](docs/guides/choosing-integration-path.md), the [Action Gateway reference](docs/reference/action-gateway.md), or the [OpenShell integration](docs/integration/openshell.md). For which state or operation Talon owns, see [Control-plane boundaries](docs/reference/control-plane-boundaries.md).
 
 ## Is this you?
 
