@@ -18,6 +18,7 @@ import (
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/govcode"
 	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
@@ -124,7 +125,10 @@ func TestDiscover_AdvertisesOnlyWhatIsImplemented(t *testing.T) {
 		assert.Contains(t, caps, "tools", name)
 		assert.NotContains(t, caps, "resources", name)
 		assert.NotContains(t, caps, "prompts", name)
-		assert.NotContains(t, caps, "extensions", "%s: Tasks is not implemented, so it is not advertised", name)
+		exts, _ := caps["extensions"].(map[string]any)
+		assert.Len(t, exts, 1, "%s: exactly the implemented governance extension (#372)", name)
+		assert.Contains(t, exts, govcode.ExtensionID, name)
+		assert.NotContains(t, exts, "io.modelcontextprotocol/tasks", "%s: Tasks is not implemented, so it is not advertised", name)
 		tc, _ := caps["tools"].(map[string]any)
 		assert.NotContains(t, tc, "listChanged", "%s: no subscriptions/listen stream exists", name)
 		meta, _ := res["_meta"].(map[string]any)
@@ -579,9 +583,12 @@ func TestProxyOutboundCapabilities_Intersection(t *testing.T) {
 	assert.NotContains(t, sent, "experimental")
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, float64(codeServerError), errCode(out), "a task result is refused even though the downstream advertised Tasks")
-	// Discovery agrees: no extensions advertised to the downstream either.
+	// Discovery agrees: Tasks is not advertised to the downstream either
+	// (only Talon's own governance extension is, #372).
 	_, disc := do(t, h, "/mcp/proxy", mcpBody(t, 2, wire.MethodDiscover, nil), nil)
-	assert.NotContains(t, disc["result"].(map[string]any)["capabilities"], "extensions")
+	exts, _ := disc["result"].(map[string]any)["capabilities"].(map[string]any)["extensions"].(map[string]any)
+	assert.NotContains(t, exts, "io.modelcontextprotocol/tasks")
+	assert.Contains(t, exts, govcode.ExtensionID)
 }
 
 func TestProxy_NoRedirectFollowing(t *testing.T) {

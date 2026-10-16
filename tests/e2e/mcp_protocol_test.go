@@ -151,8 +151,14 @@ func TestE2E_MCP_Protocol2026_07_28(t *testing.T) {
 		if _, ok := caps["tools"]; !ok {
 			t.Fatalf("%s: tools capability missing: %v", path, caps)
 		}
-		if _, ok := caps["extensions"]; ok {
-			t.Fatalf("%s: no extension (Tasks) may be advertised: %v", path, caps)
+		// Exactly one extension is advertised — Talon's governance extension
+		// (#372), because it is implemented; Tasks is not (#448).
+		exts, _ := caps["extensions"].(map[string]any)
+		if len(exts) != 1 || exts["io.dativo.talon/governance"] == nil {
+			t.Fatalf("%s: only the governance extension may be advertised: %v", path, caps)
+		}
+		if _, ok := exts["io.modelcontextprotocol/tasks"]; ok {
+			t.Fatalf("%s: Tasks must not be advertised: %v", path, caps)
 		}
 		if res["resultType"] != "complete" || res["cacheScope"] == nil || res["ttlMs"] == nil {
 			t.Fatalf("%s discover shape: %v", path, res)
@@ -286,7 +292,15 @@ func TestE2E_MCP_Protocol2026_07_28(t *testing.T) {
 	if st != 200 || mcpErrCode(out) != -32000 {
 		t.Fatalf("forbidden tool: %d %v", st, out)
 	}
-	if data, _ := out["error"].(map[string]any)["data"].(map[string]any); data["talon_code"] != "TALON_TOOL_FORBIDDEN" {
+	data, _ := out["error"].(map[string]any)["data"].(map[string]any)
+	// The versioned governance extension (#372): same code as a governed-action
+	// DENY, committed evidence reference; the flat talon_code is the deprecated alias.
+	if ext, _ := data["io.dativo.talon/governance"].(map[string]any); ext["code"] != "policy_denied" || ext["decision"] != "deny" {
+		t.Fatalf("governance extension: %v", out["error"])
+	} else if ev, _ := ext["evidence"].(map[string]any); ev["committed"] != true || ev["id"] == nil {
+		t.Fatalf("evidence reference must be committed with an id: %v", ext)
+	}
+	if data["talon_code"] != "TALON_TOOL_FORBIDDEN" {
 		t.Fatalf("talon_code: %v", out["error"])
 	}
 	if up.calls.Load() != 1 {

@@ -283,18 +283,29 @@ legal and preserved exactly) and `cacheScope` exactly `public` or `private`.
 Missing or malformed hints are an upstream protocol violation, never
 repaired.
 
-**Stable denial codes (#369):** every Talon-shaped proxy error carries
-`error.data.talon_code` — the machine contract; messages are prose and may
-change:
+**Stable governance codes (#372):** every Talon-shaped governance outcome on
+`/mcp` and `/mcp/proxy` carries the versioned extension
+`error.data["io.dativo.talon/governance"]` (denials, failures) or
+`result._meta["io.dativo.talon/governance"]` (allowed calls): the stable
+`code`, `decision`, `retryable` and the `evidence` reference of the signed
+record that committed — the machine contract; messages are prose and may
+change. Full schema and registry: [MCP governance extension](reference/mcp-governance-extension.md).
+The flat `error.data.talon_code` alias (#369) is **deprecated** and emitted
+for one more release only where a code had one:
 
-| talon_code | Meaning |
-|---|---|
-| `TALON_TOOL_FORBIDDEN` | explicit `forbidden_tools` match |
-| `TALON_POLICY_DENIED` | tool-access policy deny (Rego) |
-| `TALON_PII_BLOCKED` | PII deny, residual PII after redaction, invalid redaction output |
-| `TALON_SCANNER_UNAVAILABLE` | PII scanner fail-closed (unavailable/unverifiable) |
-| `TALON_METHOD_NOT_ALLOWED` | non-governed MCP method (#356) |
-| `TALON_UPSTREAM_ERROR` | upstream transport/decode failure (vendor JSON-RPC errors pass through untagged) |
+| Governance `code` | Deprecated alias | Meaning |
+|---|---|---|
+| `policy_denied` | `TALON_TOOL_FORBIDDEN` (forbidden_tools) / `TALON_POLICY_DENIED` (Rego) | the same code the Action Gateway uses for a governed-action DENY |
+| `pii_policy_violation` | `TALON_PII_BLOCKED` | PII deny, residual PII after redaction, invalid redaction output |
+| `scanner_unavailable` | `TALON_SCANNER_UNAVAILABLE` | PII scanner fail-closed (unavailable/unverifiable) |
+| `policy_evaluation_failed` | — | policy engine error, fail-closed, zero dispatch |
+| `upstream_auth_unavailable` | `TALON_UPSTREAM_ERROR` | vault credential unavailable before dispatch (generic message) |
+| `upstream_tool_failed` | `TALON_UPSTREAM_ERROR` | outbound request invalid, upstream contract violation, unsupported `resultType` |
+| `upstream_outcome_unknown` | `TALON_UPSTREAM_ERROR` | transport failure after the request was handed to the transport; automatic retry blocked |
+| `evidence_commit_failed` | — | the mandatory pre-dispatch record could not commit; no evidence id, zero dispatch |
+
+Vendor JSON-RPC errors still pass through untagged, and non-governed methods
+remain protocol `-32601` without any governance object.
 
 ---
 

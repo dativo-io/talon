@@ -110,6 +110,7 @@ Choose the shortest path for your situation:
 |-----|-------------|
 | [Talon object model](reference/object-model.md) | Canonical agents, sessions, native runs, logical operations, approvals, attempts, evidence, metadata and lifecycle boundaries. |
 | [Control-plane boundaries](reference/control-plane-boundaries.md) | Living architecture reference for ADR-004: component ownership, model vs action governance, execution profiles, continuation ownership, MCP 2026-07-28, OpenShell DELEGATE, identity classes, provenance, current-surface disposition and shipped-vs-target status. |
+| [MCP governance extension](reference/mcp-governance-extension.md) | `io.dativo.talon/governance`: stable governance codes shared across HTTP/MCP, retryability, placement in error.data / result _meta, committed evidence references, protocol-vs-governance boundary. |
 | [Action Gateway](reference/action-gateway.md) | The shipped exact-action spine: declaring actions and trusted MCP sources, immutable operations, approver decisions, at-most-once `talon_forwarded` dispatch, outcome truth table. |
 | [NVIDIA OpenShell composition](integration/openshell.md) | Talon as OpenShell's supervisor middleware (DELEGATE): contract, identity, evidence semantics, fixture and live lanes, honest bypass model. |
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
