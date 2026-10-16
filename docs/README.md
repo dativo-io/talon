@@ -49,7 +49,7 @@ Choose the shortest path for your situation:
    - Policy: [Policy cookbook](guides/policy-cookbook.md) · [Policy packs](guides/policy-packs.md)
    - Sessions: [Governing coding agents](guides/governing-coding-agents.md) · [Manual governed session](tutorials/manual-governed-session.md)
    - Objects and lifecycles: [Talon object model](reference/object-model.md)
-   - The big picture: [Talon as a control plane](explanation/control-plane.md)
+   - The big picture: [Talon as a control plane](explanation/control-plane.md) · architecture: [Control-plane boundaries](reference/control-plane-boundaries.md)
 2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
    - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
    - Third-party vendor: [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md), then [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md)
@@ -109,6 +109,9 @@ Choose the shortest path for your situation:
 | Doc | Description |
 |-----|-------------|
 | [Talon object model](reference/object-model.md) | Canonical agents, sessions, native runs, logical operations, approvals, attempts, evidence, metadata and lifecycle boundaries. |
+| [Control-plane boundaries](reference/control-plane-boundaries.md) | Living architecture reference for ADR-004: component ownership, model vs action governance, execution profiles, continuation ownership, MCP 2026-07-28, OpenShell DELEGATE, identity classes, provenance, current-surface disposition and shipped-vs-target status. |
+| [Action Gateway](reference/action-gateway.md) | The shipped exact-action spine: declaring actions and trusted MCP sources, immutable operations, approver decisions, at-most-once `talon_forwarded` dispatch, outcome truth table. |
+| [NVIDIA OpenShell composition](integration/openshell.md) | Talon as OpenShell's supervisor middleware (DELEGATE): contract, identity, evidence semantics, fixture and live lanes, honest bypass model. |
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Normative signed-record spec: fields, canonical serialization, HMAC-SHA256 signing, and the independent verification procedure. |
 | [Presidio compatibility matrix](reference/presidio-compatibility-matrix.md) | Scanner boundary contract: Presidio-shaped result ingress, canonical mapping, and byte-offset normalization rules. |
@@ -125,6 +128,7 @@ Choose the shortest path for your situation:
 | Doc | Description |
 |-----|-------------|
 | [Talon as a control plane](explanation/control-plane.md) | What the control plane for AI use cases means: four pillars, proof layer, vocabulary, what Talon is not. |
+| [Architecture decision records](adr/README.md) | Index of accepted ADRs, including ADR-004 (one modular in-process control plane and runtime boundaries). |
 | [What Talon does to your request](explanation/what-talon-does-to-your-request.md) | Full request lifecycle: every check, every byte transformation, latency budget. |
 | [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Five failure scenarios: what a PII-only proxy misses, what Talon does, and how to verify. |
 | [Evidence store](explanation/evidence-store.md) | Evidence record structure, session_id, HMAC signing (TALON_SIGNING_KEY), progressive disclosure, storage, and export (CSV/JSON columns). |

@@ -1,6 +1,6 @@
 # Authentication and key scopes
 
-This reference describes Talon's auth model across gateway traffic, tenant-scoped APIs, and admin/control-plane endpoints. There are exactly **two key families**: agent keys (workload identity) and the admin key (operator authority).
+This reference describes Talon's auth model across gateway traffic, tenant-scoped APIs, and admin/control-plane endpoints. There are **three credential families**: agent keys (use-case traffic identity), approver credentials (human reviewer authority on the exact-action spine) and the admin key (operator authority). A fourth identity class, the verified workload principal, is not a Talon key at all: on the OpenShell delegated path Talon verifies the runtime gateway's signed token and binds it through `agent.workload_identity.bindings` ([OpenShell composition](../integration/openshell.md)). Authority classes never substitute for one another; see [Control-plane boundaries](control-plane-boundaries.md#12-identity-classes).
 
 ---
 
@@ -9,7 +9,8 @@ This reference describes Talon's auth model across gateway traffic, tenant-scope
 | Key type | Source | Primary use | Header |
 |---|---|---|---|
 | **Agent key** | Talon vault, bound via `agent.key.secret_name` in `agent.talon.yaml` — mint with `talon secrets set <name> "$(openssl rand -hex 24)"` | Workload identity: authenticates `/v1/proxy` traffic **and** tenant-scoped API access, scoped to the agent's derived tenant | `Authorization: Bearer <agent_key>` (the gateway also accepts `x-api-key: <agent_key>`) |
-| **Admin key** | `TALON_ADMIN_KEY` env var | Operator authority: cross-tenant dashboards, secrets, policy admin, approvals | `X-Talon-Admin-Key: <key>` (preferred), `Authorization: Bearer <key>` (fallback) |
+| **Approver credential** | `talon approver add --tenant <t> --groups <g>` (256-bit, revocable, versioned; prefix `talon_appr_`) | Human reviewer authority: decisions on Action Gateway approvals, tenant-scoped and policy-authorized by group | `Authorization: Bearer talon_appr_…` on `POST /v1/approvals/{id}/decisions` only |
+| **Admin key** | `TALON_ADMIN_KEY` env var | Operator authority: cross-tenant dashboards, secrets, policy admin, and the **legacy** Plan Review and tool-approval decisions (current behavior; converging on approver credentials under #430/#433) | `X-Talon-Admin-Key: <key>` (preferred), `Authorization: Bearer <key>` (fallback) |
 
 Notes:
 
@@ -27,7 +28,9 @@ Notes:
 | Native execution paths (`/v1/agents/run`, `/v1/chat/completions`, `/mcp`, `/mcp/proxy`, `/v1/graph/events`) | Native-only serve: agent key (bearer). Gateway serve: **admin key required — strictly** | Native execution runs the agent's own policy WITHOUT `gateway.organization_policy` / provider constraints, so when a gateway is served these routes need operator authority. Fail-closed: with a gateway and **no** `TALON_ADMIN_KEY` configured they return 401 for everyone (the dev-open rule never applies here) — agent traffic goes through `/v1/proxy` |
 | Tenant-or-admin read paths (`/v1/evidence*`, `/v1/status`, `/v1/costs*`, `/v1/memory*`, `/v1/triggers*`, `/v1/plans/pending`, `/v1/plans/{id}`) | Agent key (bearer) **or** admin key | Agent keys see only their OWN agent's records (evidence, costs, memory); cross-tenant admin visibility for the admin key. `/v1/status` also reports coarse installation-level operational counters (event-stream totals, metrics summary, active-run count) — operator telemetry, not record contents, and not agent-private state |
 | Admin-only paths (`/v1/plans/{id}/approve`, `/v1/plans/{id}/reject`, `/v1/plans/{id}/modify`, `/v1/memory/{agent_id}/approve`, `/v1/secrets*`, `/v1/policies*`, `/v1/dashboard/*`, `/v1/compliance/*`, `/v1/copaw/*`) | Admin key | Control-plane actions |
-| Operational control plane (`/v1/runs*`, `/v1/overrides*`, `/v1/tool-approvals*`) | Admin key | Run management, tenant overrides, tool approval gates |
+| Operational control plane (`/v1/runs*`, `/v1/overrides*`, `/v1/tool-approvals*`) | Admin key | Run management, tenant overrides, legacy tool approval gates |
+| Action Gateway runtime routes (`POST /v1/action-operations`, `GET /v1/action-operations/{id}`, `POST /v1/action-operations/{id}/attempts`, `GET /v1/approvals/{id}`) | Agent key only | Exact-action spine; admin keys and dev-open requests get `401 agent_identity_required` |
+| Action Gateway decisions (`POST /v1/approvals/{id}/decisions`) | Approver credential only | Admin keys, agent keys, workload identities and legacy role approvers are refused |
 | Gateway dashboard + metrics (`/gateway/dashboard`, `/api/v1/metrics`, `/api/v1/metrics/stream`) | Admin key | Operational dashboards and telemetry streams |
 
 ---
@@ -35,7 +38,7 @@ Notes:
 ## Practical rules
 
 - Use the workload's **agent key** for normal tenant traffic: the same key authenticates `/v1/proxy` and the tenant-scoped read APIs, always scoped to the derived tenant. In a **native-only** serve it also authenticates `POST /v1/agents/run`.
-- Use **`TALON_ADMIN_KEY`** for admin/reviewer/operator actions and all dashboard/metrics endpoints — and for the native execution routes whenever a gateway is served. Agent keys never grant admin authority, and the admin key never impersonates an agent.
+- Use an **approver credential** for Action Gateway decisions; the admin key is refused there. Use **`TALON_ADMIN_KEY`** for admin/operator actions, the legacy Plan Review and tool-approval decisions, and all dashboard/metrics endpoints — and for the native execution routes whenever a gateway is served. Agent keys never grant admin authority, and the admin key never impersonates an agent.
 - Prefer `X-Talon-Admin-Key` for admin calls; bearer fallback is accepted.
 - Auth openness is governed only by the admin-key dev rule (running with no `TALON_ADMIN_KEY` configured is dev mode) — never by how many agents happen to be configured. **Exception (fail-closed):** the native execution routes in gateway mode never dev-open — no admin key means they deny.
 

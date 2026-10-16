@@ -312,6 +312,8 @@ POST /v1/tool-approvals/{id}/decide
 
 The `decision` field must be `"approve"` or `"deny"`. On approval, the paused agent resumes and executes the tool. On denial, the tool call is skipped with an error.
 
+> **Legacy surface.** This in-memory, admin-key tool-approval gate is current behavior but not the target: on the canonical exact-action spine a reviewer decision performs zero dispatch and the runtime claims the attempt separately ([Action Gateway](action-gateway.md)). Native tool approval is scheduled to be replaced by canonical `action_execution` approvals under [#430](https://github.com/dativo-io/talon/issues/430); see [Control-plane boundaries](control-plane-boundaries.md#15-current-surface-disposition).
+
 If no decision is made within the timeout (default 5 minutes), the request is automatically denied.
 
 ---

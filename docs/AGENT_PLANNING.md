@@ -74,7 +74,7 @@ Before the first LLM call (and before the agentic loop starts), Talon can **gate
 - When `compliance.human_oversight` is `always`, or when configured thresholds (cost, tier, tools) are met, an **execution plan** is created and stored.
 - The run returns immediately with `PlanPending` set; no LLM is called until the plan is approved (e.g. via dashboard or API).
 - The plan stores: selected model, data tier, tools available, cost estimate, policy decision, **session_id** (so dispatch reuses the same lifecycle session), and optional **proposed steps** for transparency (EU AI Act Art. 11/13).
-- In `talon serve`, an internal dispatcher watches for newly approved plans and executes them once with the plan’s session_id (bypassing the review gate for that replay only).
+- In `talon serve`, an internal dispatcher watches for newly approved plans and executes them once with the plan’s session_id (bypassing the review gate for that replay only). This approve-then-auto-dispatch behavior is the current legacy Plan Review path; the target ([#430](https://github.com/dativo-io/talon/issues/430)) makes Plan Review a typed subject of the shared approval kernel where the decision never starts execution and the run controller resumes from its checkpoint — see [Control-plane boundaries](reference/control-plane-boundaries.md).
 - Outside `talon serve`, execute approved plans manually with `talon plan execute <plan-id> --tenant <id>`.
 
 Step-by-step operator E2E (CLI, serve auto-dispatch, dashboard, test matrix): [How to test and operate Plan Review](guides/plan-review-operators.md).

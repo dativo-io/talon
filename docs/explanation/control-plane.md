@@ -2,7 +2,7 @@
 
 Talon is the **control plane for company AI use cases**: one self-hosted layer that operates and controls every AI use case **routed through it** — with budget caps, shared policy defaults, reliability and session visibility. This page defines what that means, the vocabulary the docs use, what is available today versus active direction, and what Talon deliberately is not.
 
-For the normative relationship between agents, sessions, native runs, logical operations, approvals, attempts and evidence, see the [Talon object model](../reference/object-model.md).
+For the normative relationship between agents, sessions, native runs, logical operations, approvals, attempts and evidence, see the [Talon object model](../reference/object-model.md). The frozen architecture — one modular in-process control plane, model governance versus action governance, execution profiles, continuation ownership and the enforcement doctrine `INTERCEPT | DELEGATE | COMPILE | VERIFY` — is decided in [ADR-004](../contributor/adr/ADR-004-modular-control-plane-and-runtime-boundaries.md) and kept current, with shipped-versus-target status, in [Control-plane boundaries](../reference/control-plane-boundaries.md).
 
 ## The problem it solves
 
@@ -39,12 +39,17 @@ Same-provider retries with backoff, evidence-visible, then policy-valid fallback
 Cost warning thresholds as signed evidence + one org cost webhook; hard session caps by atomic reservation (#144)
 Session summary contract: talon session show over the shared evidence projection (#271)
 AI use-case operating record: agent.use_case in the fleet view (#382)
+Always-enforced posture: no global non-enforcing live posture (#442)
+MCP 2026-07-28 wire only: stateless, self-describing, header/body integrity (#447)
+Trusted action catalog: explicit + MCP-discovered definitions in the runtime generation (#427)
+Exact governed actions over the public Action Gateway: immutable operation, approver-only decision, at most one Talon-forwarded effect, signed lifecycle evidence (#458)
+OpenShell v0.1.3 DELEGATE composition: Talon decides at PRE_CREDENTIALS, OpenShell enforces and injects the credential, proven against the released runtime (#482)
 
 Active MVP direction
 ────────────────────
 Session simplification: status open/completed, managed_by attribution and evidence-derived failure attention (#401)
-Shared model/action control-plane boundaries and canonical object linkage (#424)
-Persistent typed approvals and exact logical operations (#426)
+One typed approval kernel for plan review and action execution, replacing the legacy plan and tool-approval stores (#426/#430)
+MCP governance convergence onto ActionGovernance and one canonical POST /mcp (#431), Tasks continuation (#448)
 Durable native run checkpoints and approval waits (#430)
 n8n/external runtime adapter over the same action and approval services (#434)
 CLI-primary fleet operations; dashboard as a read-only projection of the same semantics (#143)
@@ -104,7 +109,7 @@ Talon keeps failure facts visible without inventing session outcomes:
 
 - **Not a router/optimizer.** Routers optimize a single call for latency or price; Talon decides what is *allowed* to happen across the fleet, then proves it. Fallback never bypasses policy to keep traffic up.
 - **Not an observability suite.** Observability shows what already happened; Talon enforces before the provider is called and keeps the signed trail as a by-product of enforcement.
-- **Not endpoint security or universal agent control.** Talon governs only actions it can actually intercept: tool schemas in LLM requests, and MCP calls routed through it. Local shell commands, file edits, browser actions or direct API calls that bypass Talon are invisible to it — stated plainly in [LIMITATIONS.md](../../LIMITATIONS.md).
+- **Not endpoint security or universal agent control.** Talon governs only effects that cross a boundary it owns or that a trusted runtime delegates to it: tool schemas in LLM requests, MCP calls routed through it, catalogued actions attempted through the Action Gateway, and model traffic an OpenShell sandbox routes through Talon's middleware. Local shell commands, file edits, browser actions, direct API calls or an alternate provider path that bypass every such boundary are invisible to it — stated plainly in [LIMITATIONS.md](../../LIMITATIONS.md) and [Control-plane boundaries](../reference/control-plane-boundaries.md).
 - **Not a workflow engine.** External systems such as n8n own their workflow waiting and resumption. Talon owns model/action policy, exact authorization, operation state and evidence at its controlled boundaries.
 - **Not a compliance certification.** Evidence and generated reports support audits and reviews; they do not make a deployment compliant.
 

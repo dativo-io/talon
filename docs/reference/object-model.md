@@ -44,6 +44,8 @@ The agent is not an executing process instance. Runtime activity appears in sess
 
 ## Session
 
+> **Status.** The session vocabulary in this section (`status` with `open | completed`, `managed_by`) is the settled target contract of [#401](https://github.com/dativo-io/talon/issues/401). The shipped store still exposes the older status vocabulary and no `managed_by` field; the architecture reference lists it as a retained surface pending migration ([Control-plane boundaries](control-plane-boundaries.md)).
+
 A **session** is the correlation and understanding boundary for related activity through Talon. It supports:
 
 - request and action timelines;
@@ -174,8 +176,10 @@ An operation owns:
 Canonical operation statuses are separate from approval decisions:
 
 ```text
-awaiting_approval | authorized | executing | succeeded | failed | unknown | cancelled
+awaiting_approval | authorized | executing | succeeded | failed | unknown | cancelled | denied
 ```
+
+`denied` records a policy `DENY` at establishment: the operation exists as a fact and can never be attempted.
 
 One approval authorizes one unchanged logical operation, not an arbitrary later request and not one transport attempt. Reusing an operation ID with changed bound input is a conflict.
 
@@ -193,6 +197,8 @@ Canonical approval decision statuses are:
 ```text
 pending | approved | rejected | expired | cancelled | invalidated
 ```
+
+The shipped action domain writes `pending | approved | rejected | expired | invalidated`; `cancelled` (a withdrawn pending request) is target vocabulary owned by [#426](https://github.com/dativo-io/talon/issues/426). There is no `consumed` status: whether an approved operation was attempted is operation and attempt state, never a rewrite of the approval.
 
 Approval status is not execution status:
 
@@ -219,10 +225,12 @@ Multiple failed transport attempts may occur under one approved logical operatio
 
 **Evidence** is the signed record of a Talon decision, transition or observed/asserted result. It is the proof layer under the operational objects, not their mutable source of workflow commands.
 
-Evidence should make provenance explicit:
+Evidence makes provenance explicit (vocabulary in the [evidence integrity specification](evidence-integrity-spec.md) and [Control-plane boundaries](control-plane-boundaries.md#14-provenance-vocabulary)):
 
-- `talon_observed` for events Talon directly observed at its boundary;
-- `client_asserted` or equivalent for outcomes reported by an external runtime;
+- `talon_enforced` (implicit) for decisions Talon enforced at its own boundary, with attempt results `observed | not_dispatched | unknown`;
+- `delegated_expected` for decisions a trusted runtime enforces (OpenShell);
+- `external_asserted` for imported facts Talon did not enforce or verify;
+- `client_asserted` for outcomes reported by an external runtime;
 - session identity source and client attribution where relevant.
 
 External silence, stopped polling or inactivity is not evidence that the external orchestrator failed.
@@ -302,6 +310,7 @@ To keep Talon lightweight:
 
 See also:
 
+- [Control-plane boundaries](control-plane-boundaries.md) and [ADR-004](../contributor/adr/ADR-004-modular-control-plane-and-runtime-boundaries.md)
 - [Talon as a control plane](../explanation/control-plane.md)
 - [Operational control plane](operational-control-plane.md)
 - [Evidence integrity specification](evidence-integrity-spec.md)

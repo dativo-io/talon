@@ -645,7 +645,7 @@ type ExecuteResult struct {
 //  2. claim ONE attempt (committed);
 //  3. ARM the attempt (durable pre-effect marker, committed) — after this a
 //     crash recovers as UNKNOWN, never as "not sent";
-//  4. dispatch exactly once through the trusted dispatcher;
+//  4. dispatch at most once through the trusted dispatcher (an ambiguous result is UNKNOWN, never a replay);
 //  5. record the observed facts and the conservative outcome.
 //
 // Nothing here is reachable from a reviewer decision.
