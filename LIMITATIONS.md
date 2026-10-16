@@ -10,9 +10,9 @@ This document serves as an explicit boundaries guide so that operators and secur
 
 | Capability | Status | Description |
 | :--- | :--- | :--- |
-| **Available Now** | ✅ | Proxy governance, input/output PII scan, policy decision, cost caps, policy-valid fallback, MCP tool-call interception, signed evidence, audit verify. |
+| **Available Now** | ✅ | Proxy governance, input/output PII scan, policy decision, cost caps, policy-valid fallback, MCP 2026-07-28 tool-call interception, exact governed actions over the Action Gateway (§10), OpenShell request-side DELEGATE composition (§9), signed evidence, audit verify. |
 | **Partial Today** | 🟡 | EU routing proof is currently deny/allow evidence, not silent rerouting; session-budget admission is estimate-based (reservation blocks concurrent overshoot, not estimation error). |
-| **Roadmap** | ⏳ | Per-execution tool lifecycle evidence, side-effect-free policy-impact preview (#459), offline evidence replay (#441), broader trust mesh/A2A. (Same-provider retries shipped in 1.10.0, #139; cost warning-threshold evidence and the organization webhook shipped in 1.9.4, #144.) |
+| **Roadmap** | ⏳ | MCP and native tool calls through ActionGovernance with lifecycle evidence (#431/#430), side-effect-free policy-impact preview (#459), offline evidence replay (#441), broader trust mesh/A2A. (Same-provider retries shipped in 1.10.0, #139; cost warning-threshold evidence and the organization webhook shipped in 1.9.4, #144.) |
 
 ---
 
@@ -33,7 +33,7 @@ This document serves as an explicit boundaries guide so that operators and secur
 **Today: Forbidden tools are filtered from request bodies before forwarding.**
 - Talon prevents the model from ever seeing forbidden tools by stripping them from the initial request JSON.
 - **Tool-related content is observed, not enforced.** PII inside tool_use inputs, tool_result outputs, and function-call arguments is scanned and recorded in signed evidence (`classification.tool_content`, evidence spec 1.5; `scan_tool_content: evidence_only` is the default) but does **not** block, redact, or otherwise change the request. Tool content cannot be redacted yet — acting on the signal would break agentic sessions — so treat this trail as visibility, not prevention (#212).
-- **Shipped, but bounded:** MCP `tools/call` requests are intercepted and policy-forbidden calls are denied with signed denial evidence. **Not yet:** per-execution tool *lifecycle* evidence and destination egress governance (#146) — Talon does not intercept a governed tool's actual runtime execution or its outbound destinations. These remain roadmap.
+- **Shipped, but bounded:** MCP `tools/call` requests are intercepted and policy-forbidden calls are denied with signed denial evidence. **Not yet on the MCP and native tool paths:** per-execution tool *lifecycle* evidence and destination egress governance — those exist only for actions attempted through the Action Gateway (§10); MCP and native tools reach them when #431/#430 converge on ActionGovernance (#146 owns the evidence contract). Architecture: [Control-plane boundaries](docs/reference/control-plane-boundaries.md).
 
 ## 4. Isolation Boundary
 

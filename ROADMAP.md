@@ -16,7 +16,9 @@ Everything below is current, code-verified behavior — see [CHANGELOG.md](CHANG
 - **Session understanding** — session identity (explicit `X-Talon-Session-ID` → vendor header → synthetic evidence-only); session-scoped audit, cost rollups and verification; dashboard session drill-down; metrics API, SSE stream, OTel GenAI traces.
 - **Fleet operations** — a multi-agent native runtime where one `agent.talon.yaml` = one AI use case = one active key, discovered by an `agents_dir` scan (duplicate names fail closed); `agent.enabled` plus `talon agents enable/disable`; periodic safe config reload (default 30s) with last-known-good; the `talon agents` attention queue — STATE/HEALTH/COST/WHY — and `talon agents show <name>`.
 - **Proof layer** — HMAC-SHA256 signed evidence per decision; `talon audit list/show/verify/export` incl. offline signed-file verification; compliance report generators (GDPR Art. 30 RoPA, EU AI Act Annex IV) built on the evidence; reproducible conformance suite and benchmarks.
-- **Differentiators** — single self-hosted Go binary (SQLite default, no required SaaS); provider registry with jurisdiction/EU-region metadata across 10 providers; MCP server and MCP proxy interception; `talon init` packs (incl. coding agents).
+- **Consequential-action control (first spine)** — the public Action Gateway binds one catalogued action to an immutable operation, evaluates `DENY > REQUIRE_APPROVAL > ALLOW`, lets only a tenant-scoped approver decide (decision performs zero dispatch), dispatches at most once (`talon_forwarded`) and signs the whole lifecycle (#458, #427); MCP-discovered definitions are catalogued but not yet executable (#431).
+- **Complementary runtime composition** — NVIDIA OpenShell v0.1.3 request-side DELEGATE: Talon decides at `PRE_CREDENTIALS`, OpenShell enforces and injects the provider credential; proven against the released runtime in the `OpenShell Live` workflow (#482).
+- **Differentiators** — single self-hosted Go binary (SQLite default, no required SaaS); provider registry with jurisdiction/EU-region metadata across 10 providers; MCP 2026-07-28 server and proxy interception; `talon init` packs (incl. coding agents).
 
 ---
 
@@ -34,25 +36,25 @@ The active roadmap is optimized for one near-term outcome: **qualified activatio
 - **Effective policy visibility** — show the compiled use-case policy, rule provenance and bounded recent facts ([#305](https://github.com/dativo-io/talon/issues/305))
 - **Safe rollout preview** — policy-impact preview without reintroducing global live shadow/log-only posture ([#459](https://github.com/dativo-io/talon/issues/459))
 - **Use-case registration and inheritance** — make use case #2 registration, not another policy/integration project ([#472](https://github.com/dativo-io/talon/issues/472))
-- **Always-enforced posture** — remove global `shadow`, `log_only` and MCP passthrough from the active product surface ([#442](https://github.com/dativo-io/talon/issues/442))
+- **Always-enforced posture** — **shipped**: global `shadow`, `log_only` and MCP passthrough removed from the active product surface; legacy keys fail validation ([#442](https://github.com/dativo-io/talon/issues/442))
 - **Single-node production contract** — persistence, backup/restore, recovery, degradation and operations for the OSS v1 topology ([#465](https://github.com/dativo-io/talon/issues/465))
 
 ### P0 — exact-action authorization spine
 
-- **Control-plane/runtime boundary ADR** — one canonical policy/authorization model with `INTERCEPT | DELEGATE | COMPILE | VERIFY` enforcement choices ([#424](https://github.com/dativo-io/talon/issues/424))
+- **Control-plane/runtime boundary ADR** — one canonical policy/authorization model with `INTERCEPT | DELEGATE | COMPILE | VERIFY` enforcement choices: [ADR-004](docs/contributor/adr/ADR-004-modular-control-plane-and-runtime-boundaries.md) and the living [Control-plane boundaries](docs/reference/control-plane-boundaries.md) reference ([#424](https://github.com/dativo-io/talon/issues/424))
 - **Company/use-case policy compiler** — constrained authoring model, source attribution and effective rules; no generic policy DSL ([#425](https://github.com/dativo-io/talon/issues/425))
 - **Trusted action catalog and exact binding** — **shipped**: one transport-neutral catalog type for explicit and MCP-discovered definitions, trusted MCP sources discovered over the 2026-07-28 wire with the Talon overlay as the only authority, catalog compiled into the atomic runtime generation with source refresh and last-known-good, source/upstream/connector identity in the definition digest, `talon actions list|show|validate` ([#427](https://github.com/dativo-io/talon/issues/427)); execution of MCP-sourced actions through ActionGovernance remains [#431](https://github.com/dativo-io/talon/issues/431)
 - **MCP 2026-07-28 clean cutover** — **shipped**: current protocol only, per-request `_meta`, `server/discover`, `Mcp-Method`/`Mcp-Name`/`Mcp-Param-*` integrity, no handshake/session/legacy track ([#447](https://github.com/dativo-io/talon/issues/447)); governance convergence of the MCP routes onto ActionGovernance remains [#431](https://github.com/dativo-io/talon/issues/431)
-- **Minimal durable authorization correctness** — immutable subject/decision, operation identity, attempt claim/dispatch boundary and conservative unknown outcomes ([#426](https://github.com/dativo-io/talon/issues/426))
+- **Minimal durable authorization correctness** — immutable subject/decision, operation identity, attempt claim/dispatch boundary and conservative unknown outcomes; **first slice shipped** with #458 for `action_execution`, the shared kernel across plan review remains ([#426](https://github.com/dativo-io/talon/issues/426))
 - **Local approver authority** — canonical principals/groups and policy-authorized decisions ([#428](https://github.com/dativo-io/talon/issues/428))
 - **Privileged management permissions** — explicit operator authorization, separate from reviewer/runtime identity ([#446](https://github.com/dativo-io/talon/issues/446))
-- **Canonical Action Gateway API** — evaluate → decide → claim/consume → report ([#429](https://github.com/dativo-io/talon/issues/429))
+- **Canonical Action Gateway API** — establish → decide → claim → report; **first slice shipped** (`/v1/action-operations*`, `/v1/approvals*`, `talon_forwarded`), `externally_executed` and reconciliation remain ([#429](https://github.com/dativo-io/talon/issues/429))
 - **Signed lifecycle proof** — exact subject, decision, approval, dispatch/attempt and known/unknown outcome ([#146](https://github.com/dativo-io/talon/issues/146))
 - **MCP governance/evidence references** ([#372](https://github.com/dativo-io/talon/issues/372))
 - **MCP enforcement convergence** — route governed MCP actions through the Action Gateway and remove alternate business-action authority ([#431](https://github.com/dativo-io/talon/issues/431))
 - **MCP Tasks/MRTR bounded approval continuation** only where the selected first proof requires it ([#448](https://github.com/dativo-io/talon/issues/448))
 - **Authenticated decision surface** — reviewer-safe projection plus CLI/API sufficient for the first exact-action proof ([#433](https://github.com/dativo-io/talon/issues/433))
-- **Early exact-action proof gate** — one consequential action is prevented/approved/released at most once with verifiable evidence ([#458](https://github.com/dativo-io/talon/issues/458))
+- **Early exact-action proof gate** — **first spine shipped**: one consequential action is prevented/approved/released at most once with verifiable evidence over the Action Gateway ([#458](https://github.com/dativo-io/talon/issues/458))
 
 ### P1 — breadth and hardening after the P0 spine
 
@@ -119,10 +121,10 @@ Key rules:
 | Provider failure handling | Same-provider retries with backoff (#139), then policy-valid fallback chains **shipped** | Evidence-derived recovered/unrecovered session summary and fleet signal (#401) |
 | Session status | Current implementation exposes the older status vocabulary | Canonical `open | completed`; explicit terminal/idempotent completion (#401) |
 | Session manager attribution | Existing session source records how identity was obtained; request metadata may include client attribution | Persist/expose one informational `managed_by` field using existing client/vendor attribution; keep `source` as provenance only and add no `lifecycle_owner` field (#401) |
-| Pending human approval | Existing Plan Review/tool paths are separate and partly process-local | Canonical approval/run/operation status linked as session attention, never a session status (#426, #430, #433) |
+| Pending human approval | Action Gateway approvals are durable, approver-only and dispatch nothing (#458); legacy Plan Review/tool paths remain separate and partly process-local | One typed approval kernel for plan review and action execution, linked as session attention, never a session status (#426, #430, #433) |
 | External workflow completion | No unified official adapter completion contract | Explicit external completion; completed session IDs cannot be reopened/reused (#401, #434) |
 | Tool schemas in LLM requests | Filtering/blocking **shipped** | — |
-| MCP `tools/call` routed through Talon | Runtime interception with signed denial evidence **shipped** | Per-execution lifecycle evidence + destination egress ([#146](https://github.com/dativo-io/talon/issues/146)) |
+| MCP `tools/call` routed through Talon | 2026-07-28 wire and runtime interception with signed denial evidence **shipped** (#447); governance still on the legacy OPA tool path | `tools/call` through ActionGovernance on one canonical `POST /mcp` with lifecycle evidence ([#431](https://github.com/dativo-io/talon/issues/431), [#146](https://github.com/dativo-io/talon/issues/146)) |
 | Local shell/filesystem/direct actions bypassing Talon | **Invisible and uncontrolled** | Permanently out of scope — Talon governs only what it can intercept |
 | Agent/client identity | Client-asserted = **attribution, not authentication** | Existing workload identity may be federated through #457; stronger exact-request cryptographic attestation/anti-replay remains parked in [#149](https://github.com/dativo-io/talon/issues/149) |
 | Dashboard | Read-only views + admin-API write endpoints | Read-only fleet projection plus a narrow authenticated approval surface (#143, #433) |

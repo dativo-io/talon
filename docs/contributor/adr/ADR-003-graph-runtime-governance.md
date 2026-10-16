@@ -1,6 +1,6 @@
 # ADR-003: Graph Runtime Governance — Framework-Agnostic Control Plane
 
-**Status:** Accepted
+**Status:** Accepted; amended by [ADR-004](ADR-004-modular-control-plane-and-runtime-boundaries.md) (2026-10): graph events are context and telemetry, not enforcement authority or an approval channel, and the "full governance parity" consequence below is superseded — only `allow`/`deny` decisions ship and business actions are authorized through ActionGovernance.
 **Date:** 2026-04
 **Context:** Enable Talon to govern external agent runtimes (LangGraph, LangChain, OpenAI SDK, MCP clients) as a true runtime control plane, not just a gateway proxy.
 

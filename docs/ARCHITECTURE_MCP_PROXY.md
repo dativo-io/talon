@@ -15,6 +15,8 @@ Talon's MCP server can operate in **three modes**:
 
 The proxy mode enables compliance for third-party AI vendors (Zendesk, Intercom, HubSpot) without vendor rewrites.
 
+> **Disposition.** Native, proxy and hybrid describe the *current* `/mcp` and `/mcp/proxy` routes. The target architecture ([ADR-004](contributor/adr/ADR-004-modular-control-plane-and-runtime-boundaries.md), [#431](https://github.com/dativo-io/talon/issues/431)) converges them onto one governed `POST /mcp` over ActionGovernance, removes the separate native/proxy/hybrid product modes and the process-local business-tool registry as an extension model, and replaces synthetic fallback identities with the authenticated use case. The 2026-07-28 wire described below is shared and stays.
+
 ---
 
 ## Architecture: Proxy Mode

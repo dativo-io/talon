@@ -96,6 +96,11 @@ Trust-boundary crossings (each is a point where data changes trust domain):
   forwarding ([`internal/gateway/tool_filter.go`](../../internal/gateway/tool_filter.go)).
 - Talon does **not** intercept tool *execution* in another runtime, and does not prevent a
   tool from being invoked on a path that does not pass through Talon.
+- Two other boundaries exist beyond the gateway path and are covered by their own pages: the
+  Action Gateway, where a catalogued action attempted through Talon is bound exactly, authorized
+  and dispatched at most once ([Action Gateway](action-gateway.md)), and the OpenShell delegated
+  path, where Talon decides and the runtime enforces ([OpenShell composition](../integration/openshell.md)).
+  The full boundary map is [Control-plane boundaries](control-plane-boundaries.md).
 
 ### 3.4 Operator ↔ Host / Process
 
