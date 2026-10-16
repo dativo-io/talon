@@ -283,6 +283,23 @@ dump_diag_env() {
 }
 
 # --- Environment checks (Section 2) ---
+# Sections that need no provider key: a focused SMOKE_ONLY run made only of
+# these skips the OPENAI_API_KEY prerequisite (TALON_SECRETS_KEY, talon and
+# the tools are still required). Everything else is unchanged; the full suite
+# still requires the key.
+readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance "
+smoke_only_is_offline() {
+  [[ -n "${SMOKE_ONLY:-}" ]] || return 1
+  local s
+  for s in ${SMOKE_ONLY}; do
+    case "$SMOKE_OFFLINE_SECTIONS" in
+      *" ${s} "*) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
 check_prereqs() {
   echo "Checking prerequisites..."
   local missing=()
@@ -303,13 +320,13 @@ check_prereqs() {
     if TALON_DATA_DIR="$TALON_DATA_DIR" talon secrets list 2>/dev/null | grep -q openai-api-key; then
       VAULT_HAS_OPENAI_KEY=1
     else
-      [[ -n "${OPENAI_API_KEY:-}" ]] || missing+=("OPENAI_API_KEY set (vault has no openai-api-key; set it with: talon secrets set openai-api-key \$OPENAI_API_KEY)")
+      [[ -n "${OPENAI_API_KEY:-}" ]] || smoke_only_is_offline || missing+=("OPENAI_API_KEY set (vault has no openai-api-key; set it with: talon secrets set openai-api-key \$OPENAI_API_KEY)")
     fi
   else
     TALON_DATA_DIR="$(mktemp -d)"
     export TALON_DATA_DIR
     SMOKE_CREATED_DATA_DIR=1
-    [[ -n "${OPENAI_API_KEY:-}" ]] || missing+=("OPENAI_API_KEY set (used to set openai-api-key in vault for this run)")
+    [[ -n "${OPENAI_API_KEY:-}" ]] || smoke_only_is_offline || missing+=("OPENAI_API_KEY set (used to set openai-api-key in vault for this run)")
   fi
   if [[ ${#missing[@]} -gt 0 ]]; then
     echo "Missing: ${missing[*]}"

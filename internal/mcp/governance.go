@@ -179,7 +179,18 @@ func discoverCapabilities() map[string]any {
 // so free text that reaches a signed record is first passed through
 // sanitizeDiagnostic: control characters removed, secret-shaped tokens and
 // URL credentials/queries redacted, length bounded.
+// Untrusted text. These strings are controlled by a caller, a policy author
+// or a vendor and never reach a public message or a record raw:
+//   - policy decision reasons (the rego interpolates argument values);
+//   - vendor JSON-RPC error messages and vendor definition errors;
+//   - every Go error from the engine, a tool, the transport or decoding.
+//
+// Public messages are the fixed constants below; records keep a sanitized,
+// bounded diagnostic; the vendor's own JSON-RPC error object is relayed to
+// the client unchanged as an explicit pass-through (it is the vendor's
+// error, not Talon's claim) and never copied into Talon-authored text.
 const (
+	publicPolicyDenied           = "tool not allowed by policy"
 	publicPolicyEvaluationFailed = "Tool call blocked: policy evaluation failed (fail-closed)"
 	publicToolExecutionFailed    = "Tool execution failed"
 	publicOutboundRequestInvalid = "Tool call could not be forwarded: outbound request invalid"
@@ -191,9 +202,12 @@ const (
 )
 
 var (
-	// secretShaped covers bearer tokens, API-key style values and
-	// key=value / key: value credentials in free text.
-	secretShaped = regexp.MustCompile(`(?i)(bearer\s+|sk-[a-z0-9_-]{8,}|(?:api[_-]?key|token|secret|password|passwd|authorization|credential|x-api-key)\s*[:=]\s*)\S+`)
+	// Secret-shaped text, redacted in three passes so no prefix of a token
+	// survives: "Bearer <x>", bare "sk-…" API keys, and key=value /
+	// key: value credentials.
+	bearerToken  = regexp.MustCompile(`(?i)\b(bearer)\s+\S+`)
+	apiKeyToken  = regexp.MustCompile(`(?i)\bsk-[a-z0-9_-]{8,}`)
+	credentialKV = regexp.MustCompile(`(?i)\b(api[_-]?key|token|secret|password|passwd|authorization|credential|x-api-key)\s*[:=]\s*\S+`)
 	// urlCredentials strips userinfo and query strings from URLs.
 	urlCredentials = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)(?:[^/\s@]+@)?([^\s?#]*)(\?[^\s#]*)?`)
 	// fsPath redacts absolute filesystem paths (two or more segments) that
@@ -208,14 +222,16 @@ var (
 // those are fixed constants — only to bound what evidence retains.
 func sanitizeDiagnostic(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) { // control and format (zero-width, bidi) characters
 			return ' '
 		}
 		return r
 	}, s)
 	s = strings.Join(strings.Fields(s), " ")
 	s = urlCredentials.ReplaceAllString(s, "${1}${2}")
-	s = secretShaped.ReplaceAllString(s, "${1}[redacted]")
+	s = credentialKV.ReplaceAllString(s, "${1}=[redacted]")
+	s = bearerToken.ReplaceAllString(s, "${1} [redacted]")
+	s = apiKeyToken.ReplaceAllString(s, "[redacted]")
 	s = fsPath.ReplaceAllString(s, "${1}[path]")
 	if len(s) > maxDiagnosticBytes {
 		cut := maxDiagnosticBytes
@@ -225,4 +241,20 @@ func sanitizeDiagnostic(s string) string {
 		s = s[:cut] + "…"
 	}
 	return s
+}
+
+// sanitizeReasons applies sanitizeDiagnostic to every policy reason: the
+// rego interpolates caller-provided argument values into its messages, so
+// a reason is untrusted text until bounded and redacted.
+func sanitizeReasons(reasons []string) []string {
+	if len(reasons) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(reasons))
+	for _, r := range reasons {
+		if r = sanitizeDiagnostic(r); r != "" {
+			out = append(out, r)
+		}
+	}
+	return out
 }

@@ -47,6 +47,7 @@ func adversarialError() error {
 
 func assertNoSecret(t *testing.T, where, s string) {
 	t.Helper()
+	s = strings.TrimRight(s, "\n") // a JSON encoder's trailing newline is not a leaked line break
 	for _, bad := range []string{"sk-SECRET", "P4ssw0rd", "XYZSECRET", "vault.db", "\x01", "\n"} {
 		assert.NotContains(t, s, bad, "%s leaks %q", where, bad)
 	}

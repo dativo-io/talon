@@ -49,6 +49,7 @@ Compatibility alias:
 | `POLICY_MODIFIED` | `modify` | `policy_evaluation` | modification token | Request was modified by policy before execution. | Usually no action; review modifications if unexpected. |
 | `POLICY_FILTERED` | `filter` | `output_validation` | filtering reason (for example `output_pii_redacted`) | Request output was filtered/redacted by policy. | None if expected; otherwise adjust filtering policy. |
 | `EXECUTION_FAILED` | `failure` | `execution` / `tool_execution` | stable failure token (or sanitized error context) | Request failed during execution. | Inspect dependency/tool/provider error and retry. |
+| `EXECUTION_OUTCOME_UNKNOWN` | `unknown` | `tool_execution` | `upstream_error: …`, `upstream_response_invalid: …`, `upstream_result_type_unsupported` | Request outcome is unknown: it may have reached the destination and no trustworthy result exists (#372). | Do not retry automatically; reconcile the destination's actual state before any new attempt. |
 | `LEGACY_REASON_UNMIGRATED` | `deny` (default) | `policy_evaluation` | legacy reason text | Legacy free-text reason not yet mapped to specific code. | Add explicit mapping and structured fact for this path. |
 
 ## Graph Governance Explanations

@@ -181,7 +181,7 @@ func (h *ProxyHandler) fetchDefinitions(ctx context.Context, req *wire.Request, 
 			// Spec: a definition with an invalid x-mcp-header annotation
 			// is excluded (from tools/list and from tools/call); log the
 			// tool and the reason.
-			log.Warn().Str("tool", name).Err(err).Msg("mcp_proxy_tool_excluded_invalid_header_annotation")
+			log.Warn().Str("tool", sanitizeDiagnostic(name)).Str("reason", sanitizeDiagnostic(err.Error())).Msg("mcp_proxy_tool_excluded_invalid_header_annotation")
 			continue
 		}
 		cap.byName[name] = &capturedTool{name: name, raw: toolRaw, decl: decl}
@@ -229,7 +229,7 @@ func (h *ProxyHandler) captureFailureFor(req *wire.Request, err error) *captureF
 		if len(ue.RPC.Data) > 0 {
 			out.Error.Data = ue.RPC.Data
 		}
-		return &captureFailure{reason: fmt.Sprintf("upstream_jsonrpc_error: %d %s", ue.RPC.Code, ue.RPC.Message), relay: out}
+		return &captureFailure{reason: fmt.Sprintf("definitions_upstream_jsonrpc_error: %d %s", ue.RPC.Code, sanitizeDiagnostic(ue.RPC.Message)), relay: out}
 	default:
 		return failed("upstream_response_invalid: " + sanitizeDiagnostic(ue.Err.Error()))
 	}
@@ -492,8 +492,10 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 			h.recordEvidence(ctx, inv, "proxy_policy_eval_error", toolName, "policy_evaluation_failed: "+sanitizeDiagnostic(err.Error()), nil), "", true)
 	}
 	if !decision.Allowed {
-		denyReason := strings.Join(decision.Reasons, "; ")
-		return governedError(req.ID, govcode.PolicyDenied, denyReason, h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, denyReason, nil), "", true)
+		// Policy reasons are untrusted text: fixed public message, sanitized
+		// and bounded reason in the record.
+		denyReason := sanitizeDiagnostic(strings.Join(decision.Reasons, "; "))
+		return governedError(req.ID, govcode.PolicyDenied, publicPolicyDenied, h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, denyReason, nil), "", true)
 	}
 
 	// PII scan on arguments. A scanner failure blocks the call fail-closed:
@@ -637,8 +639,11 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 		if len(upstream.Error.Data) > 0 {
 			out.Error.Data = upstream.Error.Data
 		}
+		// The vendor's error object is relayed to the client unchanged (an
+		// explicit pass-through: it is the vendor's error, not Talon's claim).
+		// Talon's own record keeps the code and a sanitized, bounded message.
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName,
-			fmt.Sprintf("upstream_jsonrpc_error: %d %s", upstream.Error.Code, upstream.Error.Message), &flow)
+			fmt.Sprintf("upstream_jsonrpc_error: %d %s", upstream.Error.Code, sanitizeDiagnostic(upstream.Error.Message)), &flow)
 		return &out
 	}
 	// resultType truth table (#447): complete continues, input_required
@@ -1100,6 +1105,18 @@ func proxyExplanationFacts(eventType, reason, toolName string) []explanation.Fac
 			Trigger:  trigger,
 		}}
 	case "proxy_upstream_error":
+		// The signed explanation must mean what the outcome means: a known
+		// failure (nothing sent, or a trustworthy vendor report) is
+		// EXECUTION_FAILED/failure; an effect that may have happened with no
+		// trustworthy answer is EXECUTION_OUTCOME_UNKNOWN/unknown (#372).
+		if upstreamOutcomeUnknown(reason) {
+			return []explanation.Fact{{
+				Code:     explanation.CodeExecutionOutcomeUnknown,
+				Decision: explanation.DecisionUnknown,
+				Stage:    explanation.StageToolExecution,
+				Trigger:  trigger,
+			}}
+		}
 		return []explanation.Fact{{
 			Code:     explanation.CodeExecutionFailed,
 			Decision: explanation.DecisionFailure,

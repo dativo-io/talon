@@ -199,22 +199,29 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	if params.Name == "" {
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "tool name is required"}}
 	}
+	// Canonical tool resolution precedes governance: a name Talon cannot
+	// resolve is the spec's invalid-params protocol error (server/tools
+	// §Error Handling) — no governance extension, no evidence, zero
+	// execution. Evaluating policy first produced a committed "policy
+	// denial" receipt for a tool that never existed (#372 review).
+	tool, ok := h.registry.Get(params.Name)
+	if !ok {
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "Unknown tool: " + sanitizeDiagnostic(params.Name)}}
+	}
 	// Mcp-Param-* integrity (#447): when the trusted tool schema declares
 	// mirrored parameters, every recognized header must equal the parsed
 	// argument. A mismatch is a protocol rejection — before policy, before
 	// execution, with no evidence (no trustworthy action exists yet). The
 	// header is never the argument value.
-	if tool, ok := h.registry.Get(params.Name); ok {
-		_, decl, derr := nativeToolDefinition(tool)
-		if derr != nil {
-			wire.WriteError(w, req.ID, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidParams, Reason: wire.ReasonInvalidRequest, Message: "tool definition is invalid: " + sanitizeDiagnostic(derr.Error())})
-			return nil
-		}
-		if perr := wire.ValidateHeaderParams(decl, params.Arguments, req.HeaderParams); perr != nil {
-			span.SetAttributes(attribute.String("mcp.protocol_reason", perr.Reason))
-			wire.WriteError(w, req.ID, perr)
-			return nil
-		}
+	_, decl, derr := nativeToolDefinition(tool)
+	if derr != nil {
+		wire.WriteError(w, req.ID, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidParams, Reason: wire.ReasonInvalidRequest, Message: "tool definition is invalid: " + sanitizeDiagnostic(derr.Error())})
+		return nil
+	}
+	if perr := wire.ValidateHeaderParams(decl, params.Arguments, req.HeaderParams); perr != nil {
+		span.SetAttributes(attribute.String("mcp.protocol_reason", perr.Reason))
+		wire.WriteError(w, req.ID, perr)
+		return nil
 	}
 
 	span.SetAttributes(attribute.String("tool.name", params.Name))
@@ -329,34 +336,32 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	}
 
 	if !decision.Allowed {
-		msg := "policy denied"
-		if len(decision.Reasons) > 0 {
-			msg = decision.Reasons[0]
+		// Policy reasons are untrusted text (the rego interpolates argument
+		// values): the public message is fixed and the record keeps only
+		// sanitized, bounded reasons.
+		reasons := sanitizeReasons(decision.Reasons)
+		evReason := "policy denied"
+		if len(reasons) > 0 {
+			evReason = reasons[0]
 		}
-		span.SetAttributes(attribute.String("policy.deny", msg))
+		span.SetAttributes(attribute.String("policy.deny", evReason))
 		flow.argBlocked = true
 		denyCorrelationID := "mcp_" + uuid.New().String()[:8]
 		denyEv := h.newServerEvidence(tenantID, agentID, denyCorrelationID, params.Name, evidence.PolicyDecision{
 			Allowed:       false,
 			Action:        decision.Action,
-			Reasons:       decision.Reasons,
+			Reasons:       reasons,
 			PolicyVersion: decision.PolicyVersion,
-		}, msg, 0, flow)
+		}, evReason, 0, flow)
 		denyEv.Explanations = explanation.BuildFromFacts(explanation.BuildLegacyFacts(
 			false,
 			decision.Action,
-			decision.Reasons,
+			reasons,
 			explanation.StagePolicyEvaluation,
 			explanation.PolicyRef(decision.PolicyVersion),
 			decision.PolicyVersion,
 		))
-		return governedError(req.ID, govcode.PolicyDenied, msg, commitEvidence(ctx, h.evidenceStore, span, denyEv), "", true)
-	}
-
-	tool, ok := h.registry.Get(params.Name)
-	if !ok {
-		// Unknown tool is a protocol error per server/tools §Error Handling.
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "Unknown tool: " + params.Name}}
+		return governedError(req.ID, govcode.PolicyDenied, publicPolicyDenied, commitEvidence(ctx, h.evidenceStore, span, denyEv), "", true)
 	}
 
 	if schema := tool.InputSchema(); len(schema) > 0 && string(schema) != "null" {

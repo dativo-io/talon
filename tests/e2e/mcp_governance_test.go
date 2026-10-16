@@ -40,6 +40,11 @@ import (
 //	                             effect, record status unknown, no hidden retry
 //	6. tamper                  → a corrupted copy of a recorded record fails
 //	                             `talon audit verify`; untouched records verify
+//	+  unknown native tool     → -32602, no governance object, no alias, no record
+//	+  denial safe data        → fixed public message; a caller-supplied secret in the
+//	                             arguments appears neither publicly nor in the record
+//	+  signed UNKNOWN          → the unknown record's explanation is
+//	                             EXECUTION_OUTCOME_UNKNOWN / unknown, equal to reasonCode
 //
 // Coverage boundary (documented, not hidden): pre-dispatch evidence-commit
 // outages and adversarial error sanitization cannot be injected into a
@@ -135,12 +140,29 @@ type storedRecord struct {
 		Reasons []string `json:"reasons"`
 	} `json:"policy_decision"`
 	Explanations []struct {
-		Code string `json:"code"`
+		Code     string `json:"code"`
+		Decision string `json:"decision"`
 	} `json:"explanations"`
 	Signature string `json:"signature"`
 }
 
-func readRecord(t *testing.T, dbPath, id string) storedRecord {
+// countRecords counts every stored record (any tenant): a protocol outcome
+// or an unresolvable tool must leave the count unchanged.
+func countRecords(t *testing.T, dbPath string) int {
+	t.Helper()
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM evidence`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func rawRecordJSON(t *testing.T, dbPath, id string) string {
 	t.Helper()
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -148,11 +170,16 @@ func readRecord(t *testing.T, dbPath, id string) storedRecord {
 	}
 	defer db.Close()
 	var js string
-	if err := db.QueryRow(`SELECT evidence_json FROM evidence WHERE id = ?`, id).Scan(&js); err != nil {
+	if err := db.QueryRowContext(t.Context(), `SELECT evidence_json FROM evidence WHERE id = ?`, id).Scan(&js); err != nil {
 		t.Fatalf("record %s not found in %s: %v", id, dbPath, err)
 	}
+	return js
+}
+
+func readRecord(t *testing.T, dbPath, id string) storedRecord {
+	t.Helper()
 	var rec storedRecord
-	if err := json.Unmarshal([]byte(js), &rec); err != nil {
+	if err := json.Unmarshal([]byte(rawRecordJSON(t, dbPath, id)), &rec); err != nil {
 		t.Fatal(err)
 	}
 	return rec
@@ -269,10 +296,21 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 	}
 
 	// 3. forbidden call: policy_denied, deny, non-retryable, alias; effect still 1.
-	deny := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{` + mcpMeta + `,"name":"delete_customer","arguments":{}}}`
+	const sentinel = "sk-SMOKE-SENTINEL-SECRET-0001"
+	deny := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{` + mcpMeta + `,"name":"delete_customer","arguments":{"token":"` + sentinel + `","reason":"line1\nline2"}}}`
+	recordsBefore := countRecords(t, dbPath)
 	st, _, out = c.post("/mcp/proxy", "tools/call", "delete_customer", deny, nil)
 	if st != 200 || mcpErrCode(out) != -32000 {
 		t.Fatalf("forbidden call: %d %v", st, out)
+	}
+	if msg := out["error"].(map[string]any)["message"].(string); msg != "tool not allowed by policy" {
+		t.Fatalf("denial message must be the fixed public string, got %q", msg)
+	}
+	if raw, _ := json.Marshal(out); strings.Contains(string(raw), sentinel) {
+		t.Fatalf("caller-supplied argument value echoed in the public denial: %s", raw)
+	}
+	if countRecords(t, dbPath) != recordsBefore+1 {
+		t.Fatalf("a governed denial writes exactly one record")
 	}
 	ext = govExt(out)
 	if err := checkGovernance(ext, "policy_denied", "deny", false); err != nil {
@@ -289,8 +327,11 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 	}
 	denyID := ext["evidence"].(map[string]any)["id"].(string)
 	rec = readRecord(t, dbPath, denyID)
-	if rec.PolicyDecison.Allowed || len(rec.Explanations) == 0 || rec.Explanations[0].Code != ext["reasonCode"] {
+	if rec.PolicyDecison.Allowed || len(rec.Explanations) == 0 || rec.Explanations[0].Code != ext["reasonCode"] || rec.Explanations[0].Decision != "deny" {
 		t.Fatalf("denied record disagrees with the extension: %+v vs %v", rec, ext)
+	}
+	if js := rawRecordJSON(t, dbPath, denyID); strings.Contains(js, sentinel) {
+		t.Fatal("caller-supplied argument value stored in the signed denial record")
 	}
 	if o, _, code := RunTalon(t, dir, nil, "audit", "verify", denyID); code != 0 || !strings.Contains(o, "VALID") {
 		t.Fatalf("audit verify %s: %d %s", denyID, code, o)
@@ -318,6 +359,19 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 		if data, _ := out["error"].(map[string]any)["data"].(map[string]any); data["talon_code"] != nil {
 			t.Fatalf("%s: a protocol error must not carry the legacy alias: %v", name, data)
 		}
+	}
+	// Unknown native tool: canonical resolution precedes governance — the
+	// spec's invalid-params error, no governance object, no alias, no record.
+	recordsBefore = countRecords(t, dbPath)
+	st, _, out = c.post("/mcp", "tools/call", "no_such_tool", `{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{`+mcpMeta+`,"name":"no_such_tool","arguments":{}}}`, nil)
+	if st != 200 || mcpErrCode(out) != -32602 || govExt(out) != nil {
+		t.Fatalf("unknown native tool must be a protocol invalid-params error without a governance object: %d %v", st, out)
+	}
+	if data, _ := out["error"].(map[string]any)["data"].(map[string]any); data["talon_code"] != nil {
+		t.Fatalf("unknown tool must not carry the legacy alias: %v", data)
+	}
+	if countRecords(t, dbPath) != recordsBefore {
+		t.Fatal("an unresolvable tool must not leave a governance receipt")
 	}
 	if st, _, out := c.post("/mcp/proxy", "resources/read", "doc-1", `{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{`+mcpMeta+`,"uri":"doc-1"}}`, nil); st != 404 || mcpErrCode(out) != -32601 || govExt(out) != nil {
 		t.Fatalf("unknown method: %d %v", st, out)
@@ -349,6 +403,9 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 	rec = readRecord(t, dbPath, unknownID)
 	if rec.Status != "unknown" || rec.FailureReason != "upstream_outcome_unknown" {
 		t.Fatalf("unknown record status/failure_reason = %s/%s", rec.Status, rec.FailureReason)
+	}
+	if len(rec.Explanations) == 0 || rec.Explanations[0].Code != "EXECUTION_OUTCOME_UNKNOWN" || rec.Explanations[0].Decision != "unknown" || rec.Explanations[0].Code != ext["reasonCode"] {
+		t.Fatalf("the signed explanation of an unknown outcome must say unknown, not failure: %+v (reasonCode %v)", rec.Explanations, ext["reasonCode"])
 	}
 	if o, _, code := RunTalon(t, dir, nil, "audit", "verify", unknownID); code != 0 || !strings.Contains(o, "VALID") {
 		t.Fatalf("audit verify %s: %d %s", unknownID, code, o)
