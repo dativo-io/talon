@@ -30,6 +30,11 @@ const (
 	CodePolicyModified          = "POLICY_MODIFIED"
 	CodePolicyFiltered          = "POLICY_FILTERED"
 	CodeExecutionFailed         = "EXECUTION_FAILED"
+	// CodeExecutionOutcomeUnknown: the request may have reached its
+	// destination and no trustworthy outcome exists (transport failure after
+	// hand-off, an unreadable or unsupported answer). It is neither a
+	// failure nor a success; automatic retry is blocked (#372).
+	CodeExecutionOutcomeUnknown = "EXECUTION_OUTCOME_UNKNOWN"
 	CodeLegacyReasonUnmigrated  = "LEGACY_REASON_UNMIGRATED"
 
 	CodeGraphRunAllowed         = "GRAPH_RUN_ALLOWED"
@@ -45,6 +50,8 @@ const (
 	DecisionModify  = "modify"
 	DecisionFilter  = "filter"
 	DecisionFailure = "failure"
+	// DecisionUnknown: the effect may or may not have happened.
+	DecisionUnknown = "unknown"
 )
 
 // Fact is the source-of-truth structured explanation fact.
@@ -244,6 +251,7 @@ var reasonByCode = map[string]string{
 	CodePolicyModified:          "Request was modified by policy before execution.",
 	CodePolicyFiltered:          "Request output was filtered by policy.",
 	CodeExecutionFailed:         "Request failed during execution.",
+	CodeExecutionOutcomeUnknown: "Request outcome is unknown: it may have reached the destination and no trustworthy result exists.",
 	CodeGraphRunAllowed:         "Graph run completed within governance limits.",
 	CodeGraphIterationLimitDeny: "Graph step denied: iteration limit exceeded.",
 	CodeGraphCostLimitDeny:      "Graph step denied: cost limit exceeded.",
@@ -272,6 +280,8 @@ func decisionFromCode(code string) string {
 		return DecisionFilter
 	case CodeExecutionFailed:
 		return DecisionFailure
+	case CodeExecutionOutcomeUnknown:
+		return DecisionUnknown
 	default:
 		return DecisionDeny
 	}
@@ -287,6 +297,8 @@ func defaultCodeForDecision(decision string) string {
 		return CodePolicyFiltered
 	case DecisionFailure:
 		return CodeExecutionFailed
+	case DecisionUnknown:
+		return CodeExecutionOutcomeUnknown
 	default:
 		return CodePolicyDenied
 	}
@@ -403,6 +415,8 @@ func defaultFix(code string) string {
 		return "Wait for cooldown or resolve repeated denials before retrying."
 	case CodeExecutionFailed:
 		return "Inspect execution error details and retry when the dependency is healthy."
+	case CodeExecutionOutcomeUnknown:
+		return "Do not retry automatically; reconcile the destination's actual state before any new attempt."
 	case CodeGraphIterationLimitDeny:
 		return "Increase max_iterations in resource_limits or reduce graph steps."
 	case CodeGraphCostLimitDeny:

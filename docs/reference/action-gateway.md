@@ -132,7 +132,9 @@ Runtime routes take the AI use case's **agent key** (`Authorization: Bearer <age
 | `GET /v1/approvals/{approval_id}` | approval + operation projection (owner agent key) |
 | `POST /v1/approvals/{approval_id}/decisions` `{decision: approve\|reject, reason}` | `200` decided; `401 approval_not_authorized` (no/unknown approver credential, admin key, agent key, or a group not named by the matched rule — refusals are evidenced); `404 not_found` (no approval with that id **in the principal's tenant scope** — a valid id of another tenant is indistinguishable from a nonexistent one and touches nothing); `409 approval_already_decided`; `409 approval_expired` |
 
-Error envelope: `{"error": {"code", "message", "operation"?}}`. The code is the contract; HTTP status alone is insufficient.
+Error envelope: `{"error": {"code", "message", "operation"?}}`. The code is the contract; HTTP status alone is insufficient. Codes are entries of the shared governance registry (`internal/govcode`, [MCP governance extension](mcp-governance-extension.md)), so the MCP adapter reports the same domain outcome under the same code.
+
+**Evidence reference (#372).** Every operation projection returned by a call that committed lifecycle evidence (establish, decision, attempt, and the evidenced `operation_conflict` refusal) carries `evidence: {"id", "committed": true, "sequence"}`: the id of the last lifecycle record that call committed in the same SQLite transaction as the state change. Reads (`GET`) commit nothing and carry no `evidence`. The reference is a locator for `talon audit verify <id>` / `talon audit verify --operation <operation_id>`, never proof by itself, and `committed: true` is not a completeness or immutability claim.
 
 ## Dispatch and outcome truth table
 

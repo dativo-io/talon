@@ -62,6 +62,7 @@ EU buyers distrust overclaiming, so every compliance reference must be under-cla
 - **Integration tests:** `make test-integration` — runs `./tests/integration/...` with `-tags=integration`
 - **E2E tests:** `make test-e2e` — runs `./tests/e2e/...` with `-tags=e2e` (builds binary in TestMain, 5m timeout)
 - **All tiers:** `make test-all` — unit + integration + e2e
+- **No-key smoke gates:** `make test-mcp-smoke` (MCP 2026-07-28 wire, #447), `make test-mcp-governance-smoke` (governance extension + signed evidence contract against the built binary, #372; also smoke section 37 and a PR CI step) and `make test-action-catalog-smoke` (trusted catalog, #427). `make test-smoke` is the full black-box suite and needs a provider key.
 
 Test layout:
 

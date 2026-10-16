@@ -25,6 +25,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier/adapter"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
+	"github.com/dativo-io/talon/internal/govcode"
 	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
@@ -44,7 +45,7 @@ type UpstreamSecretGetter interface {
 // ProxyHandler forwards MCP requests to an upstream vendor endpoint with policy and PII handling.
 type ProxyHandler struct {
 	config        *policy.ProxyPolicyConfig
-	proxyEngine   *policy.ProxyEngine
+	proxyEngine   proxyPolicyEvaluator
 	evidenceStore *evidence.Store
 	classifier    classifier.Facade
 	secrets       UpstreamSecretGetter
@@ -95,6 +96,13 @@ func newUpstreamClient(timeout time.Duration) *http.Client {
 // of the upstream.
 func proxyServer() wire.Implementation {
 	return wire.Implementation{Name: "talon-mcp-proxy", Version: ServerVersion}
+}
+
+// proxyPolicyEvaluator is the proxy's policy-engine seam (tool access and
+// PII verdicts); narrow so a failing evaluator can be injected in tests.
+type proxyPolicyEvaluator interface {
+	EvaluateProxyToolAccess(ctx context.Context, input *policy.ProxyInput) (*policy.Decision, error)
+	EvaluateProxyPII(ctx context.Context, input *policy.ProxyInput) (*policy.Decision, error)
 }
 
 // definitionCapture is the proxy's ONE trusted protocol-definition source
@@ -173,7 +181,7 @@ func (h *ProxyHandler) fetchDefinitions(ctx context.Context, req *wire.Request, 
 			// Spec: a definition with an invalid x-mcp-header annotation
 			// is excluded (from tools/list and from tools/call); log the
 			// tool and the reason.
-			log.Warn().Str("tool", name).Err(err).Msg("mcp_proxy_tool_excluded_invalid_header_annotation")
+			log.Warn().Str("tool", sanitizeDiagnostic(name)).Str("reason", sanitizeDiagnostic(err.Error())).Msg("mcp_proxy_tool_excluded_invalid_header_annotation")
 			continue
 		}
 		cap.byName[name] = &capturedTool{name: name, raw: toolRaw, decl: decl}
@@ -188,30 +196,32 @@ func (h *ProxyHandler) fetchDefinitions(ctx context.Context, req *wire.Request, 
 	return cap, nil
 }
 
-// captureFailureFor maps a classified upstream failure to the evidence
-// reason and the JSON-RPC answer the proxy returns: an unreachable upstream
-// leaves egress unconfirmed, a vault failure stays a generic configuration
-// error, an upstream JSON-RPC error is relayed, and every contract
-// violation is an invalid upstream response.
+// captureFailureFor maps a classified upstream failure of the definition
+// capture (tools/list) to the evidence reason and the governance outcome the
+// proxy returns: the business call was never sent, so every Talon-shaped
+// failure is pre-dispatch — a vault failure is upstream_auth_unavailable
+// with a generic message, anything else upstream_tool_failed — while an
+// upstream JSON-RPC error is relayed verbatim (the vendor's error object is
+// not Talon's to annotate).
 func (h *ProxyHandler) captureFailureFor(req *wire.Request, err error) *captureFailure {
-	upstreamErr := func(reason, msg string) *captureFailure {
-		return &captureFailure{reason: reason, resp: &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: msg, Data: talonErrData(TalonCodeUpstreamError)}}}
+	// Every reason is prefixed "definitions_": the business call was never
+	// sent, so these are KNOWN failures (not_dispatched), never unknown.
+	failed := func(reason string) *captureFailure {
+		return &captureFailure{reason: "definitions_" + reason, code: govcode.UpstreamToolFailed, msg: publicDefinitionsUnavailable}
 	}
 	var ue *wire.UpstreamError
 	if !errors.As(err, &ue) {
-		return upstreamErr("upstream_response_invalid", "upstream response invalid: "+err.Error())
+		return failed("upstream_response_invalid: " + sanitizeDiagnostic(err.Error()))
 	}
 	switch ue.Kind {
 	case wire.UpstreamKindRequest:
-		return upstreamErr("outbound_request_invalid", ue.Err.Error())
+		return failed("outbound_request_invalid: " + sanitizeDiagnostic(ue.Err.Error()))
 	case wire.UpstreamKindTransport:
 		if errors.Is(ue, errSecretRetrieval) {
 			// Fail-closed vault failure (#358): generic message, no detail leak.
-			f := upstreamErr("secret retrieval error", "Service configuration error")
-			f.transport = true
-			return f
+			return &captureFailure{reason: "secret retrieval error", code: govcode.UpstreamAuthUnavailable, msg: publicConfigurationError, transport: true}
 		}
-		f := upstreamErr("upstream_error: "+ue.Err.Error(), ue.Err.Error())
+		f := failed("upstream_error: " + sanitizeDiagnostic(ue.Err.Error()))
 		f.transport = true
 		return f
 	case wire.UpstreamKindRPC:
@@ -219,10 +229,20 @@ func (h *ProxyHandler) captureFailureFor(req *wire.Request, err error) *captureF
 		if len(ue.RPC.Data) > 0 {
 			out.Error.Data = ue.RPC.Data
 		}
-		return &captureFailure{reason: fmt.Sprintf("upstream_jsonrpc_error: %d %s", ue.RPC.Code, ue.RPC.Message), resp: out}
+		return &captureFailure{reason: fmt.Sprintf("definitions_upstream_jsonrpc_error: %d %s", ue.RPC.Code, sanitizeDiagnostic(ue.RPC.Message)), relay: out}
 	default:
-		return upstreamErr("upstream_response_invalid", "upstream response invalid: "+ue.Err.Error())
+		return failed("upstream_response_invalid: " + sanitizeDiagnostic(ue.Err.Error()))
 	}
+}
+
+// response renders the capture failure once its evidence (if any) was
+// recorded: a relayed vendor error unchanged, otherwise the governance
+// extension with the committed reference.
+func (f *captureFailure) response(id json.RawMessage, out *evidenceOutcome) *jsonrpcResponse {
+	if f.relay != nil {
+		return f.relay
+	}
+	return governedError(id, f.code, f.msg, out, TalonCodeUpstreamError, true)
 }
 
 // captureExpiry turns the upstream ttlMs hint into the capture's deadline;
@@ -254,9 +274,11 @@ func capturedDeclaration(toolRaw json.RawMessage) (*wire.HeaderParams, error) {
 // captureFailure is why a definition capture could not be completed: the
 // evidence reason (same vocabulary as a failed dispatch) and the response.
 type captureFailure struct {
-	reason    string
-	transport bool // nothing reached the upstream's handler (egress unconfirmed)
-	resp      *jsonrpcResponse
+	reason    string // evidence reason
+	transport bool   // egress unconfirmed
+	code      string // governance code (Talon-shaped failure)
+	msg       string
+	relay     *jsonrpcResponse // the vendor's own JSON-RPC error, relayed verbatim
 }
 
 // proxyInvocation carries request-scoped attribution for evidence (#350):
@@ -389,7 +411,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// gateway contract (reject, never truncate).
 	inv, err := h.resolveProxyInvocation(r)
 	if err != nil {
-		wire.WriteError(w, req.ID, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidRequest, Reason: wire.ReasonInvalidRequest, Message: "invalid attribution header: " + err.Error()})
+		wire.WriteError(w, req.ID, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidRequest, Reason: wire.ReasonInvalidRequest, Message: "invalid attribution header: " + sanitizeDiagnostic(err.Error())})
 		return
 	}
 	// Echo the resolved identifiers so callers can join their receipts to
@@ -403,7 +425,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var resp *jsonrpcResponse
 	switch req.Method {
 	case wire.MethodDiscover:
-		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: wire.Discover(proxyServer(), map[string]interface{}{"tools": map[string]interface{}{}}, "", listTTLMs)}
+		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: wire.Discover(proxyServer(), discoverCapabilities(), "", listTTLMs)}
 	case wire.MethodToolsList:
 		resp = h.handleToolsList(ctx, req, inv)
 	case wire.MethodToolsCall:
@@ -442,8 +464,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 	for _, f := range h.config.Proxy.ForbiddenTools {
 		if f == toolName || (strings.HasSuffix(f, "*") && strings.HasPrefix(toolName, strings.TrimSuffix(f, "*"))) {
 			span.SetAttributes(attribute.String("proxy.blocked", "forbidden"))
-			h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, "forbidden_tools", nil)
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "tool not allowed by policy", Data: talonErrData(TalonCodeToolForbidden)}}
+			return governedError(req.ID, govcode.PolicyDenied, "tool not allowed by policy", h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, "forbidden_tools", nil), TalonCodeToolForbidden, true)
 		}
 	}
 
@@ -463,13 +484,18 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 	}
 	decision, err := h.proxyEngine.EvaluateProxyToolAccess(ctx, proxyInput)
 	if err != nil {
+		// A governance failure on a trustworthy canonical tool is itself a
+		// governed, evidenced, fail-closed outcome (zero upstream). The raw
+		// engine error stays in the span and the sanitized record.
 		span.RecordError(err)
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error()}}
+		return governedError(req.ID, govcode.PolicyEvaluationFailed, publicPolicyEvaluationFailed,
+			h.recordEvidence(ctx, inv, "proxy_policy_eval_error", toolName, "policy_evaluation_failed: "+sanitizeDiagnostic(err.Error()), nil), "", true)
 	}
 	if !decision.Allowed {
-		denyReason := strings.Join(decision.Reasons, "; ")
-		h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, denyReason, nil)
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: denyReason, Data: talonErrData(TalonCodePolicyDenied)}}
+		// Policy reasons are untrusted text: fixed public message, sanitized
+		// and bounded reason in the record.
+		denyReason := sanitizeDiagnostic(strings.Join(decision.Reasons, "; "))
+		return governedError(req.ID, govcode.PolicyDenied, publicPolicyDenied, h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, denyReason, nil), "", true)
 	}
 
 	// PII scan on arguments. A scanner failure blocks the call fail-closed:
@@ -480,8 +506,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 		if scanErr != nil {
 			flow.requestBlocked = true
 			flow.scannerFailure = scannerFailureKind(scanErr)
-			h.recordEvidence(ctx, inv, "proxy_pii_scan_error", toolName, "scanner_unavailable", &flow)
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Request blocked: PII scanner unavailable (fail-closed)", Data: talonErrData(TalonCodeScannerUnavailable)}}
+			return governedError(req.ID, govcode.ScannerUnavailable, "Request blocked: PII scanner unavailable (fail-closed)", h.recordEvidence(ctx, inv, "proxy_pii_scan_error", toolName, "scanner_unavailable", &flow), "", true)
 		}
 		if result != nil && len(result.Entities) > 0 {
 			flow.requestEntities = classifier.MergeEntitySpans(argStr, result.Entities)
@@ -495,48 +520,35 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 				// Fail closed: arguments whose PII verdict Talon cannot
 				// compute must not reach the upstream tool.
 				flow.requestBlocked = true
-				h.recordEvidence(ctx, inv, "proxy_pii_eval_error", toolName, piiErr.Error(), &flow)
-				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII policy evaluation failed (fail-closed)", Data: talonErrData(TalonCodePIIBlocked)}}
+				return governedError(req.ID, govcode.PolicyEvaluationFailed, "PII policy evaluation failed (fail-closed)", h.recordEvidence(ctx, inv, "proxy_pii_eval_error", toolName, "pii_policy_evaluation_failed: "+sanitizeDiagnostic(piiErr.Error()), &flow), TalonCodePIIBlocked, true)
 			}
 			if piiDecision != nil && !piiDecision.Allowed {
 				flow.requestBlocked = true
-				h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "pii_detected_in_request", &flow)
-				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII detected in request", Data: talonErrData(TalonCodePIIBlocked)}}
+				return governedError(req.ID, govcode.PIIPolicyViolation, "PII detected in request", h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "pii_detected_in_request", &flow), "", true)
 			}
 			redactedArgs, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 			if redactErr != nil {
 				flow.requestBlocked = true
 				flow.scannerFailure = scannerFailureKind(redactErr)
-				h.recordEvidence(ctx, inv, "proxy_pii_scan_error", toolName, "scanner_unavailable", &flow)
-				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Request blocked: PII redaction failed (fail-closed)", Data: talonErrData(TalonCodeScannerUnavailable)}}
+				return governedError(req.ID, govcode.ScannerUnavailable, "Request blocked: PII redaction failed (fail-closed)", h.recordEvidence(ctx, inv, "proxy_pii_scan_error", toolName, "scanner_unavailable", &flow), "", true)
 			}
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
 				flow.requestBlocked = true
 				reason := "request_residual_pii_after_redaction"
 				msg := residualBlockMessage("Request blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr))
-				code := TalonCodePIIBlocked
+				code := govcode.PIIPolicyViolation
 				if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
 					reason = "request_redaction_verification_scanner_unavailable"
 					msg = "Request blocked: redaction could not be verified (fail-closed)"
 					flow.scannerFailure = scannerFailureKind(verifyErr)
-					code = TalonCodeScannerUnavailable
+					code = govcode.ScannerUnavailable
 				}
-				h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, reason, &flow)
-				return &jsonrpcResponse{
-					JSONRPC: jsonrpcVersion,
-					ID:      req.ID,
-					Error: &rpcError{
-						Code:    codeServerError,
-						Message: msg,
-						Data:    talonErrData(code),
-					},
-				}
+				return governedError(req.ID, code, msg, h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, reason, &flow), "", true)
 			}
 			if redactedArgs != argStr {
 				if !json.Valid([]byte(redactedArgs)) {
 					flow.requestBlocked = true
-					h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "request_redaction_invalid_json", &flow)
-					return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII redaction produced invalid JSON (fail-closed)", Data: talonErrData(TalonCodePIIBlocked)}}
+					return governedError(req.ID, govcode.PIIPolicyViolation, "PII redaction produced invalid JSON (fail-closed)", h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "request_redaction_invalid_json", &flow), "", true)
 				}
 				params.Arguments = json.RawMessage(redactedArgs)
 				proxyInput.Arguments = paramsToMap(params.Arguments)
@@ -556,8 +568,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 		// request-side classification. A transport failure leaves egress
 		// unconfirmed; a response that arrived is a truthful flow item.
 		flow.egressUnconfirmed = fail.transport
-		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, fail.reason, &flow)
-		return fail.resp
+		return fail.response(req.ID, h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, fail.reason, &flow))
 	}
 	captured, known := capture.byName[h.upstreamToolName(toolName)]
 	if !known {
@@ -583,13 +594,11 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 	// captured declaration — never from inbound header values.
 	paramHeaders, err := wire.OutboundHeaderParams(captured.decl, params.Arguments)
 	if err != nil {
-		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "outbound_header_params_invalid", &flow)
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "argument cannot be mirrored into the declared header: " + err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
+		return governedError(req.ID, govcode.UpstreamToolFailed, publicOutboundRequestInvalid, h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "outbound_header_params_invalid: "+sanitizeDiagnostic(err.Error()), &flow), "", true)
 	}
 	httpReq, err := wire.NewUpstreamRequest(ctx, h.config.Proxy.Upstream.URL, req.ID, wire.MethodToolsCall, outParams, upstreamName, paramHeaders)
 	if err != nil {
-		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "outbound_request_invalid", &flow)
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
+		return governedError(req.ID, govcode.UpstreamToolFailed, publicOutboundRequestInvalid, h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "outbound_request_invalid: "+sanitizeDiagnostic(err.Error()), &flow), "", true)
 	}
 	upstreamResp, err := h.doUpstream(ctx, httpReq, inv) //nolint:bodyclose // closed by wire.ReadUpstreamResponse
 	if err != nil {
@@ -604,20 +613,23 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 		// happened.
 		flow.egressUnconfirmed = true
 		if errors.Is(err, errSecretRetrieval) {
-			// Vault failure (#358): fail-closed, generic message to the
-			// vendor (gateway parity — no vault detail leaks), evidence
-			// carries the typed reason.
-			h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "secret retrieval error", &flow)
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Service configuration error", Data: talonErrData(TalonCodeUpstreamError)}}
+			// Vault failure (#358): fail-closed BEFORE dispatch, generic
+			// message to the vendor (gateway parity — no vault detail
+			// leaks), evidence carries the typed reason.
+			return governedError(req.ID, govcode.UpstreamAuthUnavailable, "Service configuration error", h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "secret retrieval error", &flow), "", true)
 		}
-		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_error: "+err.Error(), &flow)
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
+		// The request was handed to the transport: the effect may have
+		// happened (timeout) or not (connection refused) — unknown, never
+		// relabelled, automatic retry blocked.
+		return governedError(req.ID, govcode.UpstreamOutcomeUnknown, publicUpstreamUnavailable, h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_error: "+sanitizeDiagnostic(err.Error()), &flow), "", false)
 	}
 	upstream, err := wire.ReadUpstreamResponse(upstreamResp, req.ID)
 	if err != nil {
-		// A response arrived, so egress happened — the flow item is truthful.
-		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_response_invalid", &flow)
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid: " + err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
+		// A response arrived, so egress happened and the flow item is
+		// truthful — but a response Talon cannot read or trust proves
+		// nothing about the business effect: the outcome is UNKNOWN, never a
+		// known failure, and automatic retry is blocked.
+		return governedError(req.ID, govcode.UpstreamOutcomeUnknown, publicUpstreamResponseBad, h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_response_invalid: "+sanitizeDiagnostic(err.Error()), &flow), "", false)
 	}
 	out := jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID}
 	if upstream.Error != nil {
@@ -627,8 +639,11 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 		if len(upstream.Error.Data) > 0 {
 			out.Error.Data = upstream.Error.Data
 		}
+		// The vendor's error object is relayed to the client unchanged (an
+		// explicit pass-through: it is the vendor's error, not Talon's claim).
+		// Talon's own record keeps the code and a sanitized, bounded message.
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName,
-			fmt.Sprintf("upstream_jsonrpc_error: %d %s", upstream.Error.Code, upstream.Error.Message), &flow)
+			fmt.Sprintf("upstream_jsonrpc_error: %d %s", upstream.Error.Code, sanitizeDiagnostic(upstream.Error.Message)), &flow)
 		return &out
 	}
 	// resultType truth table (#447): complete continues, input_required
@@ -641,10 +656,13 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 		if errors.Is(err, wire.ErrResultTypeMissing) {
 			reason = "upstream_result_type_missing"
 		}
-		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, reason, &flow)
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid: " + err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
+		// The vendor answered with a shape Talon does not accept (missing or
+		// unsupported resultType, e.g. a Task): the call ran and its effect is
+		// unknowable from here — UNKNOWN, not a known failure.
+		return governedError(req.ID, govcode.UpstreamOutcomeUnknown, publicUpstreamResponseBad, h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, reason, &flow), "", false)
 	}
 	out.Result = normalized
+	var ref *evidenceOutcome
 
 	// Response PII scanning: scan tool result before returning to caller.
 	// A scanner failure blocks the result fail-closed.
@@ -655,8 +673,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 		if scanErr != nil {
 			flow.responseBlocked = true
 			flow.scannerFailure = scannerFailureKind(scanErr)
-			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_scanner_unavailable", &flow)
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Tool result blocked: PII scanner unavailable (fail-closed)", Data: talonErrData(TalonCodeScannerUnavailable)}}
+			return governedError(req.ID, govcode.ScannerUnavailable, "Tool result blocked: PII scanner unavailable (fail-closed)", h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_scanner_unavailable", &flow), "", false)
 		}
 		if cls != nil && cls.HasPII {
 			piiTypes := make([]string, 0, len(cls.Entities))
@@ -676,45 +693,39 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 			if redactErr != nil {
 				flow.responseBlocked = true
 				flow.scannerFailure = scannerFailureKind(redactErr)
-				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_scanner_unavailable", &flow)
-				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Tool result blocked: PII redaction failed (fail-closed)", Data: talonErrData(TalonCodeScannerUnavailable)}}
+				return governedError(req.ID, govcode.ScannerUnavailable, "Tool result blocked: PII redaction failed (fail-closed)", h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_scanner_unavailable", &flow), "", false)
 			}
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
 				flow.responseBlocked = true
 				reason := "output_pii_blocked_residual"
 				msg := residualBlockMessage("Tool result blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr))
-				code := TalonCodePIIBlocked
+				code := govcode.PIIPolicyViolation
 				if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
 					reason = "output_redaction_verification_scanner_unavailable"
 					msg = "Tool result blocked: redaction could not be verified (fail-closed)"
 					flow.scannerFailure = scannerFailureKind(verifyErr)
-					code = TalonCodeScannerUnavailable
+					code = govcode.ScannerUnavailable
 				}
-				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, reason, &flow)
-				return &jsonrpcResponse{
-					JSONRPC: jsonrpcVersion,
-					ID:      req.ID,
-					Error: &rpcError{
-						Code:    codeServerError,
-						Message: msg,
-						Data:    talonErrData(code),
-					},
-				}
+				return governedError(req.ID, code, msg, h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, reason, &flow), "", false)
 			}
 			var redactedResult interface{}
 			if err := json.Unmarshal([]byte(redacted), &redactedResult); err != nil {
 				flow.responseBlocked = true
-				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_redaction_invalid_json", &flow)
-				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII redaction of tool result produced invalid JSON (fail-closed)", Data: talonErrData(TalonCodePIIBlocked)}}
+				return governedError(req.ID, govcode.PIIPolicyViolation, "PII redaction of tool result produced invalid JSON (fail-closed)", h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_redaction_invalid_json", &flow), "", false)
 			}
 			out.Result = redactedResult
-			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_pii_redacted", &flow)
+			ref = h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_pii_redacted", &flow)
 		} else {
-			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "", &flow)
+			ref = h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "", &flow)
 		}
 	} else {
-		h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "", &flow)
+		ref = h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "", &flow)
 	}
+	// The allowed call's terminal record travels in the result _meta as the
+	// governance extension (decision allow + evidence reference). The record
+	// is committed after the upstream answered, so a store failure is
+	// reported as committed=false, never as a fabricated id.
+	out.Result = withGovernanceMeta(out.Result, ref)
 
 	return &out
 }
@@ -770,7 +781,13 @@ func (h *ProxyHandler) handleToolsList(ctx context.Context, req *wire.Request, i
 	}
 	capture, fail := h.trustedDefinitions(ctx, req, inv)
 	if fail != nil {
-		return fail.resp
+		// A definition fetch is not a governed action: no record is written,
+		// so the extension states committed=false truthfully and keeps the
+		// upstream code (this is not a refused-for-evidence outcome).
+		if fail.relay != nil {
+			return fail.relay
+		}
+		return governedError(req.ID, fail.code, fail.msg, &evidenceOutcome{ref: govcode.NotCommitted()}, TalonCodeUpstreamError, false)
 	}
 	tools := make([]interface{}, 0, len(capture.presented))
 	for _, ct := range capture.presented {
@@ -917,10 +934,10 @@ func (h *ProxyHandler) attachProxyFlow(ev *evidence.Evidence, inv *proxyInvocati
 	}
 }
 
-func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation, eventType, toolName, reason string, flow *proxyFlowState) {
-	if h.evidenceStore == nil {
-		return
-	}
+// recordEvidence writes the call's record and returns its reference: the id
+// only when the store accepted the signed record (#372), committed=false
+// otherwise, nil when this embedder has no store.
+func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation, eventType, toolName, reason string, flow *proxyFlowState) *evidenceOutcome {
 	allowed := proxyRecordAllowed(eventType, reason, flow)
 	action := "allow"
 	if !allowed {
@@ -958,8 +975,13 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation,
 	// typed in Status/FailureReason rather than faking a policy deny.
 	if eventType == "proxy_upstream_error" {
 		ev.Execution.Error = reason
-		ev.Status = "failed"
-		ev.FailureReason = "upstream_error"
+		ev.Status, ev.FailureReason = evidence.StatusFailed, "upstream_error"
+		if upstreamOutcomeUnknown(reason) {
+			// The request was handed to the transport or a response arrived
+			// that Talon cannot trust: the effect may exist. The signed
+			// record says UNKNOWN, matching the extension's code.
+			ev.Status, ev.FailureReason = evidence.StatusUnknown, "upstream_outcome_unknown"
+		}
 	}
 	// Upstream auth evidence (#358): mode-only, exact gateway parity in
 	// secret mode (fingerprint/source stay client_bearer-only vocabulary).
@@ -981,7 +1003,21 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation,
 		ev.Classification.Scanner = scannerInfo
 	}
 	ev.Explanations = explanation.BuildFromFacts(proxyExplanationFacts(eventType, reason, toolName))
-	_ = h.evidenceStore.Store(ctx, ev)
+	return commitEvidence(ctx, h.evidenceStore, nil, ev)
+}
+
+// upstreamOutcomeUnknown classifies an upstream-error reason: before the
+// request is handed to the transport (request construction, header
+// generation, credential retrieval, definition capture) the effect did not
+// happen; once it may have (transport failure, unreadable/untrusted
+// response, unsupported result shape) the effect is unknown.
+func upstreamOutcomeUnknown(reason string) bool {
+	for _, p := range []string{"upstream_error:", "upstream_response_invalid", "upstream_result_type_missing", "upstream_result_type_unsupported"} {
+		if strings.HasPrefix(reason, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildProxyDataFlow links tool arguments to the upstream vendor and
@@ -1061,7 +1097,7 @@ func proxyExplanationFacts(eventType, reason, toolName string) []explanation.Fac
 			Stage:    explanation.StageToolExecution,
 			Trigger:  trigger,
 		}}
-	case "proxy_pii_eval_error":
+	case "proxy_pii_eval_error", "proxy_policy_eval_error":
 		return []explanation.Fact{{
 			Code:     explanation.CodeExecutionFailed,
 			Decision: explanation.DecisionFailure,
@@ -1069,6 +1105,18 @@ func proxyExplanationFacts(eventType, reason, toolName string) []explanation.Fac
 			Trigger:  trigger,
 		}}
 	case "proxy_upstream_error":
+		// The signed explanation must mean what the outcome means: a known
+		// failure (nothing sent, or a trustworthy vendor report) is
+		// EXECUTION_FAILED/failure; an effect that may have happened with no
+		// trustworthy answer is EXECUTION_OUTCOME_UNKNOWN/unknown (#372).
+		if upstreamOutcomeUnknown(reason) {
+			return []explanation.Fact{{
+				Code:     explanation.CodeExecutionOutcomeUnknown,
+				Decision: explanation.DecisionUnknown,
+				Stage:    explanation.StageToolExecution,
+				Trigger:  trigger,
+			}}
+		}
 		return []explanation.Fact{{
 			Code:     explanation.CodeExecutionFailed,
 			Decision: explanation.DecisionFailure,

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/govcode"
 )
 
 // Operation statuses (#426). `denied` is the persisted outcome of a DENY
@@ -56,28 +57,34 @@ const (
 
 // Operation is one immutable intended business effect.
 type Operation struct {
-	Ref              string // Talon resource id; evidence correlation id
-	TenantID         string
-	AgentID          string
-	OperationID      string
-	Action           string
-	Digest           string
-	SchemaDigest     string
-	DefinitionDigest string // trusted definition identity bound at establish (schema, projection, destination, success, binding)
-	ProjectionDigest string
-	PolicyDigest     string
-	CatalogDigest    string
-	ExecutionProfile string
-	BindingProfile   string
-	DestinationID    string
-	IdentitySource   string
-	Verdict          string
-	RuleID           string
-	Status           string
-	Version          int
-	Sequence         int
-	ApprovalID       string
-	IdempotencyKey   string
+	Ref string // Talon resource id; evidence correlation id
+	// committedEvidence collects, in memory only, the ids of the lifecycle
+	// records this service call committed for the operation, in order. A
+	// projection built from the operation inside the same transaction
+	// reaches the caller only after COMMIT, so the last id is a committed
+	// record by construction (#372 evidence reference).
+	committedEvidence []string
+	TenantID          string
+	AgentID           string
+	OperationID       string
+	Action            string
+	Digest            string
+	SchemaDigest      string
+	DefinitionDigest  string // trusted definition identity bound at establish (schema, projection, destination, success, binding)
+	ProjectionDigest  string
+	PolicyDigest      string
+	CatalogDigest     string
+	ExecutionProfile  string
+	BindingProfile    string
+	DestinationID     string
+	IdentitySource    string
+	Verdict           string
+	RuleID            string
+	Status            string
+	Version           int
+	Sequence          int
+	ApprovalID        string
+	IdempotencyKey    string
 	// ReviewJSON is the stored reviewer projection (never the raw payload;
 	// the payload lives sealed in action_payloads).
 	ReviewJSON        []byte
@@ -145,8 +152,13 @@ type Projection struct {
 	LatestAttempt     *AttemptProjection         `json:"latest_attempt,omitempty"`
 	Review            map[string]json.RawMessage `json:"review,omitempty"`
 	Payload           PayloadState               `json:"payload"`
-	CreatedAt         time.Time                  `json:"created_at"`
-	UpdatedAt         time.Time                  `json:"updated_at"`
+	// Evidence references the lifecycle record committed by the call that
+	// produced this projection (the latest when a call committed several).
+	// Absent on reads that committed nothing. It is a locator for
+	// `talon audit verify`, never proof by itself (#372).
+	Evidence  *govcode.EvidenceRef `json:"evidence,omitempty"`
+	CreatedAt time.Time            `json:"created_at"`
+	UpdatedAt time.Time            `json:"updated_at"`
 }
 
 // ApprovalProjection is the safe view of an approval.
@@ -203,6 +215,9 @@ func projectionOf(op *Operation, ap *Approval, at *Attempt, payload PayloadState
 	}
 	if len(op.ReviewJSON) > 0 {
 		_ = json.Unmarshal(op.ReviewJSON, &p.Review)
+	}
+	if n := len(op.committedEvidence); n > 0 {
+		p.Evidence = &govcode.EvidenceRef{ID: op.committedEvidence[n-1], Committed: true, Sequence: op.Sequence}
 	}
 	return p
 }

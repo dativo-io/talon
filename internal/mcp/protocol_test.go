@@ -18,6 +18,7 @@ import (
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/govcode"
 	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
@@ -124,7 +125,10 @@ func TestDiscover_AdvertisesOnlyWhatIsImplemented(t *testing.T) {
 		assert.Contains(t, caps, "tools", name)
 		assert.NotContains(t, caps, "resources", name)
 		assert.NotContains(t, caps, "prompts", name)
-		assert.NotContains(t, caps, "extensions", "%s: Tasks is not implemented, so it is not advertised", name)
+		exts, _ := caps["extensions"].(map[string]any)
+		assert.Len(t, exts, 1, "%s: exactly the implemented governance extension (#372)", name)
+		assert.Contains(t, exts, govcode.ExtensionID, name)
+		assert.NotContains(t, exts, "io.modelcontextprotocol/tasks", "%s: Tasks is not implemented, so it is not advertised", name)
 		tc, _ := caps["tools"].(map[string]any)
 		assert.NotContains(t, tc, "listChanged", "%s: no subscriptions/listen stream exists", name)
 		meta, _ := res["_meta"].(map[string]any)
@@ -579,9 +583,12 @@ func TestProxyOutboundCapabilities_Intersection(t *testing.T) {
 	assert.NotContains(t, sent, "experimental")
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, float64(codeServerError), errCode(out), "a task result is refused even though the downstream advertised Tasks")
-	// Discovery agrees: no extensions advertised to the downstream either.
+	// Discovery agrees: Tasks is not advertised to the downstream either
+	// (only Talon's own governance extension is, #372).
 	_, disc := do(t, h, "/mcp/proxy", mcpBody(t, 2, wire.MethodDiscover, nil), nil)
-	assert.NotContains(t, disc["result"].(map[string]any)["capabilities"], "extensions")
+	exts, _ := disc["result"].(map[string]any)["capabilities"].(map[string]any)["extensions"].(map[string]any)
+	assert.NotContains(t, exts, "io.modelcontextprotocol/tasks")
+	assert.Contains(t, exts, govcode.ExtensionID)
 }
 
 func TestProxy_NoRedirectFollowing(t *testing.T) {
@@ -610,7 +617,8 @@ func TestProxy_NoRedirectFollowing(t *testing.T) {
 
 // Upstream resultType truth table through the proxy: complete continues,
 // input_required passes through, missing / task / unknown are honest
-// upstream errors with no fabricated result.
+// upstream errors with no fabricated result — and, because the call already
+// ran, honest UNKNOWN outcomes rather than claimed failures (#372 P1).
 func TestProxy_ResultTypeTruthTable(t *testing.T) {
 	cases := map[string]struct {
 		result string
@@ -636,8 +644,19 @@ func TestProxy_ResultTypeTruthTable(t *testing.T) {
 			}
 			require.Nil(t, out["result"], "no result is fabricated")
 			assert.Equal(t, float64(codeServerError), errCode(out))
-			assert.Contains(t, out["error"].(map[string]any)["message"], tc.want)
-			assert.Equal(t, TalonCodeUpstreamError, out["error"].(map[string]any)["data"].(map[string]any)["talon_code"])
+			// The vendor answered after the call ran: a shape Talon cannot
+			// accept proves nothing about the effect, so the public outcome is
+			// UNKNOWN (non-retryable) with a fixed, detail-free message; the
+			// vendor's shape detail lives only in the sanitized signed record.
+			e := out["error"].(map[string]any)
+			assert.NotContains(t, e["message"], tc.want, "no raw upstream detail crosses the public boundary")
+			data := e["data"].(map[string]any)
+			assert.Equal(t, TalonCodeUpstreamError, data["talon_code"])
+			ext := data[govcode.ExtensionID].(map[string]any)
+			assert.Equal(t, govcode.UpstreamOutcomeUnknown, ext["code"])
+			assert.Equal(t, govcode.DecisionUnknown, ext["decision"])
+			assert.Equal(t, false, ext["retryable"])
+			assert.Equal(t, "unknown", ext["provenance"])
 		})
 	}
 }

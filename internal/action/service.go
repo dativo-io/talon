@@ -167,6 +167,7 @@ func (s *Service) commit(ctx context.Context, tx *sql.Tx, w *evidence.TxWriter, 
 	if err := w.Store(ctx, tx, rec); err != nil {
 		return &Error{Code: CodeStoreUnavailable, Message: "committing lifecycle evidence", Err: err}
 	}
+	op.committedEvidence = append(op.committedEvidence, rec.ID)
 	return nil
 }
 

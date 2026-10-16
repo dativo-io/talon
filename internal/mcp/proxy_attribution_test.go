@@ -16,6 +16,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
+	"github.com/dativo-io/talon/internal/govcode"
 	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
@@ -419,9 +420,16 @@ func TestProxyUpstreamError_RecordsTrail(t *testing.T) {
 	r := records[0]
 	assert.Equal(t, "proxy_upstream_error", r.InvocationType)
 	assert.True(t, r.PolicyDecision.Allowed, "policy allowed the call; the vendor failed — not a deny")
+	// The failure is the DEFINITION CAPTURE (tools/list) against a dead
+	// upstream: the business call was never sent, so this is a known failure
+	// (not unknown) with a fixed public message; the transport detail stays in
+	// the sanitized record (#372 P1 boundary).
 	assert.Equal(t, "failed", r.Status)
 	assert.Equal(t, "upstream_error", r.FailureReason)
 	assert.NotEmpty(t, r.Execution.Error, "execution failure must count in session summaries")
+	assert.True(t, strings.HasPrefix(r.Execution.Error, "definitions_upstream_error:"), r.Execution.Error)
+	assert.Equal(t, publicDefinitionsUnavailable, resp.Error.Message, "fixed public message; transport detail stays in the record")
+	assert.Equal(t, "not_dispatched", resp.Error.Data.(map[string]any)[govcode.ExtensionID].(map[string]any)["provenance"])
 	assert.Contains(t, r.Classification.PIIDetected, "email",
 		"the request-side PII trail survives the upstream failure")
 	assert.Nil(t, r.DataFlow,
@@ -464,14 +472,19 @@ func TestProxyUpstreamDecodeFailure_RecordsTrail(t *testing.T) {
 	_, resp := attribCallArgs(t, h, context.Background(), nil, "crm_lookup",
 		map[string]string{"email": "jane.doe@example.com"})
 	require.NotNil(t, resp.Error)
-	assert.Contains(t, resp.Error.Message, "upstream response invalid")
+	assert.Equal(t, publicDefinitionsUnavailable, resp.Error.Message, "fixed public message; the vendor's body shape never crosses the public boundary")
 
 	records := listRecords(t, store, "default")
 	require.Len(t, records, 1)
 	r := records[0]
 	assert.Equal(t, "proxy_upstream_error", r.InvocationType)
+	// The HTML answered the DEFINITION CAPTURE, before any business call:
+	// a known failure. (A malformed answer to the call itself is UNKNOWN —
+	// see TestGovernance_PostHandoffAmbiguityIsUnknown.)
 	assert.Equal(t, "failed", r.Status)
-	assert.Contains(t, r.PolicyDecision.Reasons, "upstream_response_invalid")
+	require.Len(t, r.PolicyDecision.Reasons, 1)
+	assert.True(t, strings.HasPrefix(r.PolicyDecision.Reasons[0], "definitions_upstream_response_invalid"), r.PolicyDecision.Reasons[0])
+	assert.Contains(t, r.PolicyDecision.Reasons[0], "text/html", "the sanitized detail is retained in the signed record")
 	assert.Contains(t, r.Classification.PIIDetected, "email")
 	require.NotNil(t, r.DataFlow, "a response arrived, so the egress flow item is truthful and must stay")
 }
