@@ -284,8 +284,9 @@ func TestGovernance_PostHandoffAmbiguityIsUnknown(t *testing.T) {
 	}
 }
 
-// Proxy: the vendor's own JSON-RPC error is a trustworthy failure report,
-// relayed verbatim (contract) and recorded as failed, not unknown.
+// Proxy: the vendor's own JSON-RPC error is a trustworthy failure report:
+// recorded as failed (not unknown), answered with the vendor's code and the
+// fixed public message, never the vendor's text or data.
 func TestGovernance_VendorErrorIsTrustworthyFailure(t *testing.T) {
 	var effects atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -302,9 +303,10 @@ func TestGovernance_VendorErrorIsTrustworthyFailure(t *testing.T) {
 	h, store := attribHandler(t, srv.URL, nil)
 	_, out := do(t, h, "/mcp/proxy", mcpBody(t, 1, wire.MethodToolsCall, map[string]any{"name": "crm_lookup", "arguments": map[string]any{}}), nil)
 	e := out["error"].(map[string]any)
-	assert.Equal(t, float64(-32001), e["code"])
-	assert.Equal(t, "vendor says no", e["message"])
-	assert.Equal(t, map[string]any{"vendor": "x"}, e["data"], "the vendor's error object is relayed verbatim, not annotated")
+	assert.Equal(t, float64(-32001), e["code"], "vendor code preserved")
+	assert.Equal(t, publicVendorError, e["message"], "vendor message not relayed")
+	assert.NotContains(t, e["data"], "vendor", "vendor data not relayed")
+	assert.Equal(t, govcode.UpstreamToolFailed, governanceOf(t, out)["code"])
 	recs := listRecords(t, store, "default")
 	require.Len(t, recs, 1)
 	assert.Equal(t, evidence.StatusFailed, recs[0].Status)

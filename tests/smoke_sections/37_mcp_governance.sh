@@ -13,7 +13,8 @@
 # forbidden call → policy_denied / deny / non-retryable + committed ref +
 # deprecated alias, zero dispatch; protocol errors → no governance object, no
 # effect; effect + severed answer → upstream_outcome_unknown, exactly one
-# effect; tampered record fails verification. One assertion: the Go smoke's
+# effect; vendor JSON-RPC error → vendor code kept, message/data not relayed,
+# record sanitized; tampered record fails verification. One assertion: the Go smoke's
 # exit status. A failure is counted in the consolidated summary and makes
 # the suite exit non-zero; nothing here is optional or ignored.
 # -----------------------------------------------------------------------------

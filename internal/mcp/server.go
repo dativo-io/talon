@@ -339,7 +339,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 		// Policy reasons are untrusted text (the rego interpolates argument
 		// values): the public message is fixed and the record keeps only
 		// sanitized, bounded reasons.
-		reasons := sanitizeReasons(decision.Reasons)
+		reasons := safePolicyReasons(decision.Reasons)
 		evReason := "policy denied"
 		if len(reasons) > 0 {
 			evReason = reasons[0]

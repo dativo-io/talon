@@ -225,24 +225,31 @@ func (h *ProxyHandler) captureFailureFor(req *wire.Request, err error) *captureF
 		f.transport = true
 		return f
 	case wire.UpstreamKindRPC:
-		out := &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: ue.RPC.Code, Message: ue.RPC.Message}}
-		if len(ue.RPC.Data) > 0 {
-			out.Error.Data = ue.RPC.Data
-		}
-		return &captureFailure{reason: fmt.Sprintf("definitions_upstream_jsonrpc_error: %d %s", ue.RPC.Code, sanitizeDiagnostic(ue.RPC.Message)), relay: out}
+		// A vendor JSON-RPC error on the definition fetch: the vendor's code
+		// is preserved, its message and data are not relayed.
+		return &captureFailure{reason: fmt.Sprintf("definitions_upstream_jsonrpc_error: %d %s", ue.RPC.Code, sanitizeDiagnostic(ue.RPC.Message)), code: govcode.UpstreamToolFailed, msg: publicVendorError, vendorCode: ue.RPC.Code}
 	default:
 		return failed("upstream_response_invalid: " + sanitizeDiagnostic(ue.Err.Error()))
 	}
 }
 
 // response renders the capture failure once its evidence (if any) was
-// recorded: a relayed vendor error unchanged, otherwise the governance
-// extension with the committed reference.
+// recorded: the governance extension with the committed reference, carrying
+// the vendor's numeric code when the vendor answered with a JSON-RPC error
+// (the vendor's message and data are never relayed).
 func (f *captureFailure) response(id json.RawMessage, out *evidenceOutcome) *jsonrpcResponse {
-	if f.relay != nil {
-		return f.relay
+	resp := governedError(id, f.code, f.msg, out, TalonCodeUpstreamError, true)
+	if f.vendorCode != 0 && resp.Error != nil && govcodeOf(resp) != govcode.EvidenceCommitFailed {
+		resp.Error.Code = f.vendorCode
 	}
-	return governedError(id, f.code, f.msg, out, TalonCodeUpstreamError, true)
+	return resp
+}
+
+// govcodeOf reads back the governance code a response carries.
+func govcodeOf(resp *jsonrpcResponse) string {
+	data, _ := resp.Error.Data.(map[string]any)
+	ext, _ := data[govcode.ExtensionID].(govcode.Extension)
+	return ext.Code
 }
 
 // captureExpiry turns the upstream ttlMs hint into the capture's deadline;
@@ -274,11 +281,11 @@ func capturedDeclaration(toolRaw json.RawMessage) (*wire.HeaderParams, error) {
 // captureFailure is why a definition capture could not be completed: the
 // evidence reason (same vocabulary as a failed dispatch) and the response.
 type captureFailure struct {
-	reason    string // evidence reason
-	transport bool   // egress unconfirmed
-	code      string // governance code (Talon-shaped failure)
-	msg       string
-	relay     *jsonrpcResponse // the vendor's own JSON-RPC error, relayed verbatim
+	reason     string // evidence reason
+	transport  bool   // egress unconfirmed
+	code       string // governance code (Talon-shaped failure)
+	msg        string // fixed public message
+	vendorCode int    // the vendor's JSON-RPC error code when the vendor answered with one
 }
 
 // proxyInvocation carries request-scoped attribution for evidence (#350):
@@ -494,7 +501,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 	if !decision.Allowed {
 		// Policy reasons are untrusted text: fixed public message, sanitized
 		// and bounded reason in the record.
-		denyReason := sanitizeDiagnostic(strings.Join(decision.Reasons, "; "))
+		denyReason := strings.Join(safePolicyReasons(decision.Reasons), "; ")
 		return governedError(req.ID, govcode.PolicyDenied, publicPolicyDenied, h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, denyReason, nil), "", true)
 	}
 
@@ -634,17 +641,13 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 	out := jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID}
 	if upstream.Error != nil {
 		// The vendor answered with a JSON-RPC error: the call executed and
-		// failed — record it as such, never as a clean allowed completion.
-		out.Error = &rpcError{Code: upstream.Error.Code, Message: upstream.Error.Message}
-		if len(upstream.Error.Data) > 0 {
-			out.Error.Data = upstream.Error.Data
-		}
-		// The vendor's error object is relayed to the client unchanged (an
-		// explicit pass-through: it is the vendor's error, not Talon's claim).
-		// Talon's own record keeps the code and a sanitized, bounded message.
-		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName,
-			fmt.Sprintf("upstream_jsonrpc_error: %d %s", upstream.Error.Code, sanitizeDiagnostic(upstream.Error.Message)), &flow)
-		return &out
+		// failed — a trustworthy vendor report, recorded as a failure, never
+		// as a clean completion or an unknown. The vendor's message and data
+		// are NOT relayed (they may carry protected payload, credentials or
+		// topology); the client gets the vendor's code and a fixed message,
+		// the signed record a sanitized, bounded diagnostic.
+		return vendorErrorResponse(req.ID, upstream.Error.Code, h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName,
+			fmt.Sprintf("upstream_jsonrpc_error: %d %s", upstream.Error.Code, sanitizeDiagnostic(upstream.Error.Message)), &flow))
 	}
 	// resultType truth table (#447): complete continues, input_required
 	// (MRTR) passes through losslessly, a missing resultType is an upstream
@@ -783,11 +786,13 @@ func (h *ProxyHandler) handleToolsList(ctx context.Context, req *wire.Request, i
 	if fail != nil {
 		// A definition fetch is not a governed action: no record is written,
 		// so the extension states committed=false truthfully and keeps the
-		// upstream code (this is not a refused-for-evidence outcome).
-		if fail.relay != nil {
-			return fail.relay
+		// upstream code (this is not a refused-for-evidence outcome). A
+		// vendor JSON-RPC error keeps the vendor's code, never its text.
+		resp := governedError(req.ID, fail.code, fail.msg, &evidenceOutcome{ref: govcode.NotCommitted()}, TalonCodeUpstreamError, false)
+		if fail.vendorCode != 0 {
+			resp.Error.Code = fail.vendorCode
 		}
-		return governedError(req.ID, fail.code, fail.msg, &evidenceOutcome{ref: govcode.NotCommitted()}, TalonCodeUpstreamError, false)
+		return resp
 	}
 	tools := make([]interface{}, 0, len(capture.presented))
 	for _, ct := range capture.presented {

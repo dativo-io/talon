@@ -45,6 +45,8 @@ import (
 //	                             arguments appears neither publicly nor in the record
 //	+  signed UNKNOWN          → the unknown record's explanation is
 //	                             EXECUTION_OUTCOME_UNKNOWN / unknown, equal to reasonCode
+//	+  vendor error            → vendor code preserved, message/data NOT relayed, record
+//	                             sanitized + verified, exactly one effect
 //
 // Coverage boundary (documented, not hidden): pre-dispatch evidence-commit
 // outages and adversarial error sanitization cannot be injected into a
@@ -55,6 +57,14 @@ import (
 // TestGovernance_NativeToolErrorIsSanitized.
 
 const govExtID = "io.dativo.talon/governance"
+
+// Protected strings a vendor might put into an error: a credential-shaped
+// token and two non-credential-shaped values no regex would recognize.
+const (
+	vendorToken    = "sk-VENDOR-SECRET-0001"
+	vendorCustomer = "CUST-7391-SECRET"
+	vendorEmail    = "private.person@example.test"
+)
 
 // govUpstream is the deterministic mock: tools/list publishes three tools;
 // tools/call on "ticket_lookup" answers complete and counts an effect;
@@ -82,9 +92,15 @@ func startGovUpstream(t *testing.T) *govUpstream {
 		switch req.Method {
 		case "tools/list":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"ticket_lookup","inputSchema":{"type":"object"}},{"name":"flaky_update","inputSchema":{"type":"object"}},{"name":"delete_customer","inputSchema":{"type":"object"}}],"ttlMs":30000,"cacheScope":"public"}}`, req.ID)
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"ticket_lookup","inputSchema":{"type":"object"}},{"name":"flaky_update","inputSchema":{"type":"object"}},{"name":"vendor_error_tool","inputSchema":{"type":"object"}},{"name":"delete_customer","inputSchema":{"type":"object"}}],"ttlMs":30000,"cacheScope":"public"}}`, req.ID)
 		case "tools/call":
 			u.effects.Add(1) // the business side effect happens here, before any answer
+			if req.Params.Name == "vendor_error_tool" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32001,"message":"refund failed for %s token %s","data":{"customer":"%s","detail":{"email":"%s"}}}}`,
+					req.ID, vendorCustomer, vendorToken, vendorCustomer, vendorEmail)
+				return
+			}
 			if req.Params.Name == "flaky_update" {
 				hj, ok := w.(http.Hijacker)
 				if !ok {
@@ -232,6 +248,7 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
   allowed_tools:
     - name: ticket_lookup
     - name: flaky_update
+    - name: vendor_error_tool
   forbidden_tools:
     - delete_customer
 `), 0o600); err != nil {
@@ -409,6 +426,39 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 	}
 	if o, _, code := RunTalon(t, dir, nil, "audit", "verify", unknownID); code != 0 || !strings.Contains(o, "VALID") {
 		t.Fatalf("audit verify %s: %d %s", unknownID, code, o)
+	}
+
+	// 5b. vendor JSON-RPC error carrying protected data: the vendor's code
+	// is preserved, its message/data are not relayed, Talon's record is
+	// sanitized and verifies, exactly one effect.
+	vendorErr := `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{` + mcpMeta + `,"name":"vendor_error_tool","arguments":{"id":"7"}}}`
+	st, _, out = c.post("/mcp/proxy", "tools/call", "vendor_error_tool", vendorErr, nil)
+	if st != 200 || mcpErrCode(out) != -32001 {
+		t.Fatalf("vendor error: the vendor's numeric code must be preserved: %d %v", st, out)
+	}
+	if raw, _ := json.Marshal(out); strings.Contains(string(raw), vendorToken) || strings.Contains(string(raw), vendorCustomer) || strings.Contains(string(raw), vendorEmail) {
+		t.Fatalf("vendor error text or data relayed to the client: %s", raw)
+	}
+	if data := out["error"].(map[string]any)["data"].(map[string]any); data["customer"] != nil || data["detail"] != nil {
+		t.Fatalf("vendor error.data relayed: %v", data)
+	}
+	ext = govExt(out)
+	if err := checkGovernance(ext, "upstream_tool_failed", "failed", false); err != nil {
+		t.Fatalf("vendor error extension: %v (%v)", err, ext)
+	}
+	if up.effects.Load() != 3 {
+		t.Fatalf("effects = %d, want 3 (one vendor-error call, no hidden retry)", up.effects.Load())
+	}
+	vendorID := ext["evidence"].(map[string]any)["id"].(string)
+	if js := rawRecordJSON(t, dbPath, vendorID); strings.Contains(js, vendorToken) {
+		t.Fatal("credential from the vendor error stored in the signed record")
+	}
+	rec = readRecord(t, dbPath, vendorID)
+	if rec.Status != "failed" || len(rec.Explanations) == 0 || rec.Explanations[0].Code != "EXECUTION_FAILED" {
+		t.Fatalf("vendor error must be a trustworthy failure: %+v", rec)
+	}
+	if o, _, code := RunTalon(t, dir, nil, "audit", "verify", vendorID); code != 0 || !strings.Contains(o, "VALID") {
+		t.Fatalf("audit verify %s: %d %s", vendorID, code, o)
 	}
 
 	// 6. tamper: corrupt the denial record; verification must fail, the

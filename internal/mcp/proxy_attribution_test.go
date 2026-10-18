@@ -501,8 +501,9 @@ func TestProxyUpstreamJSONRPCError_RecordsFailure(t *testing.T) {
 
 	_, resp := attribCallArgs(t, h, context.Background(), nil, "crm_lookup",
 		map[string]string{"email": "jane.doe@example.com"})
-	require.NotNil(t, resp.Error, "the vendor's JSON-RPC error passes through")
-	assert.Equal(t, -32603, resp.Error.Code)
+	require.NotNil(t, resp.Error, "the vendor's JSON-RPC error surfaces as an error")
+	assert.Equal(t, -32603, resp.Error.Code, "the vendor's numeric code is preserved; its text is not relayed (#372)")
+	assert.Equal(t, publicVendorError, resp.Error.Message)
 
 	records := listRecords(t, store, "default")
 	require.Len(t, records, 1)

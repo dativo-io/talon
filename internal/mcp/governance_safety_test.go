@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -96,17 +97,24 @@ func TestSafety_NativePolicyDenialReasonsAreUntrusted(t *testing.T) {
 	assert.Equal(t, 0, tool.executions())
 }
 
-// Native, through the REAL rego: forbidden_argument_values interpolates the
-// caller's argument value into the denial reason. The value is a sentinel
-// secret; it must not surface publicly or in the record.
+// Native, through the REAL rego. forbidden_argument_values used to interpolate
+// the caller's argument value into the denial reason; the values here are
+// arbitrary protected strings that no credential-shaped regex would catch
+// (an e-mail address, a customer id, a project code name). None may appear
+// in any serializable field of the signed record, in the JSON-RPC body, or
+// in the record's explanations — while the rule identity and the field name
+// survive for audit, the record verifies, and the tool never runs.
 func TestSafety_RegoForbiddenArgumentValueNotEchoed(t *testing.T) {
+	protected := []string{"private.person@example.test", "CUST-7391-SECRET", "CONFIDENTIAL-PROJECT-ORCHID"}
 	store, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	pol := &policy.Policy{
 		Agent: policy.AgentConfig{Name: "test", Version: "1.0"}, VersionTag: "v1",
 		Capabilities: &policy.CapabilitiesConfig{AllowedTools: []string{"pay"}},
-		ToolPolicies: map[string]policy.ToolPIIPolicy{"pay": {ForbiddenArgumentValues: map[string][]string{"token": {sentinelBearer}}}},
+		ToolPolicies: map[string]policy.ToolPIIPolicy{"pay": {ForbiddenArgumentValues: map[string][]string{
+			"recipient": {protected[0]}, "customer": {protected[1]}, "project": {protected[2]},
+		}}},
 	}
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)
@@ -117,7 +125,7 @@ func TestSafety_RegoForbiddenArgumentValueNotEchoed(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "method": "tools/call", "id": 22,
-		"params": map[string]any{"name": "pay", "arguments": map[string]any{"token": sentinelBearer}},
+		"params": map[string]any{"name": "pay", "arguments": map[string]any{"recipient": protected[0], "customer": protected[1], "project": protected[2]}},
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(string(body)))
 	req = stamp(req)
@@ -130,12 +138,50 @@ func TestSafety_RegoForbiddenArgumentValueNotEchoed(t *testing.T) {
 	ext := governanceOf(t, out)
 	require.NotNil(t, ext, "%v", out)
 	assert.Equal(t, govcode.PolicyDenied, ext["code"])
-	assertNoSecret(t, "public response", rec.Body.String())
+	assert.Equal(t, explanation.CodePolicyDeniedTool, ext["reasonCode"])
+	assert.Equal(t, publicPolicyDenied, out["error"].(map[string]any)["message"])
+	for _, p := range protected {
+		assert.NotContains(t, rec.Body.String(), p, "JSON-RPC body leaks %q", p)
+	}
 	stored, err := store.Get(context.Background(), ext["evidence"].(map[string]any)["id"].(string))
 	require.NoError(t, err)
+	require.True(t, store.VerifyRecord(stored), "the signed record verifies")
 	js, _ := json.Marshal(stored)
-	assertNoSecret(t, "signed record", string(js))
+	for _, p := range protected {
+		assert.NotContains(t, string(js), p, "signed record leaks %q", p)
+	}
+	require.NotEmpty(t, stored.PolicyDecision.Reasons)
+	joined := strings.Join(stored.PolicyDecision.Reasons, " | ")
+	for _, field := range []string{"recipient", "customer", "project"} {
+		assert.Contains(t, joined, "argument "+field+" has a forbidden value for tool pay", "rule identity and field name are kept: %s", joined)
+	}
+	for _, x := range stored.Explanations {
+		for _, p := range protected {
+			assert.NotContains(t, x.Trigger+" "+x.Reason+" "+x.Fix, p)
+		}
+	}
 	assert.Equal(t, 0, pay.executions())
+}
+
+// A denial reason Talon's explanation vocabulary cannot classify is free
+// text of unknown provenance: the record keeps an opaque token, never the
+// text, while classified reasons keep their rule identity.
+func TestSafety_UnclassifiedPolicyReasonIsOpaque(t *testing.T) {
+	h, store, _ := nativeDenyFixture(t)
+	tool := &capturingTool{name: "only_this"}
+	h.registry = tools.NewRegistry()
+	h.registry.Register(tool)
+	h.policyEngine = denyingToolEvaluator{reasons: []string{"customer private.person@example.test is on hold", "Tool 'only_this' not in allowed_tools list"}}
+	out := callNative(t, h, "only_this", 23)
+	ext := governanceOf(t, out)
+	require.NotNil(t, ext)
+	rec, err := store.Get(context.Background(), ext["evidence"].(map[string]any)["id"].(string))
+	require.NoError(t, err)
+	js, _ := json.Marshal(rec)
+	assert.NotContains(t, string(js), "private.person@example.test")
+	assert.Contains(t, rec.PolicyDecision.Reasons, opaquePolicyReason)
+	assert.Contains(t, rec.PolicyDecision.Reasons, "Tool 'only_this' not in allowed_tools list", "a classified Talon reason keeps its identity")
+	assert.Equal(t, 0, tool.executions())
 }
 
 // Proxy: the same guarantee for a proxy policy denial.
@@ -158,19 +204,38 @@ func TestSafety_ProxyPolicyDenialReasonsAreUntrusted(t *testing.T) {
 	assert.False(t, hit)
 }
 
-// Vendor errors on tools/call and on the definition capture (tools/list):
-// the vendor's JSON-RPC error object is relayed to the client unchanged —
-// an explicit, scoped pass-through of a third-party error — while Talon's
-// own signed record carries only the code and a sanitized, bounded message.
-func TestSafety_VendorErrorPassThroughIsScoped(t *testing.T) {
-	vendorMsg := "boom " + sentinelBearer + " " + sentinelURLCreds + " " + sentinelPath + strings.Repeat("V", 1000)
-	for _, mode := range []string{"tools/call", "tools/list"} {
-		t.Run(mode, func(t *testing.T) {
+// Vendor JSON-RPC errors on tools/call and on the definition capture
+// (tools/list) are NOT relayed raw: the vendor's numeric code and the
+// request id are preserved, the message is the fixed public string, the
+// vendor's data object is dropped (only Talon's governance extension is
+// present), and the signed record keeps a sanitized, bounded diagnostic.
+// Sentinels cover credential-shaped and non-credential-shaped protected
+// strings, nested data, quoted JSON and an oversized message.
+func TestSafety_VendorErrorIsNeverRelayedRaw(t *testing.T) {
+	protected := []string{sentinelBearer, sentinelURLCreds, sentinelPath, "private.person@example.test", "CUST-7391-SECRET", "CONFIDENTIAL-PROJECT-ORCHID"}
+	vendorMsg := "boom " + strings.Join(protected, " ") + ` {"nested":"` + protected[4] + `"}` + strings.Repeat("V", 5000)
+	vendorData := `{"vendor":"x","detail":{"customer":"` + protected[4] + `","email":"` + protected[3] + `","token":"` + sentinelBearer + `"},"raw":"{\"quoted\":\"` + protected[5] + `\"}"}`
+	for _, tc := range []struct {
+		mode   string
+		code   int
+		msg    string
+		data   string
+		benign bool
+	}{
+		{"tools/call", -32001, vendorMsg, vendorData, false},
+		{"tools/list", -32001, vendorMsg, vendorData, false},
+		{"tools/call", -32602, "Invalid params: ticket must be a string", "", true},
+	} {
+		name := tc.mode
+		if tc.benign {
+			name += "/benign"
+		}
+		t.Run(name, func(t *testing.T) {
 			var effects atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req jsonrpcRequest
 				_ = json.NewDecoder(r.Body).Decode(&req)
-				if r.Header.Get(wire.HeaderMethod) == wire.MethodToolsList && mode == "tools/call" {
+				if r.Header.Get(wire.HeaderMethod) == wire.MethodToolsList && tc.mode == "tools/call" {
 					w.Header().Set("Content-Type", "application/json")
 					_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"resultType":"complete","tools":[{"name":"crm_lookup","inputSchema":{"type":"object"}}],"ttlMs":60000,"cacheScope":"public"}}`))
 					return
@@ -179,36 +244,55 @@ func TestSafety_VendorErrorPassThroughIsScoped(t *testing.T) {
 					effects.Add(1)
 				}
 				w.Header().Set("Content-Type", "application/json")
-				vm, _ := json.Marshal(vendorMsg)
-				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"error":{"code":-32001,"message":` + string(vm) + `,"data":{"vendor":"x"}}}`))
+				vm, _ := json.Marshal(tc.msg)
+				errObj := `{"code":` + fmt.Sprint(tc.code) + `,"message":` + string(vm)
+				if tc.data != "" {
+					errObj += `,"data":` + tc.data
+				}
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"error":` + errObj + `}}`))
 			}))
 			t.Cleanup(srv.Close)
 			h, store := attribHandler(t, srv.URL, nil)
-			rec, out := do(t, h, "/mcp/proxy", mcpBody(t, 1, wire.MethodToolsCall, map[string]any{"name": "crm_lookup", "arguments": map[string]any{}}), nil)
+			rec, out := do(t, h, "/mcp/proxy", mcpBody(t, 7, wire.MethodToolsCall, map[string]any{"name": "crm_lookup", "arguments": map[string]any{}}), nil)
 			e := out["error"].(map[string]any)
-			// Scoped pass-through: the vendor-owned error object is the vendor's.
-			assert.Equal(t, float64(-32001), e["code"])
-			assert.Equal(t, vendorMsg, e["message"], "vendor error relayed unchanged (explicit pass-through)")
-			assert.Equal(t, map[string]any{"vendor": "x"}, e["data"], "no Talon annotation inside the vendor's object")
-			_ = rec
-			// Talon-authored artefacts: nothing of the vendor text survives raw.
-			// The attempted call leaves exactly one Talon record either way;
-			// the vendor text inside it is sanitized and bounded.
+			assert.Equal(t, float64(tc.code), e["code"], "the vendor's numeric code is preserved")
+			assert.Equal(t, float64(7), out["id"], "the request id is preserved")
+			assert.Equal(t, publicVendorError, e["message"], "the vendor's message is never relayed")
+			data, _ := e["data"].(map[string]any)
+			for k := range data {
+				assert.Contains(t, []string{govcode.ExtensionID, "talon_code"}, k, "error.data carries only Talon's objects, never vendor data")
+			}
+			ext := governanceOf(t, out)
+			require.NotNil(t, ext)
+			assert.Equal(t, govcode.UpstreamToolFailed, ext["code"], "a vendor-reported failure stays a trustworthy failure, never unknown or a policy denial")
+			assert.Equal(t, govcode.DecisionFailed, ext["decision"])
+			for _, p := range protected {
+				assert.NotContains(t, rec.Body.String(), p, "HTTP response leaks %q", p)
+			}
+			assert.NotContains(t, rec.Body.String(), "VVVVVVVV")
 			recs := listRecords(t, store, "default")
-			require.Len(t, recs, 1)
+			require.Len(t, recs, 1, "exactly one record")
 			r := recs[0]
-			require.True(t, store.VerifyRecord(&r))
+			require.True(t, store.VerifyRecord(&r), "HMAC verifies")
 			js, _ := json.Marshal(r)
-			assertNoSecret(t, "signed record", string(js))
-			assert.LessOrEqual(t, len(r.Execution.Error), len("definitions_upstream_jsonrpc_error: -32001 ")+maxDiagnosticBytes+3)
+			for _, p := range []string{sentinelBearer, "P4ssw0rd", "XYZSECRET", "vault.db"} {
+				assert.NotContains(t, string(js), p, "signed record leaks %q", p)
+			}
 			assert.Equal(t, evidence.StatusFailed, r.Status, "a well-formed vendor error is a trustworthy failure")
 			assert.Equal(t, explanation.CodeExecutionFailed, r.Explanations[0].Code)
-			if mode == "tools/call" {
-				assert.True(t, strings.HasPrefix(r.Execution.Error, "upstream_jsonrpc_error: -32001"), r.Execution.Error)
-				assert.Equal(t, int32(1), effects.Load())
+			assert.Contains(t, r.Execution.Error, fmt.Sprint(tc.code), "the vendor code is in the diagnostic")
+			if tc.mode == "tools/call" {
+				assert.Equal(t, "observed", ext["provenance"])
+				assert.True(t, strings.HasPrefix(r.Execution.Error, "upstream_jsonrpc_error: "), r.Execution.Error)
+				assert.LessOrEqual(t, len(r.Execution.Error), len("upstream_jsonrpc_error: -32001 ")+maxDiagnosticBytes+3)
+				assert.Equal(t, int32(1), effects.Load(), "exactly one business call, no hidden retry")
+				if tc.benign {
+					assert.Contains(t, r.Execution.Error, "Invalid params: ticket must be a string", "a benign vendor message is kept for the operator")
+				}
 			} else {
-				assert.True(t, strings.HasPrefix(r.Execution.Error, "definitions_upstream_jsonrpc_error: -32001"), r.Execution.Error)
-				assert.Equal(t, int32(0), effects.Load(), "the business tool was never called: the vendor failed the definition fetch")
+				assert.Equal(t, "not_dispatched", ext["provenance"], "the vendor failed the definition fetch: nothing was dispatched")
+				assert.True(t, strings.HasPrefix(r.Execution.Error, "definitions_upstream_jsonrpc_error: "), r.Execution.Error)
+				assert.Equal(t, int32(0), effects.Load(), "the business tool was never called")
 			}
 		})
 	}
@@ -397,7 +481,7 @@ func TestSafety_OutcomeSemanticsTable(t *testing.T) {
 			effects.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(id) + `,"error":{"code":-32001,"message":"vendor says no"}}`))
-		}, expect{"", "", "", false, evidence.StatusFailed, "upstream_error", explanation.CodeExecutionFailed, explanation.DecisionFailure, true, 1, true}},
+		}, expect{govcode.UpstreamToolFailed, govcode.DecisionFailed, "observed", false, evidence.StatusFailed, "upstream_error", explanation.CodeExecutionFailed, explanation.DecisionFailure, true, 1, true}},
 		{"(c) transport reset after accepted effect", func(w http.ResponseWriter, _ json.RawMessage, effects *atomic.Int32) {
 			effects.Add(1)
 			hj, _ := w.(http.Hijacker)
@@ -462,9 +546,8 @@ func TestSafety_OutcomeSemanticsTable(t *testing.T) {
 
 			if tc.expect.relayedVendorError {
 				e := out["error"].(map[string]any)
-				assert.Equal(t, float64(-32001), e["code"])
-				assert.Nil(t, governanceOf(t, out), "the vendor's error object is relayed without Talon annotation")
-				return
+				assert.Equal(t, float64(-32001), e["code"], "the vendor's numeric code is preserved")
+				assert.Equal(t, publicVendorError, e["message"], "the vendor's message is not")
 			}
 			ext := governanceOf(t, out)
 			require.NotNil(t, ext, "%v", out)

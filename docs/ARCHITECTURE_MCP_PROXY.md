@@ -304,8 +304,11 @@ for one more release only where a code had one:
 | `upstream_outcome_unknown` | `TALON_UPSTREAM_ERROR` | transport failure after the request was handed to the transport; automatic retry blocked |
 | `evidence_commit_failed` | — | the mandatory pre-dispatch record could not commit; no evidence id, zero dispatch |
 
-Vendor JSON-RPC errors still pass through untagged, and non-governed methods
-remain protocol `-32601` without any governance object.
+A vendor JSON-RPC error keeps the vendor's numeric `code` and the request id
+but is **not** relayed raw: `message` is a fixed public string, the vendor's
+`data` is dropped, and the governance extension reports `upstream_tool_failed`
+(see [MCP governance extension](reference/mcp-governance-extension.md)).
+Non-governed methods remain protocol `-32601` without any governance object.
 
 ---
 

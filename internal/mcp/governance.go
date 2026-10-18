@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/govcode"
 )
 
@@ -243,18 +244,55 @@ func sanitizeDiagnostic(s string) string {
 	return s
 }
 
-// sanitizeReasons applies sanitizeDiagnostic to every policy reason: the
-// rego interpolates caller-provided argument values into its messages, so
-// a reason is untrusted text until bounded and redacted.
-func sanitizeReasons(reasons []string) []string {
+// opaquePolicyReason replaces a denial reason Talon's explanation
+// vocabulary does not recognize: an unclassified reason is free text of
+// unknown provenance and is never recorded raw.
+const opaquePolicyReason = "policy_rule_denied"
+
+// safePolicyReasons is the policy-reason boundary for signed evidence. A
+// reason is not trusted merely because the policy engine produced it: Talon's
+// own rego now emits structured, value-free reasons (rule identity, field
+// name, policy limit), but the boundary enforces the invariant on its own —
+// every reason is sanitized and bounded, and a reason that Talon's
+// explanation vocabulary cannot classify (LEGACY_REASON_UNMIGRATED) is
+// replaced by an opaque token so arbitrary text can never reach a record.
+// Classified reasons keep the rule identity an operator needs for audit.
+func safePolicyReasons(reasons []string) []string {
 	if len(reasons) == 0 {
 		return nil
 	}
 	out := make([]string, 0, len(reasons))
 	for _, r := range reasons {
-		if r = sanitizeDiagnostic(r); r != "" {
-			out = append(out, r)
+		r = sanitizeDiagnostic(r)
+		if r == "" {
+			continue
 		}
+		facts := explanation.BuildLegacyFacts(false, "deny", []string{r}, explanation.StagePolicyEvaluation, "", "")
+		if len(facts) == 0 || facts[0].Code == explanation.CodeLegacyReasonUnmigrated {
+			r = opaquePolicyReason
+		}
+		out = append(out, r)
 	}
 	return out
+}
+
+// publicVendorError is the only message a vendor-reported JSON-RPC error
+// carries to the client: the vendor's numeric code and the request id are
+// preserved, the vendor's message and data are not relayed (they may carry
+// protected payload, credentials or topology); Talon's signed record keeps
+// the code and a sanitized, bounded diagnostic.
+const publicVendorError = "Upstream tool returned an error; the sanitized vendor diagnostic is in Talon evidence"
+
+// vendorErrorResponse is the ONE boundary for a well-formed upstream
+// JSON-RPC error on tools/call and on the definition capture: a trustworthy,
+// vendor-reported failure (never relabelled unknown or policy denial),
+// answered with the vendor's code, the fixed public message and Talon's
+// governance extension. When the record did not commit, committed=false is
+// stated and the code stays upstream_tool_failed (the call already ran).
+func vendorErrorResponse(id json.RawMessage, vendorCode int, out *evidenceOutcome) *jsonrpcResponse {
+	resp := governedError(id, govcode.UpstreamToolFailed, publicVendorError, out, TalonCodeUpstreamError, false)
+	if vendorCode != 0 {
+		resp.Error.Code = vendorCode
+	}
+	return resp
 }
