@@ -434,7 +434,10 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case wire.MethodDiscover:
 		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: wire.Discover(proxyServer(), discoverCapabilities(), "", listTTLMs)}
 	case wire.MethodToolsList:
-		resp = h.handleToolsList(ctx, req, inv)
+		resp = h.handleToolsList(ctx, w, req, inv)
+		if resp == nil {
+			return // protocol rejection already written
+		}
 	case wire.MethodToolsCall:
 		resp = h.handleProxyToolCall(ctx, w, req, inv)
 		if resp == nil {
@@ -452,7 +455,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 	params := toolsCallParams{Name: req.Name, Arguments: req.Arguments}
 	toolName := params.Name
 	if toolName == "" {
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "tool name is required"}}
+		return writeInvalidParams(w, req.ID, "tool name is required")
 	}
 
 	// Map to upstream name
@@ -579,7 +582,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 	}
 	captured, known := capture.byName[h.upstreamToolName(toolName)]
 	if !known {
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "Unknown tool: " + toolName}}
+		return writeInvalidParams(w, req.ID, "Unknown tool: "+sanitizeDiagnostic(toolName))
 	}
 	// Inbound mirrors are checked against the ORIGINAL parsed arguments (the
 	// client mirrored what it sent); outbound mirrors below are generated
@@ -776,11 +779,11 @@ func toolNameFromRaw(raw json.RawMessage) string {
 // (the capture already followed upstream pagination), so a client cursor
 // is invalid params. Cache hints: the upstream's exact ttlMs, and always
 // cacheScope private because the list is filtered for this governed route.
-func (h *ProxyHandler) handleToolsList(ctx context.Context, req *wire.Request, inv *proxyInvocation) *jsonrpcResponse {
+func (h *ProxyHandler) handleToolsList(ctx context.Context, w http.ResponseWriter, req *wire.Request, inv *proxyInvocation) *jsonrpcResponse {
 	ctx, span := proxyTracer.Start(ctx, "mcp.proxy.tools.list")
 	defer span.End()
 	if req.Cursor != "" {
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "invalid cursor: this list is a single page"}}
+		return writeInvalidParams(w, req.ID, "invalid cursor: this list is a single page")
 	}
 	capture, fail := h.trustedDefinitions(ctx, req, inv)
 	if fail != nil {

@@ -40,7 +40,7 @@ import (
 //	                             effect, record status unknown, no hidden retry
 //	6. tamper                  → a corrupted copy of a recorded record fails
 //	                             `talon audit verify`; untouched records verify
-//	+  unknown native tool     → -32602, no governance object, no alias, no record
+//	+  unknown native tool     → HTTP 400 / -32602, no governance object, no alias, no record
 //	+  denial safe data        → fixed public message; a caller-supplied secret in the
 //	                             arguments appears neither publicly nor in the record
 //	+  signed UNKNOWN          → the unknown record's explanation is
@@ -381,8 +381,8 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 	// spec's invalid-params error, no governance object, no alias, no record.
 	recordsBefore = countRecords(t, dbPath)
 	st, _, out = c.post("/mcp", "tools/call", "no_such_tool", `{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{`+mcpMeta+`,"name":"no_such_tool","arguments":{}}}`, nil)
-	if st != 200 || mcpErrCode(out) != -32602 || govExt(out) != nil {
-		t.Fatalf("unknown native tool must be a protocol invalid-params error without a governance object: %d %v", st, out)
+	if st != 400 || mcpErrCode(out) != -32602 || govExt(out) != nil {
+		t.Fatalf("unknown native tool must be a protocol invalid-params error (HTTP 400, -32602) without a governance object: %d %v", st, out)
 	}
 	if data, _ := out["error"].(map[string]any)["data"].(map[string]any); data["talon_code"] != nil {
 		t.Fatalf("unknown tool must not carry the legacy alias: %v", data)

@@ -440,9 +440,10 @@ func TestProxyToolsList_CapturedDefinitionsAndCacheHints(t *testing.T) {
 	assert.Equal(t, "private", res["cacheScope"], "a filtered list is never public")
 	assert.Equal(t, "complete", res["resultType"])
 	assert.NotContains(t, res, "nextCursor", "Talon's list is a single page")
-	// A client cursor is invalid params on a single-page list.
+	// A client cursor is invalid params on a single-page list: a protocol
+	// failure, HTTP 400 like every other protocol rejection.
 	rec, out = do(t, h, "/mcp/proxy", mcpBody(t, 2, wire.MethodToolsList, map[string]any{"cursor": "p2"}), nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Equal(t, float64(wire.CodeInvalidParams), errCode(out))
 	// The capture is reused while fresh: no new upstream list.
 	do(t, h, "/mcp/proxy", mcpBody(t, 3, wire.MethodToolsList, nil), nil)
@@ -524,7 +525,7 @@ func TestProxyHeaderParams_TypesNestedAbsentInvalid(t *testing.T) {
 	rec, _ = do(t, h, "/mcp/proxy", mcpBody(t, 4, wire.MethodToolsList, nil), nil)
 	assert.NotContains(t, rec.Body.String(), "broken_tool")
 	rec, out := do(t, h, "/mcp/proxy", mcpBody(t, 5, wire.MethodToolsCall, map[string]any{"name": "broken_tool", "arguments": map[string]any{}}), nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "an unresolvable tool is a protocol failure: HTTP 400")
 	assert.Equal(t, float64(wire.CodeInvalidParams), errCode(out), "excluded definition → Unknown tool")
 	assert.EqualValues(t, 2, cap.hits.Load())
 	assert.Equal(t, 2, countRecords(t, store), "two governed calls, nothing for protocol rejections")

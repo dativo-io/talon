@@ -197,7 +197,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 
 	params := toolsCallParams{Name: req.Name, Arguments: req.Arguments}
 	if params.Name == "" {
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "tool name is required"}}
+		return writeInvalidParams(w, req.ID, "tool name is required")
 	}
 	// Canonical tool resolution precedes governance: a name Talon cannot
 	// resolve is the spec's invalid-params protocol error (server/tools
@@ -206,7 +206,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	// denial" receipt for a tool that never existed (#372 review).
 	tool, ok := h.registry.Get(params.Name)
 	if !ok {
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "Unknown tool: " + sanitizeDiagnostic(params.Name)}}
+		return writeInvalidParams(w, req.ID, "Unknown tool: "+sanitizeDiagnostic(params.Name))
 	}
 	// Mcp-Param-* integrity (#447): when the trusted tool schema declares
 	// mirrored parameters, every recognized header must equal the parsed
@@ -238,7 +238,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	if len(params.Arguments) > 0 {
 		if unmarshalErr := json.Unmarshal(params.Arguments, &paramsMap); unmarshalErr != nil {
 			span.RecordError(unmarshalErr)
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "malformed tool arguments: " + sanitizeDiagnostic(unmarshalErr.Error())}}
+			return writeInvalidParams(w, req.ID, "malformed tool arguments: "+sanitizeDiagnostic(unmarshalErr.Error()))
 		}
 	}
 	if paramsMap == nil {
@@ -366,7 +366,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 
 	if schema := tool.InputSchema(); len(schema) > 0 && string(schema) != "null" {
 		if valErr := tools.ValidateAgainstSchema(schema, params.Arguments); valErr != nil {
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "schema validation failed: " + sanitizeDiagnostic(valErr.Error())}}
+			return writeInvalidParams(w, req.ID, "schema validation failed: "+sanitizeDiagnostic(valErr.Error()))
 		}
 	}
 

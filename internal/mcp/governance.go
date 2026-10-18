@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"regexp"
 	"strings"
 	"unicode"
@@ -15,6 +16,7 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/govcode"
+	"github.com/dativo-io/talon/internal/mcp/wire"
 )
 
 // The MCP governance extension (#372). After the protocol gate accepted a
@@ -162,6 +164,17 @@ func withGovernanceMeta(result any, out *evidenceOutcome) any {
 	meta[govcode.ExtensionID] = ext
 	m["_meta"] = meta
 	return m
+}
+
+// writeInvalidParams answers an in-method protocol failure — a tool Talon
+// cannot resolve, arguments that violate the trusted schema, malformed
+// arguments, an invalid cursor — exactly like the wire gate answers one:
+// HTTP 400 with JSON-RPC -32602, no governance extension, no alias, no
+// evidence. Nothing trustworthy was evaluated, so nothing is recorded.
+// The returned nil tells the route the response is already written.
+func writeInvalidParams(w http.ResponseWriter, id json.RawMessage, msg string) *jsonrpcResponse {
+	wire.WriteError(w, id, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidParams, Reason: wire.ReasonParamsInvalid, Message: govcode.Bounded(msg)})
+	return nil
 }
 
 // discoverCapabilities is what both routes advertise: the tools capability

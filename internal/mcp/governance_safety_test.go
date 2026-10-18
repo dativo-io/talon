@@ -302,7 +302,9 @@ func TestSafety_VendorErrorIsNeverRelayedRaw(t *testing.T) {
 
 // Native matrix: error family, evidence count and execution count for
 // unknown tool, known-denied, known-allowed, invalid schema, header/body
-// mismatch and malformed arguments.
+// mismatch and malformed arguments. Every protocol failure — whether the
+// wire gate or the method handler detects it — is HTTP 4xx; only governed
+// outcomes on an accepted request are HTTP 200.
 func TestSafety_NativeResolutionMatrix(t *testing.T) {
 	store, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -338,10 +340,10 @@ func TestSafety_NativeResolutionMatrix(t *testing.T) {
 		want  want
 		count func() int
 	}{
-		{"unknown tool", `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"no_such_tool","arguments":{}}}`, nil, want{200, float64(codeInvalidParams), false, 0, 0, "", true}, nil},
+		{"unknown tool", `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"no_such_tool","arguments":{}}}`, nil, want{400, float64(codeInvalidParams), false, 0, 0, "", true}, nil},
 		{"known denied", `{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"denied_tool","arguments":{}}}`, nil, want{200, float64(codeServerError), true, 1, 0, govcode.PolicyDenied, false}, denied.executions},
 		{"known allowed", `{"jsonrpc":"2.0","method":"tools/call","id":3,"params":{"name":"allowed_tool","arguments":{}}}`, nil, want{200, 0, true, 1, 1, govcode.CodeAllowed, false}, allowed.executions},
-		{"invalid schema", `{"jsonrpc":"2.0","method":"tools/call","id":4,"params":{"name":"strict_tool","arguments":{"n":"not-a-number"}}}`, nil, want{200, float64(codeInvalidParams), false, 0, 0, "", true}, strict.executions},
+		{"invalid schema", `{"jsonrpc":"2.0","method":"tools/call","id":4,"params":{"name":"strict_tool","arguments":{"n":"not-a-number"}}}`, nil, want{400, float64(codeInvalidParams), false, 0, 0, "", true}, strict.executions},
 		{"malformed arguments", `{"jsonrpc":"2.0","method":"tools/call","id":5,"params":{"name":"allowed_tool","arguments":"nope"}}`, nil, want{400, float64(wire.CodeInvalidParams), false, 0, 0, "", true}, allowed.executions},
 		{"header/body mismatch", `{"jsonrpc":"2.0","method":"tools/call","id":6,"params":{"name":"allowed_tool","arguments":{}}}`, map[string]string{wire.HeaderName: "denied_tool"}, want{400, float64(wire.CodeHeaderMismatch), false, 0, 0, "", true}, allowed.executions},
 	}
@@ -438,7 +440,7 @@ func TestSafety_ProxyUnknownVersusForbidden(t *testing.T) {
 
 	// allowlisted but not published upstream → protocol error, no receipt
 	rec, out := do(t, h, "/mcp/proxy", mcpBody(t, 1, wire.MethodToolsCall, map[string]any{"name": "ghost_tool", "arguments": map[string]any{}}), nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "an unresolvable tool is a protocol failure: HTTP 400")
 	assert.Equal(t, float64(codeInvalidParams), errCode(out), rec.Body.String())
 	assert.Nil(t, governanceOf(t, out))
 	assert.Equal(t, 0, countRecords(t, store), "an unresolvable tool leaves no governance receipt")
