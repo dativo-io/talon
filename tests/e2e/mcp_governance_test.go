@@ -314,7 +314,7 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 
 	// 3. forbidden call: policy_denied, deny, non-retryable, alias; effect still 1.
 	const sentinel = "sk-SMOKE-SENTINEL-SECRET-0001"
-	deny := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{` + mcpMeta + `,"name":"delete_customer","arguments":{"token":"` + sentinel + `","reason":"line1\nline2"}}}`
+	deny := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{` + mcpMeta + `,"name":"delete_customer","arguments":{"token":"` + sentinel + `","customer":"` + vendorCustomer + `","email":"` + vendorEmail + `","reason":"line1\nline2"}}}`
 	recordsBefore := countRecords(t, dbPath)
 	st, _, out = c.post("/mcp/proxy", "tools/call", "delete_customer", deny, nil)
 	if st != 200 || mcpErrCode(out) != -32000 {
@@ -347,8 +347,16 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 	if rec.PolicyDecison.Allowed || len(rec.Explanations) == 0 || rec.Explanations[0].Code != ext["reasonCode"] || rec.Explanations[0].Decision != "deny" {
 		t.Fatalf("denied record disagrees with the extension: %+v vs %v", rec, ext)
 	}
-	if js := rawRecordJSON(t, dbPath, denyID); strings.Contains(js, sentinel) {
-		t.Fatal("caller-supplied argument value stored in the signed denial record")
+	denyJS := rawRecordJSON(t, dbPath, denyID)
+	for _, p := range []string{sentinel, vendorCustomer, vendorEmail} {
+		if strings.Contains(denyJS, p) {
+			t.Fatalf("caller-supplied argument value %q stored in the signed denial record: %s", p, denyJS)
+		}
+	}
+	// The proxy's configured forbidden_tools list denies before the rego
+	// runs and records Talon's fixed token for that rule.
+	if len(rec.PolicyDecison.Reasons) != 1 || rec.PolicyDecison.Reasons[0] != "forbidden_tools" {
+		t.Fatalf("denial reasons must be the structured token only: %v", rec.PolicyDecison.Reasons)
 	}
 	if o, _, code := RunTalon(t, dir, nil, "audit", "verify", denyID); code != 0 || !strings.Contains(o, "VALID") {
 		t.Fatalf("audit verify %s: %d %s", denyID, code, o)
@@ -428,9 +436,11 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 		t.Fatalf("audit verify %s: %d %s", unknownID, code, o)
 	}
 
-	// 5b. vendor JSON-RPC error carrying protected data: the vendor's code
-	// is preserved, its message/data are not relayed, Talon's record is
-	// sanitized and verifies, exactly one effect.
+	// 5b. vendor JSON-RPC error carrying protected data (a credential, a
+	// customer id, an e-mail address): the vendor's code is preserved, its
+	// message/data are not relayed, Talon's record stores only the code and
+	// category (checked over the whole signed JSON, explanations included),
+	// verifies, exactly one effect.
 	vendorErr := `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{` + mcpMeta + `,"name":"vendor_error_tool","arguments":{"id":"7"}}}`
 	st, _, out = c.post("/mcp/proxy", "tools/call", "vendor_error_tool", vendorErr, nil)
 	if st != 200 || mcpErrCode(out) != -32001 {
@@ -450,8 +460,14 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 		t.Fatalf("effects = %d, want 3 (one vendor-error call, no hidden retry)", up.effects.Load())
 	}
 	vendorID := ext["evidence"].(map[string]any)["id"].(string)
-	if js := rawRecordJSON(t, dbPath, vendorID); strings.Contains(js, vendorToken) {
-		t.Fatal("credential from the vendor error stored in the signed record")
+	vendorJS := rawRecordJSON(t, dbPath, vendorID)
+	for _, p := range []string{vendorToken, vendorCustomer, vendorEmail, "refund failed"} {
+		if strings.Contains(vendorJS, p) {
+			t.Fatalf("vendor error text %q stored in the signed record: %s", p, vendorJS)
+		}
+	}
+	if !strings.Contains(vendorJS, `"upstream_jsonrpc_error: code=-32001 category=server_error"`) {
+		t.Fatalf("the record must keep the vendor code and category token: %s", vendorJS)
 	}
 	rec = readRecord(t, dbPath, vendorID)
 	if rec.Status != "failed" || len(rec.Explanations) == 0 || rec.Explanations[0].Code != "EXECUTION_FAILED" {

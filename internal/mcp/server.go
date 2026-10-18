@@ -252,10 +252,11 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 		// fail-closed refusal is itself a governed outcome and MUST be
 		// evidenced before the response (an uncommitted record becomes
 		// evidence_commit_failed; either way zero execution). The raw
-		// engine error stays in the span and the sanitized record.
+		// engine error goes to the span and the log, never the record.
+		log.Warn().Str("tool", sanitizeDiagnostic(params.Name)).Str("detail", sanitizeDiagnostic(err.Error())).Msg("mcp_policy_evaluation_failed")
 		failEv := h.newServerEvidence(tenantID, agentID, "mcp_"+uuid.New().String()[:8], params.Name, evidence.PolicyDecision{
 			Allowed: false, Action: "deny", Reasons: []string{"policy_evaluation_failed"},
-		}, sanitizeDiagnostic(err.Error()), 0, flow)
+		}, "policy_evaluation_failed", 0, flow)
 		failEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
 			Code: explanation.CodeExecutionFailed, Decision: explanation.DecisionDeny, Stage: explanation.StagePolicyEvaluation,
 			Trigger: "policy_evaluation_failed",
@@ -336,15 +337,15 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	}
 
 	if !decision.Allowed {
-		// Policy reasons are untrusted text (the rego interpolates argument
-		// values): the public message is fixed and the record keeps only
-		// sanitized, bounded reasons.
-		reasons := safePolicyReasons(decision.Reasons)
-		evReason := "policy denied"
+		// Policy reasons are untrusted text: the public message is fixed and
+		// the record keeps one structured token per reason; the text itself
+		// goes only to the span.
+		reasons := policyReasonTokens(decision.Reasons)
+		evReason := opaquePolicyReason
 		if len(reasons) > 0 {
 			evReason = reasons[0]
 		}
-		span.SetAttributes(attribute.String("policy.deny", evReason))
+		span.SetAttributes(attribute.String("policy.deny", evReason), attribute.String("policy.deny_detail", sanitizeDiagnostic(strings.Join(decision.Reasons, "; "))))
 		flow.argBlocked = true
 		denyCorrelationID := "mcp_" + uuid.New().String()[:8]
 		denyEv := h.newServerEvidence(tenantID, agentID, denyCorrelationID, params.Name, evidence.PolicyDecision{
@@ -443,7 +444,9 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 		VersionIdentity: decision.PolicyVersion,
 	}})
 	if execErr != nil {
-		ev.Execution.Error = sanitizeDiagnostic(execErr.Error())
+		// The record keeps a token; the tool's own text goes to the log.
+		log.Warn().Str("tool", sanitizeDiagnostic(params.Name)).Str("detail", sanitizeDiagnostic(execErr.Error())).Msg("mcp_tool_execution_failed")
+		ev.Execution.Error = "tool_execution_failed"
 		ev.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
 			Code:            explanation.CodeExecutionFailed,
 			Decision:        explanation.DecisionFailure,

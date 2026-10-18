@@ -15,8 +15,9 @@
 #   - a tampered record fails verification while an untouched one verifies;
 #   - the smoke's own assertion set rejects a missing id, an uncommitted
 #     reference, a retryable denial and a leaked signature.
-# Coverage boundary: pre-dispatch evidence-commit outages and adversarial
-# error sanitization are proven in-process (internal/mcp TestGovernance_*),
+# Coverage boundary: pre-dispatch evidence-commit outages and injected
+# adversarial reasons are proven in-process (internal/mcp TestGovernance_*,
+# TestSafety_*),
 # because they cannot be injected into a running binary.
 #
 # Independent of make test-smoke (no provider key, no Docker); also run as

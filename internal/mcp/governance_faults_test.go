@@ -97,7 +97,9 @@ func TestGovernance_NativePolicyEvaluationFailure_EvidencedZeroExecution(t *test
 	assertNoSecret(t, "public response", string(raw))
 	stored, _ := json.Marshal(rec)
 	assertNoSecret(t, "signed record", string(stored))
-	assert.True(t, len(rec.Execution.Error) <= maxDiagnosticBytes+3, "record diagnostic is bounded: %d", len(rec.Execution.Error))
+	assert.Equal(t, []string{"policy_evaluation_failed"}, rec.PolicyDecision.Reasons)
+	assert.Equal(t, "policy_evaluation_failed", rec.Execution.Error, "the engine's error text never enters the record")
+	assertOnlyEvidenceTokens(t, rec)
 }
 
 // Native: when the policy-evaluation failure record cannot commit, the
@@ -168,6 +170,8 @@ func TestGovernance_NativeToolErrorIsSanitized(t *testing.T) {
 	require.NoError(t, err)
 	stored, _ := json.Marshal(rec)
 	assertNoSecret(t, "signed record", string(stored))
+	assert.Equal(t, "tool_execution_failed", rec.Execution.Error, "the tool's error text never enters the record")
+	assertOnlyEvidenceTokens(t, rec)
 	assert.Equal(t, int32(1), leaky.calls.Load())
 }
 

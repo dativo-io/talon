@@ -364,7 +364,7 @@ var reasonRules = []reasonRule{
 		"is blocked for this caller",
 		"exceeds caller restriction",
 	}, code: CodePolicyDeniedRouting},
-	{markers: []string{"tool", "forbidden"}, code: CodePolicyDeniedTool},
+	{markers: []string{"tool", "forbidden", "row_count_exceeded", "dry_run_required", "admin_operation_requires_allow", "policy_rule_denied"}, code: CodePolicyDeniedTool},
 	{markers: []string{"hook"}, code: CodePolicyDeniedHook},
 	{markers: []string{"circuit_breaker", "circuit breaker"}, code: CodePolicyDeniedCircuit},
 	{markers: []string{"early_termination"}, code: CodePolicyDeniedEarlyTerm},

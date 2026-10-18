@@ -483,8 +483,8 @@ func TestProxyUpstreamDecodeFailure_RecordsTrail(t *testing.T) {
 	// see TestGovernance_PostHandoffAmbiguityIsUnknown.)
 	assert.Equal(t, "failed", r.Status)
 	require.Len(t, r.PolicyDecision.Reasons, 1)
-	assert.True(t, strings.HasPrefix(r.PolicyDecision.Reasons[0], "definitions_upstream_response_invalid"), r.PolicyDecision.Reasons[0])
-	assert.Contains(t, r.PolicyDecision.Reasons[0], "text/html", "the sanitized detail is retained in the signed record")
+	assert.Equal(t, "definitions_upstream_response_invalid: protocol_violation", r.PolicyDecision.Reasons[0],
+		"the record keeps the failure kind, never the vendor's content type or body")
 	assert.Contains(t, r.Classification.PIIDetected, "email")
 	require.NotNil(t, r.DataFlow, "a response arrived, so the egress flow item is truthful and must stay")
 }

@@ -67,7 +67,8 @@ func adversarialReasons() []string {
 
 // Native: a policy denial whose reasons carry secrets, URL credentials,
 // paths, control/format characters and oversized text yields a fixed public
-// message and a sanitized, bounded, HMAC-valid record. Zero execution.
+// message and an HMAC-valid record whose reasons are structured tokens only
+// (none of these free-text reasons is a Talon template). Zero execution.
 func TestSafety_NativePolicyDenialReasonsAreUntrusted(t *testing.T) {
 	h, store, _ := nativeDenyFixture(t)
 	tool := &capturingTool{name: "only_this"}
@@ -90,10 +91,9 @@ func TestSafety_NativePolicyDenialReasonsAreUntrusted(t *testing.T) {
 	stored, _ := json.Marshal(rec)
 	assertNoSecret(t, "signed record", string(stored))
 	assert.NotContains(t, string(stored), zeroWidthSpace, "format characters are removed")
-	for _, r := range rec.PolicyDecision.Reasons {
-		assert.LessOrEqual(t, len(r), maxDiagnosticBytes+3, "each stored reason is bounded")
-	}
-	assert.Contains(t, strings.Join(rec.PolicyDecision.Reasons, " "), "is forbidden for tool x", "the policy meaning is retained for audit")
+	assert.Equal(t, []string{opaquePolicyReason, opaquePolicyReason, opaquePolicyReason, opaquePolicyReason}, rec.PolicyDecision.Reasons,
+		"free text is never stored, however familiar its words; only the opaque token")
+	assertOnlyEvidenceTokens(t, rec)
 	assert.Equal(t, 0, tool.executions())
 }
 
@@ -151,10 +151,9 @@ func TestSafety_RegoForbiddenArgumentValueNotEchoed(t *testing.T) {
 		assert.NotContains(t, string(js), p, "signed record leaks %q", p)
 	}
 	require.NotEmpty(t, stored.PolicyDecision.Reasons)
-	joined := strings.Join(stored.PolicyDecision.Reasons, " | ")
-	for _, field := range []string{"recipient", "customer", "project"} {
-		assert.Contains(t, joined, "argument "+field+" has a forbidden value for tool pay", "rule identity and field name are kept: %s", joined)
-	}
+	assert.ElementsMatch(t, []string{"forbidden_argument_value:field=recipient", "forbidden_argument_value:field=customer", "forbidden_argument_value:field=project"},
+		stored.PolicyDecision.Reasons, "the rule token and the configured field name are all the record keeps")
+	assertOnlyEvidenceTokens(t, stored)
 	for _, x := range stored.Explanations {
 		for _, p := range protected {
 			assert.NotContains(t, x.Trigger+" "+x.Reason+" "+x.Fix, p)
@@ -163,24 +162,36 @@ func TestSafety_RegoForbiddenArgumentValueNotEchoed(t *testing.T) {
 	assert.Equal(t, 0, pay.executions())
 }
 
-// A denial reason Talon's explanation vocabulary cannot classify is free
-// text of unknown provenance: the record keeps an opaque token, never the
-// text, while classified reasons keep their rule identity.
+// A denial reason that is not exactly one of Talon's rule templates is free
+// text of unknown provenance: the record keeps the opaque token, never the
+// text — even when the text contains the words ("tool", "forbidden") that
+// Talon's explanation vocabulary recognizes, and even when it carries only
+// ordinary, non-secret-shaped identifiers (an e-mail address, a customer
+// id). A template match is reduced to its token.
 func TestSafety_UnclassifiedPolicyReasonIsOpaque(t *testing.T) {
 	h, store, _ := nativeDenyFixture(t)
 	tool := &capturingTool{name: "only_this"}
 	h.registry = tools.NewRegistry()
 	h.registry.Register(tool)
-	h.policyEngine = denyingToolEvaluator{reasons: []string{"customer private.person@example.test is on hold", "Tool 'only_this' not in allowed_tools list"}}
+	h.policyEngine = denyingToolEvaluator{reasons: []string{
+		"customer private.person@example.test is on hold",
+		"Tool rejected for customer private.person@example.test",
+		"Tool 'only_this' is forbidden by policy for account CUST-7391",
+		"Tool 'only_this' not in allowed_tools list",
+	}}
 	out := callNative(t, h, "only_this", 23)
 	ext := governanceOf(t, out)
 	require.NotNil(t, ext)
+	assert.Equal(t, explanation.CodePolicyDeniedTool, ext["reasonCode"])
 	rec, err := store.Get(context.Background(), ext["evidence"].(map[string]any)["id"].(string))
 	require.NoError(t, err)
+	require.True(t, store.VerifyRecord(rec))
 	js, _ := json.Marshal(rec)
-	assert.NotContains(t, string(js), "private.person@example.test")
-	assert.Contains(t, rec.PolicyDecision.Reasons, opaquePolicyReason)
-	assert.Contains(t, rec.PolicyDecision.Reasons, "Tool 'only_this' not in allowed_tools list", "a classified Talon reason keeps its identity")
+	for _, p := range []string{"private.person@example.test", "CUST-7391", "on hold", "rejected", "account"} {
+		assert.NotContains(t, string(js), p, "the whole signed record is free of %q", p)
+	}
+	assert.Equal(t, []string{opaquePolicyReason, opaquePolicyReason, opaquePolicyReason, "tool_not_allowed"}, rec.PolicyDecision.Reasons)
+	assertOnlyEvidenceTokens(t, rec)
 	assert.Equal(t, 0, tool.executions())
 }
 
@@ -208,11 +219,14 @@ func TestSafety_ProxyPolicyDenialReasonsAreUntrusted(t *testing.T) {
 // (tools/list) are NOT relayed raw: the vendor's numeric code and the
 // request id are preserved, the message is the fixed public string, the
 // vendor's data object is dropped (only Talon's governance extension is
-// present), and the signed record keeps a sanitized, bounded diagnostic.
-// Sentinels cover credential-shaped and non-credential-shaped protected
-// strings, nested data, quoted JSON and an oversized message.
+// present), and the signed record keeps only the vendor's numeric code and
+// its JSON-RPC category — never any part of the vendor's message, not even
+// a benign-looking one. Sentinels cover credential-shaped and ordinary
+// identifiers (an e-mail address, a customer id, a project code name),
+// nested data, quoted JSON and an oversized message.
 func TestSafety_VendorErrorIsNeverRelayedRaw(t *testing.T) {
 	protected := []string{sentinelBearer, sentinelURLCreds, sentinelPath, "private.person@example.test", "CUST-7391-SECRET", "CONFIDENTIAL-PROJECT-ORCHID"}
+	ordinary := []string{"ordinary.user@example.org", "CUST-4482", "no open tickets"}
 	vendorMsg := "boom " + strings.Join(protected, " ") + ` {"nested":"` + protected[4] + `"}` + strings.Repeat("V", 5000)
 	vendorData := `{"vendor":"x","detail":{"customer":"` + protected[4] + `","email":"` + protected[3] + `","token":"` + sentinelBearer + `"},"raw":"{\"quoted\":\"` + protected[5] + `\"}"}`
 	for _, tc := range []struct {
@@ -225,8 +239,10 @@ func TestSafety_VendorErrorIsNeverRelayedRaw(t *testing.T) {
 		{"tools/call", -32001, vendorMsg, vendorData, false},
 		{"tools/list", -32001, vendorMsg, vendorData, false},
 		{"tools/call", -32602, "Invalid params: ticket must be a string", "", true},
+		{"tools/call", -32000, "Customer CUST-4482 <ordinary.user@example.org> has no open tickets", "", false},
+		{"tools/list", -32000, "Customer CUST-4482 <ordinary.user@example.org> has no open tickets", "", false},
 	} {
-		name := tc.mode
+		name := tc.mode + "/" + fmt.Sprint(tc.code)
 		if tc.benign {
 			name += "/benign"
 		}
@@ -274,24 +290,20 @@ func TestSafety_VendorErrorIsNeverRelayedRaw(t *testing.T) {
 			require.Len(t, recs, 1, "exactly one record")
 			r := recs[0]
 			require.True(t, store.VerifyRecord(&r), "HMAC verifies")
-			js, _ := json.Marshal(r)
-			for _, p := range []string{sentinelBearer, "P4ssw0rd", "XYZSECRET", "vault.db"} {
-				assert.NotContains(t, string(js), p, "signed record leaks %q", p)
+			js, _ := json.Marshal(&r)
+			for _, p := range append(append([]string{"P4ssw0rd", "XYZSECRET", "vault.db", "boom", "ticket must be"}, protected...), ordinary...) {
+				assert.NotContains(t, string(js), p, "the whole signed record (reasons, error, explanations) is free of %q", p)
 			}
 			assert.Equal(t, evidence.StatusFailed, r.Status, "a well-formed vendor error is a trustworthy failure")
 			assert.Equal(t, explanation.CodeExecutionFailed, r.Explanations[0].Code)
-			assert.Contains(t, r.Execution.Error, fmt.Sprint(tc.code), "the vendor code is in the diagnostic")
+			assertOnlyEvidenceTokens(t, &r)
 			if tc.mode == "tools/call" {
 				assert.Equal(t, "observed", ext["provenance"])
-				assert.True(t, strings.HasPrefix(r.Execution.Error, "upstream_jsonrpc_error: "), r.Execution.Error)
-				assert.LessOrEqual(t, len(r.Execution.Error), len("upstream_jsonrpc_error: -32001 ")+maxDiagnosticBytes+3)
+				assert.Equal(t, vendorErrorToken("upstream_jsonrpc_error", tc.code), r.Execution.Error, "only the vendor code and its category are stored")
 				assert.Equal(t, int32(1), effects.Load(), "exactly one business call, no hidden retry")
-				if tc.benign {
-					assert.Contains(t, r.Execution.Error, "Invalid params: ticket must be a string", "a benign vendor message is kept for the operator")
-				}
 			} else {
 				assert.Equal(t, "not_dispatched", ext["provenance"], "the vendor failed the definition fetch: nothing was dispatched")
-				assert.True(t, strings.HasPrefix(r.Execution.Error, "definitions_upstream_jsonrpc_error: "), r.Execution.Error)
+				assert.Equal(t, vendorErrorToken("definitions_upstream_jsonrpc_error", tc.code), r.Execution.Error)
 				assert.Equal(t, int32(0), effects.Load(), "the business tool was never called")
 			}
 		})
