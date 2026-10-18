@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-action-catalog-smoke test-openshell-live test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-openshell-live test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -52,6 +52,9 @@ test-e2e: ## Run e2e tests (builds binary in TestMain). Uses -count=1 so cache i
 
 test-mcp-smoke: ## MCP 2026-07-28 protocol smoke (#447): discover/list/call/integrity against the built binary with a mock upstream (no keys)
 	@bash scripts/mcp-smoke.sh
+
+test-mcp-governance-smoke: ## MCP governance-contract smoke (#372): extension + committed signed evidence + forbidden action + protocol errors + ambiguous effect against the built binary (no keys, no Docker); also smoke section 37 and a PR CI gate
+	@bash scripts/mcp-governance-smoke.sh
 
 test-action-catalog-smoke: ## Trusted action catalog smoke (#427): CLI inspection, catalog in the runtime generation, mcp-sourced action not executable, source refresh/last-known-good against the built binary (no keys)
 	@bash scripts/action-catalog-smoke.sh

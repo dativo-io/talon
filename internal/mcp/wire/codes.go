@@ -108,4 +108,9 @@ const (
 	ReasonParamHeaderMismatch     = "param_header_mismatch"
 	ReasonParamHeaderInvalid      = "param_header_invalid"
 	ReasonMethodNotFound          = "method_not_found"
+	// ReasonParamsInvalid: a method handler could not resolve or validate
+	// its params (unknown tool, schema violation, malformed arguments, an
+	// invalid cursor). A protocol failure like the gate's: HTTP 400 and
+	// -32602, no governance object, no evidence.
+	ReasonParamsInvalid = "params_invalid"
 )

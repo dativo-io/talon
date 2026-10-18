@@ -131,6 +131,8 @@ func decisionFromExplanation(ev *evidence.Evidence) (decision, reasonCode, reaso
 	switch item.Decision {
 	case explanation.DecisionFailure:
 		decision = "error"
+	case explanation.DecisionUnknown:
+		decision = "unknown"
 	case explanation.DecisionDeny:
 		if ev.PolicyDecision.Allowed && item.Code == explanation.CodePolicyDeniedPIIOutput {
 			// Records written before #476 explained every response-PII

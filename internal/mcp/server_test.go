@@ -232,7 +232,7 @@ func TestHandler_ToolsCall_ToolNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "unknown tool is a protocol failure: HTTP 400, like the wire gate")
 	var resp jsonrpcResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 	require.NotNil(t, resp.Error)

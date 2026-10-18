@@ -22,6 +22,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
+	"github.com/dativo-io/talon/internal/govcode"
 	"github.com/dativo-io/talon/internal/mcp/wire"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
@@ -44,9 +45,10 @@ type jsonrpcResponse struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
-	// Data carries the stable machine-readable denial code (#369):
-	// {"talon_code": "TALON_..."} — integrators key on this, never on the
-	// prose Message.
+	// Data carries the versioned governance extension (#372,
+	// govcode.ExtensionID) and, for one release, the deprecated flat
+	// {"talon_code": "TALON_..."} alias (#369). Integrators key on these,
+	// never on the prose Message.
 	Data interface{} `json:"data,omitempty"`
 }
 
@@ -81,7 +83,7 @@ const listTTLMs = 60_000
 // tools/call over MCP 2026-07-28 Streamable HTTP (#447).
 type Handler struct {
 	registry      *tools.ToolRegistry
-	policyEngine  *policy.Engine
+	policyEngine  toolAccessEvaluator
 	evidenceStore *evidence.Store
 	classifier    classifier.Facade
 	// Transport is the shared protocol gate; routes share one implementation
@@ -100,6 +102,13 @@ func NewHandler(registry *tools.ToolRegistry, policyEngine *policy.Engine, evide
 		classifier:    cls,
 		Transport:     newTransport(),
 	}
+}
+
+// toolAccessEvaluator is the one policy-engine seam the native route uses;
+// it exists so a failing evaluator can be injected in tests (the fail-closed
+// policy_evaluation_failed path must be provable).
+type toolAccessEvaluator interface {
+	EvaluateToolAccess(ctx context.Context, toolName string, params map[string]interface{}, toolHistory []map[string]interface{}) (*policy.Decision, error)
 }
 
 // newTransport is the one method allowlist both routes serve.
@@ -142,9 +151,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // discoverResult advertises exactly what this route implements: the one
 // protocol version, the tools capability (no listChanged: there is no
-// subscriptions/listen stream here), no extensions.
+// subscriptions/listen stream here) and the governance extension (#372);
+// no Tasks.
 func (h *Handler) discoverResult() map[string]interface{} {
-	return wire.Discover(nativeServer(), map[string]interface{}{"tools": map[string]interface{}{}}, "", listTTLMs)
+	return wire.Discover(nativeServer(), discoverCapabilities(), "", listTTLMs)
 }
 
 func (h *Handler) handleToolsList(ctx context.Context, id json.RawMessage) *jsonrpcResponse {
@@ -187,24 +197,31 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 
 	params := toolsCallParams{Name: req.Name, Arguments: req.Arguments}
 	if params.Name == "" {
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "tool name is required"}}
+		return writeInvalidParams(w, req.ID, "tool name is required")
+	}
+	// Canonical tool resolution precedes governance: a name Talon cannot
+	// resolve is the spec's invalid-params protocol error (server/tools
+	// §Error Handling) — no governance extension, no evidence, zero
+	// execution. Evaluating policy first produced a committed "policy
+	// denial" receipt for a tool that never existed (#372 review).
+	tool, ok := h.registry.Get(params.Name)
+	if !ok {
+		return writeInvalidParams(w, req.ID, "Unknown tool: "+sanitizeDiagnostic(params.Name))
 	}
 	// Mcp-Param-* integrity (#447): when the trusted tool schema declares
 	// mirrored parameters, every recognized header must equal the parsed
 	// argument. A mismatch is a protocol rejection — before policy, before
 	// execution, with no evidence (no trustworthy action exists yet). The
 	// header is never the argument value.
-	if tool, ok := h.registry.Get(params.Name); ok {
-		_, decl, derr := nativeToolDefinition(tool)
-		if derr != nil {
-			wire.WriteError(w, req.ID, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidParams, Reason: wire.ReasonInvalidRequest, Message: "tool definition is invalid: " + derr.Error()})
-			return nil
-		}
-		if perr := wire.ValidateHeaderParams(decl, params.Arguments, req.HeaderParams); perr != nil {
-			span.SetAttributes(attribute.String("mcp.protocol_reason", perr.Reason))
-			wire.WriteError(w, req.ID, perr)
-			return nil
-		}
+	_, decl, derr := nativeToolDefinition(tool)
+	if derr != nil {
+		wire.WriteError(w, req.ID, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidParams, Reason: wire.ReasonInvalidRequest, Message: "tool definition is invalid: " + sanitizeDiagnostic(derr.Error())})
+		return nil
+	}
+	if perr := wire.ValidateHeaderParams(decl, params.Arguments, req.HeaderParams); perr != nil {
+		span.SetAttributes(attribute.String("mcp.protocol_reason", perr.Reason))
+		wire.WriteError(w, req.ID, perr)
+		return nil
 	}
 
 	span.SetAttributes(attribute.String("tool.name", params.Name))
@@ -221,7 +238,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	if len(params.Arguments) > 0 {
 		if unmarshalErr := json.Unmarshal(params.Arguments, &paramsMap); unmarshalErr != nil {
 			span.RecordError(unmarshalErr)
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "malformed tool arguments: " + unmarshalErr.Error()}}
+			return writeInvalidParams(w, req.ID, "malformed tool arguments: "+sanitizeDiagnostic(unmarshalErr.Error()))
 		}
 	}
 	if paramsMap == nil {
@@ -231,7 +248,20 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error()}}
+		// A genuine governance failure on a trustworthy canonical tool: the
+		// fail-closed refusal is itself a governed outcome and MUST be
+		// evidenced before the response (an uncommitted record becomes
+		// evidence_commit_failed; either way zero execution). The raw
+		// engine error goes to the span and the log, never the record.
+		log.Warn().Str("tool", sanitizeDiagnostic(params.Name)).Str("detail", sanitizeDiagnostic(err.Error())).Msg("mcp_policy_evaluation_failed")
+		failEv := h.newServerEvidence(tenantID, agentID, "mcp_"+uuid.New().String()[:8], params.Name, evidence.PolicyDecision{
+			Allowed: false, Action: "deny", Reasons: []string{"policy_evaluation_failed"},
+		}, "policy_evaluation_failed", 0, flow)
+		failEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
+			Code: explanation.CodeExecutionFailed, Decision: explanation.DecisionDeny, Stage: explanation.StagePolicyEvaluation,
+			Trigger: "policy_evaluation_failed",
+		}})
+		return governedError(req.ID, govcode.PolicyEvaluationFailed, publicPolicyEvaluationFailed, commitEvidence(ctx, h.evidenceStore, span, failEv), "", true)
 	}
 
 	// Classify tool arguments: every governed tool call records what data
@@ -278,17 +308,9 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 					PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
 					VersionIdentity: decision.PolicyVersion,
 				}})
-				if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
-					span.RecordError(storeErr)
-				}
-				return &jsonrpcResponse{
-					JSONRPC: jsonrpcVersion,
-					ID:      req.ID,
-					Error: &rpcError{
-						Code:    codeServerError,
-						Message: mcpResidualBlockMessage("Tool arguments blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr)),
-					},
-				}
+				return governedError(req.ID, govcode.PIIPolicyViolation,
+					mcpResidualBlockMessage("Tool arguments blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr)),
+					commitEvidence(ctx, h.evidenceStore, span, blockEv), "", true)
 			}
 			if !json.Valid([]byte(redactedArgs)) {
 				flow.argBlocked = true
@@ -307,56 +329,45 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 					PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
 					VersionIdentity: decision.PolicyVersion,
 				}})
-				if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
-					span.RecordError(storeErr)
-				}
-				return &jsonrpcResponse{
-					JSONRPC: jsonrpcVersion,
-					ID:      req.ID,
-					Error:   &rpcError{Code: codeServerError, Message: "PII redaction produced invalid JSON (fail-closed)"},
-				}
+				return governedError(req.ID, govcode.PIIPolicyViolation, "PII redaction produced invalid JSON (fail-closed)",
+					commitEvidence(ctx, h.evidenceStore, span, blockEv), "", true)
 			}
 			params.Arguments = json.RawMessage(redactedArgs)
 		}
 	}
 
 	if !decision.Allowed {
-		msg := "policy denied"
-		if len(decision.Reasons) > 0 {
-			msg = decision.Reasons[0]
+		// Policy reasons are untrusted text: the public message is fixed and
+		// the record keeps one structured token per reason; the text itself
+		// goes only to the span.
+		reasons := policyReasonTokens(decision.Reasons)
+		evReason := opaquePolicyReason
+		if len(reasons) > 0 {
+			evReason = reasons[0]
 		}
-		span.SetAttributes(attribute.String("policy.deny", msg))
+		span.SetAttributes(attribute.String("policy.deny", evReason), attribute.String("policy.deny_detail", sanitizeDiagnostic(strings.Join(decision.Reasons, "; "))))
 		flow.argBlocked = true
 		denyCorrelationID := "mcp_" + uuid.New().String()[:8]
 		denyEv := h.newServerEvidence(tenantID, agentID, denyCorrelationID, params.Name, evidence.PolicyDecision{
 			Allowed:       false,
 			Action:        decision.Action,
-			Reasons:       decision.Reasons,
+			Reasons:       reasons,
 			PolicyVersion: decision.PolicyVersion,
-		}, msg, 0, flow)
+		}, evReason, 0, flow)
 		denyEv.Explanations = explanation.BuildFromFacts(explanation.BuildLegacyFacts(
 			false,
 			decision.Action,
-			decision.Reasons,
+			reasons,
 			explanation.StagePolicyEvaluation,
 			explanation.PolicyRef(decision.PolicyVersion),
 			decision.PolicyVersion,
 		))
-		if storeErr := h.evidenceStore.Store(ctx, denyEv); storeErr != nil {
-			span.RecordError(storeErr)
-		}
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: msg}}
-	}
-
-	tool, ok := h.registry.Get(params.Name)
-	if !ok {
-		// Unknown tool is a protocol error per server/tools §Error Handling.
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "Unknown tool: " + params.Name}}
+		return governedError(req.ID, govcode.PolicyDenied, publicPolicyDenied, commitEvidence(ctx, h.evidenceStore, span, denyEv), "", true)
 	}
 
 	if schema := tool.InputSchema(); len(schema) > 0 && string(schema) != "null" {
 		if valErr := tools.ValidateAgainstSchema(schema, params.Arguments); valErr != nil {
-			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "schema validation failed: " + valErr.Error()}}
+			return writeInvalidParams(w, req.ID, "schema validation failed: "+sanitizeDiagnostic(valErr.Error()))
 		}
 	}
 
@@ -408,17 +419,9 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 						PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
 						VersionIdentity: decision.PolicyVersion,
 					}})
-					if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
-						span.RecordError(storeErr)
-					}
-					return &jsonrpcResponse{
-						JSONRPC: jsonrpcVersion,
-						ID:      req.ID,
-						Error: &rpcError{
-							Code:    codeServerError,
-							Message: mcpResidualBlockMessage("Tool result blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr)),
-						},
-					}
+					return governedError(req.ID, govcode.PIIPolicyViolation,
+						mcpResidualBlockMessage("Tool result blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr)),
+						commitEvidence(ctx, h.evidenceStore, span, blockEv), "", false)
 				}
 				result = json.RawMessage(redacted)
 			}
@@ -441,7 +444,9 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 		VersionIdentity: decision.PolicyVersion,
 	}})
 	if execErr != nil {
-		ev.Execution.Error = execErr.Error()
+		// The record keeps a token; the tool's own text goes to the log.
+		log.Warn().Str("tool", sanitizeDiagnostic(params.Name)).Str("detail", sanitizeDiagnostic(execErr.Error())).Msg("mcp_tool_execution_failed")
+		ev.Execution.Error = "tool_execution_failed"
 		ev.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
 			Code:            explanation.CodeExecutionFailed,
 			Decision:        explanation.DecisionFailure,
@@ -451,17 +456,22 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 			VersionIdentity: decision.PolicyVersion,
 		}})
 	}
-	if storeErr := h.evidenceStore.Store(ctx, ev); storeErr != nil {
-		span.RecordError(storeErr)
-	}
+	// The tool already ran: the terminal record is committed after the
+	// effect, so a store failure is reported as committed=false under the
+	// real outcome code, never relabelled.
+	ref := commitEvidence(ctx, h.evidenceStore, span, ev)
 
 	if execErr != nil {
+		// The process-local tool reported its own failure: a trustworthy
+		// report (the tool, not the transport, said it failed), so the code
+		// is upstream_tool_failed, not unknown. Its text never crosses the
+		// public boundary.
 		span.RecordError(execErr)
 		span.SetStatus(codes.Error, execErr.Error())
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: execErr.Error()}}
+		return governedError(req.ID, govcode.UpstreamToolFailed, publicToolExecutionFailed, ref, "", false)
 	}
 
-	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: toolResult(result)}
+	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: withGovernanceMeta(toolResult(result), ref)}
 }
 
 // nativeToolDefinition is the ONE source of truth for a native tool's
@@ -581,14 +591,11 @@ func (h *Handler) scannerBlockedResponse(ctx context.Context, span trace.Span, r
 		PolicyRef:       explanation.PolicyRef(policyVersion),
 		VersionIdentity: policyVersion,
 	}})
-	if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
-		span.RecordError(storeErr)
-	}
-	return &jsonrpcResponse{
-		JSONRPC: jsonrpcVersion,
-		ID:      reqID,
-		Error:   &rpcError{Code: codeServerError, Message: clientMsg},
-	}
+	// A scan failure before execution is pre-dispatch (an uncommitted
+	// record refuses the call as evidence_commit_failed); after execution
+	// the effect happened and the code must stay scanner_unavailable.
+	preDispatch := stage == explanation.StagePolicyEvaluation
+	return governedError(reqID, govcode.ScannerUnavailable, clientMsg, commitEvidence(ctx, h.evidenceStore, span, blockEv), "", preDispatch)
 }
 
 func (h *Handler) newServerEvidence(

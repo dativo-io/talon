@@ -347,7 +347,7 @@ sequenceDiagram
 | synthetic execution identities (`mcp-client`, `mcp-proxy`) replaced by the authenticated use case | TARGET ([#431](https://github.com/dativo-io/talon/issues/431)) |
 | Tasks as adapter continuation; `resultType: task` upstream is deferred state, not success | TARGET ([#448](https://github.com/dativo-io/talon/issues/448)); today rejected |
 | MRTR passes through as non-authorizing input | SHIPPED on `/mcp/proxy` |
-| Talon extension codes and committed evidence references | TARGET ([#372](https://github.com/dativo-io/talon/issues/372)) |
+| Talon governance extension `io.dativo.talon/governance`: one registry of stable codes shared with the Action Gateway, retryability, committed evidence references in `error.data` / result `_meta`, advertised in `server/discover`; protocol errors carry none | SHIPPED ([#372](https://github.com/dativo-io/talon/issues/372), [reference](mcp-governance-extension.md)); operation/approval/task identifiers in the extension arrive with [#431](https://github.com/dativo-io/talon/issues/431)/[#448](https://github.com/dativo-io/talon/issues/448) |
 
 Talon `session_id` is application correlation and is never derived from any MCP transport concept.
 
@@ -422,7 +422,7 @@ Live traffic has no global non-enforcing posture; the removal shipped in [#442](
 ## 16. Shipped-versus-target migration notes
 
 1. **Action spine first.** The action domain, Action Gateway, approver principals and lifecycle evidence are the canonical implementation. New adapters (#431 MCP, #430 native, #434 external) call them; they do not fork them.
-2. **MCP convergence (#431)** replaces two governance paths with one adapter, removes synthetic identities and in-process business tools, adds the MCP upstream dispatcher so MCP-sourced definitions stop returning `execution_unsupported`, and makes `tools/list` a generation projection. #372 adds extension codes and evidence references; #448 adds Tasks.
+2. **MCP convergence (#431)** replaces two governance paths with one adapter, removes synthetic identities and in-process business tools, adds the MCP upstream dispatcher so MCP-sourced definitions stop returning `execution_unsupported`, and makes `tools/list` a generation projection. #372 shipped the extension vocabulary and evidence references that #431 and #448 reuse.
 3. **Native convergence (#430)** moves Plan Review and tool approval onto the typed kernel and a durable run controller. Until then the legacy approve-then-run behavior is current product behavior and is documented as such, not as target.
 4. **External profile (#434)** adds `externally_executed` and `client_asserted` outcomes without new domain authorities. Reconciliation of `unknown` (#146) lands with it or before.
 5. **Sessions (#401)** simplify to `open | completed` plus `managed_by`; docs describing that vocabulary are target until the store changes.

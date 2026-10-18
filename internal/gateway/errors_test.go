@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/dativo-io/talon/internal/govcode"
 )
 
 func TestWriteOpenAIError(t *testing.T) {
@@ -220,5 +222,26 @@ func TestErrorContract_DocumentedCodes(t *testing.T) {
 	// Unregistered shapes keep the fallback path: no accidental code minting.
 	if _, errType := normalizeGatewayError("Free-form denial text with no prefix"); errType != "" {
 		t.Errorf("unprefixed reason must not mint a machine code, got %q", errType)
+	}
+}
+
+// TestErrorContract_CodesRegisteredInGovcode: the gateway's documented codes
+// are the canonical spelling in the one governance registry (#372), so the
+// MCP governance extension and the Action Gateway cannot drift from them.
+func TestErrorContract_CodesRegisteredInGovcode(t *testing.T) {
+	for _, code := range []string{
+		"agent_disabled", "model_not_allowed", "provider_not_allowed", "data_tier_exceeded", "tool_policy_violation",
+		"budget_exceeded", "session_budget_exceeded", "egress_tier_destination_disallowed", "egress_destination_disallowed",
+		"pii_policy_violation", "model_required_for_policy_evaluation", "rate_limited", "scanner_unavailable",
+		"workload_identity_required", "workload_identity_unbound", "destination_not_governed",
+	} {
+		spec, ok := govcode.Lookup(code)
+		if !ok {
+			t.Errorf("gateway code %q is not registered in govcode", code)
+			continue
+		}
+		if spec.IsTarget() {
+			t.Errorf("gateway code %q is emitted today and must not be tagged target", code)
+		}
 	}
 }

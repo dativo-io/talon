@@ -29,6 +29,10 @@ Talon never returns a stack trace or internal error dump in any envelope. Upstre
 
 Statuses without a machine code (unreadable body, invalid orchestration header, method not allowed, unknown provider) keep the family's status-mapped type; they indicate a malformed call, not a policy decision.
 
+## One registry across surfaces
+
+The machine codes above are canonical entries of Talon's governance-code registry (`internal/govcode`), shared with the Action Gateway (`error.code` / `operation.outcome_code`, [Action Gateway](action-gateway.md)) and the MCP governance extension (`error.data["io.dativo.talon/governance"]`, [MCP governance extension](mcp-governance-extension.md)). The same denial carries the same code on every surface; only the envelope differs. `TestErrorContract_CodesRegisteredInGovcode` pins the registration.
+
 ## Semantics clients may rely on
 
 - **Retriability is a property of the code, not the status.** A 403 `budget_exceeded` and a 403 `tool_policy_violation` are both permanent for the request as sent; a 502 `scanner_unavailable` and a 429 `rate_limited` are transient. Talon's own same-provider retry logic (#139) classifies by exactly this split.

@@ -193,9 +193,11 @@ supported version. The proxy serves server/discover, tools/list and
 tools/call; any OTHER method (resources/read, prompts/get, ...) is a
 protocol -32601 / HTTP 404 — never forwarded. Header/body mismatches are
 HeaderMismatch (-32020) with zero upstream dispatch. All Talon-shaped
-governance denials carry stable machine-readable codes in
-error.data.talon_code (see ARCHITECTURE_MCP_PROXY.md for the full table);
-protocol errors never do.
+governance outcomes carry the versioned governance extension
+error.data["io.dativo.talon/governance"] (stable code, decision, retryable,
+committed evidence reference; see docs/reference/mcp-governance-extension.md)
+plus, for one more release, the deprecated error.data.talon_code alias;
+protocol errors never carry either.
 
 Also: tools/list responses are filtered — the vendor only ever discovers
 tools you listed in allowed_tools.
@@ -474,7 +476,10 @@ curl -X POST https://talon.your-company.local/mcp/proxy \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}},"name":"zendesk_user_delete","arguments":{"user_id":123}},"id":3}'
 
 # Expected: a JSON-RPC error instead of a forwarded call —
-#   {"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"tool not allowed by policy","data":{"talon_code":"TALON_TOOL_FORBIDDEN"}}}
+#   {"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"tool not allowed by policy",
+#     "data":{"io.dativo.talon/governance":{"schemaVersion":1,"code":"policy_denied","decision":"deny","reasonCode":"ACTION_POLICY_DENIED","retryable":false,"evidence":{"id":"proxy_8b1e4d20","committed":true}},
+#             "talon_code":"TALON_TOOL_FORBIDDEN"}}}
+# `talon_code` is the deprecated alias; key on the extension (docs/reference/mcp-governance-extension.md).
 # and a proxy_tool_blocked evidence record:
 talon audit list --agent zendesk-vendor-proxy --limit 1
 ```

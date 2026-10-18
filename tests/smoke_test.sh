@@ -44,7 +44,9 @@
 #   26 pii-enrichment | 27 runtime-governance | 28 control-plane | 29 consistency |
 #   30 graph-events | 31 quickstart | 32 egress | 33 auditor-documents |
 #   34 compliance-dashboard | 35 failover | 36 external-scanner (llama/llm engine;
-#   hermetic llama stand-in by default, TALON_SMOKE_OLLAMA_URL opts into real Ollama).
+#   hermetic llama stand-in by default, TALON_SMOKE_OLLAMA_URL opts into real Ollama) |
+#   37 mcp-governance (#372 governance-contract smoke: the same assertions as
+#   `make test-mcp-governance-smoke`, no provider key; mandatory, counted).
 #
 # QA notes (from brief):
 # - Section 10/18 (Tamper test): Evidence DB is TALON_DATA_DIR/evidence.db; corrupt
@@ -281,6 +283,23 @@ dump_diag_env() {
 }
 
 # --- Environment checks (Section 2) ---
+# Sections that need no provider key: a focused SMOKE_ONLY run made only of
+# these skips the OPENAI_API_KEY prerequisite (TALON_SECRETS_KEY, talon and
+# the tools are still required). Everything else is unchanged; the full suite
+# still requires the key.
+readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance "
+smoke_only_is_offline() {
+  [[ -n "${SMOKE_ONLY:-}" ]] || return 1
+  local s
+  for s in ${SMOKE_ONLY}; do
+    case "$SMOKE_OFFLINE_SECTIONS" in
+      *" ${s} "*) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
 check_prereqs() {
   echo "Checking prerequisites..."
   local missing=()
@@ -301,13 +320,13 @@ check_prereqs() {
     if TALON_DATA_DIR="$TALON_DATA_DIR" talon secrets list 2>/dev/null | grep -q openai-api-key; then
       VAULT_HAS_OPENAI_KEY=1
     else
-      [[ -n "${OPENAI_API_KEY:-}" ]] || missing+=("OPENAI_API_KEY set (vault has no openai-api-key; set it with: talon secrets set openai-api-key \$OPENAI_API_KEY)")
+      [[ -n "${OPENAI_API_KEY:-}" ]] || smoke_only_is_offline || missing+=("OPENAI_API_KEY set (vault has no openai-api-key; set it with: talon secrets set openai-api-key \$OPENAI_API_KEY)")
     fi
   else
     TALON_DATA_DIR="$(mktemp -d)"
     export TALON_DATA_DIR
     SMOKE_CREATED_DATA_DIR=1
-    [[ -n "${OPENAI_API_KEY:-}" ]] || missing+=("OPENAI_API_KEY set (used to set openai-api-key in vault for this run)")
+    [[ -n "${OPENAI_API_KEY:-}" ]] || smoke_only_is_offline || missing+=("OPENAI_API_KEY set (used to set openai-api-key in vault for this run)")
   fi
   if [[ ${#missing[@]} -gt 0 ]]; then
     echo "Missing: ${missing[*]}"
@@ -707,7 +726,7 @@ for _section_file in \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
   33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh \
-  36_external_scanner.sh; do
+  36_external_scanner.sh 37_mcp_governance.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -800,6 +819,7 @@ main() {
   run_section "34_compliance_dashboard" test_section_34_compliance_dashboard
   run_section "35_failover" test_section_35_failover
   run_section "36_external_scanner" test_section_36_external_scanner
+  run_section "37_mcp_governance" test_section_37_mcp_governance
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency
