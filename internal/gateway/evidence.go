@@ -288,7 +288,9 @@ func sanitizeGatewayAnnotations(in []string) []string {
 		annotationResponseUnseen:    {}, // settlement: no response within the settlement window; estimate stands
 		annotationDecisionUnmatched: {}, // settlement: no request half (Talon restarted or window elapsed)
 		annotationBodyUninspectable: {}, // settlement: body not inspectable (compressed/partial/none); usage unobserved
-		"provider_error":            {}, // settlement: the provider answered an error status; nothing billed
+		annotationProviderError:     {}, // settlement: the provider answered an error status; nothing billed
+		annotationErrorBodyScanned:  {}, // settlement: the provider's error body was scanned under the response policy
+		annotationResponseLate:      {}, // reconciliation: the response arrived after the estimate was booked as unobserved
 	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(in))

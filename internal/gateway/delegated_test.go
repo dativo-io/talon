@@ -44,6 +44,17 @@ func setupDelegatedGateway(t *testing.T, piiAction string, override *PolicyOverr
 // enable OpenShell response governance) before the gateway is built.
 func setupDelegatedGatewayWith(t *testing.T, piiAction string, override *PolicyOverride, mut func(*GatewayConfig)) (*Gateway, *evidence.Store) {
 	t.Helper()
+	evStore, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+	return setupDelegatedGatewayOn(t, piiAction, override, mut, evStore), evStore
+}
+
+// setupDelegatedGatewayOn builds a gateway over an EXISTING evidence store:
+// a second call with the same store is a Talon restart (the settlement
+// ledger lives in that store).
+func setupDelegatedGatewayOn(t *testing.T, piiAction string, override *PolicyOverride, mut func(*GatewayConfig), evStore *evidence.Store) *Gateway {
+	t.Helper()
 	dir := t.TempDir()
 	cfg := &GatewayConfig{
 		Enabled: true, ListenPrefix: "/v1/proxy",
@@ -67,15 +78,12 @@ func setupDelegatedGatewayWith(t *testing.T, piiAction string, override *PolicyO
 		{"openshell", delegatedSubject}:                        bound,
 		{"openshell", "spiffe://openshell/sandbox/sb-stopped"}: stopped,
 	}
-	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = evStore.Close() })
 	secStore, err := secrets.NewSecretStore(filepath.Join(dir, "s.db"), testutil.TestEncryptionKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = secStore.Close() })
 	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
-	return gw, evStore
+	return gw
 }
 
 func delegatedReq(principal *workload.Principal, body string) DelegatedRequest {

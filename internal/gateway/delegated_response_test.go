@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,24 @@ func preflightFor(status int, contentType string) DelegatedResponsePreflight {
 		Host: "api.openai.com", SandboxRef: "sb-42", RequestID: "req-1", Status: status, ContentType: contentType,
 		BodyInspectable: true, StreamPermitted: true,
 	}
+}
+
+func pendingSettlements(t *testing.T, gw *Gateway) int {
+	t.Helper()
+	require.NotNil(t, gw.settlements)
+	n, err := gw.settlements.countPending(context.Background())
+	require.NoError(t, err)
+	return n
+}
+
+func settlementCostTotal(t *testing.T, store *evidence.Store) float64 {
+	t.Helper()
+	var total float64
+	recs := listDelegated(t, store, "sandboxed-agent")
+	for i := range recs {
+		total += recs[i].Execution.Cost
+	}
+	return total
 }
 
 func recordsOfType(t *testing.T, store *evidence.Store, typ string) []evidence.Evidence {
@@ -61,7 +80,7 @@ func TestDelegatedResponse_DecisionParksSettlement(t *testing.T) {
 	assert.Equal(t, PricingBasisAwaitingSettlement, ev.Execution.PricingBasis)
 	assert.False(t, ev.Execution.PricingKnown)
 	assert.Contains(t, ev.GatewayAnnotations, annotationSettlementPending)
-	assert.Equal(t, 1, gw.delegatedPending.len())
+	assert.Equal(t, 1, pendingSettlements(t, gw))
 
 	agent, ok := gw.registry.Current().ResolveWorkload("openshell", delegatedSubject)
 	require.True(t, ok)
@@ -86,7 +105,7 @@ func TestDelegatedResponse_SettlesUsageAndCost(t *testing.T) {
 	assert.Greater(t, st.Cost, 0.0)
 	assert.NotEqual(t, PricingBasisAwaitingSettlement, st.Basis)
 	assert.NotEqual(t, PricingBasisEstimateNoUsage, st.Basis, "usage was observed, so the cost is priced, not estimated")
-	assert.Equal(t, 0, gw.delegatedPending.len())
+	assert.Equal(t, 0, pendingSettlements(t, gw))
 
 	decisions := recordsOfType(t, store, "gateway")
 	settlements := recordsOfType(t, store, InvocationTypeGatewayResponse)
@@ -110,30 +129,49 @@ func TestDelegatedResponse_SettlesUsageAndCost(t *testing.T) {
 	assert.Equal(t, delegatedSubject, s.WorkloadIdentity.Subject)
 	assert.Equal(t, 0.0, decisions[0].Execution.Cost, "the decision record is never rewritten")
 
-	// A second settlement for the same request id has no request half: it
-	// is still observed (usage) but labelled unmatched.
+	// A repeated callback for the same runtime exchange is a REPLAY: the
+	// recorded verdict and evidence id come back, nothing is written, the
+	// cost is not counted twice.
+	before := settlementCostTotal(t, store)
 	st2 := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: preflightFor(200, "application/json"), Mode: ResponseModeWholeBody, Body: []byte(body)})
-	assert.NotEmpty(t, st2.EvidenceID)
-	settlements = recordsOfType(t, store, InvocationTypeGatewayResponse)
-	require.Len(t, settlements, 2)
-	var unmatched int
-	for _, r := range settlements {
-		if contains(r.GatewayAnnotations, annotationDecisionUnmatched) {
-			unmatched++
-			assert.NotEqual(t, decisions[0].CorrelationID, r.CorrelationID)
-			assert.Equal(t, 120, r.Execution.Tokens.Input)
-		}
-	}
-	assert.Equal(t, 1, unmatched)
+	assert.True(t, st2.Replayed)
+	assert.False(t, st2.Block)
+	assert.Equal(t, st.EvidenceID, st2.EvidenceID)
+	assert.Equal(t, CodeSettlementReplayed, st2.Code)
+	assert.Equal(t, 0.0, st2.Cost)
+	require.Len(t, recordsOfType(t, store, InvocationTypeGatewayResponse), 1, "a duplicate callback writes no record")
+	assert.InDelta(t, before, settlementCostTotal(t, store), 1e-12, "a duplicate callback books no cost")
+	assert.Equal(t, 0, pendingSettlements(t, gw))
 }
 
-func contains(xs []string, x string) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
+// Duplicate callbacks under a preventive policy reproduce the verdict: a
+// redacted body is redacted again (same bytes), a blocked one stays
+// blocked; neither writes a second record.
+func TestDelegatedResponse_DuplicateCallbackReplaysPreventiveVerdict(t *testing.T) {
+	const email = "jane.doe@example.com"
+	body := `{"id":"cmpl-1","model":"gpt-4o-mini","choices":[{"message":{"role":"assistant","content":"contact ` + email + `"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`
+	for _, action := range []string{"redact", "block"} {
+		t.Run(action, func(t *testing.T) {
+			gw, store := setupDelegatedGatewayWith(t, action, nil, responseGoverned)
+			require.True(t, gw.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)).Allowed)
+			in := DelegatedResponseBody{Preflight: preflightFor(200, "application/json"), Mode: ResponseModeWholeBody, Body: []byte(body)}
+			first := gw.SettleDelegatedResponse(context.Background(), in)
+			second := gw.SettleDelegatedResponse(context.Background(), in)
+			assert.True(t, second.Replayed)
+			assert.Equal(t, first.Block, second.Block)
+			assert.Equal(t, first.EvidenceID, second.EvidenceID)
+			if action == "redact" {
+				assert.True(t, second.BodyChanged)
+				assert.Equal(t, string(first.Body), string(second.Body))
+				assert.NotContains(t, string(second.Body), email)
+			} else {
+				assert.Equal(t, "output_pii_blocked", second.Code)
+				plan := gw.PlanDelegatedResponse(context.Background(), preflightFor(200, "application/json"))
+				assert.True(t, plan.Block, "the plan of a replayed blocked response blocks before any body is sent")
+			}
+			require.Len(t, recordsOfType(t, store, InvocationTypeGatewayResponse), 1)
+		})
 	}
-	return false
 }
 
 // The agent's response PII policy is applied to the held body: redact
@@ -232,7 +270,9 @@ func TestDelegatedResponse_PlanMatrix(t *testing.T) {
 		code  string
 	}{
 		"identity failure":       {noID, "", true, CodeWorkloadIdentityRequired},
-		"provider error":         {preflightFor(502, "application/json"), ResponseModeHeadersOnly, false, ""},
+		"provider error":         {preflightFor(502, "application/json"), ResponseModeWholeBody, false, ""},
+		"provider error (html)":  {preflightFor(502, "text/html"), ResponseModeWholeBody, false, ""},
+		"provider error (octet)": {preflightFor(502, "application/octet-stream"), ResponseModeHeadersOnly, false, ""},
 		"non-model body":         {preflightFor(200, "text/html"), ResponseModeHeadersOnly, false, ""},
 		"compressed + redact":    {gz, "", true, CodeResponseScanUnavailable},
 		"uninspectable + redact": {noBody, "", true, CodeResponseScanUnavailable},
@@ -247,7 +287,7 @@ func TestDelegatedResponse_PlanMatrix(t *testing.T) {
 			}
 		})
 	}
-	assert.Equal(t, 1, gw.delegatedPending.len(), "planning never consumes the pending entry")
+	assert.Equal(t, 1, pendingSettlements(t, gw), "planning never consumes the pending entry")
 
 	// Observational policy + compressed body: observe from headers only.
 	gw2, _ := setupDelegatedGatewayWith(t, "warn", nil, responseGoverned)
@@ -255,6 +295,159 @@ func TestDelegatedResponse_PlanMatrix(t *testing.T) {
 	p := gw2.PlanDelegatedResponse(context.Background(), gz)
 	assert.False(t, p.Block)
 	assert.Equal(t, ResponseModeHeadersOnly, p.Mode)
+	// Compressed provider ERROR body under a preventive policy: blocked.
+	gzErr := preflightFor(502, "application/json")
+	gzErr.ContentEncoding = "gzip"
+	p = gw.PlanDelegatedResponse(context.Background(), gzErr)
+	assert.True(t, p.Block)
+	assert.Equal(t, CodeResponseScanUnavailable, p.Code)
+	// Policy "allow": error bodies settle from the headers.
+	gw3, _ := setupDelegatedGatewayWith(t, "allow", nil, responseGoverned)
+	require.True(t, gw3.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)).Allowed)
+	assert.Equal(t, ResponseModeHeadersOnly, gw3.PlanDelegatedResponse(context.Background(), preflightFor(502, "application/json")).Mode)
+}
+
+// Provider error bodies are not exempt from the response policy: a 4xx/5xx
+// body echoing PII is blocked under a preventive policy and observed under
+// warn; nothing is billed for an error either way.
+func TestDelegatedResponse_ErrorBodyWithPII(t *testing.T) {
+	const email = "jane.doe@example.com"
+	errBody := `{"error":{"message":"invalid request: the input mentions ` + email + `","type":"invalid_request_error"}}`
+	for _, tc := range []struct {
+		action string
+		block  bool
+	}{{"redact", true}, {"block", true}, {"warn", false}} {
+		t.Run(tc.action, func(t *testing.T) {
+			gw, store := setupDelegatedGatewayWith(t, tc.action, nil, responseGoverned)
+			require.True(t, gw.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)).Allowed)
+			plan := gw.PlanDelegatedResponse(context.Background(), preflightFor(400, "application/json"))
+			require.Equal(t, ResponseModeWholeBody, plan.Mode, "an inspectable error body is held and scanned: %+v", plan)
+			st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: preflightFor(400, "application/json"), Mode: ResponseModeWholeBody, Body: []byte(errBody)})
+			assert.Equal(t, tc.block, st.Block, "%+v", st)
+			assert.Contains(t, st.PIITypes, "email")
+			assert.Equal(t, 0.0, st.Cost)
+			if tc.block {
+				assert.Equal(t, "output_pii_blocked", st.Code)
+			}
+			recs := recordsOfType(t, store, InvocationTypeGatewayResponse)
+			require.Len(t, recs, 1)
+			r := recs[0]
+			assert.Equal(t, evidence.StatusFailed, r.Status)
+			assert.Equal(t, evidence.FailureReasonProviderPermanent, r.FailureReason)
+			assert.Equal(t, !tc.block, r.PolicyDecision.Allowed)
+			assert.True(t, r.Classification.OutputPIIDetected)
+			assert.Contains(t, r.GatewayAnnotations, annotationErrorBodyScanned)
+			assert.Contains(t, r.GatewayAnnotations, "provider_error")
+			assert.NotContains(t, mustJSON(t, r), email)
+		})
+	}
+}
+
+// A Talon restart while a preventive response is in flight: the ledger row
+// (and the policy in force at decision time) survives in the evidence
+// store, so the new process still holds and scans the body and blocks on
+// PII — it never degrades to "skip". A response with no row at all from a
+// provider host is governed under the CURRENT policy, and an unbound
+// principal is refused rather than skipped.
+func TestDelegatedResponse_RestartKeepsPreventivePolicy(t *testing.T) {
+	const email = "jane.doe@example.com"
+	body := `{"id":"cmpl-1","model":"gpt-4o-mini","choices":[{"message":{"role":"assistant","content":"mail ` + email + `"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`
+	gw1, store := setupDelegatedGatewayWith(t, "block", nil, responseGoverned)
+	dec := gw1.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody))
+	require.True(t, dec.Allowed)
+
+	// Restart: a new gateway over the same evidence store, configured
+	// permissively — the decision-time policy (block) must still apply.
+	gw2 := setupDelegatedGatewayOn(t, "warn", nil, responseGoverned, store)
+	assert.Equal(t, 1, pendingSettlements(t, gw2), "the obligation survived the restart")
+	plan := gw2.PlanDelegatedResponse(context.Background(), preflightFor(200, "application/json"))
+	assert.True(t, plan.Matched)
+	assert.Equal(t, ResponseModeWholeBody, plan.Mode, "%+v", plan)
+	st := gw2.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: preflightFor(200, "application/json"), Mode: ResponseModeWholeBody, Body: []byte(body)})
+	assert.True(t, st.Block, "%+v", st)
+	assert.Equal(t, "output_pii_blocked", st.Code)
+	settlements := recordsOfType(t, store, InvocationTypeGatewayResponse)
+	require.Len(t, settlements, 1)
+	assert.Equal(t, recordsOfType(t, store, "gateway")[0].CorrelationID, settlements[0].CorrelationID, "joined to the pre-restart decision")
+	assert.NotContains(t, settlements[0].GatewayAnnotations, annotationDecisionUnmatched)
+	assert.Equal(t, 0, pendingSettlements(t, gw2))
+
+	// No row (decided before any ledger existed): the current policy
+	// governs the response; it is observed once and labelled unmatched.
+	gw3 := setupDelegatedGatewayOn(t, "redact", nil, responseGoverned, store)
+	pf := preflightFor(200, "application/json")
+	pf.RequestID = "req-before-ledger"
+	plan = gw3.PlanDelegatedResponse(context.Background(), pf)
+	assert.False(t, plan.Matched)
+	assert.Equal(t, ResponseModeWholeBody, plan.Mode)
+	st = gw3.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf, Mode: ResponseModeWholeBody, Body: []byte(body)})
+	assert.False(t, st.Block)
+	assert.True(t, st.BodyChanged, "the current redact policy transformed the body")
+	assert.NotContains(t, string(st.Body), email)
+	settlements = recordsOfType(t, store, InvocationTypeGatewayResponse)
+	require.Len(t, settlements, 2)
+	again := gw3.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf, Mode: ResponseModeWholeBody, Body: []byte(body)})
+	assert.True(t, again.Replayed, "an unmatched response is observed once; its repeat replays")
+	require.Len(t, recordsOfType(t, store, InvocationTypeGatewayResponse), 2)
+
+	// No row and an unbound principal on a provider host: refused, never skipped.
+	unbound := preflightFor(200, "application/json")
+	unbound.RequestID, unbound.Principal = "req-unbound", delegatedPrincipal("spiffe://openshell/sandbox/sb-nobody")
+	plan = gw3.PlanDelegatedResponse(context.Background(), unbound)
+	assert.True(t, plan.Block)
+	assert.Equal(t, CodeWorkloadIdentityUnbound, plan.Code)
+	st = gw3.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: unbound, Mode: ResponseModeWholeBody, Body: []byte(body)})
+	assert.True(t, st.Block)
+	assert.Equal(t, CodeWorkloadIdentityUnbound, st.Code)
+	require.Len(t, recordsOfType(t, store, InvocationTypeGatewayResponse), 2, "a refused unbound response is not settled")
+}
+
+// The ledger is bounded by refusing NEW delegated requests when it is full
+// — never by discarding an obligation. Settling one frees one slot.
+func TestDelegatedResponse_CapacityRefusesNewRequests(t *testing.T) {
+	gw, store := setupDelegatedGatewayWith(t, "warn", nil, func(cfg *GatewayConfig) {
+		responseGoverned(cfg)
+		cfg.OpenShell.ResponseGovernance.MaxPending = 100
+	})
+	for i := 0; i < 100; i++ {
+		req := delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)
+		req.RequestID = "req-" + strconv.Itoa(i)
+		require.True(t, gw.EvaluateDelegated(context.Background(), req).Allowed, "request %d", i)
+	}
+	assert.Equal(t, 100, pendingSettlements(t, gw))
+	over := delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)
+	over.RequestID = "req-over"
+	dec := gw.EvaluateDelegated(context.Background(), over)
+	assert.False(t, dec.Allowed)
+	assert.Equal(t, CodeSettlementCapacityExhausted, dec.Code)
+	assert.Equal(t, http.StatusServiceUnavailable, dec.Status)
+	assert.Equal(t, 100, pendingSettlements(t, gw), "no obligation was evicted to make room")
+	denied := 0
+	for _, r := range recordsOfType(t, store, "gateway") {
+		if !r.PolicyDecision.Allowed {
+			denied++
+		}
+	}
+	assert.Equal(t, 1, denied, "the refusal is evidenced")
+
+	pf := preflightFor(200, "application/json")
+	pf.RequestID = "req-7"
+	st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf, Mode: ResponseModeWholeBody, Body: []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1},"choices":[{"message":{"content":"ok"}}]}`)})
+	require.NotEmpty(t, st.EvidenceID)
+	assert.Equal(t, 99, pendingSettlements(t, gw))
+
+	// A runtime request id that is still pending is refused, never
+	// overwritten (the slot stays with the first exchange).
+	dup := delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)
+	dup.RequestID = "req-3"
+	dec = gw.EvaluateDelegated(context.Background(), dup)
+	assert.False(t, dec.Allowed)
+	assert.Equal(t, CodeSettlementUnavailable, dec.Code)
+	assert.Equal(t, http.StatusConflict, dec.Status)
+	assert.Equal(t, 99, pendingSettlements(t, gw))
+
+	assert.True(t, gw.EvaluateDelegated(context.Background(), over).Allowed, "a settled slot admits a new request")
+	assert.Equal(t, 100, pendingSettlements(t, gw))
 }
 
 // A provider error settles with zero cost and a failed status; a response
@@ -288,7 +481,7 @@ func TestDelegatedResponse_SweeperSettlesUnobserved(t *testing.T) {
 	require.True(t, gw.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)).Allowed)
 	assert.Equal(t, 0, gw.SweepDelegatedPending(context.Background(), time.Now()), "nothing expired yet")
 	assert.Equal(t, 1, gw.SweepDelegatedPending(context.Background(), time.Now().Add(31*time.Second)))
-	assert.Equal(t, 0, gw.delegatedPending.len())
+	assert.Equal(t, 0, pendingSettlements(t, gw))
 	recs := recordsOfType(t, store, InvocationTypeGatewayResponse)
 	require.Len(t, recs, 1)
 	r := recs[0]
@@ -302,9 +495,42 @@ func TestDelegatedResponse_SweeperSettlesUnobserved(t *testing.T) {
 	require.NotEmpty(t, r.Explanations)
 	assert.Equal(t, "EXECUTION_OUTCOME_UNKNOWN", r.Explanations[0].Code)
 
-	// The late response is still observed, as unmatched.
-	st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: preflightFor(200, "application/json"), Mode: ResponseModeWholeBody, Body: []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1},"choices":[{"message":{"content":"late"}}]}`)})
-	assert.NotEmpty(t, st.EvidenceID)
+	// The late response RECONCILES against the booked estimate: a record
+	// under the same correlation id whose cost is only the excess of the
+	// actual over the estimate, so the total is max(estimate, actual) —
+	// never estimate plus actual, never decision_unmatched.
+	estimate := r.Execution.Cost
+	late := DelegatedResponseBody{Preflight: preflightFor(200, "application/json"), Mode: ResponseModeWholeBody, Body: []byte(`{"model":"gpt-4o-mini","usage":{"prompt_tokens":100000,"completion_tokens":50000},"choices":[{"message":{"content":"late"}}]}`)}
+	st := gw.SettleDelegatedResponse(context.Background(), late)
+	require.NotEmpty(t, st.EvidenceID)
+	assert.False(t, st.Replayed)
+	assert.Equal(t, PricingBasisLateReconciliation, st.Basis)
+	actual := gw.costEstimate("openai", "gpt-4o-mini", Usage{Input: 100000, Output: 50000}).Amount
+	require.Greater(t, actual, estimate, "the fixture's actual exceeds the estimate")
+	assert.InDelta(t, actual-estimate, st.Cost, 1e-9)
+	settlements := recordsOfType(t, store, InvocationTypeGatewayResponse)
+	require.Len(t, settlements, 2)
+	assert.InDelta(t, actual, settlementCostTotal(t, store), 1e-9, "records sum to the actual, not estimate+actual")
+	for _, s := range settlements {
+		assert.Equal(t, r.CorrelationID, s.CorrelationID)
+		assert.NotContains(t, s.GatewayAnnotations, annotationDecisionUnmatched)
+		if s.Execution.PricingBasis == PricingBasisLateReconciliation {
+			assert.Contains(t, s.GatewayAnnotations, annotationResponseLate)
+			assert.Equal(t, 100000, s.Execution.Tokens.Input)
+		}
+	}
+	// A third callback replays; a late response BELOW the estimate books 0.
+	assert.True(t, gw.SettleDelegatedResponse(context.Background(), late).Replayed)
+	require.Len(t, recordsOfType(t, store, InvocationTypeGatewayResponse), 2)
+
+	gwB, storeB := setupDelegatedGatewayWith(t, "warn", nil, responseGoverned)
+	require.True(t, gwB.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)).Allowed)
+	require.Equal(t, 1, gwB.SweepDelegatedPending(context.Background(), time.Now().Add(31*time.Second)))
+	booked := settlementCostTotal(t, storeB)
+	stB := gwB.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: preflightFor(200, "application/json"), Mode: ResponseModeWholeBody, Body: []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1},"choices":[{"message":{"content":"late"}}]}`)})
+	assert.Equal(t, 0.0, stB.Cost)
+	assert.Equal(t, PricingBasisLateReconciliation, stB.Basis)
+	assert.InDelta(t, booked, settlementCostTotal(t, storeB), 1e-12, "the booked estimate stands when the actual is lower")
 }
 
 // Without response governance the decision books the estimate exactly as
@@ -314,24 +540,12 @@ func TestDelegatedResponse_DisabledKeepsEstimateBooking(t *testing.T) {
 	dec := gw.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody))
 	require.True(t, dec.Allowed)
 	assert.False(t, dec.ResponseGovernance)
-	assert.Nil(t, gw.delegatedPending)
+	assert.Nil(t, gw.settlements)
 	recs := recordsOfType(t, store, "gateway")
 	require.Len(t, recs, 1)
 	assert.Greater(t, recs[0].Execution.Cost, 0.0)
 	assert.NotEqual(t, PricingBasisAwaitingSettlement, recs[0].Execution.PricingBasis)
 	assert.NotContains(t, strings.Join(recs[0].GatewayAnnotations, ","), annotationSettlementPending)
-}
-
-func TestDelegatedPendingSet_Bound(t *testing.T) {
-	p := newDelegatedPendingSet(time.Minute)
-	base := time.Now()
-	for i := 0; i < maxPendingSettlements+5; i++ {
-		p.add(&delegatedPending{key: pendingKey{"gw", "sb", string(rune('a'+i%26)) + string(rune(i))}, startedAt: base.Add(time.Duration(i) * time.Millisecond), agent: &ResolvedIdentity{Name: "a", TenantID: "t"}, estimate: 1})
-	}
-	assert.Equal(t, maxPendingSettlements, p.len(), "oldest entries are evicted, never unbounded growth")
-	assert.InDelta(t, float64(maxPendingSettlements), p.estimateFor("t", "a"), 1e-9)
-	assert.Equal(t, 0.0, p.estimateFor("t", "other"))
-	_ = http.StatusOK
 }
 
 // A response with no request half from a host Talon has no provider for
@@ -348,4 +562,21 @@ func TestDelegatedResponse_UnknownHostWithoutRequestHalfIsSkipped(t *testing.T) 
 	assert.Empty(t, st.EvidenceID)
 	assert.Equal(t, CodeDestinationNotGoverned, st.Code)
 	assert.Empty(t, recordsOfType(t, store, InvocationTypeGatewayResponse), "no settlement is booked for a non-provider response")
+}
+
+func TestOpenShellResponseGovernanceConfig_MaxPendingBounds(t *testing.T) {
+	for _, tc := range []struct {
+		in   int
+		ok   bool
+		want int
+	}{{0, true, DefaultOpenShellMaxPendingSettlements}, {100, true, 100}, {99, false, 0}, {1000000, true, 1000000}, {1000001, false, 0}} {
+		c := &OpenShellResponseGovernanceConfig{Enabled: true, SettlementTimeout: "5m", MaxCaptureBytes: 1 << 20, MaxPending: tc.in}
+		err := c.validate(4 << 20)
+		if tc.ok {
+			require.NoError(t, err, "max_pending=%d", tc.in)
+			assert.Equal(t, tc.want, c.MaxPendingSettlements())
+		} else {
+			require.Error(t, err, "max_pending=%d", tc.in)
+		}
+	}
 }

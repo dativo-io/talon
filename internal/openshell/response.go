@@ -217,6 +217,9 @@ func settlementBodyResult(seq uint64, mode string, truncated bool, st gateway.De
 	if st.Basis != "" {
 		meta["talon_pricing_basis"] = st.Basis
 	}
+	if st.Replayed {
+		meta["talon_replayed"] = "true"
+	}
 	if mode == gateway.ResponseModeWholeBody {
 		switch {
 		case st.Block:

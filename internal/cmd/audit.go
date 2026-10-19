@@ -74,7 +74,7 @@ func init() {
 	auditListCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
 	auditListCmd.Flags().IntVar(&auditLimit, "limit", 20, "Maximum records to show")
 	auditListCmd.Flags().StringVar(&auditSession, "session", "", "Show a per-session summary and the session's records (session_id)")
-	auditListCmd.Flags().StringVar(&auditRuntimeRef, "runtime-ref", "", "Show every record attributed to one external-runtime workload reference (e.g. an OpenShell sandbox id): delegated decisions, response settlements, action lifecycle and imported containment events (#482)")
+	auditListCmd.Flags().StringVar(&auditRuntimeRef, "runtime-ref", "", "Show every record attributed to one external-runtime workload reference (e.g. an OpenShell sandbox id): delegated decisions, response settlements, action lifecycle and imported containment events (#482). The reference is not indexed: the lookup scans the most recent 50×--limit records (at least 500, at most 20000) of the tenant/agent, so older history needs --tenant/--agent narrowing or --session")
 
 	auditVerifyCmd.Flags().StringVar(&auditVerifyFile, "file", "", "Verify all records from a signed export file")
 	auditVerifyCmd.Flags().StringVar(&auditSession, "session", "", "Verify every record in a session (session_id)")

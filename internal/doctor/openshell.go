@@ -181,5 +181,5 @@ func checkOpenShellResponseGovernance(oc *gateway.OpenShellConfig) CheckResult {
 	if !oc.ResponseGovernanceEnabled() {
 		return CheckResult{Name: name, Category: "openshell", Status: "warn", Message: "disabled: cost is estimate-only, token counts are zero and the provider response is not governed on this path", Fix: "Set gateway.openshell.response_governance.enabled: true and restart the OpenShell gateway so it reads the new manifest"}
 	}
-	return CheckResult{Name: name, Category: "openshell", Status: "pass", Message: fmt.Sprintf("enabled: settlement timeout %s, capture bound %d bytes", oc.ResponseGovernance.SettlementTimeoutDuration(), oc.ResponseGovernance.MaxCaptureBytes)}
+	return CheckResult{Name: name, Category: "openshell", Status: "pass", Message: fmt.Sprintf("enabled: settlement timeout %s, capture bound %d bytes, ledger bound %d pending settlements (new requests are refused beyond it)", oc.ResponseGovernance.SettlementTimeoutDuration(), oc.ResponseGovernance.MaxCaptureBytes, oc.ResponseGovernance.MaxPendingSettlements())}
 }

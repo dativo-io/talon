@@ -812,7 +812,8 @@
               "properties": {
                 "enabled": {"type": "boolean"},
                 "settlement_timeout": {"type": "string", "description": "How long a decided request waits for its response before it is settled as unobserved with the estimate, 30s–1h (default 5m)."},
-                "max_capture_bytes": {"type": "integer", "minimum": 1024, "maximum": 4194304, "description": "Response body bound Talon buffers or observes (default 1 MiB)."}
+                "max_capture_bytes": {"type": "integer", "minimum": 1024, "maximum": 4194304, "description": "Response body bound Talon buffers or observes (default 1 MiB)."},
+                "max_pending": {"type": "integer", "minimum": 100, "maximum": 1000000, "description": "Settlement ledger bound: when this many delegated requests await their response, new delegated requests are refused (settlement_capacity_exhausted) until some settle; obligations are never discarded (default 10000)."}
               }
             }
           }

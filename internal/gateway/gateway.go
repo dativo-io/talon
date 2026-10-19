@@ -125,10 +125,10 @@ type Gateway struct {
 	// failure, rebuilt lazily from the evidence store after a restart.
 	budgetEventMu    sync.Mutex
 	budgetEventFired map[string]bool
-	// delegatedPending parks the request half of delegated exchanges until
-	// the runtime's response hook settles them (#482 response side); nil
-	// when response governance is off.
-	delegatedPending *delegatedPendingSet
+	// settlements is the durable ledger of delegated exchanges awaiting the
+	// runtime's response hook (#482 response side); nil when response
+	// governance is off.
+	settlements *settlementRepo
 }
 
 type gatewayCacheConfig struct {
@@ -253,7 +253,14 @@ func NewGateway(
 		attInjScanner: injScan,
 	}
 	if config.OpenShell.ResponseGovernanceEnabled() {
-		g.delegatedPending = newDelegatedPendingSet(config.OpenShell.ResponseGovernance.SettlementTimeoutDuration())
+		if evidenceStore == nil {
+			return nil, fmt.Errorf("openshell response_governance requires the evidence store (settlement ledger)")
+		}
+		repo, err := newSettlementRepo(context.Background(), evidenceStore.DB())
+		if err != nil {
+			return nil, err
+		}
+		g.settlements = repo
 	}
 	return g, nil
 }
@@ -1579,8 +1586,12 @@ func (g *Gateway) agentCostTotals(ctx context.Context, agent *ResolvedIdentity) 
 	// Delegated requests awaiting their response settlement carry cost 0 in
 	// evidence; their estimates still count against the caps so an in-flight
 	// burst cannot slip under a budget (#482 response side).
-	if g.delegatedPending != nil {
-		pending := g.delegatedPending.estimateFor(agent.TenantID, agent.Name)
+	if g.settlements != nil {
+		pending, perr := g.settlements.pendingEstimate(ctx, agent.TenantID, agent.Name)
+		if perr != nil {
+			log.Warn().Err(perr).Str("agent", agent.Name).Msg("gateway_pending_settlement_read_failed")
+			return daily, monthly, true
+		}
 		daily += pending
 		monthly += pending
 	}

@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -49,6 +50,8 @@ type responseFixtureProvider struct {
 	calls atomic.Int64
 	// next is the body the next call returns.
 	next atomic.Value
+	// status is the HTTP status of the next call (0 = 200).
+	status atomic.Int64
 }
 
 func startResponseFixtureProvider(t *testing.T) *responseFixtureProvider {
@@ -59,6 +62,9 @@ func startResponseFixtureProvider(t *testing.T) *responseFixtureProvider {
 		_, _ = io.ReadAll(r.Body)
 		p.calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
+		if st := p.status.Load(); st != 0 {
+			w.WriteHeader(int(st))
+		}
 		_, _ = w.Write([]byte(p.next.Load().(string)))
 	}))
 	t.Cleanup(p.srv.Close)
@@ -73,6 +79,24 @@ func startResponseFixtureProvider(t *testing.T) *responseFixtureProvider {
 //
 //nolint:gocyclo // one sequential black-box scenario: each step depends on the state the previous one left in the running binary
 func (s *fixtureSupervisor) forwardAndReturn(t *testing.T, token, body string, provider *responseFixtureProvider) (deliveredStatus int, delivered []byte, reqMeta, respMeta map[string]string) {
+	t.Helper()
+	up := s.forward(t, token, body, provider)
+	deliveredStatus, delivered, respMeta = s.preReturn(t, token, up)
+	return deliveredStatus, delivered, up.reqMeta, respMeta
+}
+
+// upstreamExchange is the request half of one sandbox exchange: the runtime
+// request id Talon keyed its settlement on, and what the provider answered.
+type upstreamExchange struct {
+	requestID   string
+	status      int
+	contentType string
+	body        []byte
+	reqMeta     map[string]string
+}
+
+// forward runs EvaluateHttpRequest and the provider call.
+func (s *fixtureSupervisor) forward(t *testing.T, token, body string, provider *responseFixtureProvider) *upstreamExchange {
 	t.Helper()
 	requestID := fmt.Sprintf("req-%d", time.Now().UnixNano())
 	c := connect.NewClient[middlewarev1.HttpRequestEvaluation, middlewarev1.HttpRequestResult](s.client, s.talonURL+"/openshell.middleware.v1.SupervisorMiddleware/EvaluateHttpRequest", connect.WithGRPC())
@@ -92,7 +116,7 @@ func (s *fixtureSupervisor) forwardAndReturn(t *testing.T, token, body string, p
 	if res.Msg.GetDecision() != middlewarev1.Decision_DECISION_ALLOW {
 		t.Fatalf("request denied: %v", res.Msg)
 	}
-	reqMeta = res.Msg.GetMetadata()
+	reqMeta := res.Msg.GetMetadata()
 	forward := body
 	if res.Msg.GetHasBody() {
 		forward = string(res.Msg.GetBody())
@@ -115,8 +139,18 @@ func (s *fixtureSupervisor) forwardAndReturn(t *testing.T, token, body string, p
 	}
 	upstreamBody, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
+	return &upstreamExchange{requestID: requestID, status: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), body: upstreamBody, reqMeta: reqMeta}
+}
 
-	// PRE_RETURN exchange.
+// preReturn runs the PRE_RETURN exchange for one upstream answer. Calling
+// it twice for the same exchange is the runtime repeating a callback.
+func (s *fixtureSupervisor) preReturn(t *testing.T, token string, up *upstreamExchange) (deliveredStatus int, delivered []byte, respMeta map[string]string) {
+	t.Helper()
+	requestID, upstreamBody := up.requestID, up.body
+	resp := struct {
+		StatusCode int
+		Header     http.Header
+	}{StatusCode: up.status, Header: http.Header{"Content-Type": []string{up.contentType}}}
 	rc := connect.NewClient[middlewarev1.HttpResponseEvent, middlewarev1.HttpResponseEventResult](s.client, s.talonURL+"/openshell.middleware.v1.HttpResponsePreReturn/Evaluate", connect.WithGRPC())
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -147,9 +181,9 @@ func (s *fixtureSupervisor) forwardAndReturn(t *testing.T, token, body string, p
 	respMeta = pres.GetMetadata()
 	switch {
 	case pres.GetBlockDelivery() != nil:
-		return http.StatusForbidden, nil, reqMeta, respMeta
+		return http.StatusForbidden, nil, respMeta
 	case pres.GetSkip() != nil:
-		return resp.StatusCode, upstreamBody, reqMeta, respMeta
+		return resp.StatusCode, upstreamBody, respMeta
 	}
 	if pres.GetInspect().GetBodyMode() != middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES {
 		t.Fatalf("expected whole-body inspection for a JSON response, got %v", pres.GetInspect().GetBodyMode())
@@ -172,11 +206,11 @@ func (s *fixtureSupervisor) forwardAndReturn(t *testing.T, token, body string, p
 	_ = st.CloseRequest()
 	switch {
 	case bres.GetBlockDelivery() != nil:
-		return http.StatusForbidden, nil, reqMeta, respMeta
+		return http.StatusForbidden, nil, respMeta
 	case bres.GetTransform() != nil:
-		return resp.StatusCode, bres.GetTransform().GetData(), reqMeta, respMeta
+		return resp.StatusCode, bres.GetTransform().GetData(), respMeta
 	default:
-		return resp.StatusCode, upstreamBody, reqMeta, respMeta
+		return resp.StatusCode, upstreamBody, respMeta
 	}
 }
 
@@ -291,6 +325,44 @@ gateway:
 		t.Fatalf("no-usage response: %d meta=%v", status, respMeta)
 	}
 
+	// 4b. Talon restarts while a preventive response is in flight: the
+	// decision is made, the provider has answered with PII, and only then
+	// does the new process see the response. The ledger row (and the
+	// redact policy in force at decision time) survived in the evidence
+	// store: the body is still held, scanned and transformed, and the
+	// settlement joins the pre-restart decision — never decision_unmatched,
+	// never a skip.
+	provider.next.Store(`{"id":"cmpl-4","model":"gpt-4o-mini","choices":[{"message":{"role":"assistant","content":"after the restart mail ` + email + `"}}],"usage":{"prompt_tokens":4,"completion_tokens":8}}`)
+	inflight := sup.forward(t, token(), `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"restart me"}]}`, provider)
+	stop()
+	stop = startServe(t, dir, httpPort)
+	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", osPort))
+	status, delivered, respMeta = sup.preReturn(t, token(), inflight)
+	if status != 200 || strings.Contains(string(delivered), email) || respMeta["talon_decision"] != "transform" {
+		t.Fatalf("in-flight response after restart: %d %s meta=%v", status, delivered, respMeta)
+	}
+	restartDecisionID, restartSettlementID := inflight.reqMeta["talon_evidence_id"], respMeta["talon_evidence_id"]
+
+	// 4c. The runtime repeats the callback for the same exchange: the
+	// recorded verdict is reproduced (same replacement, same evidence id),
+	// nothing is written and nothing is counted twice.
+	status, deliveredAgain, respMetaAgain := sup.preReturn(t, token(), inflight)
+	if status != 200 || !bytes.Equal(deliveredAgain, delivered) || respMetaAgain["talon_replayed"] != "true" || respMetaAgain["talon_evidence_id"] != restartSettlementID {
+		t.Fatalf("duplicate callback: %d %s meta=%v (first evidence %s)", status, deliveredAgain, respMetaAgain, restartSettlementID)
+	}
+
+	// 4d. A provider error body that echoes PII is not exempt from the
+	// response policy: under redact it is blocked (a vendor error envelope
+	// is not rewritten), nothing is billed, and the record says so.
+	provider.status.Store(http.StatusBadRequest)
+	provider.next.Store(`{"error":{"message":"invalid request: the input mentions ` + email + `","type":"invalid_request_error"}}`)
+	status, delivered, _, respMeta = sup.forwardAndReturn(t, token(), `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"trigger an error"}]}`, provider)
+	provider.status.Store(0)
+	if status != http.StatusForbidden || len(delivered) != 0 || respMeta["talon_decision"] != "block" {
+		t.Fatalf("error body with PII must be blocked under redact: %d %s meta=%v", status, delivered, respMeta)
+	}
+	errorSettlementID := respMeta["talon_evidence_id"]
+
 	// 5. Evidence.
 	recs := exportRecords(t, dir)
 	byID := map[string]map[string]any{}
@@ -320,6 +392,32 @@ gateway:
 	if est, _ := exec(set)["estimated_cost"].(float64); est <= 0 {
 		t.Fatalf("settlement keeps the estimate visible: %v", exec(set))
 	}
+	rdec, rset := byID[restartDecisionID], byID[restartSettlementID]
+	if rdec == nil || rset == nil || rdec["correlation_id"] != rset["correlation_id"] {
+		t.Fatalf("the post-restart settlement must join its pre-restart decision: %v / %v", rdec, rset)
+	}
+	annotations := func(r map[string]any) string { a, _ := json.Marshal(r["gateway_annotations"]); return string(a) }
+	if strings.Contains(annotations(rset), "decision_unmatched") || !strings.Contains(annotations(rset), "response_observed") {
+		t.Fatalf("post-restart settlement annotations: %s", annotations(rset))
+	}
+	if rtokens, _ := exec(rset)["tokens"].(map[string]any); rtokens["input"] != 4.0 || rtokens["output"] != 8.0 {
+		t.Fatalf("post-restart settlement tokens: %v", rtokens)
+	}
+	eset := byID[errorSettlementID]
+	if eset == nil || eset["status"] != "failed" || exec(eset)["cost"] != 0.0 {
+		t.Fatalf("error settlement: %v", eset)
+	}
+	if ecls, _ := eset["classification"].(map[string]any); ecls["output_pii_detected"] != true {
+		t.Fatalf("error settlement must record the PII it blocked: %v", eset["classification"])
+	}
+	if !strings.Contains(annotations(eset), "provider_error_body_scanned") {
+		t.Fatalf("error settlement annotations: %s", annotations(eset))
+	}
+	for _, r := range recs {
+		if r["invocation_type"] == "gateway_response" && strings.Contains(annotations(r), "decision_unmatched") {
+			t.Fatalf("no settlement may lose its request half: %v", r["id"])
+		}
+	}
 	rs := byID[redactedSettlementID]
 	cls, _ := rs["classification"].(map[string]any)
 	if cls["output_pii_detected"] != true {
@@ -343,8 +441,8 @@ gateway:
 		c, _ := exec(r)["cost"].(float64)
 		sessionCost += c
 	}
-	if sessionDecisions != 3 || sessionSettlements != 3 {
-		t.Fatalf("session records: decisions=%v settlements=%v", sessionDecisions, sessionSettlements)
+	if sessionDecisions != 5 || sessionSettlements != 5 {
+		t.Fatalf("session records: decisions=%v settlements=%v (the duplicate callback must not add a record)", sessionDecisions, sessionSettlements)
 	}
 	var settledSum float64
 	for _, id := range []string{settlementID, redactedSettlementID} {
@@ -361,7 +459,7 @@ gateway:
 			t.Errorf("leak of %q in evidence or logs", leak)
 		}
 	}
-	for _, id := range []string{decisionID, settlementID, redactedSettlementID} {
+	for _, id := range []string{decisionID, settlementID, redactedSettlementID, restartSettlementID, errorSettlementID} {
 		if out, _, code := RunTalon(t, dir, nil, "audit", "verify", id); code != 0 || !strings.Contains(strings.ToUpper(out), "VALID") {
 			t.Errorf("audit verify %s: %d %s", id, code, out)
 		}
@@ -370,7 +468,7 @@ gateway:
 	if !strings.Contains(show, "gateway_response") {
 		t.Errorf("audit show of the settlement:\n%s", show)
 	}
-	if provider.calls.Load() != 3 {
-		t.Fatalf("provider calls = %d, want 3", provider.calls.Load())
+	if provider.calls.Load() != 5 {
+		t.Fatalf("provider calls = %d, want 5 (a repeated callback never re-reaches the provider)", provider.calls.Load())
 	}
 }

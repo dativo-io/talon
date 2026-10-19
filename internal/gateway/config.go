@@ -970,6 +970,11 @@ type OpenShellResponseGovernanceConfig struct {
 	// MaxCaptureBytes bounds the response body Talon buffers/observes
 	// (default 1 MiB, at most OpenShell's 4 MiB).
 	MaxCaptureBytes int64 `yaml:"max_capture_bytes,omitempty" json:"max_capture_bytes,omitempty"`
+	// MaxPending bounds the settlement ledger: when this many delegated
+	// requests await their response, NEW requests are refused
+	// (settlement_capacity_exhausted) — obligations are never discarded
+	// (100–1,000,000, default 10,000).
+	MaxPending int `yaml:"max_pending,omitempty" json:"max_pending,omitempty"`
 }
 
 // OpenShellSelfDestinationConfig configures the Talon-as-destination hop.
@@ -1201,8 +1206,9 @@ func (o *OpenShellConfig) RequestTimeoutDuration() time.Duration {
 
 // Defaults for the response hook.
 const (
-	DefaultOpenShellSettlementTimeout = "5m"
-	DefaultOpenShellMaxCaptureBytes   = int64(1024 * 1024)
+	DefaultOpenShellSettlementTimeout     = "5m"
+	DefaultOpenShellMaxCaptureBytes       = int64(1024 * 1024)
+	DefaultOpenShellMaxPendingSettlements = 10000
 )
 
 func (r *OpenShellResponseGovernanceConfig) validate(maxPayload int64) error {
@@ -1225,6 +1231,9 @@ func (r *OpenShellResponseGovernanceConfig) validate(maxPayload int64) error {
 	if maxPayload > 0 && r.MaxCaptureBytes > maxPayload {
 		return fmt.Errorf("max_capture_bytes must not exceed max_payload_bytes (%d)", maxPayload)
 	}
+	if r.MaxPending != 0 && (r.MaxPending < 100 || r.MaxPending > 1000000) {
+		return fmt.Errorf("max_pending must be between 100 and 1000000")
+	}
 	return nil
 }
 
@@ -1241,4 +1250,12 @@ func (r *OpenShellResponseGovernanceConfig) SettlementTimeoutDuration() time.Dur
 	}
 	d, _ := time.ParseDuration(r.SettlementTimeout)
 	return d
+}
+
+// MaxPendingSettlements is the ledger bound (default 10,000).
+func (r *OpenShellResponseGovernanceConfig) MaxPendingSettlements() int {
+	if r == nil || r.MaxPending <= 0 {
+		return DefaultOpenShellMaxPendingSettlements
+	}
+	return r.MaxPending
 }
