@@ -3,7 +3,9 @@
 // TLS to the registered endpoint with the registration's CA, carrying the
 // gateway's extension PeerMetadata. The live harness uses it in preflight
 // mode (no Docker) to prove that a real gateway would accept the TLS
-// identity and complete protocol negotiation; the manifest is printed.
+// identity and complete protocol negotiation; the manifest is printed. The
+// manifest carries the request binding and, when Talon's response governance
+// is on, the response binding (-expect-response requires it).
 package main
 
 import (
@@ -25,9 +27,12 @@ import (
 	middlewarev1 "github.com/dativo-io/talon/internal/openshell/proto/gen/middlewarev1"
 )
 
+var expectResponse *bool
+
 func main() {
 	endpoint := flag.String("endpoint", "", "https://host:port of the Talon middleware listener (the registered grpc_endpoint)")
 	caFile := flag.String("ca", "", "PEM certificate bundle the registration pins (tls_ca_cert_path)")
+	expectResponse = flag.Bool("expect-response", false, "require the HTTP_RESPONSE / PRE_RETURN binding (Talon response governance on)")
 	flag.Parse()
 	if *endpoint == "" || *caFile == "" {
 		log.Fatal("-endpoint and -ca are required")
@@ -54,17 +59,43 @@ func main() {
 		log.Fatalf("describe: %v", err)
 	}
 	m := res.Msg
-	if len(m.GetBindings()) != 1 || m.GetBindings()[0].GetOperation() != middlewarev1.SupervisorMiddlewareOperation_SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_REQUEST ||
-		m.GetBindings()[0].GetPhase() != middlewarev1.SupervisorMiddlewarePhase_SUPERVISOR_MIDDLEWARE_PHASE_PRE_CREDENTIALS {
-		log.Fatalf("unexpected bindings: %v", m.GetBindings())
+	bs := m.GetBindings()
+	if err := checkBindings(bs, *expectResponse); err != nil {
+		log.Fatalf("%v: %v", err, bs)
 	}
 	if m.GetExtension().GetProtocolVersion().GetMajor() != 1 {
 		log.Fatalf("unexpected extension metadata: %v", m.GetExtension())
 	}
+	bindings := make([]map[string]any, 0, len(bs))
+	for _, b := range bs {
+		bindings = append(bindings, map[string]any{"operation": b.GetOperation().String(), "phase": b.GetPhase().String(), "max_payload_bytes": b.GetMaxPayloadBytes(), "request_timeout": b.GetRequestTimeout().AsDuration().String()})
+	}
 	out, _ := json.MarshalIndent(map[string]any{
 		"name": m.GetName(), "expected_audience": m.GetExpectedAudience(),
-		"binding":   map[string]any{"operation": m.GetBindings()[0].GetOperation().String(), "phase": m.GetBindings()[0].GetPhase().String(), "max_payload_bytes": m.GetBindings()[0].GetMaxPayloadBytes(), "request_timeout": m.GetBindings()[0].GetRequestTimeout().AsDuration().String()},
+		"bindings":  bindings,
 		"extension": map[string]any{"protocol": fmt.Sprintf("%d.%d", m.GetExtension().GetProtocolVersion().GetMajor(), m.GetExtension().GetProtocolVersion().GetMinor()), "implementation": m.GetExtension().GetImplementationName() + " " + m.GetExtension().GetImplementationVersion(), "supported": m.GetExtension().GetSupportedCapabilities(), "required": m.GetExtension().GetRequiredCapabilities()},
 	}, "", "  ")
 	fmt.Println(string(out))
+}
+
+// checkBindings validates the manifest shape: the request binding first;
+// the response binding (HTTP_RESPONSE / PRE_RETURN) second, only when
+// Talon's response governance is on. expectResponse makes its presence a
+// requirement so the harness proves the manifest the gateway will act on.
+func checkBindings(bs []*middlewarev1.MiddlewareBinding, expectResponse bool) error {
+	if len(bs) < 1 || len(bs) > 2 {
+		return fmt.Errorf("unexpected binding count %d", len(bs))
+	}
+	if bs[0].GetOperation() != middlewarev1.SupervisorMiddlewareOperation_SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_REQUEST ||
+		bs[0].GetPhase() != middlewarev1.SupervisorMiddlewarePhase_SUPERVISOR_MIDDLEWARE_PHASE_PRE_CREDENTIALS {
+		return fmt.Errorf("first binding is not HTTP_REQUEST/PRE_CREDENTIALS")
+	}
+	if len(bs) == 2 && (bs[1].GetOperation() != middlewarev1.SupervisorMiddlewareOperation_SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_RESPONSE ||
+		bs[1].GetPhase() != middlewarev1.SupervisorMiddlewarePhase_SUPERVISOR_MIDDLEWARE_PHASE_PRE_RETURN) {
+		return fmt.Errorf("second binding is not HTTP_RESPONSE/PRE_RETURN")
+	}
+	if expectResponse && len(bs) != 2 {
+		return fmt.Errorf("response binding (HTTP_RESPONSE / PRE_RETURN) expected but not advertised")
+	}
+	return nil
 }

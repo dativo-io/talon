@@ -467,7 +467,7 @@ if "$WORK/describe" -endpoint "https://$HOST_IP:$TALON_GRPC_PORT" -ca "$TLS_DIR/
   die "Describe succeeded with an unrelated CA; TLS verification is not effective"
 fi
 pass "tls: Describe with the wrong CA is refused"
-"$WORK/describe" -endpoint "https://$HOST_IP:$TALON_GRPC_PORT" -ca "$TLS_DIR/ca.pem" >>"$LOGS/setup.log" 2>&1 || die "Describe over TLS with the registered CA failed"
+"$WORK/describe" -endpoint "https://$HOST_IP:$TALON_GRPC_PORT" -ca "$TLS_DIR/ca.pem" -expect-response >>"$LOGS/setup.log" 2>&1 || die "Describe over TLS with the registered CA failed (see setup log: bindings must be HTTP_REQUEST/PRE_CREDENTIALS + HTTP_RESPONSE/PRE_RETURN)"
 pass "tls: Describe with the registered CA and the dialed SAN negotiated protocol 1.0 and returned the HTTP_REQUEST/PRE_CREDENTIALS + HTTP_RESPONSE/PRE_RETURN manifest"
 if [[ "$PREFLIGHT_ONLY" == "1" ]]; then
   echo "PREFLIGHT ONLY: artifacts verified, talon started with the middleware listener, TLS trust proven both ways, gateway registration accepted; the gateway/sandbox stages need Docker"
