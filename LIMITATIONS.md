@@ -82,7 +82,7 @@ Sharp edges of governing coding agents (Claude Code, Codex CLI, orchestrators) t
 - **MCP/graph interception and the dashboard policy view remain single-policy** (built from the default policy file at startup) — they belong to the intercepted-actions pillar (#114/#146), not Fleet Operations v1.
 - **Trigger/webhook DEFINITIONS are read at startup** for all discovered agents; changing them requires a restart (#297). Dispatch-time resolution still applies the current generation's policy to each firing.
 
-## 9. External Containment Runtime Boundary (#482 — OpenShell reference composition, request side verified against the released v0.1.3)
+## 9. External Containment Runtime Boundary (#482/#457 — OpenShell reference composition: model request side verified against the released v0.1.3; response side and sandbox → Action Gateway channel fixture-tested, live validation by the `OpenShell Live` workflow)
 
 Talon can be composed with an execution-containment runtime (reference: NVIDIA OpenShell v0.1.3, whose middleware wire contract is identical to v0.1.2) as that runtime's supervisor middleware: the runtime admits a sandboxed agent's model request, asks Talon to decide it, and injects the provider credential only after Talon answers. This is **DELEGATE** enforcement (#424): Talon decides, the runtime enforces. The boundaries that remain, each recorded in signed evidence (spec 1.11 `enforcement` / `workload_identity`):
 
