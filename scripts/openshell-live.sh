@@ -680,7 +680,10 @@ sandbox_action() {
     "$SH_BIN" -c 'out=$('"$CURL_BIN"' -sS --max-time 40 -w "\n__CODE__%{http_code}" -X "$TALON_METHOD" "http://host.openshell.internal:'"$TALON_HTTP_PORT"'$TALON_PATH" -H "content-type: application/json" -H "X-Talon-Session-ID: $TALON_SESSION" ${TALON_EXTRA_HEADER:+-H "$TALON_EXTRA_HEADER"} ${TALON_BODY:+--data "$TALON_BODY"}); echo "${out##*__CODE__}"; printf "%s\n" "${out%__CODE__*}"' 2>>"$LOGS/setup.log"
 }
 body_of() { tail -n +2 <<<"$1"; }
-json_field() { jq -r "$2 // empty" <<<"$(body_of "$1")" 2>/dev/null; }
+# json_field OUT PATH -> the value at PATH as text ("" when absent). Not
+# `// empty`: jq's alternative operator treats false as absent, which hid the
+# literal `"created": false` of an exact replay.
+json_field() { jq -r "($2) | if . == null then \"\" else tostring end" <<<"$(body_of "$1")" 2>/dev/null; }
 records_total() { ( cd "$TALON_HOME" && "$TALON" audit export --format signed-json 2>>"$LOGS/setup.log" ) | jq '.records | length'; }
 
 # ---------------------------------------------------------------- CASE G — allowed read action, executed once
