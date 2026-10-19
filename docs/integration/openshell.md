@@ -174,6 +174,7 @@ Cases and assertions:
 | Case | Sandbox request | Expected |
 |---|---|---|
 | A allowed | `gpt-4o-mini`, plain content | provider count 1; provider saw `Authorization: Bearer <OpenShell-injected key>`; Talon record `workload_identity.status: verified`, `upstream_auth_mode: external_runtime`, `enforcement.provenance: delegated_expected` |
+| provenance split | — | no model-path record (`gateway`, `gateway_response`) of an OpenShell identity is `talon_enforced`; action lifecycle records of the same sandbox are `talon_enforced` with `enforcement.runtime` naming it (Talon dispatches the action) |
 | B PII | content with `jane.doe@example.com` | provider count 2; forwarded body differs from the original, never contains the e-mail, keeps the rest |
 | C blocked model | `gpt-4o` | sandbox gets `403 {"error":"middleware_denied", "reason_code":"model_not_allowed"}`; count unchanged |
 | D unbound identity | second sandbox with no Talon binding | `403 middleware_denied`, `reason_code: workload_identity_unbound`; count unchanged |

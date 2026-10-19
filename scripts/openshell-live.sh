@@ -804,7 +804,10 @@ VERIFIED="$(jq '[.records[] | select(.workload_identity.status=="verified" and .
 # subject spiffe://openshell/sandbox/<id as reported by the released CLI>.
 REAL_ID="$(jq --arg iss "openshell-gateway:$GATEWAY_ID" --arg sub "spiffe://openshell/sandbox/$SANDBOX_A_ID" '[.records[] | select(.workload_identity.status=="verified" and .workload_identity.issuer==$iss and .workload_identity.subject==$sub)] | length' "$EXPORT")"
 [[ "${REAL_ID:-0}" -ge 3 ]] || die "expected >=3 records verified for issuer openshell-gateway:$GATEWAY_ID and subject spiffe://openshell/sandbox/$SANDBOX_A_ID, found ${REAL_ID:-0}"
-jq -e '[.records[] | select(.enforcement.provenance=="talon_enforced" and .workload_identity.runtime=="openshell")] | length == 0' "$EXPORT" >/dev/null || die "a delegated decision was labelled talon_enforced"
+# Model-path records (decisions, settlements) are DELEGATE: never talon_enforced.
+# Action lifecycle records established through the hop ARE talon_enforced by
+# design (Talon dispatches the action itself) and are asserted separately below.
+jq -e '[.records[] | select(.enforcement.provenance=="talon_enforced" and .workload_identity.runtime=="openshell" and (.invocation_type=="gateway" or .invocation_type=="gateway_response" or .invocation_type=="gateway_count_tokens"))] | length == 0' "$EXPORT" >/dev/null || die "a delegated model decision or settlement was labelled talon_enforced"
 ALLOW_ID="$(jq -r '[.records[] | select(.enforcement.provenance=="delegated_expected" and .policy_decision.allowed==true)][0].id // empty' "$EXPORT")"
 [[ -n "$ALLOW_ID" ]] || die "no allowed delegated record id found"
 ( cd "$TALON_HOME" && "$TALON" audit verify "$ALLOW_ID" ) >>"$LOGS/setup.log" 2>&1 || die "talon audit verify $ALLOW_ID"
