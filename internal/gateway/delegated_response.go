@@ -299,7 +299,13 @@ func (g *Gateway) PlanDelegatedResponse(ctx context.Context, pf DelegatedRespons
 	} else {
 		// No request half (Talon restarted, or the window elapsed): the
 		// response is still attributable through the binding, so usage can
-		// be observed, but no response policy is known — observe only.
+		// be observed, but no response policy is known — observe only. A
+		// host Talon has no provider for is not a model response at all
+		// (Talon's own API, or a destination the runtime bound by mistake):
+		// nothing to settle.
+		if _, governed := g.config.providerForHost(pf.Host); !governed {
+			return DelegatedResponsePlan{Mode: ResponseModeSkip, Code: CodeDestinationNotGoverned}
+		}
 		if agent, ok := g.registry.Current().ResolveWorkload(pf.Runtime, pf.Principal.Subject); ok {
 			agentName = agent.Name
 		} else {
@@ -421,7 +427,13 @@ func (g *Gateway) SettleDelegatedResponse(ctx context.Context, in DelegatedRespo
 			return DelegatedSettlement{Block: true, Code: CodeWorkloadIdentityUnbound}
 		}
 		agent = a
-		provider, _ = g.config.providerForHost(pf.Host)
+		var governed bool
+		provider, governed = g.config.providerForHost(pf.Host)
+		if !governed {
+			// Not a provider response (see PlanDelegatedResponse): never
+			// book a settlement for it.
+			return DelegatedSettlement{Code: CodeDestinationNotGoverned}
+		}
 		correlationID = "gw_" + uuid.New().String()[:12]
 		annotations = append(annotations, annotationDecisionUnmatched)
 		sessionID, sessionSo = "sess_"+correlationID, "synthetic"

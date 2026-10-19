@@ -333,3 +333,19 @@ func TestDelegatedPendingSet_Bound(t *testing.T) {
 	assert.Equal(t, 0.0, p.estimateFor("t", "other"))
 	_ = http.StatusOK
 }
+
+// A response with no request half from a host Talon has no provider for
+// (Talon's own API behind the same hostname, or a runtime misbinding) is
+// skipped and never settled: no decision_unmatched record exists for it.
+func TestDelegatedResponse_UnknownHostWithoutRequestHalfIsSkipped(t *testing.T) {
+	gw, store := setupDelegatedGatewayWith(t, "warn", nil, responseGoverned)
+	pf := preflightFor(201, "application/json")
+	pf.Host, pf.RequestID = "host.openshell.internal", "req-action-1"
+	plan := gw.PlanDelegatedResponse(context.Background(), pf)
+	assert.Equal(t, ResponseModeSkip, plan.Mode)
+	assert.Equal(t, CodeDestinationNotGoverned, plan.Code)
+	st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf, Mode: ResponseModeWholeBody, Body: []byte(`{"created":true}`)})
+	assert.Empty(t, st.EvidenceID)
+	assert.Equal(t, CodeDestinationNotGoverned, st.Code)
+	assert.Empty(t, recordsOfType(t, store, InvocationTypeGatewayResponse), "no settlement is booked for a non-provider response")
+}

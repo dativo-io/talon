@@ -292,3 +292,31 @@ func TestEvaluate_SettlingRequestAsksForIdentityEncoding(t *testing.T) {
 	assert.True(t, found, "Accept-Encoding mutation missing: %v", res.GetHeaderMutations())
 	assert.Equal(t, "pending", res.GetMetadata()["talon_response_governance"])
 }
+
+// Responses from Talon's own Action Gateway (self-destination host) reach
+// the hook because OpenShell selects middleware by host; they are skipped
+// without consulting the decider — they are not model responses.
+func TestResponse_SelfDestinationIsSkipped(t *testing.T) {
+	s := newSigner(t, "k1")
+	h := startHarness(t, s, func(c *gateway.OpenShellConfig) {
+		c.ResponseGovernance = &gateway.OpenShellResponseGovernanceConfig{Enabled: true, SettlementTimeout: "30s", MaxCaptureBytes: 4096}
+		c.SelfDestination = &gateway.OpenShellSelfDestinationConfig{Hosts: []string{"api.openai.com:8080"}}
+	})
+	ex := h.openResponse(t, s.token(t, nil))
+	defer ex.cancel()
+	pf := preflightEvent(201, "application/json")
+	pf.GetPreflight().Target.Port = 8080
+	require.NoError(t, ex.stream.Send(pf))
+	res, err := ex.stream.Receive()
+	require.NoError(t, err)
+	pr := res.GetPreflightResult()
+	require.NotNil(t, pr)
+	assert.NotNil(t, pr.GetSkip(), "%v", pr)
+	assert.Equal(t, CodeSelfDestinationResponse, pr.GetReasonCode())
+	require.NoError(t, ex.stream.Send(sessionEnd(middlewarev1.MiddlewareSessionEndReason_MIDDLEWARE_SESSION_END_REASON_NORMAL)))
+	require.NoError(t, ex.stream.CloseRequest())
+	h.gw.mu.Lock()
+	defer h.gw.mu.Unlock()
+	assert.Empty(t, h.gw.preflights, "the decider is not consulted")
+	assert.Empty(t, h.gw.settlements)
+}

@@ -29,6 +29,9 @@ const (
 	procResponseEvaluate = "/openshell.middleware.v1.HttpResponsePreReturn/Evaluate"
 
 	CodeResponseProtocol = "response_protocol_error"
+	// CodeSelfDestinationResponse: a response from Talon's own API (the
+	// Action Gateway hop), not a provider response; skipped.
+	CodeSelfDestinationResponse = "self_destination_response"
 )
 
 // responseStream is the subset of the connect bidi stream the adapter uses
@@ -61,6 +64,19 @@ func (s *Service) serveResponse(ctx context.Context, authorization string, strea
 	}
 	headers := pf.GetHeaders()
 	modes := pf.GetPermittedBodyModes()
+	if s.cfg.SelfDestination.IsSelfHost(pf.GetTarget().GetHost(), pf.GetTarget().GetPort()) {
+		// OpenShell selects middleware by host, so when Talon's own Action
+		// Gateway shares a host with a provider the gateway also offers
+		// Talon's own responses here. They are not model responses: nothing
+		// to settle, nothing to scan — skip without consulting the decider.
+		if err := stream.Send(&middlewarev1.HttpResponseEventResult{Result: &middlewarev1.HttpResponseEventResult_PreflightResult{PreflightResult: &middlewarev1.HttpResponsePreflightResult{
+			Action: &middlewarev1.HttpResponsePreflightResult_Skip{Skip: &middlewarev1.HttpResponsePreflightSkip{}}, ReasonCode: reasonCode(CodeSelfDestinationResponse),
+			Metadata: map[string]string{"talon_kind": "response", "talon_decision": "skip"},
+		}}}); err != nil {
+			return err
+		}
+		return drain(stream)
+	}
 	preflight := gateway.DelegatedResponsePreflight{
 		Runtime: RuntimeType, RuntimeID: s.cfg.Identity.Issuer, Principal: principal, IdentityFailure: failure,
 		Host: pf.GetTarget().GetHost(), SandboxRef: pf.GetContext().GetSandboxId(), RequestID: pf.GetContext().GetRequestId(),
