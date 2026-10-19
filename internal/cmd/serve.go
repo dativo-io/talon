@@ -42,6 +42,7 @@ import (
 	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/sovereignty"
 	"github.com/dativo-io/talon/internal/trigger"
+	"github.com/dativo-io/talon/internal/workload"
 	"github.com/dativo-io/talon/web"
 )
 
@@ -715,9 +716,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 			// so a delegated decision consumes the same compiled policy,
 			// registry generation, evidence store and accounting as /v1/proxy.
 			if oc := gatewayCfg.OpenShell; oc != nil && oc.Enabled {
-				svc, err := openshell.NewService(gw, *oc, resolvedVersion())
+				// Self-destination hop (#457/#482): sandbox requests addressed
+				// to Talon's own Action Gateway are bound to their use case
+				// at the hop and carried to ingress as a workload assertion
+				// signed under the deployment root key.
+				var hopSigner *workload.HopSigner
+				if oc.SelfDestination != nil {
+					hopSigner, err = workload.NewHopSigner(cfg.SecretsKey, oc.SelfDestination.AssertionTTLDuration())
+					if err != nil {
+						return fmt.Errorf("openshell self_destination: %w", err)
+					}
+					opts = append(opts, server.WithWorkloadHop(hopSigner, hopBinderFor(runtimeHolder)))
+				}
+				svc, err := openshell.NewService(gw, *oc, resolvedVersion(), openshell.WithHopSigner(hopSigner))
 				if err != nil {
 					return fmt.Errorf("initializing openshell middleware: %w", err)
+				}
+				if oc.ResponseGovernanceEnabled() {
+					// Settles decided requests whose response never came back
+					// within the settlement window (estimate stands, record
+					// says unobserved).
+					go gw.RunDelegatedSettlementSweeper(ctx)
 				}
 				openshellServer, err = openshell.NewServer(*oc, svc.Handler())
 				if err != nil {

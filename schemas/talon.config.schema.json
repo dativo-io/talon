@@ -771,7 +771,52 @@
           },
           "additionalProperties": false
         },
-        "timeouts": {
+        "openshell": {
+          "type": "object",
+          "description": "Talon as NVIDIA OpenShell supervisor middleware (#482/#457): verified sandbox identity, delegated model decisions, and the self-destination hop that carries a workload assertion to Talon's own Action Gateway.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "listen": {"type": "string", "description": "gRPC bind address reachable from the OpenShell gateway AND every sandbox supervisor."},
+            "tls": {"type": "object", "additionalProperties": false, "properties": {"cert_file": {"type": "string"}, "key_file": {"type": "string"}}},
+            "allow_insecure_transport": {"type": "boolean", "description": "Plaintext h2c for local fixtures only; OpenShell sends no caller token over an insecure registration, so every request is denied."},
+            "identity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["issuer", "audience"],
+              "properties": {
+                "issuer": {"type": "string", "description": "Exact iss claim: openshell-gateway:<gateway_id>."},
+                "audience": {"type": "string", "description": "Exact aud claim: the registration audience."},
+                "jwks_url": {"type": "string"},
+                "jwks_file": {"type": "string"}
+              }
+            },
+            "middleware_name": {"type": "string"},
+            "max_payload_bytes": {"type": "integer", "minimum": 1, "maximum": 4194304},
+            "request_timeout": {"type": "string"},
+            "self_destination": {
+              "type": "object",
+              "description": "Hosts (optionally host:port) under which sandboxes reach Talon's own HTTP API. A sandbox request to one of them is admitted at the hop with a request-bound workload assertion instead of being treated as model traffic.",
+              "additionalProperties": false,
+              "required": ["hosts"],
+              "properties": {
+                "hosts": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?$"}},
+                "assertion_ttl": {"type": "string", "description": "Workload assertion lifetime, 5s–5m (default 60s)."}
+              }
+            },
+            "response_governance": {
+              "type": "object",
+              "description": "HTTP_RESPONSE / PRE_RETURN: inspect the provider response before the sandbox receives it — actual usage and cost settlement, response PII policy (preventive for block/redact, observational for warn on streams).",
+              "additionalProperties": false,
+              "required": ["enabled"],
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "settlement_timeout": {"type": "string", "description": "How long a decided request waits for its response before it is settled as unobserved with the estimate, 30s–1h (default 5m)."},
+                "max_capture_bytes": {"type": "integer", "minimum": 1024, "maximum": 4194304, "description": "Response body bound Talon buffers or observes (default 1 MiB)."}
+              }
+            }
+          }
+        },        "timeouts": {
           "type": "object",
           "properties": {
             "connect_timeout": {

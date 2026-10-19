@@ -694,7 +694,7 @@ Signed evidence records which of these happened in `classification.response_scan
 
 ### OpenShell delegated boundary (`gateway.openshell`)
 
-Optional (#482). When enabled, `talon serve --gateway` additionally serves NVIDIA OpenShell's supervisor-middleware gRPC contract (pinned to and live-tested against OpenShell v0.1.3; extension protocol 1.0 negotiated at `Describe`) so OpenShell can ask Talon to decide model requests its sandbox network policy admits, **before** OpenShell injects the provider credential. Talon does not dispatch, retry or fall back on this path and never sees the provider key. Full guide: [docs/integration/openshell.md](../integration/openshell.md).
+Optional (#482/#457). When enabled, `talon serve --gateway` additionally serves NVIDIA OpenShell's supervisor-middleware gRPC contract (pinned to and live-tested against OpenShell v0.1.3, v0.1.4 pinned; extension protocol 1.0 negotiated at `Describe`) so OpenShell can ask Talon to decide model requests its sandbox network policy admits, **before** OpenShell injects the provider credential, and — with `response_governance` — to inspect the provider's response before the sandbox receives it (actual usage and cost settlement, response PII policy). With `self_destination`, a sandbox request addressed to Talon's own Action Gateway is authenticated at the hop and carried to ingress as a request-bound workload assertion. Talon does not dispatch, retry or fall back on the model path and never sees the provider key. `talon doctor --gateway-config <file>` reports the `openshell` checks (transport, identity keys, bindings, self destination, response governance). Full guide: [docs/integration/openshell.md](../integration/openshell.md).
 
 ```yaml
 gateway:
@@ -709,6 +709,13 @@ gateway:
       issuer:   "openshell-gateway:<gateway_id>"           # exact iss claim of the supervisor's extension JWT
       audience: "urn:openshell:extension:middleware:talon"  # exact registration audience
       jwks_url: "https://<openshell-gateway>/.well-known/jwks.json"  # exactly one of jwks_url | jwks_file
+    self_destination:                                 # optional: sandboxes reach Talon's OWN Action Gateway here
+      hosts: ["talon.corp.example"]                   # or "host:port" when a provider shares the hostname
+      assertion_ttl: 60s                              # workload assertion lifetime, 5s–5m
+    response_governance:                              # recommended: HTTP_RESPONSE / PRE_RETURN
+      enabled: true
+      settlement_timeout: 5m                          # unobserved responses settle with the estimate after this (30s–1h)
+      max_capture_bytes: 1048576                      # response body bound (≤ max_payload_bytes)
     middleware_name: talon            # default talon; must equal the gateway.toml registration name
     max_payload_bytes: 4194304        # default and ceiling 4 MiB
     request_timeout: 10s              # advertised in the manifest; 10ms–30s

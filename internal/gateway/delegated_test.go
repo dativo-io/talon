@@ -37,6 +37,13 @@ func delegatedPrincipal(subject string) *workload.Principal {
 // and one agent bound to the sandbox subject.
 func setupDelegatedGateway(t *testing.T, piiAction string, override *PolicyOverride) (*Gateway, *evidence.Store) {
 	t.Helper()
+	return setupDelegatedGatewayWith(t, piiAction, override, nil)
+}
+
+// setupDelegatedGatewayWith lets a test adjust the gateway config (e.g.
+// enable OpenShell response governance) before the gateway is built.
+func setupDelegatedGatewayWith(t *testing.T, piiAction string, override *PolicyOverride, mut func(*GatewayConfig)) (*Gateway, *evidence.Store) {
+	t.Helper()
 	dir := t.TempDir()
 	cfg := &GatewayConfig{
 		Enabled: true, ListenPrefix: "/v1/proxy",
@@ -47,6 +54,9 @@ func setupDelegatedGateway(t *testing.T, piiAction string, override *PolicyOverr
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	require.NoError(t, cfg.ApplyDefaults())
+	if mut != nil {
+		mut(cfg)
+	}
 	bound := testIdentity("sandboxed-agent", "acme", "tk-sandboxed", override)
 	bound.workloadBindings = []WorkloadBinding{{Runtime: "openshell", Subject: delegatedSubject}}
 	stopped := testIdentity("stopped-agent", "acme", "tk-stopped", nil)

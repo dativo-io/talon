@@ -14,6 +14,7 @@ const (
 	tenantIDKey contextKey = iota
 	isAdminKey
 	agentIdentityKey
+	workloadFactsKey
 )
 
 // AgentIdentity is the identity an agent traffic key resolves to (#266): the
@@ -66,4 +67,35 @@ func SetIsAdmin(ctx context.Context, isAdmin bool) context.Context {
 func IsAdmin(ctx context.Context) bool {
 	v, _ := ctx.Value(isAdminKey).(bool)
 	return v
+}
+
+// WorkloadFacts are the SAFE identity facts of a request whose agent
+// identity was established through a verified external-runtime principal
+// (a workload hop assertion, #457/#482) rather than an agent key. They are
+// recorded in evidence and never used as authority beyond the agent
+// binding the middleware already resolved. No token material is kept.
+type WorkloadFacts struct {
+	Runtime       string
+	RuntimeIssuer string
+	Subject       string
+	PrincipalID   string
+	AuthMethod    string
+	// SandboxRef and RequestID are the runtime's own references (correlation).
+	SandboxRef string
+	RequestID  string
+	// SessionID is the client-asserted session seen at the hop (attribution).
+	SessionID  string
+	VerifiedAt string
+}
+
+// SetWorkloadFacts stores the verified workload facts in the context.
+func SetWorkloadFacts(ctx context.Context, f WorkloadFacts) context.Context {
+	return context.WithValue(ctx, workloadFactsKey, f)
+}
+
+// WorkloadFactsFrom returns the verified workload facts and true when the
+// request authenticated through a workload hop assertion.
+func WorkloadFactsFrom(ctx context.Context) (WorkloadFacts, bool) {
+	f, ok := ctx.Value(workloadFactsKey).(WorkloadFacts)
+	return f, ok && f.Subject != ""
 }

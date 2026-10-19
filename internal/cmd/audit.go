@@ -35,6 +35,7 @@ var (
 	auditVerifyOperation string
 	auditVerifyTenant    string
 	auditSession         string
+	auditRuntimeRef      string
 )
 
 var auditCmd = &cobra.Command{
@@ -73,6 +74,7 @@ func init() {
 	auditListCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
 	auditListCmd.Flags().IntVar(&auditLimit, "limit", 20, "Maximum records to show")
 	auditListCmd.Flags().StringVar(&auditSession, "session", "", "Show a per-session summary and the session's records (session_id)")
+	auditListCmd.Flags().StringVar(&auditRuntimeRef, "runtime-ref", "", "Show every record attributed to one external-runtime workload reference (e.g. an OpenShell sandbox id): delegated decisions, response settlements, action lifecycle and imported containment events (#482)")
 
 	auditVerifyCmd.Flags().StringVar(&auditVerifyFile, "file", "", "Verify all records from a signed export file")
 	auditVerifyCmd.Flags().StringVar(&auditSession, "session", "", "Verify every record in a session (session_id)")
@@ -129,6 +131,19 @@ func auditList(cmd *cobra.Command, args []string) error {
 		}
 		renderSessionSummary(os.Stdout, evidence.BuildSessionSummary(auditSession, records))
 		fmt.Fprintln(os.Stdout)
+		renderSessionRecords(os.Stdout, records)
+		return nil
+	}
+	if auditRuntimeRef != "" {
+		records, err := fetchRuntimeRefRecords(ctx, store, auditRuntimeRef, auditTenant, auditAgent, auditLimit)
+		if err != nil {
+			return err
+		}
+		if len(records) == 0 {
+			fmt.Printf("No evidence records found for runtime reference %s.\n", auditRuntimeRef)
+			return nil
+		}
+		fmt.Fprintf(os.Stdout, "Runtime reference %s: %d record(s) (newest first; decisions, settlements, action lifecycle and imported containment events)\n\n", auditRuntimeRef, len(records))
 		renderSessionRecords(os.Stdout, records)
 		return nil
 	}
@@ -1393,4 +1408,55 @@ func renderLifecycleRecord(out io.Writer, r *evidence.Evidence, sigOK bool) {
 		extra = " code=" + l.RefusalCode
 	}
 	fmt.Fprintf(out, "  %s #%d %-24s %s op_status=%s%s\n", mark, l.Sequence, l.Event, r.ID, l.OperationStatus, extra)
+}
+
+// fetchRuntimeRefRecords returns the records attributed to one external
+// runtime workload reference (#482): a delegated decision or response
+// settlement (enforcement.runtime.reference), a hop-established action
+// lifecycle record (enforcement.runtime.reference), or an imported
+// containment event (workload_identity.subject ending in the reference).
+// It is the operator's reconstruction surface for "what did this sandbox
+// do and what did Talon decide", across record classes.
+func fetchRuntimeRefRecords(ctx context.Context, store *evidence.Store, ref, tenant, agent string, limit int) ([]*evidence.Evidence, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, fmt.Errorf("runtime reference is required")
+	}
+	// The reference is not an indexed column: scan a bounded window of
+	// recent records and filter. Sessions and operations have their own
+	// indexed lookups; this one is deliberately simple.
+	window := limit * 50
+	if window < 500 {
+		window = 500
+	}
+	if window > 20000 {
+		window = 20000
+	}
+	all, err := store.List(ctx, tenant, agent, time.Time{}, time.Time{}, window)
+	if err != nil {
+		return nil, fmt.Errorf("querying evidence: %w", err)
+	}
+	var out []*evidence.Evidence
+	for i := range all {
+		r := &all[i]
+		if runtimeRefMatches(r, ref) {
+			out = append(out, r)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func runtimeRefMatches(r *evidence.Evidence, ref string) bool {
+	if r.Enforcement != nil && r.Enforcement.Runtime != nil && r.Enforcement.Runtime.Reference == ref {
+		return true
+	}
+	if r.WorkloadIdentity != nil {
+		if r.WorkloadIdentity.Subject == ref || strings.HasSuffix(r.WorkloadIdentity.Subject, "/"+ref) {
+			return true
+		}
+	}
+	return false
 }

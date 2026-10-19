@@ -84,6 +84,14 @@ func LoadJWKSFile(path string) (*StaticKeySet, error) {
 }
 
 // Key implements KeySet.
+// Len is the number of keys in the set (diagnostics).
+func (s *StaticKeySet) Len() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.keys)
+}
+
 func (s *StaticKeySet) Key(kid string) (ed25519.PublicKey, bool, error) {
 	if s == nil {
 		return nil, false, errNoKeys

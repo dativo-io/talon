@@ -125,6 +125,10 @@ type Gateway struct {
 	// failure, rebuilt lazily from the evidence store after a restart.
 	budgetEventMu    sync.Mutex
 	budgetEventFired map[string]bool
+	// delegatedPending parks the request half of delegated exchanges until
+	// the runtime's response hook settles them (#482 response side); nil
+	// when response governance is off.
+	delegatedPending *delegatedPendingSet
 }
 
 type gatewayCacheConfig struct {
@@ -234,7 +238,7 @@ func NewGateway(
 		// keyless gateway (quickstart) is a holder over a nil registry.
 		registry = NewRegistryHolder(nil)
 	}
-	return &Gateway{
+	g := &Gateway{
 		config:        config,
 		registry:      registry,
 		classifier:    classifier,
@@ -247,7 +251,11 @@ func NewGateway(
 		rateLimiter:   rl,
 		attExtractor:  ext,
 		attInjScanner: injScan,
-	}, nil
+	}
+	if config.OpenShell.ResponseGovernanceEnabled() {
+		g.delegatedPending = newDelegatedPendingSet(config.OpenShell.ResponseGovernance.SettlementTimeoutDuration())
+	}
+	return g, nil
 }
 
 // ServeHTTP implements the 10-step gateway pipeline.
@@ -1568,6 +1576,14 @@ func (g *Gateway) agentCostTotals(ctx context.Context, agent *ResolvedIdentity) 
 		return daily, 0, true
 	}
 	monthly = byAgent[agent.Name]
+	// Delegated requests awaiting their response settlement carry cost 0 in
+	// evidence; their estimates still count against the caps so an in-flight
+	// burst cannot slip under a budget (#482 response side).
+	if g.delegatedPending != nil {
+		pending := g.delegatedPending.estimateFor(agent.TenantID, agent.Name)
+		daily += pending
+		monthly += pending
+	}
 	return daily, monthly, false
 }
 

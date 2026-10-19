@@ -282,10 +282,22 @@ func sanitizeGatewayAnnotations(in []string) []string {
 		// open (#198) — the enforcement gap must be visible in evidence.
 		"session_budget_unavailable": {},
 		"delegated_dispatch":         {}, // #482: the provider was reached by an external runtime after a Talon delegated decision
+		// #482 response side: settlement vocabulary (see delegated_response.go).
+		annotationSettlementPending: {}, // decision record: cost is carried by a later settlement
+		annotationResponseObserved:  {}, // settlement: the provider response was observed at the runtime's response hook
+		annotationResponseUnseen:    {}, // settlement: no response within the settlement window; estimate stands
+		annotationDecisionUnmatched: {}, // settlement: no request half (Talon restarted or window elapsed)
+		annotationBodyUninspectable: {}, // settlement: body not inspectable (compressed/partial/none); usage unobserved
+		"provider_error":            {}, // settlement: the provider answered an error status; nothing billed
 	}
+	seen := map[string]struct{}{}
 	out := make([]string, 0, len(in))
 	for _, v := range in {
 		if _, ok := allowed[v]; ok {
+			if _, dup := seen[v]; dup {
+				continue
+			}
+			seen[v] = struct{}{}
 			out = append(out, v)
 			continue
 		}

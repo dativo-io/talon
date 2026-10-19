@@ -55,7 +55,11 @@ type Server struct {
 	// snapshot (#289) — serve injects a registry-holder-backed resolver so a
 	// reload propagates to server auth; static maps serve tests and the
 	// native-only path.
-	agentKeys            AgentKeyResolver
+	agentKeys AgentKeyResolver
+	// hopVerifier/hopBinder accept workload hop assertions on the Action
+	// Gateway routes (#457/#482); nil = agent key only.
+	hopVerifier          HopVerifier
+	hopBinder            HopBinder
 	corsOrigins          []string
 	policyPath           string
 	startTime            time.Time
@@ -346,7 +350,7 @@ func (s *Server) Routes() http.Handler {
 	// authenticates; no admin/dev-open fallback).
 	if s.actionServices != nil {
 		r.Group(func(r chi.Router) {
-			r.Use(TenantKeyMiddleware(s.agentKeys, s.adminKey))
+			r.Use(ActionIdentityMiddleware(s.agentKeys, s.adminKey, s.hopVerifier, s.hopBinder, maxActionBody))
 			r.Use(RateLimitMiddleware(s.tenantManager))
 			r.Post("/v1/action-operations", s.handleActionEstablish)
 			r.Get("/v1/action-operations/{operation_id}", s.handleActionGet)

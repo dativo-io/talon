@@ -35,4 +35,12 @@ grep -qF '[[ "$WORKLOAD_IMAGE" == *@sha256:* ]] ||' scripts/openshell-live.sh ||
 if grep -nE 'sandbox create' scripts/openshell-live.sh | grep -vF -- '--from "$WORKLOAD_IMAGE"' | grep -vE '^\s*[0-9]+:\s*#'; then
   echo "FAIL plumbing: a sandbox create without --from \"\$WORKLOAD_IMAGE\" exists in the harness" >&2; exit 1
 fi
-echo "PASS openshell live plumbing: a failing harness is a failing job; the workload fixture is explicit and digest pinned"
+# 5. the reference sandbox agent the lane runs in CASE N exists, is POSIX sh
+#    (busybox in the fixture image) and prints the lines the lane gates on.
+test -f examples/openshell/sandbox-agent.sh || { echo "FAIL plumbing: examples/openshell/sandbox-agent.sh is missing (CASE N)" >&2; exit 1; }
+head -n1 examples/openshell/sandbox-agent.sh | grep -qE '^#!/bin/sh$' || { echo "FAIL plumbing: the reference agent must be POSIX sh (busybox), not bash" >&2; exit 1; }
+sh -n examples/openshell/sandbox-agent.sh || { echo "FAIL plumbing: the reference agent does not parse" >&2; exit 1; }
+for line in 'APPROVAL_ID=' 'RESULT=succeeded' 'REPLAY='; do
+  grep -qF "$line" examples/openshell/sandbox-agent.sh || { echo "FAIL plumbing: the reference agent no longer prints $line, which CASE N gates on" >&2; exit 1; }
+done
+echo "PASS openshell live plumbing: a failing harness is a failing job; the workload fixture is explicit and digest pinned; the reference agent is present"

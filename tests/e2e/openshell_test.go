@@ -412,6 +412,16 @@ gateway:
 	if importedID == "" {
 		t.Fatalf("no imported record id in output:\n%s", out)
 	}
+	// Re-importing the same export (or a duplicated line) never yields a
+	// second record: the receipt digest is the event's identity.
+	if out, _, code := RunTalon(t, dir, nil, "audit", "import-external", "--runtime", "openshell", "--file", ocsfPath, "--runtime-id", osIssuer); code != 0 || !strings.Contains(out, "0 imported, 1 duplicate(s)") {
+		t.Fatalf("second import must be a no-op: %d\n%s", code, out)
+	}
+	// The sandbox reference joins the delegated decisions and the imported
+	// containment fact across record classes.
+	if out, _, code := RunTalon(t, dir, nil, "audit", "list", "--runtime-ref", osSandbox, "--limit", "50"); code != 0 || !strings.Contains(out, importedID) || !strings.Contains(out, allowEvidenceID) {
+		t.Fatalf("audit list --runtime-ref must list the imported event and the delegated decision: %d\n%s", code, out)
+	}
 
 	// 7. Evidence: provenance labels, identity, no secret leakage, verification.
 	showAllow, _, code := RunTalon(t, dir, nil, "audit", "show", allowEvidenceID)

@@ -448,6 +448,7 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 	results = append(results, checkSovereigntyFromGateway(gwCfg, opts.GatewayConfigPath))
 	results = append(results, checkAirGapFromGateway(gwCfg, opts.GatewayConfigPath))
 	results = append(results, checkAirGapEgressGuardFromGateway(gwCfg, opts.GatewayConfigPath))
+	results = append(results, checkOpenShell(ctx, gwCfg, opts)...)
 
 	if !opts.SkipUpstream {
 		results = append(results, checkGatewayUpstreams(ctx, gwCfg)...)

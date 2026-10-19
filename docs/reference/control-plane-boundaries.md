@@ -367,7 +367,7 @@ sandbox agent → OpenShell network admission → Talon PRE_CREDENTIALS middlewa
 
 Evidence semantics on this path are literal: `mechanism: delegate`, `boundary: external_runtime`, `decision_authority: talon`, `provenance: delegated_expected`, `decision_returned_via: openshell_middleware`, `upstream_auth_mode: external_runtime`. Talon proves it made and returned its decision; it does not claim it observed OpenShell enforcing it. Imported OCSF containment events are `mechanism: verify`, `provenance: external_asserted`, `receipt.verified: false`, `workload_identity.status: asserted`, never `external_verified`.
 
-Not implemented: OpenShell v0.1.3 offers `HTTP_RESPONSE / PRE_RETURN` and WebSocket middleware; Talon does not advertise or implement either. No Talon → OpenShell COMPILE mapping is supported because no rule mapping has been shown semantically equivalent. OpenShell is an example; core domains carry no OpenShell dependency.
+Response side: with `gateway.openshell.response_governance` Talon implements `HTTP_RESPONSE / PRE_RETURN` (actual usage settled in a `gateway_response` record joined to the decision; response PII policy preventive for `block`/`redact`, observational for `warn` on streams); WebSocket middleware is not implemented. Action side: a sandbox addressing Talon's own Action Gateway is authenticated at the hop and carried to ingress as a request-bound workload assertion (`identity_source: workload_asserted`); Talon still dispatches the action itself (`talon_enforced`, with `enforcement.runtime` naming the sandbox). No Talon → OpenShell COMPILE mapping is supported because no rule mapping has been shown semantically equivalent. OpenShell is an example; core domains carry no OpenShell dependency.
 
 ## 12. Identity classes
 
@@ -417,7 +417,7 @@ Live traffic has no global non-enforcing posture; the removal shipped in [#442](
 | Global `shadow` / `log_only` / `passthrough` posture | REMOVED ([#442](https://github.com/dativo-io/talon/issues/442)); historical evidence readable | none | closed |
 | Internal HTTP/gRPC between Talon modules | none; the only gRPC is the OpenShell middleware served to an external runtime | NOT INTRODUCED in v1 | ADR-004 |
 | Action Gateway (`/v1/action-operations*`, `/v1/approvals*`) | SHIPPED, `talon_forwarded`, generation-bound | RETAIN as the public authorization adapter; add `externally_executed` and reconciliation | [#429](https://github.com/dativo-io/talon/issues/429), [#434](https://github.com/dativo-io/talon/issues/434), [#146](https://github.com/dativo-io/talon/issues/146) |
-| OpenShell middleware (gRPC, `PRE_CREDENTIALS`) | SHIPPED, DELEGATE, request side | RETAIN; response side and WebSocket are open design, not committed | [#482](https://github.com/dativo-io/talon/issues/482) |
+| OpenShell middleware (gRPC, `PRE_CREDENTIALS` + opt-in `PRE_RETURN`, Action Gateway hop assertion) | SHIPPED, DELEGATE on the model path (request and, when enabled, response); INTERCEPT for sandbox-initiated actions through the hop | RETAIN; WebSocket is open design, not committed | [#482](https://github.com/dativo-io/talon/issues/482), [#457](https://github.com/dativo-io/talon/issues/457) |
 
 ## 16. Shipped-versus-target migration notes
 

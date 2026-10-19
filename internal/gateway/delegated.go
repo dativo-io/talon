@@ -93,6 +93,10 @@ type DelegatedDecision struct {
 	Agent      string
 	Provider   string
 	Model      string
+	// ResponseGovernance is true when Talon parked a settlement for this
+	// request and will inspect the provider's response at the runtime's
+	// response hook; the request hop then asks for an uncompressed response.
+	ResponseGovernance bool
 }
 
 // EvaluateDelegated decides one delegated request and commits its signed
@@ -143,7 +147,7 @@ func (g *Gateway) EvaluateDelegated(ctx context.Context, req DelegatedRequest) D
 		}
 		return g.delegatedDeny(ctx, correlationID, agent, providerName, start, outcome.Deny, provenanceOpt)
 	}
-	return g.delegatedAllow(ctx, correlationID, agent, providerName, start, req, outcome, isCountTokens, sessionID, sessionSource, provenanceOpt)
+	return g.delegatedAllow(ctx, correlationID, agent, providerName, start, req, outcome, isCountTokens, sessionID, sessionSource, provenanceOpt, eff.ResponsePIIAction)
 }
 
 // resolveDelegatedAgent turns the verified principal into the bound agent.
@@ -241,11 +245,19 @@ func preDecisionBlocker(agent *ResolvedIdentity, method string) *decisionDeny {
 // the runtime, not by Talon: token usage is unobserved on this path, so
 // the record carries the pre-request estimate exactly as a usage-less
 // gateway record does. An allow that cannot be recorded is not an allow.
-func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agent *ResolvedIdentity, providerName string, start time.Time, req DelegatedRequest, outcome decisionOutcome, isCountTokens bool, sessionID, sessionSource string, provenanceOpt func(*RecordGatewayEvidenceParams)) DelegatedDecision {
+func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agent *ResolvedIdentity, providerName string, start time.Time, req DelegatedRequest, outcome decisionOutcome, isCountTokens bool, sessionID, sessionSource string, provenanceOpt func(*RecordGatewayEvidenceParams), responsePIIAction string) DelegatedDecision {
 	dec := outcome.Allow
 	durationMS := time.Since(start).Milliseconds()
+	// With response governance the cost of this request is carried by its
+	// settlement record (actual usage, or the estimate when no response is
+	// observed); the decision record says so instead of booking the estimate.
+	settling := g.responseGovernanceEnabled() && !isCountTokens
+	recordCost := dec.EstimatedCost
+	if settling {
+		recordCost = 0
+	}
 	persisted, err := g.recordEvidence(ctx, correlationID, agent, providerName, dec.Extracted.Model, start, dec.Extracted.Text,
-		dec.Classification, nil, dec.EstimatedCost, durationMS, "", true, nil, dec.InputPIIRedacted, nil, dec.AttSummary, dec.ToolResult,
+		dec.Classification, nil, recordCost, durationMS, "", true, nil, dec.InputPIIRedacted, nil, dec.AttSummary, dec.ToolResult,
 		false, "", 0, 0, false, 0, 0, dec.EstimatedCost, provenanceOpt, func(p *RecordGatewayEvidenceParams) {
 			p.ToolContent = dec.ToolContentScan
 			if dec.SessionBudgetUnavailable {
@@ -253,6 +265,11 @@ func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agen
 			}
 			if isCountTokens {
 				p.InvocationType = "gateway_count_tokens"
+			}
+			if settling {
+				p.PricingBasis = PricingBasisAwaitingSettlement
+				p.PricingKnown = false
+				p.GatewayAnnotations = append(p.GatewayAnnotations, annotationSettlementPending)
 			}
 		})
 	if err != nil {
@@ -265,15 +282,28 @@ func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agen
 			Message: "evidence_unavailable: Talon could not commit the signed record (fail-closed)", Agent: agent.Name, Provider: providerName,
 		}
 	}
-	if !isCountTokens {
+	switch {
+	case settling:
+		// The session reservation stays open until the response settles it
+		// with the actual cost (or the sweeper with the estimate).
+		g.delegatedPending.add(&delegatedPending{
+			key:           pendingKey{req.RuntimeID, req.Reference, req.RequestID},
+			correlationID: correlationID, agent: agent, provider: providerName, model: dec.Extracted.Model,
+			wire: g.config.providerAPIFamily(providerName), estimate: dec.EstimatedCost,
+			sessionID: sessionID, sessionSource: sessionSource, reservation: outcome.SessReservation,
+			startedAt: start, responsePIIAction: responsePIIAction, decisionEvidenceID: persisted.ID,
+			provenance: provenanceOpt, sessionHeader: req.SessionID,
+		})
+	case !isCountTokens:
 		g.trackSessionUsage(ctx, outcome.SessReservation, sessionID, sessionSource, agent.TenantID, agent.Name, dec.EstimatedCost, 0)
-	} else if outcome.SessReservation != nil {
+	case outcome.SessReservation != nil:
 		g.releaseSessionReservation(outcome.SessReservation)
 	}
-	g.emitMetrics(ctx, agent, providerName, dec.Extracted.Model, dec.Classification, dec.ToolResult, nil, dec.EstimatedCost, durationMS, false, false, dec.PIIAction, false, 0, 0, 0, persisted)
+	g.emitMetrics(ctx, agent, providerName, dec.Extracted.Model, dec.Classification, dec.ToolResult, nil, recordCost, durationMS, false, false, dec.PIIAction, false, 0, 0, 0, persisted)
 	return DelegatedDecision{
 		Allowed: true, Status: http.StatusOK, Body: dec.ForwardBody, BodyChanged: !bytes.Equal(dec.ForwardBody, req.Body), Redacted: dec.InputPIIRedacted,
 		PIITypes: piiTypesOf(dec.Classification), EvidenceID: persisted.ID, Agent: agent.Name, Provider: providerName, Model: dec.Extracted.Model,
+		ResponseGovernance: settling,
 	}
 }
 

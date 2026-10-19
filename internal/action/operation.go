@@ -45,6 +45,10 @@ const (
 const (
 	IdentityCallerProvided   = "caller_provided"
 	IdentityAdapterGenerated = "adapter_generated"
+	// IdentityWorkloadAsserted: the agent identity came from a verified
+	// external-runtime principal carried by a workload hop assertion
+	// (#457/#482), not from the agent key.
+	IdentityWorkloadAsserted = "workload_asserted"
 )
 
 // Result provenance aliases (canonical values live in the evidence package

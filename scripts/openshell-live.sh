@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Real-OpenShell live smoke (#482): Talon as supervisor middleware of a REAL
-# OpenShell v0.1.3 gateway and sandbox, with a deterministic mock provider.
+# Real-OpenShell live smoke (#482, #457): Talon as supervisor middleware of a
+# REAL, pinned OpenShell gateway and sandbox (v0.1.3 baseline, v0.1.4 pinned),
+# with a deterministic mock provider and a protected action target.
 #
 #   sandbox (released image) --curl--> OpenShell supervisor (network policy)
 #     --gRPC EvaluateHttpRequest (gateway-signed extension JWT, TLS)--> talon
@@ -17,8 +18,34 @@
 #   E  Talon unavailable: OpenShell fails closed (middleware_failed), count unchanged
 #   F  Talon restart: the next sandbox request is governed again without a
 #      gateway restart (registration is static; Talon's identity did not change)
+#   Action Gateway through the SAME hop (#457/#482, sandbox holds no Talon secret):
+#   G  allowed read action: the sandbox establishes and claims under its
+#      verified identity; the protected service is called exactly once
+#   H  forbidden action: DENY, zero dispatch, claim refused
+#   I  consequential action requiring approval: 202 and zero dispatch; the
+#      claim waits; a human reviewer approves from the host; approval alone
+#      dispatches nothing; the sandbox's claim dispatches exactly once; exact
+#      replay never duplicates
+#   J  unbound sandbox: denied at the hop (workload_identity_unbound), Talon's
+#      API never reached, record count unchanged
+#   K  a sandbox-written assertion header is overwritten by the hop (the
+#      request still authenticates as the verified sandbox, never as the
+#      forged claims); a forged assertion presented directly to Talon is refused
+#   L  direct egress from the sandbox to the protected service is blocked by
+#      OpenShell network policy (Talon authorization is not what prevents it)
+#   M  the reviewer route is unreachable through the hop, whatever credential
+#      the sandbox holds
+#   N  the checked-in reference agent (examples/openshell/sandbox-agent.sh)
+#      runs the whole scenario inside the real sandbox with a host-side human
+#      approval: exactly one effect, replay-safe, lifecycle VALID
+#   Response side (HTTP_RESPONSE / PRE_RETURN): every allowed model response is
+#   inspected before the sandbox receives it; evidence carries the provider's
+#   ACTUAL usage priced from the table in a settlement record joined to its
+#   decision (which booked no cost), never estimate plus actual.
 #   plus: signed Talon evidence with delegated_expected provenance verifies
-#   offline, and the provider secret appears nowhere in Talon's state or logs.
+#   offline, action lifecycle records carry the verified sandbox identity and
+#   join the model records through the session spine, `audit verify
+#   --operation` is VALID, and no secret appears in Talon's state or logs.
 #
 # Requirements: Linux, Docker Engine >= 28 reachable by this user, a Landlock
 # capable kernel, curl, openssl, tar, jq, Go toolchain (builds talon and the
@@ -35,6 +62,11 @@
 #                               digest-pinned (@sha256:) curl-capable workload
 #                               image replacing the default fixture; the
 #                               in-sandbox precondition still has to pass
+#   OPENSHELL_VERSION           released OpenShell tag to exercise (default
+#                               v0.1.3, the validated baseline; v0.1.4 is pinned
+#                               as well — its middleware proto differs from
+#                               v0.1.3 by a comment only — and is exercised by
+#                               the live workflow's experimental matrix entry)
 #   TALON_OPENSHELL_PREFLIGHT_ONLY=1
 #                               stop before starting the gateway: verifies the
 #                               pinned artifacts, builds talon, generates the
@@ -48,17 +80,22 @@ PREFLIGHT_ONLY="${TALON_OPENSHELL_PREFLIGHT_ONLY:-0}"
 # the workflow's own plumbing check (a failing harness must be a red job).
 if [[ "${TALON_OPENSHELL_SELFTEST_FAIL:-0}" == "1" ]]; then echo "FAIL self-test: deliberate harness failure requested" >&2; exit 1; fi
 
-OPENSHELL_VERSION="v0.1.3"
-# sha256 from the release's openshell-checksums-sha256.txt and
-# openshell-gateway-checksums-sha256.txt (NVIDIA/OpenShell v0.1.3, 2026-10-09).
-declare -A CLI_SHA=(
-  [x86_64]="ed08ea7874c47f22d6e5dcc4b27d9ef1ef5d2060f83035b35ff725d5160830a3"
-  [aarch64]="07687dacefc52bc73b01943f5b58f7a5082c1ceaa228461b9a2a78023b8057c0"
-)
-declare -A GW_SHA=(
-  [x86_64]="da8dce943fe01cce90243b2bf2587c71a243e4d641a4b616528829b681ced198"
-  [aarch64]="801214322227f64f2d3faa6989daaa5e6cd9ef1ab768b5860496deeb1158c27b"
-)
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.1.3}"
+# sha256 from each release's openshell-checksums-sha256.txt and
+# openshell-gateway-checksums-sha256.txt. Only pinned versions can run.
+declare -A CLI_SHA GW_SHA
+case "$OPENSHELL_VERSION" in
+  v0.1.3) # released 2026-10-09; validated baseline
+    CLI_SHA=([x86_64]="ed08ea7874c47f22d6e5dcc4b27d9ef1ef5d2060f83035b35ff725d5160830a3" [aarch64]="07687dacefc52bc73b01943f5b58f7a5082c1ceaa228461b9a2a78023b8057c0")
+    GW_SHA=([x86_64]="da8dce943fe01cce90243b2bf2587c71a243e4d641a4b616528829b681ced198" [aarch64]="801214322227f64f2d3faa6989daaa5e6cd9ef1ab768b5860496deeb1158c27b")
+    ;;
+  v0.1.4) # released 2026-10-13; proto contract identical to v0.1.3 (comment-only diff), validated by the experimental matrix entry
+    CLI_SHA=([x86_64]="2b65178e62e1ece1d90d482555e9f1f98ff0296e058409b33418104b6333df07" [aarch64]="1cd6e63597e1947c44a753bf5352f949e8d8d02e344af92ab899b7c111112d95")
+    GW_SHA=([x86_64]="43f43554bcaabff2a8147444410d1ad0b7f51bdae7589c2d249982bc8b260b91" [aarch64]="d0f8a2045e613f612a542abe860e497906169c2483093a9bd52e41737df397f0")
+    ;;
+  *) echo "MISSING pin: OPENSHELL_VERSION=$OPENSHELL_VERSION has no pinned checksums in this harness" >&2; exit 2 ;;
+esac
+OPENSHELL_SEMVER="${OPENSHELL_VERSION#v}"
 RELEASE_BASE="https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_VERSION}"
 
 # Workload fixture. The sandbox image is a TEST FIXTURE, never OpenShell's
@@ -146,8 +183,8 @@ fetch_pinned() { # name url sha binary
 fetch_pinned "openshell-cli" "$RELEASE_BASE/openshell-${ARCH}-unknown-linux-musl.tar.gz" "${CLI_SHA[$ARCH]}" "openshell"
 fetch_pinned "openshell-gateway" "$RELEASE_BASE/openshell-gateway-${ARCH}-unknown-linux-gnu.tar.gz" "${GW_SHA[$ARCH]}" "openshell-gateway"
 CLI_BIN="$BIN/openshell"; GW_BIN="$BIN/openshell-gateway"
-[[ "$("$CLI_BIN" --version)" == *"0.1.3"* ]] || die "unexpected CLI version: $("$CLI_BIN" --version)"
-[[ "$("$GW_BIN" --version)" == *"0.1.3"* ]] || die "unexpected gateway version: $("$GW_BIN" --version)"
+[[ "$("$CLI_BIN" --version)" == *"$OPENSHELL_SEMVER"* ]] || die "unexpected CLI version: $("$CLI_BIN" --version) (want $OPENSHELL_SEMVER)"
+[[ "$("$GW_BIN" --version)" == *"$OPENSHELL_SEMVER"* ]] || die "unexpected gateway version: $("$GW_BIN" --version) (want $OPENSHELL_SEMVER)"
 log "verified release artifacts: cli sha256 ${CLI_SHA[$ARCH]}, gateway sha256 ${GW_SHA[$ARCH]} ($ARCH)"
 
 # ---------------------------------------------------------------- workspace
@@ -168,13 +205,13 @@ import socket
 s=socket.socket(); s.bind(("0.0.0.0",0)); print(s.getsockname()[1]); s.close()
 PY
 }
-TALON_HTTP_PORT="$(free_port)"; TALON_GRPC_PORT="$(free_port)"; MOCK_PORT="$(free_port)"; GW_PORT="$(free_port)"; GW_HEALTH_PORT="$(free_port)"
+TALON_HTTP_PORT="$(free_port)"; TALON_GRPC_PORT="$(free_port)"; MOCK_PORT="$(free_port)"; PROTECTED_PORT="$(free_port)"; GW_PORT="$(free_port)"; GW_HEALTH_PORT="$(free_port)"
 GW_ENDPOINT="http://127.0.0.1:$GW_PORT"
 CLI=(env -u OPENSHELL_SANDBOX_POLICY "$CLI_BIN" --gateway-endpoint "$GW_ENDPOINT")
 
-TALON_PID=""; GW_PID=""; MOCK_PID=""; SANDBOXES=()
+TALON_PID=""; GW_PID=""; MOCK_PID=""; PROTECTED_PID=""; SANDBOXES=()
 dump_logs() {
-  for f in talon-serve gateway mockprovider setup; do
+  for f in talon-serve gateway mockprovider protectedservice setup; do
     printf '\n--- %s log ---\n' "$f" >&2
     [[ -f "$LOGS/$f.log" ]] && tail -n 120 "$LOGS/$f.log" >&2 || printf '(missing)\n' >&2
   done
@@ -183,7 +220,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   for sb in "${SANDBOXES[@]:-}"; do [[ -n "$sb" ]] && "${CLI[@]}" sandbox delete "$sb" >>"$LOGS/setup.log" 2>&1 || true; done
-  for pid in "$GW_PID" "$TALON_PID" "$MOCK_PID"; do [[ -n "$pid" ]] && { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }; done
+  for pid in "$GW_PID" "$TALON_PID" "$MOCK_PID" "$PROTECTED_PID"; do [[ -n "$pid" ]] && { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }; done
   # Secret-bearing material (tls/, jwt/, talon-home/, provider-state.json)
   # stays in $WORK and is never part of the collected logs; CI uploads $LOGS only.
   if [[ "$status" -eq 0 && "${TALON_OPENSHELL_KEEP:-0}" != "1" ]]; then rm -rf "$WORK"; else echo "work dir retained: $WORK (logs: $LOGS)" >&2; fi
@@ -199,6 +236,7 @@ wait_http() { # url seconds
 log "building talon and the mock provider from $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo untracked)"
 go build -o "$WORK/talon" ./cmd/talon >>"$LOGS/setup.log" 2>&1 || die "go build talon"
 go build -o "$WORK/mockprovider" ./tests/openshell-live/mockprovider >>"$LOGS/setup.log" 2>&1 || die "go build mockprovider"
+go build -o "$WORK/protectedservice" ./tests/openshell-live/protectedservice >>"$LOGS/setup.log" 2>&1 || die "go build protectedservice"
 TALON="$WORK/talon"
 
 # ---------------------------------------------------------------- keys and certs
@@ -265,6 +303,14 @@ wait_http "http://127.0.0.1:$MOCK_PORT/__state" 10 || die "mock provider did not
 provider_state() { curl -fsS "http://127.0.0.1:$MOCK_PORT/__state"; }
 provider_calls() { provider_state | jq -r '.calls'; }
 provider_record() { provider_state | jq -r ".records[$1].$2"; }
+# The protected action target. It listens on every interface so CASE L can
+# prove that OpenShell's network policy — not Talon — is what keeps the
+# sandbox from reaching it directly; Talon dispatches to it over loopback.
+"$WORK/protectedservice" -listen "$MOCK_BIND:$PROTECTED_PORT" -state-file "$WORK/protected-state.json" >"$LOGS/protectedservice.log" 2>&1 &
+PROTECTED_PID=$!
+wait_http "http://127.0.0.1:$PROTECTED_PORT/__state" 10 || die "protected service did not start"
+protected_state() { curl -fsS "http://127.0.0.1:$PROTECTED_PORT/__state"; }
+protected_count() { protected_state | jq -r ".$1"; }
 
 # ---------------------------------------------------------------- talon
 AGENT="sandboxed-support"
@@ -300,8 +346,77 @@ gateway:
       issuer: "openshell-gateway:$GATEWAY_ID"
       audience: "$AUDIENCE"
       jwks_file: "$WORK/openshell-jwks.json"
+    # Sandboxes reach Talon's OWN Action Gateway on the host at this port;
+    # the provider shares the hostname on another port, so the entry carries
+    # Talon's port (a destination is either Talon or a provider).
+    self_destination:
+      hosts: ["host.openshell.internal:$TALON_HTTP_PORT"]
+      assertion_ttl: "60s"
+    # Response side: Talon inspects the provider's response at PRE_RETURN,
+    # settles actual usage/cost and applies the response PII policy.
+    response_governance:
+      enabled: true
+      settlement_timeout: "60s"
 EOT
+# Trusted action catalog of the use case (the sandbox cannot change it): a
+# read, a consequential refund that needs a human reviewer, and a forbidden
+# action. Destinations are Talon-side loopback; the sandbox has no route to
+# them except through Talon.
+python3 - "$AGENT_FILE" "$PROTECTED_PORT" <<'PY' || die "catalog edit"
+import sys
+p, port = sys.argv[1:]
+s = open(p).read()
+assert "\ncapabilities:\n" in s and "\npolicies:\n" in s, "scaffold shape"
+s = s.replace("\ncapabilities:\n", "\ncapabilities:\n  forbidden_tools: [delete_customer]\n", 1)
+s = s.replace("\npolicies:\n", """
+actions:
+  definitions:
+    lookup_ticket:
+      description: Read one support ticket
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id]
+        properties:
+          ticket_id: {type: string}
+      destination: {type: http, url: "http://127.0.0.1:%s/tickets", method: POST, success: {status_codes: [200]}}
+    create_refund_request:
+      description: Create a refund request for a support ticket
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount, currency]
+        properties:
+          ticket_id: {type: string}
+          amount: {type: number}
+          currency: {type: string, enum: [EUR, USD]}
+      review:
+        fields: [ticket_id, amount, currency]
+      destination: {type: http, url: "http://127.0.0.1:%s/refunds", method: POST, success: {status_codes: [201]}}
+    delete_customer:
+      input_schema:
+        type: object
+        additionalProperties: false
+        properties:
+          customer_id: {type: string}
+      destination: {type: http, url: "http://127.0.0.1:%s/customers"}
+
+policies:
+  approvals:
+    expires_after: 30m
+    rules:
+      refund-request:
+        actions: [create_refund_request]
+        approver_groups: [support-leads]
+""" % (port, port, port), 1)
+open(p, "w").write(s)
+PY
+( cd "$TALON_HOME" && "$TALON" validate >>"$LOGS/setup.log" 2>&1 ) || die "talon validate rejected the agent catalog"
 ( cd "$TALON_HOME" && "$TALON" secrets set openai-api-key "$TALON_VAULT_DECOY" >>"$LOGS/setup.log" 2>&1 && "$TALON" secrets set "$AGENT-talon-key" "talon-gw-live-$(openssl rand -hex 6)" >>"$LOGS/setup.log" 2>&1 ) || die "talon secrets set"
+# One human reviewer credential (host-side only; the sandbox never holds it,
+# and CASE M proves it could not use it through the hop anyway).
+LEAD_KEY="$( (cd "$TALON_HOME" && "$TALON" approver add --name lead-1 --tenant default --groups support-leads 2>>"$LOGS/setup.log") | grep -oE 'talon_appr_cred_[0-9a-f]+\.[A-Za-z0-9_-]+' | head -n1)"
+[[ -n "$LEAD_KEY" ]] || die "approver add printed no credential"
 
 start_talon() {
   ( cd "$TALON_HOME" && exec "$TALON" serve --port "$TALON_HTTP_PORT" --gateway --gateway-config "$TALON_HOME/talon.config.yaml" ) >>"$LOGS/talon-serve.log" 2>&1 &
@@ -353,7 +468,7 @@ if "$WORK/describe" -endpoint "https://$HOST_IP:$TALON_GRPC_PORT" -ca "$TLS_DIR/
 fi
 pass "tls: Describe with the wrong CA is refused"
 "$WORK/describe" -endpoint "https://$HOST_IP:$TALON_GRPC_PORT" -ca "$TLS_DIR/ca.pem" >>"$LOGS/setup.log" 2>&1 || die "Describe over TLS with the registered CA failed"
-pass "tls: Describe with the registered CA and the dialed SAN negotiated protocol 1.0 and returned the HTTP_REQUEST/PRE_CREDENTIALS manifest"
+pass "tls: Describe with the registered CA and the dialed SAN negotiated protocol 1.0 and returned the HTTP_REQUEST/PRE_CREDENTIALS + HTTP_RESPONSE/PRE_RETURN manifest"
 if [[ "$PREFLIGHT_ONLY" == "1" ]]; then
   echo "PREFLIGHT ONLY: artifacts verified, talon started with the middleware listener, TLS trust proven both ways, gateway registration accepted; the gateway/sandbox stages need Docker"
   exit 0
@@ -378,7 +493,7 @@ for ((i=0; i<240; i++)); do
   sleep 0.5
 done
 curl -fsS --max-time 1 "http://127.0.0.1:$GW_HEALTH_PORT/healthz" >/dev/null 2>&1 || die "openshell-gateway not healthy; likely stage: $(gateway_startup_hint)"
-pass "gateway v0.1.3 started with talon registered (Describe + protocol negotiation succeeded)"
+pass "gateway $OPENSHELL_VERSION started with talon registered (Describe + protocol negotiation succeeded)"
 
 # ---------------------------------------------------------------- provider profile, provider, policy, sandboxes
 cat >"$WORK/profile.yaml" <<EOT
@@ -428,6 +543,18 @@ network_policies:
     endpoints:
       - host: host.openshell.internal
         port: $MOCK_PORT
+        protocol: rest
+        access: read-write
+        enforcement: enforce
+    binaries:
+      - path: $CURL_BIN
+  # Talon's own Action Gateway, reached through the same talon middleware
+  # (selected by host). The protected service's port is deliberately NOT
+  # listed: CASE L proves OpenShell blocks the direct path.
+  talon-action-gateway:
+    endpoints:
+      - host: host.openshell.internal
+        port: $TALON_HTTP_PORT
         protocol: rest
         access: read-write
         enforcement: enforce
@@ -487,7 +614,7 @@ grep -q "agent_config_reload_activated" "$LOGS/talon-serve.log" || die "talon di
 sandbox_request() { # sandbox body -> prints "<http_code>\n<response body>"; stdout only, no file writes in the sandbox
   local sb="$1" body="$2"
   "${CLI[@]}" sandbox exec --name "$sb" --no-tty --no-login-shell --timeout 60 --env "TALON_BODY=$body" -- \
-    "$SH_BIN" -c 'out=$('"$CURL_BIN"' -sS --max-time 40 -w "\n__CODE__%{http_code}" -X POST "http://host.openshell.internal:'"$MOCK_PORT"'/v1/chat/completions" -H "Authorization: Bearer $OPENAI_API_KEY" -H "content-type: application/json" --data "$TALON_BODY"); echo "${out##*__CODE__}"; printf "%s\n" "${out%__CODE__*}"' 2>>"$LOGS/setup.log"
+    "$SH_BIN" -c 'out=$('"$CURL_BIN"' -sS --max-time 40 -w "\n__CODE__%{http_code}" -X POST "http://host.openshell.internal:'"$MOCK_PORT"'/v1/chat/completions" -H "Authorization: Bearer $OPENAI_API_KEY" -H "content-type: application/json" -H "X-Talon-Session-ID: sess-live-'"$RUN_ID"'" --data "$TALON_BODY"); echo "${out##*__CODE__}"; printf "%s\n" "${out%__CODE__*}"' 2>>"$LOGS/setup.log"
 }
 
 # ---------------------------------------------------------------- CASE A — allowed
@@ -542,6 +669,125 @@ OUT="$(sandbox_request "$SANDBOX_A" "$BODY_A")"; CODE="$(head -n1 <<<"$OUT")"
 [[ "$(provider_calls)" == "3" ]] || die "CASE F provider calls = $(provider_calls), want 3"
 pass "CASE F talon restarted: governed again without a gateway restart"
 
+# ---------------------------------------------------------------- action gateway through the hop
+SESSION="sess-live-$RUN_ID"
+# sandbox_action sandbox method path body [extra curl args…] -> "<http_code>\n<response body>"
+# The sandbox dials Talon's HTTP API on the host through OpenShell; it holds
+# no Talon credential — the hop supplies the workload assertion.
+sandbox_action() {
+  local sb="$1" method="$2" path="$3" body="$4"; shift 4
+  "${CLI[@]}" sandbox exec --name "$sb" --no-tty --no-login-shell --timeout 60 --env "TALON_BODY=$body" --env "TALON_PATH=$path" --env "TALON_METHOD=$method" --env "TALON_SESSION=$SESSION" "$@" -- \
+    "$SH_BIN" -c 'out=$('"$CURL_BIN"' -sS --max-time 40 -w "\n__CODE__%{http_code}" -X "$TALON_METHOD" "http://host.openshell.internal:'"$TALON_HTTP_PORT"'$TALON_PATH" -H "content-type: application/json" -H "X-Talon-Session-ID: $TALON_SESSION" ${TALON_EXTRA_HEADER:+-H "$TALON_EXTRA_HEADER"} ${TALON_BODY:+--data "$TALON_BODY"}); echo "${out##*__CODE__}"; printf "%s\n" "${out%__CODE__*}"' 2>>"$LOGS/setup.log"
+}
+body_of() { tail -n +2 <<<"$1"; }
+json_field() { jq -r "$2 // empty" <<<"$(body_of "$1")" 2>/dev/null; }
+records_total() { ( cd "$TALON_HOME" && "$TALON" audit export --format signed-json 2>>"$LOGS/setup.log" ) | jq '.records | length'; }
+
+# ---------------------------------------------------------------- CASE G — allowed read action, executed once
+OUT="$(sandbox_action "$SANDBOX_A" POST /v1/action-operations '{"operation_id":"op-read-live","action":"lookup_ticket","arguments":{"ticket_id":"T-1842"}}')"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "201" ]] || die "CASE G expected 201 (operation created under the verified sandbox identity), got $CODE: $OUT"
+[[ "$(json_field "$OUT" .operation.verdict)" == "ALLOW" ]] || die "CASE G verdict: $OUT"
+OUT="$(sandbox_action "$SANDBOX_A" POST /v1/action-operations/op-read-live/attempts '')"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "200" && "$(json_field "$OUT" .attempt.status)" == "succeeded" ]] || die "CASE G claim: $CODE $OUT"
+[[ "$(protected_count tickets)" == "1" ]] || die "CASE G protected tickets = $(protected_count tickets), want 1"
+pass "CASE G allowed read action: sandbox authenticated through the hop with no Talon secret; protected service called exactly once"
+
+# ---------------------------------------------------------------- CASE H — forbidden action
+OUT="$(sandbox_action "$SANDBOX_A" POST /v1/action-operations '{"operation_id":"op-del-live","action":"delete_customer","arguments":{"customer_id":"c-9"}}')"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "403" && "$(json_field "$OUT" .operation.verdict)" == "DENY" ]] || die "CASE H expected 403 DENY, got $CODE: $OUT"
+OUT="$(sandbox_action "$SANDBOX_A" POST /v1/action-operations/op-del-live/attempts '')"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "403" && "$(json_field "$OUT" .error.code)" == "policy_denied" ]] || die "CASE H claim on denied: $CODE $OUT"
+[[ "$(protected_count customers)" == "0" ]] || die "CASE H a forbidden action reached the protected service"
+pass "CASE H forbidden action: DENY evidenced, zero dispatch, claim refused"
+
+# ---------------------------------------------------------------- CASE I — approval-required action, approved, executed once, replay-safe
+REFUND='{"operation_id":"op-refund-live","action":"create_refund_request","arguments":{"ticket_id":"T-1842","amount":50.00,"currency":"EUR"}}'
+OUT="$(sandbox_action "$SANDBOX_A" POST /v1/action-operations "$REFUND")"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "202" && "$(json_field "$OUT" .operation.operation_status)" == "awaiting_approval" ]] || die "CASE I expected 202 awaiting_approval, got $CODE: $OUT"
+APPROVAL_ID="$(json_field "$OUT" .operation.approval.id)"; [[ -n "$APPROVAL_ID" ]] || die "CASE I no approval id: $OUT"
+OUT="$(sandbox_action "$SANDBOX_A" POST /v1/action-operations/op-refund-live/attempts '')"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "409" && "$(json_field "$OUT" .error.code)" == "approval_pending" ]] || die "CASE I claim before approval: $CODE $OUT"
+OUT="$(sandbox_action "$SANDBOX_A" GET "/v1/approvals/$APPROVAL_ID" '')"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "200" && "$(json_field "$OUT" .approval.status)" == "pending" ]] || die "CASE I approval read via hop: $CODE $OUT"
+[[ "$(protected_count refunds)" == "0" ]] || die "CASE I refund dispatched before approval"
+# The human reviewer decides from the HOST with the approver credential.
+DEC="$(curl -sS -o "$WORK/decision.json" -w '%{http_code}' -X POST "http://127.0.0.1:$TALON_HTTP_PORT/v1/approvals/$APPROVAL_ID/decisions" -H "Authorization: Bearer $LEAD_KEY" -H 'content-type: application/json' --data '{"decision":"approve","reason":"verified with customer"}')"
+[[ "$DEC" == "200" && "$(jq -r '.operation.operation_status' "$WORK/decision.json")" == "authorized" ]] || die "CASE I reviewer approve: $DEC $(cat "$WORK/decision.json")"
+[[ "$(protected_count refunds)" == "0" ]] || die "CASE I the reviewer decision itself dispatched"
+OUT="$(sandbox_action "$SANDBOX_A" POST /v1/action-operations/op-refund-live/attempts '')"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "200" && "$(json_field "$OUT" .attempt.status)" == "succeeded" ]] || die "CASE I approved claim: $CODE $OUT"
+[[ "$(protected_count refunds)" == "1" ]] || die "CASE I protected refunds = $(protected_count refunds), want 1"
+OUT="$(sandbox_action "$SANDBOX_A" POST /v1/action-operations "$REFUND")"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "200" && "$(json_field "$OUT" .created)" == "false" ]] || die "CASE I exact replay: $CODE $OUT"
+OUT="$(sandbox_action "$SANDBOX_A" POST /v1/action-operations/op-refund-live/attempts '')"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "409" && "$(json_field "$OUT" .error.code)" == "operation_already_succeeded" ]] || die "CASE I second claim: $CODE $OUT"
+[[ "$(protected_count refunds)" == "1" ]] || die "CASE I replay duplicated the effect"
+grep -q '"idempotency_key": "talon-op_' <<<"$(protected_state)" || die "CASE I protected service saw no Talon idempotency key"
+pass "CASE I approval-required action: zero dispatch until a human approved; approval alone dispatched nothing; sandbox claim executed exactly once; replay did not duplicate"
+
+# ---------------------------------------------------------------- CASE J — unbound sandbox, action path
+RECORDS_BEFORE="$(records_total)"
+OUT="$(sandbox_action "$SANDBOX_B" POST /v1/action-operations '{"operation_id":"op-b-live","action":"lookup_ticket","arguments":{"ticket_id":"T-1"}}')"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "403" ]] || die "CASE J expected 403, got $CODE: $OUT"
+grep -q '"workload_identity_unbound"' <<<"$OUT" || die "CASE J reason_code is not workload_identity_unbound: $OUT"
+[[ "$(records_total)" == "$RECORDS_BEFORE" ]] || die "CASE J an unbound sandbox produced a Talon record"
+[[ "$(protected_count tickets)" == "1" ]] || die "CASE J protected service reached for an unbound sandbox"
+pass "CASE J unbound sandbox on the action path: denied at the hop, Talon's API never reached"
+
+# ---------------------------------------------------------------- CASE K — sandbox-written assertion is overwritten; forged assertion direct to Talon refused
+OUT="$(TALON_EXTRA_HEADER='X-Talon-Workload-Assertion: v1.eyJhZ2VudCI6Im90aGVyLWFnZW50IiwidGVuYW50IjoiYWNtZSJ9.Zm9yZ2Vk' sandbox_action "$SANDBOX_A" GET /v1/action-operations/op-refund-live '' --env "TALON_EXTRA_HEADER=X-Talon-Workload-Assertion: v1.eyJhZ2VudCI6Im90aGVyLWFnZW50IiwidGVuYW50IjoiYWNtZSJ9.Zm9yZ2Vk")"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "200" && "$(json_field "$OUT" .operation.operation_status)" == "succeeded" ]] || die "CASE K the hop did not overwrite the sandbox-written assertion (expected the verified sandbox's own operation): $CODE $OUT"
+DIRECT="$(curl -sS -o "$WORK/forged.json" -w '%{http_code}' "http://127.0.0.1:$TALON_HTTP_PORT/v1/action-operations/op-refund-live" -H 'X-Talon-Workload-Assertion: v1.eyJhZ2VudCI6InNhbmRib3hlZC1zdXBwb3J0In0.Zm9yZ2Vk')"
+[[ "$DIRECT" == "401" && "$(jq -r '.error.code' "$WORK/forged.json")" == "workload_identity_invalid" ]] || die "CASE K forged assertion direct to Talon: $DIRECT $(cat "$WORK/forged.json")"
+pass "CASE K assertion header: sandbox-written value overwritten at the hop; forged assertion refused at Talon's ingress"
+
+# ---------------------------------------------------------------- CASE L — direct egress to the protected service blocked by OpenShell
+OUT="$("${CLI[@]}" sandbox exec --name "$SANDBOX_A" --no-tty --no-login-shell --timeout 60 -- "$SH_BIN" -c 'out=$('"$CURL_BIN"' -sS --max-time 20 -w "\n__CODE__%{http_code}" -X POST "http://host.openshell.internal:'"$PROTECTED_PORT"'/refunds" -H "content-type: application/json" --data "{}" 2>&1); echo "${out##*__CODE__}"; printf "%s\n" "${out%__CODE__*}"' 2>>"$LOGS/setup.log" || true)"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" != "201" && "$CODE" != "200" ]] || die "CASE L the sandbox reached the protected service directly: $OUT"
+[[ "$(protected_count refunds)" == "1" ]] || die "CASE L protected refunds changed on a direct sandbox call"
+pass "CASE L direct egress to the protected service blocked by OpenShell network policy (code ${CODE:-none}); count unchanged"
+
+# ---------------------------------------------------------------- CASE M — reviewer route unreachable through the hop
+OUT="$(sandbox_action "$SANDBOX_A" POST "/v1/approvals/$APPROVAL_ID/decisions" '{"decision":"approve"}' --env "TALON_EXTRA_HEADER=Authorization: Bearer $LEAD_KEY")"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "403" ]] || die "CASE M expected 403 from the hop, got $CODE: $OUT"
+grep -q '"self_destination_path_not_governed"' <<<"$OUT" || die "CASE M reason_code is not self_destination_path_not_governed: $OUT"
+pass "CASE M reviewer route: unreachable through the hop even with a reviewer credential"
+
+# ---------------------------------------------------------------- CASE N — reference sandbox agent, end to end
+# The checked-in reference agent (examples/openshell/sandbox-agent.sh) runs
+# INSIDE the real sandbox with sh+curl+sed only: model call, governed read,
+# consequential refund → waits for a human → resumes → exactly one effect →
+# replay-safe. The host plays the reviewer while the agent waits.
+AGENT_SCRIPT="$(cat "$ROOT/examples/openshell/sandbox-agent.sh")"
+AGENT_OUT="$WORK/agent-out.txt"; : >"$AGENT_OUT"
+REFUNDS_BEFORE="$(protected_count refunds)"
+"${CLI[@]}" sandbox exec --name "$SANDBOX_A" --no-tty --no-login-shell --timeout 300 \
+  --env "TALON_BASE=http://host.openshell.internal:$TALON_HTTP_PORT" --env "PROVIDER_BASE=http://host.openshell.internal:$MOCK_PORT" \
+  --env "TALON_SESSION=$SESSION" --env "OPERATION_ID=refund-agent-live" --env "APPROVAL_WAIT_S=120" \
+  -- "$SH_BIN" -c "$AGENT_SCRIPT" >"$AGENT_OUT" 2>>"$LOGS/setup.log" &
+AGENT_PID=$!
+AGENT_APPROVAL=""
+for ((i=0; i<120; i++)); do
+  AGENT_APPROVAL="$(sed -n 's/^APPROVAL_ID=//p' "$AGENT_OUT" | head -n1)"
+  [[ -n "$AGENT_APPROVAL" ]] && break
+  kill -0 "$AGENT_PID" 2>/dev/null || break
+  sleep 1
+done
+[[ -n "$AGENT_APPROVAL" ]] || { wait "$AGENT_PID" || true; die "CASE N the reference agent did not reach the approval step: $(cat "$AGENT_OUT")"; }
+[[ "$(protected_count refunds)" == "$REFUNDS_BEFORE" ]] || die "CASE N refund dispatched before the human decided"
+DEC="$(curl -sS -o "$WORK/decision-n.json" -w '%{http_code}' -X POST "http://127.0.0.1:$TALON_HTTP_PORT/v1/approvals/$AGENT_APPROVAL/decisions" -H "Authorization: Bearer $LEAD_KEY" -H 'content-type: application/json' --data '{"decision":"approve","reason":"reference agent run"}')"
+[[ "$DEC" == "200" ]] || die "CASE N reviewer approve: $DEC $(cat "$WORK/decision-n.json")"
+wait "$AGENT_PID" || die "CASE N the reference agent exited non-zero: $(cat "$AGENT_OUT")"
+grep -q '^MODEL=ok$' "$AGENT_OUT" || die "CASE N model step: $(cat "$AGENT_OUT")"
+grep -q '^READ=succeeded' "$AGENT_OUT" || die "CASE N read step: $(cat "$AGENT_OUT")"
+grep -q '^APPROVAL=approved$' "$AGENT_OUT" || die "CASE N approval step: $(cat "$AGENT_OUT")"
+grep -q '^ATTEMPT=succeeded$' "$AGENT_OUT" || die "CASE N claim step: $(cat "$AGENT_OUT")"
+grep -q '^REPLAY=operation_already_succeeded$' "$AGENT_OUT" || die "CASE N replay step: $(cat "$AGENT_OUT")"
+grep -q '^RESULT=succeeded$' "$AGENT_OUT" || die "CASE N result: $(cat "$AGENT_OUT")"
+[[ "$(protected_count refunds)" == "$((REFUNDS_BEFORE + 1))" ]] || die "CASE N protected refunds = $(protected_count refunds), want $((REFUNDS_BEFORE + 1))"
+( cd "$TALON_HOME" && "$TALON" audit verify --operation refund-agent-live ) >>"$LOGS/setup.log" 2>&1 || die "CASE N audit verify --operation refund-agent-live"
+pass "CASE N reference sandbox agent: model → governed read → refund awaiting a human → approved from the host → exactly one effect → replay-safe; lifecycle VALID"
+
 # ---------------------------------------------------------------- evidence and secret hygiene
 EXPORT="$WORK/export.json"
 ( cd "$TALON_HOME" && "$TALON" audit export --format signed-json ) >"$EXPORT" 2>>"$LOGS/setup.log" || die "talon audit export"
@@ -562,6 +808,33 @@ ALLOW_ID="$(jq -r '[.records[] | select(.enforcement.provenance=="delegated_expe
 if grep -rqF "$PROVIDER_SECRET" "$TALON_HOME" "$LOGS/talon-serve.log" "$EXPORT" 2>/dev/null; then die "provider secret found in Talon state, evidence or logs"; fi
 grep -qF "$TALON_VAULT_DECOY" <<<"$(provider_state)" && die "Talon's vault value reached the provider"
 pass "evidence: $DELEGATED delegated_expected records, identity verified for the real gateway and sandbox ($SANDBOX_A_ID), offline verification OK, provider secret absent from Talon"
+# Response settlements: every allowed model decision booked no cost
+# (awaiting_settlement) and has exactly one gateway_response record under
+# the same correlation id carrying the mock provider's real usage (12/3)
+# priced from the table; no estimate is counted next to an actual.
+DECISIONS_ALLOWED="$(jq '[.records[] | select(.invocation_type=="gateway" and .enforcement.provenance=="delegated_expected" and .policy_decision.allowed==true)] | length' "$EXPORT")"
+AWAITING="$(jq '[.records[] | select(.invocation_type=="gateway" and .enforcement.provenance=="delegated_expected" and .policy_decision.allowed==true and .execution.pricing_basis=="awaiting_settlement" and .execution.cost==0)] | length' "$EXPORT")"
+[[ "$AWAITING" == "$DECISIONS_ALLOWED" && "${AWAITING:-0}" -ge 3 ]] || die "allowed decisions=$DECISIONS_ALLOWED but awaiting_settlement records=$AWAITING (every allowed delegated decision must defer its cost to the settlement)"
+SETTLED="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .execution.tokens.input==12 and .execution.tokens.output==3 and .execution.cost>0 and .execution.pricing_basis!="awaiting_settlement" and .execution.pricing_basis!="estimate_no_usage" and .execution.pricing_basis!="estimate_unsettled" and (.gateway_annotations|index("response_observed")!=null))] | length' "$EXPORT")"
+[[ "$SETTLED" == "$DECISIONS_ALLOWED" ]] || die "settled responses with the provider's actual usage=$SETTLED, want $DECISIONS_ALLOWED"
+JOINED="$(jq '[.records[] | select(.invocation_type=="gateway" and .policy_decision.allowed==true and .enforcement.provenance=="delegated_expected") | .correlation_id] as $c | [.records[] | select(.invocation_type=="gateway_response" and (.correlation_id as $x | $c | index($x)) != null)] | length' "$EXPORT")"
+[[ "$JOINED" == "$DECISIONS_ALLOWED" ]] || die "settlements joined to their decision by correlation id=$JOINED, want $DECISIONS_ALLOWED"
+jq -e '[.records[] | select(.invocation_type=="gateway_response" and (.gateway_annotations|index("decision_unmatched")!=null))] | length == 0' "$EXPORT" >/dev/null || die "a settlement lost its request half"
+pass "evidence: $SETTLED response settlements carry the provider's actual usage (12/3) priced from the table under their decision's correlation id; decisions booked 0 while awaiting settlement"
+# Action lifecycle records: the REAL sandbox identity verified through the
+# hop, Talon-enforced execution with the runtime reference, the session spine
+# shared with the model records, lifecycle verification, and no credential.
+ACTION_IDENTIFIED="$(jq --arg sub "spiffe://openshell/sandbox/$SANDBOX_A_ID" --arg iss "openshell-gateway:$GATEWAY_ID" '[.records[] | select(.invocation_type=="action_lifecycle" and .workload_identity.status=="verified" and .workload_identity.runtime=="openshell" and .workload_identity.auth_method=="workload_hop_assertion" and .workload_identity.subject==$sub and .workload_identity.issuer==$iss and .enforcement.provenance=="talon_enforced" and .enforcement.runtime.reference==$"'"$SANDBOX_A_ID"'" and .action_lifecycle.identity_source=="workload_asserted")] | length' "$EXPORT")"
+[[ "${ACTION_IDENTIFIED:-0}" -ge 8 ]] || die "expected >=8 action lifecycle records carrying the verified sandbox identity, found ${ACTION_IDENTIFIED:-0}"
+SESSION_MODEL="$(jq --arg s "$SESSION" '[.records[] | select(.session_id==$s and .invocation_type=="gateway")] | length' "$EXPORT")"
+SESSION_ACTIONS="$(jq --arg s "$SESSION" '[.records[] | select(.session_id==$s and .invocation_type=="action_lifecycle")] | length' "$EXPORT")"
+[[ "${SESSION_MODEL:-0}" -ge 3 && "${SESSION_ACTIONS:-0}" -ge 8 ]] || die "session join: model=$SESSION_MODEL actions=$SESSION_ACTIONS records on session $SESSION (want >=3 and >=8)"
+jq -e '[.records[] | select(.invocation_type=="action_lifecycle" and .workload_identity.runtime=="openshell" and .action_lifecycle.identity_source=="caller_provided")] | length == 0' "$EXPORT" >/dev/null || die "a hop-established operation was labelled caller_provided"
+( cd "$TALON_HOME" && "$TALON" audit verify --operation op-refund-live ) >>"$LOGS/setup.log" 2>&1 || die "talon audit verify --operation op-refund-live"
+( cd "$TALON_HOME" && "$TALON" audit verify --operation op-del-live ) >>"$LOGS/setup.log" 2>&1 || die "talon audit verify --operation op-del-live"
+if grep -qF "$LEAD_KEY" "$EXPORT" "$LOGS/talon-serve.log" 2>/dev/null; then die "reviewer credential found in evidence or logs"; fi
+if grep -qE '"X-Talon-Workload-Assertion"|v1\.eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{40,}' "$EXPORT" "$LOGS/talon-serve.log" 2>/dev/null; then die "workload assertion material found in evidence or logs"; fi
+pass "evidence: $ACTION_IDENTIFIED action records carry the verified sandbox identity (talon_enforced, runtime ref $SANDBOX_A_ID); session $SESSION joins $SESSION_MODEL model and $SESSION_ACTIONS action records; lifecycle verification VALID; no reviewer credential or assertion material in Talon's export or logs"
 
 # ---------------------------------------------------------------- log hygiene
 # Only $LOGS is ever collected by CI. Prove it carries no secret material:
@@ -569,7 +842,7 @@ pass "evidence: $DELEGATED delegated_expected records, identity verified for the
 # bearer token value.
 hygiene_check() {
   local leak=0 needle
-  for needle in "$PROVIDER_SECRET" "$TALON_SECRETS_KEY" "$TALON_SIGNING_KEY" "$TALON_ADMIN_KEY" "PRIVATE KEY-----" "Bearer ey"; do
+  for needle in "$PROVIDER_SECRET" "$TALON_SECRETS_KEY" "$TALON_SIGNING_KEY" "$TALON_ADMIN_KEY" "$LEAD_KEY" "PRIVATE KEY-----" "Bearer ey"; do
     if grep -rqF -- "$needle" "$LOGS" 2>/dev/null; then echo "HYGIENE secret-shaped material found in logs: $(printf '%s' "$needle" | cut -c1-12)…" >&2; leak=1; fi
   done
   return $leak
@@ -588,6 +861,7 @@ ALL PASS openshell live smoke
   resolved digests:   $RESOLVED_DIGESTS
   sandbox binaries:   curl=$DETECTED_CURL sh=$DETECTED_SH sleep=$DETECTED_SLEEP ($CURL_VERSION_LINE)
   openshell images:   $(docker ps -a --format '{{.Image}}' | grep -i openshell | sort -u | tr '\n' ' ')
-  host address:       $HOST_IP (talon middleware https://$HOST_IP:$TALON_GRPC_PORT, mock provider :$MOCK_PORT)
+  host address:       $HOST_IP (talon middleware https://$HOST_IP:$TALON_GRPC_PORT, talon http :$TALON_HTTP_PORT, mock provider :$MOCK_PORT, protected service :$PROTECTED_PORT)
+  action cases:       G allow=1 dispatch, H deny=0, I approval→1 dispatch (replay 0), J unbound, K assertion overwrite/forgery, L direct egress blocked, M reviewer route closed, N reference agent end to end
   ocsf (gateway):     $LOGS/gateway-ocsf.jsonl ($(wc -l <"$LOGS/gateway-ocsf.jsonl" 2>/dev/null || echo 0) lines)
 EOT

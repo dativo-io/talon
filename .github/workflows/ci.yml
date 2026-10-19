@@ -77,6 +77,16 @@ jobs:
         # provider key and is not an ordinary-PR gate; this target is.
         run: make test-mcp-governance-smoke
 
+      - name: OpenShell composition smoke (#482/#457, fixture supervisor, no keys, no Docker)
+        # Named PR gate for the Talon ↔ OpenShell composition: the fixture
+        # supervisor replays the pinned middleware contract against the built
+        # binary — governed model channel, sandbox → Action Gateway channel
+        # through the hop assertion (allow / deny / human approval / replay /
+        # forged identity), and response governance (actual usage settled,
+        # PII transformed before delivery). The real-runtime proof is the
+        # separate OpenShell Live workflow (Docker).
+        run: make test-openshell-smoke
+
       - name: Check coverage
         run: |
           COVERAGE=$(go tool cover -func=coverage-${{ matrix.go-version }}.out | grep total | awk '{print $3}' | sed 's/%//')
