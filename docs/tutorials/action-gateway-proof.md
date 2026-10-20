@@ -1,6 +1,6 @@
 # Prove exact-action authorization before business execution
 
-**Five-minute evaluator proof (no provider API key).** This exercises the shipped **HTTP Action Gateway**, not MCP `tools/call` or native tool-execution convergence. It uses an in-process counting mock as the downstream business API; no real refund or mutation is performed.
+**Five-minute evaluator proof (no provider API key).** This exercises the HTTP Action Gateway **implemented on Talon main**, not MCP `tools/call` or native tool-execution convergence. Check [releases](https://github.com/dativo-io/talon/releases/latest) before assuming a prebuilt tagged binary includes the feature. It uses an in-process counting mock as the downstream business API; no real refund or mutation is performed.
 
 ## Run
 
