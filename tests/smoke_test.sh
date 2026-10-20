@@ -46,7 +46,10 @@
 #   34 compliance-dashboard | 35 failover | 36 external-scanner (llama/llm engine;
 #   hermetic llama stand-in by default, TALON_SMOKE_OLLAMA_URL opts into real Ollama) |
 #   37 mcp-governance (#372 governance-contract smoke: the same assertions as
-#   `make test-mcp-governance-smoke`, no provider key; mandatory, counted).
+#   `make test-mcp-governance-smoke`, no provider key; mandatory, counted) |
+#   38 openshell (#457/#482 composition smoke: the same scenarios as
+#   `make test-openshell-smoke` — fixture supervisor, action hop, response
+#   governance, SDK agent; no provider key, no Docker; mandatory, counted).
 #
 # QA notes (from brief):
 # - Section 10/18 (Tamper test): Evidence DB is TALON_DATA_DIR/evidence.db; corrupt
@@ -287,7 +290,7 @@ dump_diag_env() {
 # these skips the OPENAI_API_KEY prerequisite (TALON_SECRETS_KEY, talon and
 # the tools are still required). Everything else is unchanged; the full suite
 # still requires the key.
-readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance "
+readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance 38_openshell "
 smoke_only_is_offline() {
   [[ -n "${SMOKE_ONLY:-}" ]] || return 1
   local s
@@ -726,7 +729,7 @@ for _section_file in \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
   33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh \
-  36_external_scanner.sh 37_mcp_governance.sh; do
+  36_external_scanner.sh 37_mcp_governance.sh 38_openshell.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -820,6 +823,7 @@ main() {
   run_section "35_failover" test_section_35_failover
   run_section "36_external_scanner" test_section_36_external_scanner
   run_section "37_mcp_governance" test_section_37_mcp_governance
+  run_section "38_openshell" test_section_38_openshell
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency

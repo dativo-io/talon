@@ -933,5 +933,5 @@ ALL PASS openshell live smoke
   host address:       $HOST_IP (talon middleware https://$HOST_IP:$TALON_GRPC_PORT, talon http :$TALON_HTTP_PORT, mock provider :$MOCK_PORT, protected service :$PROTECTED_PORT)
   response cases:     O response PII redacted, P oversized body blocked (PII past the bound), Q provider error with PII blocked, R talon restart between decision and response
   action cases:       G allow=1 dispatch, H deny=0, I approval→1 dispatch (replay 0), J unbound, K assertion overwrite/forgery, L direct egress blocked, M reviewer route closed, N reference agent end to end
-  ocsf (gateway):     $LOGS/gateway-ocsf.jsonl ($(wc -l <"$LOGS/gateway-ocsf.jsonl" 2>/dev/null || echo 0) lines)
+  ocsf (gateway):     $LOGS/gateway-ocsf.jsonl ($(if [[ -f "$LOGS/gateway-ocsf.jsonl" ]]; then wc -l <"$LOGS/gateway-ocsf.jsonl"; else echo 0; fi) lines)
 EOT

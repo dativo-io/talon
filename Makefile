@@ -68,7 +68,7 @@ test-openshell-live: ## REAL OpenShell live smoke (#482/#457): pinned released g
 openshell-proto: ## Regenerate Go types from the pinned OpenShell v0.1.3 protos (buf via go run; generated code is checked in)
 	@bash scripts/openshell-proto-gen.sh
 
-test-smoke: build ## Run black-box smoke test (prereqs: TALON_SECRETS_KEY, OPENAI_API_KEY; see tests/smoke_test.sh)
+test-smoke: build ## Run black-box smoke test (prereqs: TALON_SECRETS_KEY, OPENAI_API_KEY; see tests/smoke_test.sh; sections 37/38 embed the MCP governance and OpenShell smokes)
 	@PATH="$(CURDIR)/bin:$$PATH" bash ./tests/smoke_test.sh
 
 test-all: test test-e2e ## Run unit, integration, and e2e tests (does not include test-smoke)
