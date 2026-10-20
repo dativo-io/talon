@@ -7,10 +7,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -473,4 +475,53 @@ func TestPurgeOlderThanForAgent(t *testing.T) {
 	require.NoError(t, err, "a sibling agent's rows survive — its own retention governs them")
 	_, err = s.Get(ctx, otherTenant.ID, "globex")
 	require.NoError(t, err, "another tenant's same-named agent survives")
+}
+
+// ApplyUsageOnce charges a session exactly once per application id, under
+// retries and under concurrent appliers (the delegated settlement ledger's
+// crash-recovery contract, #482).
+func TestApplyUsageOnce_ExactlyOnce(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "s.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	sess, err := store.GetOrCreateExternal(ctx, "acme", "bot", "ext-1", "client_asserted")
+	require.NoError(t, err)
+	_, err = store.ReserveSessionCost(ctx, sess.ID, 0.5, time.Minute)
+	require.NoError(t, err)
+
+	applied, err := store.ApplyUsageOnce(ctx, "app-1", sess.ID, 0.5, 0.3, 42)
+	require.NoError(t, err)
+	assert.True(t, applied)
+	applied, err = store.ApplyUsageOnce(ctx, "app-1", sess.ID, 0.5, 0.3, 42)
+	require.NoError(t, err)
+	assert.False(t, applied, "a retry of the same application is a no-op")
+	got, err := store.Get(ctx, sess.ID, "acme")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.3, got.TotalCost, 1e-9)
+	assert.Equal(t, 42, got.TotalTokens)
+	assert.InDelta(t, 0, got.ReservedCost, 1e-9)
+
+	var wg sync.WaitGroup
+	var wins atomic.Int32
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := store.ApplyUsageOnce(ctx, "app-2", sess.ID, 0, 0.1, 1)
+			if err == nil && ok {
+				wins.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, int32(1), wins.Load(), "sixteen concurrent appliers, one application")
+	got, err = store.Get(ctx, sess.ID, "acme")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.4, got.TotalCost, 1e-9)
+	_, err = store.ApplyUsageOnce(ctx, "", sess.ID, 0, 0.1, 1)
+	require.Error(t, err)
+	ok, err := store.UsageApplied(ctx, "app-2")
+	require.NoError(t, err)
+	assert.True(t, ok)
 }

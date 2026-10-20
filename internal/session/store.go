@@ -150,6 +150,14 @@ func (s *Store) init(ctx context.Context) error {
 		PRIMARY KEY (session_id, stage),
 		FOREIGN KEY (session_id) REFERENCES sessions(id)
 	);
+	CREATE TABLE IF NOT EXISTS session_applications (
+		application_id TEXT PRIMARY KEY,
+		session_id TEXT NOT NULL,
+		estimate REAL NOT NULL DEFAULT 0,
+		cost REAL NOT NULL DEFAULT 0,
+		tokens INTEGER NOT NULL DEFAULT 0,
+		applied_at DATETIME NOT NULL
+	);
 	`)
 	if err != nil {
 		return fmt.Errorf("creating sessions table: %w", err)
@@ -501,6 +509,54 @@ func (s *Store) SettleSessionUsage(ctx context.Context, id string, estimate, act
 		return fmt.Errorf("settling session usage: %w", err)
 	}
 	return nil
+}
+
+// ApplyUsageOnce settles usage on a session EXACTLY ONCE per applicationID:
+// the application record and the balance update commit in one transaction,
+// so a caller that crashed after this returned (before it could acknowledge
+// the application elsewhere) retries into a no-op (applied == false) instead
+// of a second charge. The delegated settlement ledger (#482) keys its
+// applications by the ledger transition; two Talon processes or a sweeper
+// and a callback racing on the same transition cannot apply it twice. The
+// estimate leaves reserved_cost (floored at zero); cost/tokens land on the
+// totals.
+func (s *Store) ApplyUsageOnce(ctx context.Context, applicationID, id string, estimate, cost float64, tokens int) (applied bool, err error) {
+	if applicationID == "" {
+		return false, fmt.Errorf("session application id is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("beginning session application: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UTC()
+	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO session_applications (application_id, session_id, estimate, cost, tokens, applied_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		applicationID, id, estimate, cost, tokens, now)
+	if err != nil {
+		return false, fmt.Errorf("recording session application: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil // already applied by an earlier attempt or another process
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE sessions SET reserved_cost = MAX(0, reserved_cost - ?),
+			total_cost = total_cost + ?, total_tokens = total_tokens + ?, updated_at = ? WHERE id = ?`,
+		estimate, cost, tokens, now, id); err != nil {
+		return false, fmt.Errorf("applying session usage: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("committing session application: %w", err)
+	}
+	return true, nil
+}
+
+// UsageApplied reports whether applicationID has been applied (diagnostics).
+func (s *Store) UsageApplied(ctx context.Context, applicationID string) (bool, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_applications WHERE application_id = ?`, applicationID).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func (s *Store) CheckBudget(ctx context.Context, id string) error {

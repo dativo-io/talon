@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -410,68 +409,104 @@ gateway:
 	talonEdge := gw.listen(osActSelfHost, 8080, talonHTTP, "talon")
 
 	// 3. Run the agent. It holds no Talon key, no reviewer credential, no
-	// provider credential; the reviewer approves from the HOST when the
-	// agent reports the approval id.
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, agentBin)
-	cmd.Env = append([]string{}, "PATH="+os.Getenv("PATH"), "HOME="+os.Getenv("HOME"),
-		"TALON_BASE="+talonEdge.URL, "PROVIDER_BASE="+providerEdge.URL, "TALON_SESSION="+sdkAgentSession,
-		"OPERATION_ID="+sdkAgentOpID, "TICKET_ID=T-1842", "APPROVAL_WAIT_S=60", "MAX_TURNS=8", "OPENAI_API_KEY=placeholder-only")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
+	// provider credential. The journey is split across THREE processes to
+	// prove stable business identity: the first waits for approval and
+	// times out (a crash while awaiting approval); the reviewer approves
+	// from the HOST; the second process addresses the same operation and
+	// claims it once; the third finds everything already done.
+	stateDir := filepath.Join(t.TempDir(), "agent-state")
+	runAgent := func(waitSeconds int) (string, int) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, agentBin)
+		cmd.Env = append([]string{}, "PATH="+os.Getenv("PATH"), "HOME="+os.Getenv("HOME"),
+			"TALON_BASE="+talonEdge.URL, "PROVIDER_BASE="+providerEdge.URL, "TALON_SESSION="+sdkAgentSession,
+			"OPERATION_ID="+sdkAgentOpID, "TICKET_ID=T-1842", "APPROVAL_WAIT_S="+fmt.Sprint(waitSeconds), "MAX_TURNS=8",
+			"AGENT_STATE_DIR="+stateDir, "AGENT_ADVERSARIAL_PROBE=1", "OPENAI_API_KEY=placeholder-only")
+		var stdoutBuf, stderrBuf strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdoutBuf, &stderrBuf
+		err := cmd.Run()
+		out := stdoutBuf.String()
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			t.Logf("agent> %s", line)
+		}
+		code := 0
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		} else if err != nil {
+			t.Fatalf("agent: %v\nstderr:\n%s", err, stderrBuf.String())
+		}
+		return out, code
 	}
-	var stderrBuf strings.Builder
-	cmd.Stderr = &stderrBuf
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
+	// Process 1: times out while awaiting approval (exit 3). Nothing dispatched.
+	out1, code1 := runAgent(2)
+	if code1 != 3 || !strings.Contains(out1, "RESULT=timeout APPROVAL=pending") {
+		t.Fatalf("first agent process: exit %d\n%s", code1, out1)
 	}
-	reviewer := &agClient{t: t, base: talonHTTP}
-	var lines []string
-	var approvedAt int64
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		lines = append(lines, line)
-		t.Logf("agent> %s", line)
+	approvalID := ""
+	for _, line := range strings.Split(out1, "\n") {
 		if strings.HasPrefix(line, "APPROVAL_ID=") {
-			approvalID := strings.TrimPrefix(line, "APPROVAL_ID=")
-			if down.refunds.Load() != 0 {
-				t.Fatalf("refund dispatched before approval")
-			}
-			st, res := reviewer.do("POST", "/v1/approvals/"+approvalID+"/decisions", leadKey, `{"decision":"approve","reason":"verified with customer"}`)
-			if st != 200 || dig(res, "operation", "operation_status") != "authorized" {
-				t.Fatalf("approve: %d %v", st, res)
-			}
-			approvedAt = down.refunds.Load()
-			if approvedAt != 0 {
-				t.Fatalf("the reviewer decision itself dispatched")
-			}
+			approvalID = strings.Fields(strings.TrimPrefix(line, "APPROVAL_ID="))[0]
 		}
 	}
-	waitErr := cmd.Wait()
-	output := strings.Join(lines, "\n")
-	if waitErr != nil {
-		t.Fatalf("agent exited with %v\nstdout:\n%s\nstderr:\n%s", waitErr, output, stderrBuf.String())
+	if approvalID == "" || down.refunds.Load() != 0 {
+		t.Fatalf("no approval id or a refund before approval: %q refunds=%d", approvalID, down.refunds.Load())
+	}
+	// The reviewer approves from the host. Approval alone dispatches nothing.
+	reviewer := &agClient{t: t, base: talonHTTP}
+	st, res := reviewer.do("POST", "/v1/approvals/"+approvalID+"/decisions", leadKey, `{"decision":"approve","reason":"verified with customer"}`)
+	if st != 200 || dig(res, "operation", "operation_status") != "authorized" {
+		t.Fatalf("approve: %d %v", st, res)
+	}
+	if down.refunds.Load() != 0 {
+		t.Fatalf("the reviewer decision itself dispatched")
+	}
+	// Process 2: same session, same prefix → the same operations; the read
+	// is found succeeded (not re-dispatched), the refund is found authorized
+	// and claimed once.
+	out2, code2 := runAgent(60)
+	if code2 != 0 {
+		t.Fatalf("second agent process: exit %d\n%s", code2, out2)
 	}
 	for _, want := range []string{
-		"TOOLS_OFFERED=lookup_ticket,create_refund_request,delete_customer",
-		"ATTEMPT=succeeded TOOL=lookup_ticket",
+		"RESUME=", "RESUMED=lookup_ticket", "ATTEMPT=already_succeeded TOOL=lookup_ticket",
 		"DENIED=delete_customer",
-		"APPROVAL_ID=",
-		"APPROVAL=approved",
+		"RESUMED=create_refund_request", "STATUS=authorized",
 		"ATTEMPT=succeeded TOOL=create_refund_request",
 		"REPLAY=operation_already_succeeded",
-		"FINAL=",
-		"RESULT=succeeded",
+		"ADVERSARIAL=denied TOOL=delete_customer",
+		"FINAL=", "RESULT=succeeded",
 	} {
-		if !strings.Contains(output, want) {
-			t.Errorf("agent output lacks %q:\n%s", want, output)
+		if !strings.Contains(out2, want) {
+			t.Errorf("second agent process lacks %q:\n%s", want, out2)
 		}
 	}
-	if strings.Count(output, "MODEL=ok") != 4 {
-		t.Errorf("expected 4 governed model turns:\n%s", output)
+	// Process 3: everything is already done; nothing is dispatched again.
+	out3, code3 := runAgent(60)
+	if code3 != 0 || !strings.Contains(out3, "ATTEMPT=already_succeeded TOOL=create_refund_request") {
+		t.Fatalf("third agent process: exit %d\n%s", code3, out3)
+	}
+	output := out1 + "\n" + out2 + "\n" + out3
+	if !strings.Contains(output, "TOOLS_OFFERED=lookup_ticket,create_refund_request,delete_customer") {
+		t.Errorf("tools offered line missing")
+	}
+	// Process 1 stops after three turns (it times out inside the refund's
+	// approval wait); processes 2 and 3 run four turns each.
+	if n := strings.Count(output, "MODEL=ok"); n != 11 {
+		t.Errorf("expected 11 governed model turns across three processes, got %d:\n%s", n, output)
+	}
+	refundOp := ""
+	for _, line := range strings.Split(out2, "\n") {
+		if strings.HasPrefix(line, "ATTEMPT=succeeded TOOL=create_refund_request OPERATION=") {
+			refundOp = strings.TrimPrefix(line, "ATTEMPT=succeeded TOOL=create_refund_request OPERATION=")
+		}
+	}
+	if !strings.HasPrefix(refundOp, sdkAgentOpID+"-create_refund_request-") {
+		t.Fatalf("refund operation id must derive from the run prefix and the intent: %q", refundOp)
+	}
+	if !strings.Contains(out1, "OPERATION="+refundOp) || !strings.Contains(out3, "OPERATION="+refundOp) {
+		t.Fatalf("all three processes must address the same refund operation %s", refundOp)
 	}
 
 	// 4. Side effects at the protected service: exactly one read, exactly
@@ -484,8 +519,8 @@ gateway:
 	model.mu.Lock()
 	offered, auths := model.toolsOffered, model.authHdrs
 	model.mu.Unlock()
-	if len(offered) != 4 {
-		t.Fatalf("model calls = %d, want 4", len(offered))
+	if len(offered) != 11 {
+		t.Fatalf("model calls = %d, want 11", len(offered))
 	}
 	t.Logf("first provider request body (%d bytes): %.600s", len(model.rawFirst), model.rawFirst)
 	for i, tl := range offered {
@@ -538,7 +573,7 @@ gateway:
 			}
 		}
 	}
-	if decisions != 4 || settlements != 4 || toolsFiltered != 4 || actions < 10 {
+	if decisions != 11 || settlements != 11 || toolsFiltered != 11 || actions < 10 {
 		t.Fatalf("session evidence: decisions=%d settlements=%d toolsFiltered=%d actions=%d", decisions, settlements, toolsFiltered, actions)
 	}
 	exportJSON, _ := json.Marshal(recs)
@@ -548,7 +583,6 @@ gateway:
 			t.Errorf("leak of %q in evidence, logs or agent output", leak[:12])
 		}
 	}
-	refundOp := sdkAgentOpID + "-create_refund_request-3"
 	if out, stderr, code := RunTalon(t, dir, nil, "audit", "verify", "--operation", refundOp); code != 0 || !strings.Contains(strings.ToUpper(out), "VALID") {
 		t.Fatalf("audit verify --operation %s: %d\n%s\n%s", refundOp, code, out, stderr)
 	}
@@ -556,25 +590,28 @@ gateway:
 	// complete, verified walkthrough — identity, every model exchange with
 	// its settlement, every operation with the human decision and the
 	// downstream result, verification status.
-	report, _, code := RunTalon(t, dir, nil, "audit", "list", "--runtime-ref", osSandbox, "--limit", "100", "--report")
+	report, _, code := RunTalon(t, dir, nil, "audit", "list", "--runtime-ref", osSandbox, "--limit", "200", "--report")
 	if code != 0 {
 		t.Fatalf("audit list --runtime-ref --report: %d\n%s", code, report)
 	}
 	for _, want := range []string{
 		"Runtime reference " + osSandbox + ": showing",
 		"IDENTITY", "runtime=openshell issuer=" + osIssuer + " subject=" + osSubject + " auth=jwt_eddsa (verified by Talon)",
-		"MODEL REQUESTS (4)", "tools_removed=[delete_customer]", "pricing=awaiting_settlement", "settlement gw_",
+		"MODEL REQUESTS (11)", "tools_removed=[delete_customer]", "pricing=awaiting_settlement", "settlement gw_",
 		"ACTIONS (3 operations)", refundOp + " action=create_refund_request verdict=REQUIRE_APPROVAL",
 		"approval_decided", "reviewer=apr_", "group=support-leads approval=approved", "attempt=succeeded", "provenance=talon_enforced",
-		sdkAgentOpID + "-delete_customer-2 action=delete_customer verdict=DENY",
+		sdkAgentOpID + "-delete_customer-", "action=delete_customer verdict=DENY",
 		"IMPORTED RUNTIME EVENTS (0)",
-		"VERIFICATION: 19 of 19 records on this page carry a valid Talon signature",
+		"VERIFICATION: ",
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report lacks %q:\n%s", want, report)
 		}
 	}
-	if strings.Contains(report, "UNVERIFIED") {
-		t.Errorf("report contains an unverified record:\n%s", report)
+	if strings.Contains(report, "UNVERIFIED") || strings.Contains(report, "More records exist") {
+		t.Errorf("report contains an unverified record or is paginated:\n%s", report)
+	}
+	if m := regexp.MustCompile(`VERIFICATION: (\d+) of (\d+) records`).FindStringSubmatch(report); len(m) != 3 || m[1] != m[2] {
+		t.Errorf("every record on the page must verify: %v", m)
 	}
 }
