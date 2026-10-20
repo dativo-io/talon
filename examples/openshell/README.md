@@ -1,5 +1,9 @@
 # OpenShell reference sandbox agents
 
+The customer showcase — the SDK agent inside a released OpenShell sandbox with
+a human approval and verified evidence — is `showcase/demo.sh`; start with
+[`showcase/README.md`](showcase/README.md).
+
 Two reference agents live here. `agent/` (`support-agent`) is the
 **tool-using** agent on the official OpenAI Go SDK — the model chooses the
 tools, Talon governs each one — with its own README. `sandbox-agent.sh`,

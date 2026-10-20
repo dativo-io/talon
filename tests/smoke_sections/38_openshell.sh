@@ -38,4 +38,6 @@ test_section_38_openshell() {
   # sections.
   assert_pass "TestE2E_OpenShell_*: composed model channel, action channel through the hop, response governance, SDK agent (scripts/openshell-smoke.sh)" \
     bash scripts/openshell-smoke.sh
+  assert_pass "showcase runner contract: vocabulary, embedded contract, standalone prepare validated by doctor (examples/openshell/showcase/test-contract.sh)" \
+    env TALON_SHOWCASE_TALON_BIN="$(command -v talon)" bash examples/openshell/showcase/test-contract.sh
 }

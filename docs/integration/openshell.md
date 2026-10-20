@@ -294,6 +294,10 @@ The provider credential stays an OpenShell provider (profile endpoint bound to `
 | `output_content_unsupported` | a non-JSON/SSE/text response under `block`/`redact` | the provider returned a media type Talon cannot inspect; a preventive policy has no safe way to deliver it |
 | `workload_identity_conflict` (response) | the response callback's sandbox is not the one the request was decided for | a runtime misbinding; the obligation stays with the original exchange |
 
+## Customer showcase (canonical runner)
+
+`examples/openshell/showcase/demo.sh` is the one authoritative runner of the customer scenario — the SDK agent inside a released OpenShell sandbox, model-chosen tools governed by Talon, a human approval through Talon's reviewer API from outside the sandbox, at-most-once dispatch of the approved refund, and the signed evidence to reconstruct it (`prepare | start | status | run | approval-status | approve | reject | validate | stop`). It is used three ways: standalone from a checkout or from the published showcase bundle (verified against its manifest), embedded in [talon-full-demo](https://github.com/dativo-io/talon-full-demo) (`TALON_SHOWCASE_EMBEDDED=1`: the runner overlays the Full Demo's generated configuration through `talon openshell prepare` and attaches to the shared Talon — never a second Talon, evidence store or key), and by the `OpenShell Live` workflow's showcase job (`demo.sh validate`). `talon openshell prepare` is the configuration overlay: it edits `gateway.openshell`, the provider the sandbox dials and the `sandboxed-support` use case (identity binding, tool governance, trusted catalog, refund approval rule) through Talon's YAML loaders and validates the result with the same loaders `talon serve` uses; other agents and settings are preserved, re-runs are no-ops, and the gateway block's restart boundary is reported. See [the showcase README](../../examples/openshell/showcase/README.md).
+
 ## Reference agents
 
 Two agents ship under `examples/openshell/`, both running **inside** the sandbox with no Talon, reviewer or provider credential:

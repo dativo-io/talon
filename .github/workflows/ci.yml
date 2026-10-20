@@ -87,6 +87,13 @@ jobs:
         # separate OpenShell Live workflow (Docker).
         run: make test-openshell-smoke
 
+      - name: OpenShell showcase runner contract (#482, offline, no Docker)
+        # The canonical customer runner's vocabulary, the Full Demo embedded
+        # contract's refusals, and a standalone prepare validated by Talon's
+        # loaders and doctor. The real-runtime run is the OpenShell Live
+        # workflow's showcase job.
+        run: make test-openshell-showcase-contract
+
       - name: Check coverage
         run: |
           COVERAGE=$(go tool cover -func=coverage-${{ matrix.go-version }}.out | grep total | awk '{print $3}' | sed 's/%//')

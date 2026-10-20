@@ -43,8 +43,23 @@ builds:
       - -X github.com/dativo-io/talon/internal/cmd.Commit={{.ShortCommit}}
       - -X github.com/dativo-io/talon/internal/cmd.BuildDate={{.Date}}
 
+  # OpenShell showcase helpers (#482): static, CGO-free, so linux/arm64 ships
+  # too. They are packaged by scripts/build-showcase-bundle.sh (release hook
+  # below) into the versioned showcase bundle with a sha256 manifest.
+  - id: support-agent
+    dir: examples/openshell/agent
+    main: .
+    binary: support-agent
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}}
+
 archives:
-  - formats: [tar.gz]
+  - id: talon
+    builds: [talon]
+    formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
@@ -86,6 +101,22 @@ changelog:
       order: 999
 
 dockers:
+  # The sandbox agent image (#482 showcase): the release pins it by version;
+  # the showcase manifest names it, and customer instructions use the digest.
+  - id: openshell-agent
+    ids: [support-agent]
+    goos: linux
+    goarch: amd64
+    dockerfile: examples/openshell/agent/Dockerfile.goreleaser
+    image_templates:
+      - "ghcr.io/dativo-io/talon-openshell-agent:{{ .Version }}"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title=talon-openshell-agent"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source=https://github.com/dativo-io/talon"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
   - image_templates:
       - "ghcr.io/dativo-io/talon:{{ .Version }}"
       - "ghcr.io/dativo-io/talon:{{ .Major }}.{{ .Minor }}"
@@ -106,6 +137,9 @@ release:
   github:
     owner: dativo-io
     name: talon
+  # The showcase bundle (runner + helpers + manifest) is built by the release
+  # workflow after goreleaser (scripts/build-showcase-bundle.sh) and uploaded
+  # next to the archives; see .github/workflows/release.yml.
   draft: false
   prerelease: auto
   # Re-run safe: if assets already exist on this tag's release, delete and retry upload.

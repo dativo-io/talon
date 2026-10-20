@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-openshell-live test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-openshell-live test-openshell-showcase-contract openshell-showcase-validate openshell-agent-image showcase-bundle test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -64,6 +64,18 @@ test-openshell-smoke: ## OpenShell composition smoke (#482): fixture supervisor 
 
 test-openshell-live: ## REAL OpenShell live smoke (#482/#457): pinned released gateway + CLI + sandbox (docker driver; OPENSHELL_VERSION=v0.1.3 default, v0.1.4 pinned) with Talon as supervisor middleware, a mock provider and a protected action target; model cases A–F, response cases O–R and Action Gateway cases G–N; needs Docker >= 28 on Linux, no keys
 	@bash scripts/openshell-live.sh
+
+test-openshell-showcase-contract: build ## Offline contract test of the canonical OpenShell showcase runner (vocabulary, embedded contract, standalone prepare validated by doctor; no Docker)
+	@TALON_SHOWCASE_TALON_BIN="$(CURDIR)/bin/talon" bash ./examples/openshell/showcase/test-contract.sh
+
+openshell-showcase-validate: ## Canonical OpenShell showcase against the REAL released runtime (SDK agent inside the sandbox, host-side approval and rejection, resume, evidence); needs Docker >= 28 on Linux, no keys
+	@bash ./examples/openshell/showcase/demo.sh validate
+
+openshell-agent-image: ## Build the sandbox agent image locally (talon-openshell-agent:local-<commit>)
+	@docker build -t "talon-openshell-agent:local-$$(git rev-parse --short HEAD)" --build-arg VERSION=local --build-arg COMMIT="$$(git rev-parse --short HEAD)" examples/openshell/agent
+
+showcase-bundle: ## Build the versioned OpenShell showcase bundle + manifest into ./dist (customer path: published artifacts, no source checkout)
+	@bash ./scripts/build-showcase-bundle.sh "$(VERSION)" "$(CURDIR)/dist"
 
 openshell-proto: ## Regenerate Go types from the pinned OpenShell v0.1.3 protos (buf via go run; generated code is checked in)
 	@bash scripts/openshell-proto-gen.sh
