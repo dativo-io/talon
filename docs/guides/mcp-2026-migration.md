@@ -7,7 +7,7 @@
 | Old assumption | Supported contract now |
 |---|---|
 | `initialize` / `initialized` negotiation and older MCP versions | **Only `2026-07-28`**; `server/discover` replaces initialization and every request carries protocol metadata |
-| `Mcp-Session-Id`, GET session stream, DELETE or resumption | **No MCP transport sessions**; an optional `X-Talon-Session-ID` is *application correlation*, not protocol state |
+| Former MCP transport-session header, GET/DELETE lifecycle or stream resumption | **Removed and not supported.** Optional `X-Talon-Session-ID` is *application correlation* only, never MCP protocol state |
 | Header-free `tools/call` | `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` (for calls) and matching request-body `_meta` are required |
 | Global gateway `shadow`/`log_only`, MCP `passthrough`/`shadow`, native `audit.observation_only` | Removed: active rules always enforce. Use `talon doctor`, `talon validate` and native `talon run --dry-run` before live rollout |
 | Parse `error.data.talon_code` as a durable policy contract | Use versioned `io.dativo.talon/governance` extension; the flat alias is deprecated for one release |
