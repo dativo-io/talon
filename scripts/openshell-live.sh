@@ -480,7 +480,8 @@ env -u OPENSHELL_DRIVERS -u OPENSHELL_COMPUTE_DRIVER "$GW_BIN" --compute-driver 
 GW_PID=$!
 gateway_startup_hint() { # diagnostics only: classify the likely stage from the gateway and talon logs
   local gw="$LOGS/gateway.log" tl="$LOGS/talon-serve.log"
-  if grep -qiE "tls|certificate|handshake" "$gw" "$tl" 2>/dev/null; then echo "transport/TLS (certificate chain, SAN or CA mismatch)"
+  if grep -qiE "configuration error|registration failed|max_payload_bytes" "$gw" 2>/dev/null; then echo "gateway configuration / middleware registration (see the gateway log's Error block)"
+  elif grep -qiE "tls|certificate|handshake" "$gw" "$tl" 2>/dev/null; then echo "transport/TLS (certificate chain, SAN or CA mismatch)"
   elif grep -qiE "protocol metadata|protocol version|capabilit" "$gw" 2>/dev/null; then echo "extension protocol negotiation"
   elif grep -qiE "manifest|expected_audience|binding" "$gw" 2>/dev/null; then echo "manifest validation"
   elif grep -qiE "could not connect|connection refused|unreachable" "$gw" 2>/dev/null; then echo "transport (endpoint unreachable)"

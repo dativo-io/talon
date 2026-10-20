@@ -80,7 +80,7 @@ func TestDescribe_AdvertisesResponseBindingOnlyWhenEnabled(t *testing.T) {
 	b := m.Msg.GetBindings()[1]
 	assert.Equal(t, middlewarev1.SupervisorMiddlewareOperation_SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_RESPONSE, b.GetOperation())
 	assert.Equal(t, middlewarev1.SupervisorMiddlewarePhase_SUPERVISOR_MIDDLEWARE_PHASE_PRE_RETURN, b.GetPhase())
-	assert.Equal(t, uint64(4096), b.GetMaxPayloadBytes())
+	assert.Equal(t, uint64(1<<20), b.GetMaxPayloadBytes(), "the response binding advertises the payload cap, not Talon's internal capture bound (OpenShell refuses a registration above any binding's capability)")
 
 	// Disabled: the procedure is not served at all (Unimplemented), so an
 	// old registration can never make OpenShell hold responses on Talon.

@@ -198,10 +198,17 @@ func (s *Service) describe(_ context.Context, req *connect.Request[middlewarev1.
 		RequestTimeout:  durationpb.New(s.cfg.RequestTimeoutDuration()),
 	}}
 	if s.cfg.ResponseGovernanceEnabled() {
+		// The binding advertises the same payload cap as the request binding:
+		// OpenShell refuses a registration whose max_payload_bytes exceeds any
+		// binding's capability, so the cap is the gateway-facing promise.
+		// max_capture_bytes is Talon's OWN inspection bound beneath it — a
+		// body beyond it is truncated at the adapter and, under a preventive
+		// policy, blocked (output_scan_incomplete); it never changes the
+		// manifest.
 		bindings = append(bindings, &middlewarev1.MiddlewareBinding{
 			Operation:       middlewarev1.SupervisorMiddlewareOperation_SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_RESPONSE,
 			Phase:           middlewarev1.SupervisorMiddlewarePhase_SUPERVISOR_MIDDLEWARE_PHASE_PRE_RETURN,
-			MaxPayloadBytes: uint64(s.captureCap()), //nolint:gosec // validated 1 KiB..4 MiB
+			MaxPayloadBytes: s.maxPayload,
 			RequestTimeout:  durationpb.New(s.cfg.RequestTimeoutDuration()),
 		})
 	}
