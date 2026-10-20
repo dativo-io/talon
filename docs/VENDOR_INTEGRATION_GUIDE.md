@@ -35,11 +35,10 @@ You're using great AI tools like:
 - ✗ Which high-risk decisions lacked human oversight?
 - ✗ Can you export GDPR Article 30 processing records?
 
-**Legal reality:**
-- **You** are the data controller (GDPR Article 4)
-- **Vendor** is the data processor (GDPR Article 28)
-- **You're liable** even if vendor claims compliance
-- "Vendor said they're compliant" is NOT a defense in AEPD audits
+**Legal and assurance boundary:**
+- GDPR roles depend on the actual processing arrangement: your organization and the vendor may be controllers, joint controllers, or processors for different activities; do not assume the roles from the software architecture alone.
+- Review processing purposes, data-processing terms, sub-processors, international transfers and the vendor's independent controls with your privacy/legal team.
+- Talon can evidence decisions and transformed data **on supported routed calls**. It cannot inspect the vendor's unrelated processing, certify GDPR/NIS2 obligations, or replace contractual and organizational assurance.
 
 ---
 
