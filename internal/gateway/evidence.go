@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
 
@@ -113,6 +114,28 @@ type RecordGatewayEvidenceParams struct {
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
 // Never logs or stores real provider API keys.
 func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params RecordGatewayEvidenceParams) (*evidence.Evidence, error) {
+	ev := buildGatewayEvidence(params)
+	if err := store.Store(ctx, ev); err != nil {
+		return nil, err
+	}
+	return ev, nil
+}
+
+// storeGatewayEvidenceTx signs and inserts the record inside a caller-owned
+// transaction (the delegated settlement ledger commits its state transition
+// and its record together, #482). Post-commit projections fire when the
+// caller reports the commit through the TxWriter.
+func storeGatewayEvidenceTx(ctx context.Context, w *evidence.TxWriter, tx *sql.Tx, params RecordGatewayEvidenceParams) (*evidence.Evidence, error) {
+	ev := buildGatewayEvidence(params)
+	if err := w.Store(ctx, tx, ev); err != nil {
+		return nil, err
+	}
+	return ev, nil
+}
+
+// buildGatewayEvidence assembles the unsigned record; the id is assigned
+// here so a ledger row can name it in the same transaction.
+func buildGatewayEvidence(params RecordGatewayEvidenceParams) *evidence.Evidence {
 	var toolGov *evidence.ToolGovernance
 	if len(params.ToolsRequested) > 0 || len(params.ToolsFiltered) > 0 || len(params.ToolsForwarded) > 0 {
 		toolGov = &evidence.ToolGovernance{
@@ -227,10 +250,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		}
 	}
 	ev.Explanations = explanation.BuildFromFacts(facts)
-	if err := store.Store(ctx, ev); err != nil {
-		return nil, err
-	}
-	return ev, nil
+	return ev
 }
 
 // What happened to a response in which PII was detected.
@@ -282,10 +302,25 @@ func sanitizeGatewayAnnotations(in []string) []string {
 		// open (#198) — the enforcement gap must be visible in evidence.
 		"session_budget_unavailable": {},
 		"delegated_dispatch":         {}, // #482: the provider was reached by an external runtime after a Talon delegated decision
+		// #482 response side: settlement vocabulary (see delegated_response.go).
+		annotationSettlementPending: {}, // decision record: cost is carried by a later settlement
+		annotationResponseObserved:  {}, // settlement: the provider response was observed at the runtime's response hook
+		annotationResponseUnseen:    {}, // settlement: no response within the settlement window; estimate stands
+		annotationDecisionUnmatched: {}, // settlement: no request half (Talon restarted or window elapsed)
+		annotationBodyUninspectable: {}, // settlement: body not inspectable (compressed/partial/none); usage unobserved
+		annotationProviderError:     {}, // settlement: the provider answered an error status; nothing billed
+		annotationErrorBodyScanned:  {}, // settlement: the provider's error body was scanned under the response policy
+		annotationResponseLate:      {}, // reconciliation: the response arrived after the estimate was booked as unobserved
+		annotationRawTextScanned:    {}, // settlement: a text/* body was scanned as raw text under the response policy
 	}
+	seen := map[string]struct{}{}
 	out := make([]string, 0, len(in))
 	for _, v := range in {
 		if _, ok := allowed[v]; ok {
+			if _, dup := seen[v]; dup {
+				continue
+			}
+			seen[v] = struct{}{}
 			out = append(out, v)
 			continue
 		}

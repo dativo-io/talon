@@ -40,6 +40,14 @@ type generationHarness struct {
 
 func newGenerationHarness(t *testing.T) *generationHarness {
 	t.Helper()
+	return newGenerationHarnessWith(t)
+}
+
+// newGenerationHarnessWith builds the harness with extra server options
+// applied BEFORE the routes are built (a chi mux takes no middleware after
+// its first route).
+func newGenerationHarnessWith(t *testing.T, extra ...Option) *generationHarness {
+	t.Helper()
 	h := &generationHarness{}
 	h.current.Store("g1")
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -81,12 +89,13 @@ func newGenerationHarness(t *testing.T) *generationHarness {
 		}
 		return h.svc, nil
 	}
-	h.srv = NewServer(nil, store, nil, engine, pol, "", nil, "admin-key", map[string]string{},
+	opts := []Option{
 		WithAgentKeyResolver(StaticAgentKeys(map[string]requestctx.AgentIdentity{
 			"agent-key-g1": {AgentID: "support-bot", TenantID: "default", Generation: "g1"},
 		})),
 		WithActionGateway(resolver, nil, nil),
-	)
+	}
+	h.srv = NewServer(nil, store, nil, engine, pol, "", nil, "admin-key", map[string]string{}, append(opts, extra...)...)
 	h.handler = h.srv.Routes()
 	return h
 }

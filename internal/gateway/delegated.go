@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -93,6 +94,10 @@ type DelegatedDecision struct {
 	Agent      string
 	Provider   string
 	Model      string
+	// ResponseGovernance is true when Talon parked a settlement for this
+	// request and will inspect the provider's response at the runtime's
+	// response hook; the request hop then asks for an uncompressed response.
+	ResponseGovernance bool
 }
 
 // EvaluateDelegated decides one delegated request and commits its signed
@@ -143,7 +148,7 @@ func (g *Gateway) EvaluateDelegated(ctx context.Context, req DelegatedRequest) D
 		}
 		return g.delegatedDeny(ctx, correlationID, agent, providerName, start, outcome.Deny, provenanceOpt)
 	}
-	return g.delegatedAllow(ctx, correlationID, agent, providerName, start, req, outcome, isCountTokens, sessionID, sessionSource, provenanceOpt)
+	return g.delegatedAllow(ctx, correlationID, agent, providerName, start, req, outcome, isCountTokens, sessionID, sessionSource, provenanceOpt, eff.ResponsePIIAction)
 }
 
 // resolveDelegatedAgent turns the verified principal into the bound agent.
@@ -241,11 +246,19 @@ func preDecisionBlocker(agent *ResolvedIdentity, method string) *decisionDeny {
 // the runtime, not by Talon: token usage is unobserved on this path, so
 // the record carries the pre-request estimate exactly as a usage-less
 // gateway record does. An allow that cannot be recorded is not an allow.
-func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agent *ResolvedIdentity, providerName string, start time.Time, req DelegatedRequest, outcome decisionOutcome, isCountTokens bool, sessionID, sessionSource string, provenanceOpt func(*RecordGatewayEvidenceParams)) DelegatedDecision {
+func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agent *ResolvedIdentity, providerName string, start time.Time, req DelegatedRequest, outcome decisionOutcome, isCountTokens bool, sessionID, sessionSource string, provenanceOpt func(*RecordGatewayEvidenceParams), responsePIIAction string) DelegatedDecision {
 	dec := outcome.Allow
 	durationMS := time.Since(start).Milliseconds()
-	persisted, err := g.recordEvidence(ctx, correlationID, agent, providerName, dec.Extracted.Model, start, dec.Extracted.Text,
-		dec.Classification, nil, dec.EstimatedCost, durationMS, "", true, nil, dec.InputPIIRedacted, nil, dec.AttSummary, dec.ToolResult,
+	// With response governance the cost of this request is carried by its
+	// settlement record (actual usage, or the estimate when no response is
+	// observed); the decision record says so instead of booking the estimate.
+	settling := g.responseGovernanceEnabled() && !isCountTokens
+	recordCost := dec.EstimatedCost
+	if settling {
+		recordCost = 0
+	}
+	params := g.evidenceParams(ctx, correlationID, agent, providerName, dec.Extracted.Model, start, dec.Extracted.Text,
+		dec.Classification, nil, recordCost, durationMS, "", true, nil, dec.InputPIIRedacted, nil, dec.AttSummary, dec.ToolResult,
 		false, "", 0, 0, false, 0, 0, dec.EstimatedCost, provenanceOpt, func(p *RecordGatewayEvidenceParams) {
 			p.ToolContent = dec.ToolContentScan
 			if dec.SessionBudgetUnavailable {
@@ -254,7 +267,29 @@ func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agen
 			if isCountTokens {
 				p.InvocationType = "gateway_count_tokens"
 			}
+			if settling {
+				p.PricingBasis = PricingBasisAwaitingSettlement
+				p.PricingKnown = false
+				p.GatewayAnnotations = append(p.GatewayAnnotations, annotationSettlementPending)
+			}
 		})
+	var persisted *evidence.Evidence
+	var err error
+	if settling {
+		// The ledger row and the decision record commit together: an allow
+		// that cannot be tracked to its settlement is not an allow, and a
+		// tracked obligation always has its decision. Capacity is a refusal
+		// inside the same write transaction, never an eviction.
+		persisted, err = g.commitDecisionWithSettlement(ctx, correlationID, agent, providerName, start, req, outcome, sessionID, sessionSource, responsePIIAction, params)
+		if d := settlementAdmissionDeny(err); d != nil {
+			if outcome.SessReservation != nil {
+				g.releaseSessionReservation(outcome.SessReservation)
+			}
+			return g.delegatedDeny(ctx, correlationID, agent, providerName, start, d, provenanceOpt)
+		}
+	} else {
+		persisted, err = RecordGatewayEvidence(ctx, g.evidenceStore, params)
+	}
 	if err != nil {
 		if outcome.SessReservation != nil {
 			g.releaseSessionReservation(outcome.SessReservation)
@@ -265,15 +300,21 @@ func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agen
 			Message: "evidence_unavailable: Talon could not commit the signed record (fail-closed)", Agent: agent.Name, Provider: providerName,
 		}
 	}
-	if !isCountTokens {
+	switch {
+	case settling:
+		// The session reservation stays open until the response settles it
+		// with the actual cost (or the sweeper with the estimate); the
+		// ledger row carries what the settlement needs.
+	case !isCountTokens:
 		g.trackSessionUsage(ctx, outcome.SessReservation, sessionID, sessionSource, agent.TenantID, agent.Name, dec.EstimatedCost, 0)
-	} else if outcome.SessReservation != nil {
+	case outcome.SessReservation != nil:
 		g.releaseSessionReservation(outcome.SessReservation)
 	}
-	g.emitMetrics(ctx, agent, providerName, dec.Extracted.Model, dec.Classification, dec.ToolResult, nil, dec.EstimatedCost, durationMS, false, false, dec.PIIAction, false, 0, 0, 0, persisted)
+	g.emitMetrics(ctx, agent, providerName, dec.Extracted.Model, dec.Classification, dec.ToolResult, nil, recordCost, durationMS, false, false, dec.PIIAction, false, 0, 0, 0, persisted)
 	return DelegatedDecision{
 		Allowed: true, Status: http.StatusOK, Body: dec.ForwardBody, BodyChanged: !bytes.Equal(dec.ForwardBody, req.Body), Redacted: dec.InputPIIRedacted,
 		PIITypes: piiTypesOf(dec.Classification), EvidenceID: persisted.ID, Agent: agent.Name, Provider: providerName, Model: dec.Extracted.Model,
+		ResponseGovernance: settling,
 	}
 }
 
@@ -341,4 +382,67 @@ func piiTypesOf(c *classifier.Classification) []string {
 		return nil
 	}
 	return uniqueEntityTypes(c.Entities)
+}
+
+// commitDecisionWithSettlement writes the pending ledger row and the
+// decision record in one write transaction. The row is admitted only while
+// the ledger holds fewer than max_pending pending obligations (count and
+// insert are one statement under the write lock, so concurrent admissions
+// cannot exceed the bound), and a runtime request id that is still pending
+// is refused rather than overwritten.
+func (g *Gateway) commitDecisionWithSettlement(ctx context.Context, correlationID string, agent *ResolvedIdentity, providerName string, start time.Time, req DelegatedRequest, outcome decisionOutcome, sessionID, sessionSource, responsePIIAction string, params RecordGatewayEvidenceParams) (*evidence.Evidence, error) {
+	row := &settlementRow{
+		key: settlementKey{req.RuntimeID, req.Reference, req.RequestID}, runtime: req.Runtime, correlationID: correlationID,
+		tenantID: agent.TenantID, agentName: agent.Name, provider: providerName, model: outcome.Allow.Extracted.Model,
+		estimate: outcome.Allow.EstimatedCost, responsePIIAction: responsePIIAction, sessionID: sessionID, sessionSource: sessionSource,
+		policyRef: req.PolicyRef, principal: principalProjection(req.Principal), startedAt: start, status: settlementPending,
+	}
+	if res := outcome.SessReservation; res != nil {
+		row.reservationRow, row.reservationEstimate = res.rowID, res.estimate
+	}
+	tx, err := g.settlements.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w := g.evidenceStore.NewTxWriter()
+	defer func() {
+		_ = tx.Rollback()
+		w.Discard()
+	}()
+	if err := g.settlements.insertPending(ctx, tx, row, g.config.OpenShell.ResponseGovernance.MaxPendingSettlements()); err != nil {
+		return nil, err
+	}
+	ev, err := storeGatewayEvidenceTx(ctx, w, tx, params)
+	if err != nil {
+		return nil, err
+	}
+	if g.settlementHooks != nil && g.settlementHooks.beforeCommit != nil {
+		if err := g.settlementHooks.beforeCommit(settleFirst, row.key); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	w.Committed(ctx)
+	return ev, nil
+}
+
+// settlementAdmissionDeny maps a ledger admission refusal to a decision
+// denial (nil for other errors, which are evidence failures).
+func settlementAdmissionDeny(err error) *decisionDeny {
+	switch {
+	case errors.Is(err, errSettlementCapacity):
+		log.Warn().Msg("delegated_settlement_capacity_exhausted")
+		return &decisionDeny{
+			Status: http.StatusServiceUnavailable, ErrorCode: CodeSettlementCapacityExhausted, MetricsError: true,
+			Message: CodeSettlementCapacityExhausted + ": too many delegated requests await their response settlement; retry later", Reasons: []string{"settlement ledger at capacity"},
+		}
+	case errors.Is(err, errSettlementExists):
+		return &decisionDeny{
+			Status: http.StatusConflict, ErrorCode: CodeSettlementUnavailable, MetricsError: true,
+			Message: CodeSettlementUnavailable + ": a settlement already exists for this runtime request id", Reasons: []string{"duplicate runtime request id"},
+		}
+	}
+	return nil
 }

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,6 +43,51 @@ type fakeGateway struct {
 	last     *gateway.DelegatedRequest
 	decision gateway.DelegatedDecision
 	calls    int
+
+	mu          sync.Mutex
+	hop         gateway.WorkloadHopDecision
+	hopRequests []gateway.WorkloadHopRequest
+	preflights  []gateway.DelegatedResponsePreflight
+	settlements []gateway.DelegatedResponseBody
+	plan        func(gateway.DelegatedResponsePreflight) gateway.DelegatedResponsePlan
+	settle      func(gateway.DelegatedResponseBody) gateway.DelegatedSettlement
+}
+
+func (f *fakeGateway) PlanDelegatedResponse(_ context.Context, pf gateway.DelegatedResponsePreflight) gateway.DelegatedResponsePlan {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.preflights = append(f.preflights, pf)
+	if f.plan != nil {
+		return f.plan(pf)
+	}
+	if pf.Principal == nil {
+		return gateway.DelegatedResponsePlan{Block: true, Code: gateway.CodeWorkloadIdentityRequired}
+	}
+	return gateway.DelegatedResponsePlan{Mode: gateway.ResponseModeWholeBody, Matched: true, Agent: "sandboxed-agent"}
+}
+
+func (f *fakeGateway) SettleDelegatedResponse(_ context.Context, in gateway.DelegatedResponseBody) gateway.DelegatedSettlement {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.settlements = append(f.settlements, in)
+	if f.settle != nil {
+		return f.settle(in)
+	}
+	return gateway.DelegatedSettlement{EvidenceID: "ev_resp_1", Basis: "table"}
+}
+
+func (f *fakeGateway) ResolveWorkloadHop(_ context.Context, req gateway.WorkloadHopRequest) gateway.WorkloadHopDecision {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hopRequests = append(f.hopRequests, req)
+	if f.hop.Code == "" && !f.hop.Allowed {
+		// Default: a verified principal binds to the fixture agent.
+		if req.Principal == nil {
+			return gateway.WorkloadHopDecision{Status: 401, Code: gateway.CodeWorkloadIdentityRequired, Message: req.IdentityFailure}
+		}
+		return gateway.WorkloadHopDecision{Allowed: true, Status: 200, Agent: "sandboxed-agent", Tenant: "default"}
+	}
+	return f.hop
 }
 
 func (f *fakeGateway) EvaluateDelegated(_ context.Context, req gateway.DelegatedRequest) gateway.DelegatedDecision {

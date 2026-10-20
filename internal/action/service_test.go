@@ -17,6 +17,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/requestctx"
 )
 
 const (
@@ -896,4 +897,62 @@ func TestConcurrentDecisions_OneWinner(t *testing.T) {
 	}
 	wg.Wait()
 	require.Equal(t, int64(1), wins.Load())
+}
+
+// A hop-established operation keeps its origin: the reviewer's decision (a
+// host-side request with no workload facts of its own) and the sandbox's
+// later claim both carry the sandbox identity, runtime reference and
+// session that established the operation, so `audit list --runtime-ref`
+// and the session join see the whole lifecycle, not only the hop requests
+// (#482 review).
+func TestLifecycle_OriginFactsPropagateToLaterEvents(t *testing.T) {
+	h := newHarness(t)
+	origin := requestctx.WorkloadFacts{
+		Runtime: "openshell", RuntimeIssuer: "openshell-gateway:gw-1", Subject: "spiffe://openshell/sandbox/sb-9", PrincipalID: "openshell-gateway:gw-1|spiffe://openshell/sandbox/sb-9",
+		AuthMethod: "workload_hop_assertion", SandboxRef: "sb-9", RequestID: "req-establish", SessionID: "sess-sb-9", VerifiedAt: "2026-09-30T12:00:00Z",
+	}
+	sandboxCtx := requestctx.SetWorkloadFacts(context.Background(), origin)
+	res, err := h.svc.Establish(sandboxCtx, EstablishRequest{OperationID: "op-origin", Action: "create_refund_request", Arguments: json.RawMessage(refundArgs), IdentitySource: IdentityWorkloadAsserted})
+	require.NoError(t, err)
+
+	// The reviewer decides from the host: no workload facts on this context.
+	_, err = h.svc.Decide(context.Background(), DecideRequest{ApprovalID: res.Operation.Approval.ID, Approve: true, Reason: "ok", Reviewer: lead("lead-1")})
+	require.NoError(t, err)
+	// The sandbox claims under its own hop request id.
+	claimCtx := requestctx.SetWorkloadFacts(context.Background(), func() requestctx.WorkloadFacts { f := origin; f.RequestID = "req-claim"; return f }())
+	_, err = h.svc.Execute(claimCtx, "op-origin")
+	require.NoError(t, err)
+
+	recs := h.lifecycle(t, "op-origin")
+	require.GreaterOrEqual(t, len(recs), 5)
+	var decided, claimed bool
+	for _, r := range recs {
+		require.NotNil(t, r.WorkloadIdentity, "event %s lost the origin identity", r.ActionLifecycle.Event)
+		require.Equal(t, evidence.WorkloadIdentityVerified, r.WorkloadIdentity.Status)
+		require.Equal(t, origin.Subject, r.WorkloadIdentity.Subject)
+		require.Equal(t, "sess-sb-9", r.SessionID, "event %s lost the session join", r.ActionLifecycle.Event)
+		require.NotNil(t, r.Enforcement)
+		require.NotNil(t, r.Enforcement.Runtime)
+		require.Equal(t, "sb-9", r.Enforcement.Runtime.Reference)
+		require.Equal(t, evidence.ProvenanceTalonEnforced, r.Enforcement.Provenance)
+		switch r.ActionLifecycle.Event {
+		case evidence.ActionEventApprovalDecided:
+			decided = true
+			require.Equal(t, "req-establish", r.Enforcement.Runtime.RequestID, "a host-side event carries the ORIGIN request reference")
+			require.Equal(t, "apr_lead-1", r.ActionLifecycle.ReviewerPrincipal, "the event's own actor is still the reviewer")
+		case evidence.ActionEventAttemptClaimed:
+			claimed = true
+			require.Equal(t, "req-claim", r.Enforcement.Runtime.RequestID, "a hop request carries its own request reference")
+		}
+	}
+	require.True(t, decided && claimed)
+	require.Equal(t, LifecycleValid, h.verify(t, "op-origin").Verdict)
+
+	// Agent-key operations are unchanged: no origin, no identity facts.
+	plain := h.establish(t, "op-plain", "create_refund_request", refundArgs)
+	_, err = h.svc.Decide(context.Background(), DecideRequest{ApprovalID: plain.Operation.Approval.ID, Approve: true, Reason: "ok", Reviewer: lead("lead-1")})
+	require.NoError(t, err)
+	for _, r := range h.lifecycle(t, "op-plain") {
+		require.Nil(t, r.WorkloadIdentity)
+	}
 }

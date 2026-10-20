@@ -45,6 +45,10 @@ const (
 const (
 	IdentityCallerProvided   = "caller_provided"
 	IdentityAdapterGenerated = "adapter_generated"
+	// IdentityWorkloadAsserted: the agent identity came from a verified
+	// external-runtime principal carried by a workload hop assertion
+	// (#457/#482), not from the agent key.
+	IdentityWorkloadAsserted = "workload_asserted"
 )
 
 // Result provenance aliases (canonical values live in the evidence package
@@ -87,7 +91,13 @@ type Operation struct {
 	IdempotencyKey    string
 	// ReviewJSON is the stored reviewer projection (never the raw payload;
 	// the payload lives sealed in action_payloads).
-	ReviewJSON        []byte
+	ReviewJSON []byte
+	// OriginJSON is the verified external-runtime identity the operation was
+	// ESTABLISHED under (requestctx.WorkloadFacts, #482), kept so every later
+	// lifecycle record — a reviewer's decision, an expiry, a sweep — still
+	// names the sandbox, runtime reference and session that originated the
+	// operation. Empty for agent-key operations. Never a token.
+	OriginJSON        []byte
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	TerminalAt        *time.Time

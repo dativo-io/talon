@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -164,4 +165,57 @@ func readFile(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// The response scenarios the live lane selects per request: PII in the
+// body, PII beyond a 4 KiB capture bound, an error envelope with PII, and a
+// held answer; the default completion is unchanged.
+//
+//nolint:gocyclo // one scripted sequence of scenarios
+func TestMockProvider_ResponseScenarios(t *testing.T) {
+	srv := httptest.NewServer(newHandler(&state{}, "", 1<<20))
+	t.Cleanup(srv.Close)
+	c := newProviderClient(t, srv.URL)
+	call := func(scenario, delay string) (int, []byte) {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini","messages":[]}`))
+		if scenario != "" {
+			req.Header.Set("X-Mock-Scenario", scenario)
+		}
+		if delay != "" {
+			req.Header.Set("X-Mock-Delay-Ms", delay)
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+	if code, b := call("", ""); code != 200 || !strings.Contains(string(b), "mock completion 1") || strings.Contains(string(b), mockPII) {
+		t.Fatalf("default: %d %s", code, b)
+	}
+	if code, b := call(scenarioResponsePII, ""); code != 200 || !strings.Contains(string(b), mockPII) || !strings.Contains(string(b), `"usage"`) {
+		t.Fatalf("response-pii: %d %s", code, b)
+	}
+	code, b := call(scenarioOversized, "")
+	if code != 200 || len(b) < 4096 || !strings.HasSuffix(strings.TrimSpace(string(b)), `}`) || !strings.Contains(string(b), mockPII) {
+		t.Fatalf("oversized: %d %d bytes", code, len(b))
+	}
+	if idx := bytes.Index(b, []byte(mockPII)); idx < 4096 {
+		t.Fatalf("oversized: the PII must sit beyond a 4 KiB capture bound, found at %d", idx)
+	}
+	if code, b := call(scenarioErrorPII, ""); code != http.StatusBadRequest || !strings.Contains(string(b), mockPII) || !strings.Contains(string(b), `"error"`) {
+		t.Fatalf("error-pii: %d %s", code, b)
+	}
+	start := time.Now()
+	if code, _ := call("", "300"); code != 200 || time.Since(start) < 300*time.Millisecond {
+		t.Fatalf("delay: %d after %s", code, time.Since(start))
+	}
+	if st := c.state(); st.Calls != 5 || st.Records[1].Scenario != scenarioResponsePII {
+		t.Fatalf("state: %+v", st)
+	}
+	_ = os.Getpid
+	var _ sync.Mutex
+	_ = json.Valid
 }

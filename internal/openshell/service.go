@@ -83,6 +83,13 @@ const (
 // Decider is the gateway seam this adapter needs.
 type Decider interface {
 	EvaluateDelegated(ctx context.Context, req gateway.DelegatedRequest) gateway.DelegatedDecision
+	// ResolveWorkloadHop binds a verified principal to its use case for a
+	// request addressed to Talon's own API (self_destination).
+	ResolveWorkloadHop(ctx context.Context, req gateway.WorkloadHopRequest) gateway.WorkloadHopDecision
+	// PlanDelegatedResponse and SettleDelegatedResponse are the response
+	// hook (HTTP_RESPONSE / PRE_RETURN): how to inspect, then the settlement.
+	PlanDelegatedResponse(ctx context.Context, pf gateway.DelegatedResponsePreflight) gateway.DelegatedResponsePlan
+	SettleDelegatedResponse(ctx context.Context, in gateway.DelegatedResponseBody) gateway.DelegatedSettlement
 }
 
 // Service implements the pinned SupervisorMiddleware contract over Talon.
@@ -91,13 +98,28 @@ type Service struct {
 	verifier *workload.JWTVerifier
 	cfg      gateway.OpenShellConfig
 	version  string
+	// hop mints the workload assertion for self-destination requests; nil
+	// when no self_destination is configured or no root key exists, in
+	// which case such requests are denied, never forwarded unattributed.
+	hop *workload.HopSigner
 	// maxPayload is the validated, non-negative manifest bound.
 	maxPayload uint64
 }
 
 // NewService wires the adapter. The verifier's key set comes from the
 // config (static JWKS file or the OpenShell gateway's JWKS URL).
-func NewService(decider Decider, cfg gateway.OpenShellConfig, talonVersion string) (*Service, error) {
+// ServiceOption configures optional Service collaborators.
+type ServiceOption func(*Service)
+
+// WithHopSigner enables the self-destination hop: requests addressed to a
+// configured self_destination host are answered with a workload assertion
+// minted by signer. Without it (or without self_destination) those
+// requests are denied.
+func WithHopSigner(signer *workload.HopSigner) ServiceOption {
+	return func(s *Service) { s.hop = signer }
+}
+
+func NewService(decider Decider, cfg gateway.OpenShellConfig, talonVersion string, opts ...ServiceOption) (*Service, error) {
 	var keys workload.KeySet
 	switch {
 	case cfg.Identity.JWKSFile != "":
@@ -121,7 +143,7 @@ func NewService(decider Decider, cfg gateway.OpenShellConfig, talonVersion strin
 	if cfg.MaxPayloadBytes < 0 || cfg.MaxPayloadBytes > gateway.DefaultOpenShellMaxPayloadBytes {
 		return nil, fmt.Errorf("openshell max_payload_bytes must be between 1 and %d", gateway.DefaultOpenShellMaxPayloadBytes)
 	}
-	return &Service{
+	svc := &Service{
 		decider:    decider,
 		cfg:        cfg,
 		version:    talonVersion,
@@ -134,7 +156,11 @@ func NewService(decider Decider, cfg gateway.OpenShellConfig, talonVersion strin
 			SafeClaims:  []string{claimCallerKind, claimSandboxID},
 			MaxLifetime: time.Hour, // OpenShell mints extension tokens with exp ≤ 1h
 		},
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc, nil
 }
 
 // Handler serves the gRPC procedures. Unregistered procedures (WebSocket
@@ -145,6 +171,9 @@ func (s *Service) Handler() http.Handler {
 	mux.Handle(procDescribe, connect.NewUnaryHandler(procDescribe, s.describe))
 	mux.Handle(procValidateConfig, connect.NewUnaryHandler(procValidateConfig, s.validateConfig))
 	mux.Handle(procEvaluateHTTP, connect.NewUnaryHandler(procEvaluateHTTP, s.evaluateHTTPRequest, connect.WithReadMaxBytes(int(s.cfg.MaxPayloadBytes)+1024*1024)))
+	if s.cfg.ResponseGovernanceEnabled() {
+		mux.Handle(procResponseEvaluate, connect.NewBidiStreamHandler(procResponseEvaluate, s.evaluateHTTPResponse, connect.WithReadMaxBytes(int(s.cfg.MaxPayloadBytes)+1024*1024)))
+	}
 	return mux
 }
 
@@ -153,24 +182,41 @@ func (s *Service) Handler() http.Handler {
 // major, requiring a capability Talon lacks, or lacking a capability Talon
 // requires is refused with FailedPrecondition — the gateway then refuses to
 // start rather than run against an incompatible middleware. The manifest
-// advertises ONLY what this adapter implements: one binding,
-// HTTP_REQUEST/PRE_CREDENTIALS. Response (PRE_RETURN) and WebSocket bindings
-// exist in the v0.1.3 contract and are deliberately absent here.
+// advertises ONLY what this adapter implements: HTTP_REQUEST/PRE_CREDENTIALS
+// always, HTTP_RESPONSE/PRE_RETURN only when response governance is
+// configured. The WebSocket binding exists in the contract and is
+// deliberately absent.
 func (s *Service) describe(_ context.Context, req *connect.Request[middlewarev1.MiddlewareDescribeRequest]) (*connect.Response[middlewarev1.MiddlewareManifest], error) {
 	if err := NegotiatePeer(req.Msg.GetGateway()); err != nil {
 		log.Warn().Str("reason", err.Code).Msg("openshell_gateway_negotiation_refused")
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
+	bindings := []*middlewarev1.MiddlewareBinding{{
+		Operation:       middlewarev1.SupervisorMiddlewareOperation_SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_REQUEST,
+		Phase:           middlewarev1.SupervisorMiddlewarePhase_SUPERVISOR_MIDDLEWARE_PHASE_PRE_CREDENTIALS,
+		MaxPayloadBytes: s.maxPayload,
+		RequestTimeout:  durationpb.New(s.cfg.RequestTimeoutDuration()),
+	}}
+	if s.cfg.ResponseGovernanceEnabled() {
+		// The binding advertises the same payload cap as the request binding:
+		// OpenShell refuses a registration whose max_payload_bytes exceeds any
+		// binding's capability, so the cap is the gateway-facing promise.
+		// max_capture_bytes is Talon's OWN inspection bound beneath it — a
+		// body beyond it is truncated at the adapter and, under a preventive
+		// policy, blocked (output_scan_incomplete); it never changes the
+		// manifest.
+		bindings = append(bindings, &middlewarev1.MiddlewareBinding{
+			Operation:       middlewarev1.SupervisorMiddlewareOperation_SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_RESPONSE,
+			Phase:           middlewarev1.SupervisorMiddlewarePhase_SUPERVISOR_MIDDLEWARE_PHASE_PRE_RETURN,
+			MaxPayloadBytes: s.maxPayload,
+			RequestTimeout:  durationpb.New(s.cfg.RequestTimeoutDuration()),
+		})
+	}
 	return connect.NewResponse(&middlewarev1.MiddlewareManifest{
 		Name:             s.cfg.MiddlewareName,
 		ExpectedAudience: s.cfg.Identity.Audience,
-		Bindings: []*middlewarev1.MiddlewareBinding{{
-			Operation:       middlewarev1.SupervisorMiddlewareOperation_SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_REQUEST,
-			Phase:           middlewarev1.SupervisorMiddlewarePhase_SUPERVISOR_MIDDLEWARE_PHASE_PRE_CREDENTIALS,
-			MaxPayloadBytes: s.maxPayload,
-			RequestTimeout:  durationpb.New(s.cfg.RequestTimeoutDuration()),
-		}},
-		Extension: PeerMetadata(s.version),
+		Bindings:         bindings,
+		Extension:        PeerMetadata(s.version),
 	}), nil
 }
 
@@ -356,6 +402,12 @@ func (s *Service) evaluateHTTPRequest(ctx context.Context, req *connect.Request[
 	}
 
 	principal, failure := s.authenticate(req.Header(), msg.GetContext())
+	if s.cfg.SelfDestination.IsSelfHost(target.GetHost(), target.GetPort()) {
+		// Talon itself is the destination: not model traffic. The hop
+		// verifies and binds the identity, then hands the request on with
+		// a request-bound assertion; the Action Gateway decides.
+		return s.admitSelfHop(ctx, msg, principal, failure)
+	}
 	dreq := gateway.DelegatedRequest{
 		Runtime:         RuntimeType,
 		RuntimeID:       s.cfg.Identity.Issuer,
@@ -390,6 +442,14 @@ func (s *Service) evaluateHTTPRequest(ctx context.Context, req *connect.Request[
 	}
 	res.Decision = middlewarev1.Decision_DECISION_ALLOW
 	res.Metadata["talon_decision"] = "allow"
+	if dec.ResponseGovernance {
+		// The response hook can only inspect an uncompressed body; ask the
+		// provider for identity encoding on the way out.
+		res.HeaderMutations = append(res.HeaderMutations, &middlewarev1.HeaderMutation{Operation: &middlewarev1.HeaderMutation_Write{Write: &middlewarev1.WriteHeader{
+			Name: "Accept-Encoding", Value: "identity", OnExisting: middlewarev1.ExistingHeaderAction_EXISTING_HEADER_ACTION_OVERWRITE,
+		}}})
+		res.Metadata["talon_response_governance"] = "pending"
+	}
 	if dec.BodyChanged {
 		// The replacement body is exactly what Talon evaluated as safe to
 		// egress; OpenShell forwards it in place of the original.
@@ -408,7 +468,12 @@ func (s *Service) authenticate(h http.Header, rc *middlewarev1.RequestContext) (
 	if !strings.HasPrefix(auth, "Bearer ") {
 		return nil, workload.FailureMissing
 	}
-	p, err := s.verifier.Verify(strings.TrimPrefix(auth, "Bearer "))
+	return s.authenticateToken(strings.TrimPrefix(auth, "Bearer "), rc)
+}
+
+// authenticateToken verifies one extension token against the request context.
+func (s *Service) authenticateToken(token string, rc *middlewarev1.RequestContext) (principal *workload.Principal, failureCode string) {
+	p, err := s.verifier.Verify(token)
 	if err != nil {
 		code := workload.FailureCode(err)
 		log.Warn().Str("failure", code).Msg("openshell_caller_token_rejected")

@@ -96,18 +96,19 @@ func runAuditImportExternal(cmd *cobra.Command, _ []string) error {
 	if issuer == "" {
 		issuer = openshell.RuntimeType
 	}
-	written, unbound, err := importContainmentEvents(ctx, cmd.OutOrStdout(), store, events, bindings, issuer)
+	written, unbound, duplicates, err := importContainmentEvents(ctx, cmd.OutOrStdout(), store, events, bindings, issuer)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "External runtime import (%s): %d denial(s) in export, %d imported, %d unbound, %d non-denial line(s) skipped\n",
-		importExternalRuntime, len(events), written, unbound, skipped)
+	fmt.Fprintf(cmd.OutOrStdout(), "External runtime import (%s): %d denial(s) in export, %d imported, %d duplicate(s), %d unbound, %d non-denial line(s) skipped\n",
+		importExternalRuntime, len(events), written, duplicates, unbound, skipped)
 	return nil
 }
 
 // importContainmentEvents attributes each denial through the sandbox
 // binding and writes (or, in dry-run, previews) its signed record.
-func importContainmentEvents(ctx context.Context, out io.Writer, store *evidence.Store, events []*openshell.ContainmentEvent, bindings map[string]openshell.ImportedAgent, issuer string) (written, unbound int, err error) {
+func importContainmentEvents(ctx context.Context, out io.Writer, store *evidence.Store, events []*openshell.ContainmentEvent, bindings map[string]openshell.ImportedAgent, issuer string) (written, unbound, duplicates int, err error) {
+	seen := map[string]bool{}
 	for _, ev := range events {
 		agent, ok := bindings[openshell.RuntimeType+"\x00"+"spiffe://openshell/sandbox/"+ev.SandboxID]
 		if !ok || ev.SandboxID == "" {
@@ -116,17 +117,36 @@ func importContainmentEvents(ctx context.Context, out io.Writer, store *evidence
 			continue
 		}
 		rec := openshell.ContainmentRecord(ev, agent, issuer, operatorID(), time.Now())
+		// The receipt digest is the event's identity: the same OCSF line
+		// imported twice (a re-run, an overlapping export, a duplicated
+		// line) yields exactly one record. Ordering within an export does
+		// not matter: each record carries the event's own time.
+		if seen[rec.CorrelationID] {
+			duplicates++
+			fmt.Fprintf(out, "  duplicate  %s  (same receipt digest already in this export)\n", rec.CorrelationID)
+			continue
+		}
+		seen[rec.CorrelationID] = true
 		if store == nil {
 			fmt.Fprintf(out, "  would-import  agent=%s tenant=%s dst=%s:%d process=%s\n", agent.Name, agent.TenantID, ev.DstHost, ev.DstPort, ev.ProcessName)
 			continue
 		}
+		existing, err := store.ListByCorrelationID(ctx, rec.CorrelationID)
+		if err != nil {
+			return written, unbound, duplicates, fmt.Errorf("checking for a prior import: %w", err)
+		}
+		if len(existing) > 0 {
+			duplicates++
+			fmt.Fprintf(out, "  duplicate  %s  (already imported as %s)\n", rec.CorrelationID, existing[0].ID)
+			continue
+		}
 		if err := store.Store(ctx, rec); err != nil {
-			return written, unbound, fmt.Errorf("storing record: %w", err)
+			return written, unbound, duplicates, fmt.Errorf("storing record: %w", err)
 		}
 		written++
 		fmt.Fprintf(out, "  imported  %s  agent=%s dst=%s:%d  enforcement=external_asserted receipt=unverified\n", rec.ID, agent.Name, ev.DstHost, ev.DstPort)
 	}
-	return written, unbound, nil
+	return written, unbound, duplicates, nil
 }
 
 // loadWorkloadBindings indexes (runtime, subject) → agent from the SAME

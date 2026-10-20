@@ -15,6 +15,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
+	"github.com/dativo-io/talon/internal/requestctx"
 )
 
 // Service is ActionGovernance for one agent generation: catalog + approval
@@ -164,6 +165,7 @@ func (s *Service) commit(ctx context.Context, tx *sql.Tx, w *evidence.TxWriter, 
 	op.Sequence++
 	ev.Sequence = op.Sequence
 	rec := s.lifecycleRecord(op, ev, allowed, reasons, code)
+	attachWorkloadFacts(ctx, op, rec)
 	if err := w.Store(ctx, tx, rec); err != nil {
 		return &Error{Code: CodeStoreUnavailable, Message: "committing lifecycle evidence", Err: err}
 	}
@@ -313,7 +315,7 @@ func (s *Service) insertNewOperation(ctx context.Context, tx *sql.Tx, w *evidenc
 		PolicyDigest: s.Policy.Digest, CatalogDigest: s.Catalog.Digest,
 		ExecutionProfile: def.ExecutionProfile, BindingProfile: def.BindingProfile, DestinationID: def.DestinationID,
 		IdentitySource: plan.identitySource, Verdict: verdict.Outcome, RuleID: verdict.RuleID, Version: 1, ReviewJSON: plan.reviewJSON,
-		CreatedAt: now, UpdatedAt: now,
+		OriginJSON: originFacts(ctx), CreatedAt: now, UpdatedAt: now,
 	}
 	op.IdempotencyKey = "talon-" + op.Ref
 	code, allowed := "ACTION_AUTHORIZED", true
@@ -982,4 +984,57 @@ func (s *Service) ListLifecycle(ctx context.Context, operationID string) ([]*evi
 		return nil, fmt.Errorf("operation not found")
 	}
 	return s.evidence.ListByCorrelationID(ctx, op.Ref)
+}
+
+// originFacts is the stored projection of the verified external-runtime
+// identity an operation is established under ("" when established with an
+// agent key).
+func originFacts(ctx context.Context) []byte {
+	f, ok := requestctx.WorkloadFactsFrom(ctx)
+	if !ok {
+		return nil
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// attachWorkloadFacts records, on a lifecycle record, the verified
+// external-runtime identity the operation is attributed to (#457/#482): who
+// asked, through which runtime, under which runtime request id — and the
+// client-asserted session that joins it to the model-request records of the
+// same sandbox session. A request that itself arrived through the hop (an
+// establish, a sandbox claim) contributes its own facts; every other
+// lifecycle event of a hop-established operation — a reviewer's decision,
+// an expiry, a sweep — carries the operation's ORIGIN facts, so the
+// sandbox's history is complete under `audit list --runtime-ref` and the
+// session join. The event's own actor stays in action_lifecycle (decided_by
+// and friends). Execution stays Talon-enforced (Talon dispatches the action
+// itself); the runtime reference is attribution and correlation, never
+// authority. Agent-key operations leave these fields empty.
+func attachWorkloadFacts(ctx context.Context, op *Operation, rec *evidence.Evidence) {
+	f, ok := requestctx.WorkloadFactsFrom(ctx)
+	if !ok {
+		if op == nil || len(op.OriginJSON) == 0 {
+			return
+		}
+		var origin requestctx.WorkloadFacts
+		if err := json.Unmarshal(op.OriginJSON, &origin); err != nil || origin.Subject == "" {
+			return
+		}
+		f = origin
+	}
+	rec.SessionID = f.SessionID
+	rec.WorkloadIdentity = &evidence.WorkloadIdentity{
+		Status: evidence.WorkloadIdentityVerified, Runtime: f.Runtime, AuthMethod: f.AuthMethod,
+		Issuer: f.RuntimeIssuer, Subject: f.Subject, PrincipalID: f.PrincipalID,
+		Binding: evidence.WorkloadIdentityBindingAgentConfig, VerifiedAt: f.VerifiedAt,
+	}
+	rec.Enforcement = &evidence.Enforcement{
+		Mechanism: evidence.MechanismIntercept, Boundary: evidence.BoundaryTalon,
+		DecisionAuthority: evidence.BoundaryTalon, Provenance: evidence.ProvenanceTalonEnforced,
+		Runtime: &evidence.ExternalRuntimeRef{Type: f.Runtime, ID: f.RuntimeIssuer, Reference: f.SandboxRef, RequestID: f.RequestID},
+	}
 }

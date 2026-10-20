@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS action_operations (
 	approval_id TEXT NOT NULL DEFAULT '',
 	idempotency_key TEXT NOT NULL,
 	review_json BLOB,
+	origin_json BLOB,
 	created_at TIMESTAMP NOT NULL,
 	updated_at TIMESTAMP NOT NULL,
 	terminal_at TIMESTAMP,
@@ -98,6 +99,7 @@ func devSchemaMigrations(ctx context.Context, db *sql.DB) error {
 		{"action_operations", "definition_digest", "TEXT NOT NULL DEFAULT ''"},
 		{"action_operations", "projection_digest", "TEXT NOT NULL DEFAULT ''"},
 		{"action_operations", "review_json", "BLOB"},
+		{"action_operations", "origin_json", "BLOB"},
 		{"action_attempts", "armed_at", "TIMESTAMP"},
 		{"action_attempts", "request_written", "INTEGER NOT NULL DEFAULT 0"},
 		{"action_attempts", "response_observed", "INTEGER NOT NULL DEFAULT 0"},
@@ -203,14 +205,14 @@ func (c *committedRefusal) Unwrap() error { return c.err }
 
 func refusal(err error) error { return &committedRefusal{err: err} }
 
-const opColumns = `ref, tenant_id, agent_id, operation_id, action, digest, schema_digest, definition_digest, projection_digest, policy_digest, catalog_digest, execution_profile, binding_profile, destination_id, identity_source, verdict, rule_id, status, version, sequence, approval_id, idempotency_key, review_json, created_at, updated_at, terminal_at, outcome_provenance, outcome_code, attempt_count`
+const opColumns = `ref, tenant_id, agent_id, operation_id, action, digest, schema_digest, definition_digest, projection_digest, policy_digest, catalog_digest, execution_profile, binding_profile, destination_id, identity_source, verdict, rule_id, status, version, sequence, approval_id, idempotency_key, review_json, origin_json, created_at, updated_at, terminal_at, outcome_provenance, outcome_code, attempt_count`
 
 func scanOperation(row interface{ Scan(...any) error }) (*Operation, error) {
 	var op Operation
 	var terminal sql.NullTime
 	err := row.Scan(&op.Ref, &op.TenantID, &op.AgentID, &op.OperationID, &op.Action, &op.Digest, &op.SchemaDigest, &op.DefinitionDigest, &op.ProjectionDigest, &op.PolicyDigest, &op.CatalogDigest,
 		&op.ExecutionProfile, &op.BindingProfile, &op.DestinationID, &op.IdentitySource, &op.Verdict, &op.RuleID, &op.Status, &op.Version, &op.Sequence,
-		&op.ApprovalID, &op.IdempotencyKey, &op.ReviewJSON, &op.CreatedAt, &op.UpdatedAt, &terminal, &op.OutcomeProvenance, &op.OutcomeCode, &op.AttemptCount)
+		&op.ApprovalID, &op.IdempotencyKey, &op.ReviewJSON, &op.OriginJSON, &op.CreatedAt, &op.UpdatedAt, &terminal, &op.OutcomeProvenance, &op.OutcomeCode, &op.AttemptCount)
 	if err != nil {
 		return nil, err
 	}
@@ -241,10 +243,10 @@ func getOperationByRef(ctx context.Context, q querier, ref string) (*Operation, 
 }
 
 func insertOperation(ctx context.Context, q querier, op *Operation) error {
-	_, err := q.ExecContext(ctx, `INSERT INTO action_operations (`+opColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err := q.ExecContext(ctx, `INSERT INTO action_operations (`+opColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		op.Ref, op.TenantID, op.AgentID, op.OperationID, op.Action, op.Digest, op.SchemaDigest, op.DefinitionDigest, op.ProjectionDigest, op.PolicyDigest, op.CatalogDigest,
 		op.ExecutionProfile, op.BindingProfile, op.DestinationID, op.IdentitySource, op.Verdict, op.RuleID, op.Status, op.Version, op.Sequence,
-		op.ApprovalID, op.IdempotencyKey, op.ReviewJSON, op.CreatedAt, op.UpdatedAt, op.TerminalAt, op.OutcomeProvenance, op.OutcomeCode, op.AttemptCount)
+		op.ApprovalID, op.IdempotencyKey, op.ReviewJSON, op.OriginJSON, op.CreatedAt, op.UpdatedAt, op.TerminalAt, op.OutcomeProvenance, op.OutcomeCode, op.AttemptCount)
 	return err
 }
 

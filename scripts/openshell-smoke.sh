@@ -14,6 +14,16 @@
 #     external_asserted (never a Talon decision, never a Talon observation)
 #   - provider credential never enters Talon evidence or logs
 #   - signed evidence verifies online and offline, across a Talon restart
+#   Action channel (TestE2E_OpenShell_ComposedActionChannel, #457/#482):
+#   - a sandbox with NO Talon credential reaches the Action Gateway through the
+#     hop assertion: allow → one dispatch; deny → zero; approval → zero until a
+#     host-side human approves, then exactly one; exact replay never duplicates
+#   - unbound / forged / tampered / re-routed identity refused with no state;
+#     the reviewer route is unreachable through the hop; session join; restart
+#   Response channel (TestE2E_OpenShell_ResponseGovernance):
+#   - PRE_RETURN replayed: actual usage settled under the decision's
+#     correlation id (decision books no cost), PII transformed before delivery,
+#     a usage-less response keeps its estimate, session cost = settled actuals
 #
 # What this does NOT prove: OpenShell's own behaviour. The live lane against
 # a real OpenShell gateway is documented in docs/integration/openshell.md.

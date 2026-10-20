@@ -62,7 +62,7 @@ test-action-catalog-smoke: ## Trusted action catalog smoke (#427): CLI inspectio
 test-openshell-smoke: ## OpenShell composition smoke (#482): fixture supervisor replays the pinned v0.1.3 middleware contract against the built binary (no OpenShell install, no keys)
 	@bash scripts/openshell-smoke.sh
 
-test-openshell-live: ## REAL OpenShell v0.1.3 live smoke (#482): pinned released gateway + CLI + sandbox (docker driver) with Talon as supervisor middleware and a mock provider; needs Docker >= 28 on Linux, no keys
+test-openshell-live: ## REAL OpenShell live smoke (#482/#457): pinned released gateway + CLI + sandbox (docker driver; OPENSHELL_VERSION=v0.1.3 default, v0.1.4 pinned) with Talon as supervisor middleware, a mock provider and a protected action target; model cases A–F, response cases O–R and Action Gateway cases G–N; needs Docker >= 28 on Linux, no keys
 	@bash scripts/openshell-live.sh
 
 openshell-proto: ## Regenerate Go types from the pinned OpenShell v0.1.3 protos (buf via go run; generated code is checked in)

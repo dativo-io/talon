@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -703,6 +705,21 @@ func (c *GatewayConfig) Validate() error {
 		if err := c.OpenShell.validate(); err != nil {
 			return fmt.Errorf("gateway openshell: %w", err)
 		}
+		if sd := c.OpenShell.SelfDestination; sd != nil {
+			for _, entry := range sd.Hosts {
+				host, port := splitHostPort(entry)
+				p, ok := c.providerForHost(host)
+				if !ok {
+					continue
+				}
+				if port == 0 {
+					return fmt.Errorf("gateway openshell: self_destination host %q is also provider %q's host; give the Talon entry its own port (host:port) or use a distinct hostname", entry, p)
+				}
+				if pp := c.providerPort(p); pp == port {
+					return fmt.Errorf("gateway openshell: self_destination %q is provider %q's host and port; a destination is either Talon or a provider", entry, p)
+				}
+			}
+		}
 	}
 	switch c.OrganizationPolicy.ScanToolContent {
 	case "", ScanToolContentEvidenceOnly, ScanToolContentOff:
@@ -925,6 +942,56 @@ type OpenShellConfig struct {
 	// RequestTimeout is the per-request budget advertised in the manifest
 	// (OpenShell accepts 10ms–30s; default 10s).
 	RequestTimeout string `yaml:"request_timeout,omitempty" json:"request_timeout,omitempty"`
+	// SelfDestination names the hosts under which sandboxes reach Talon's
+	// OWN HTTP API (the Action Gateway) through the runtime's egress. A
+	// sandbox request to one of these hosts is not model traffic: Talon
+	// verifies the runtime identity at the hop, binds it to the use case and
+	// returns a request-bound workload assertion the runtime carries to
+	// Talon's ingress (#457/#482). Unset: Talon governs no self traffic and
+	// such a destination is destination_not_governed.
+	SelfDestination *OpenShellSelfDestinationConfig `yaml:"self_destination,omitempty" json:"self_destination,omitempty"`
+	// ResponseGovernance enables the HTTP_RESPONSE / PRE_RETURN binding: Talon
+	// inspects the provider's response before the sandbox receives it,
+	// captures actual usage, settles cost and session budget, and applies the
+	// agent's response PII policy (preventive for block/redact — the body is
+	// held by OpenShell until Talon answers — observational for warn on
+	// streams). Opt-in: advertising the binding changes what OpenShell asks
+	// Talon, and a failing Talon then blocks responses (fail closed).
+	ResponseGovernance *OpenShellResponseGovernanceConfig `yaml:"response_governance,omitempty" json:"response_governance,omitempty"`
+}
+
+// OpenShellResponseGovernanceConfig configures the response hook.
+type OpenShellResponseGovernanceConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// SettlementTimeout bounds how long a decided request waits for its
+	// response before it is settled as unobserved with the pre-request
+	// estimate (30s–1h, default 5m).
+	SettlementTimeout string `yaml:"settlement_timeout,omitempty" json:"settlement_timeout,omitempty"`
+	// MaxCaptureBytes bounds the response body Talon buffers/observes
+	// (default 1 MiB, at most OpenShell's 4 MiB).
+	MaxCaptureBytes int64 `yaml:"max_capture_bytes,omitempty" json:"max_capture_bytes,omitempty"`
+	// MaxPending bounds the settlement ledger: when this many delegated
+	// requests await their response, NEW requests are refused
+	// (settlement_capacity_exhausted) — obligations are never discarded
+	// (100–1,000,000, default 10,000).
+	MaxPending int `yaml:"max_pending,omitempty" json:"max_pending,omitempty"`
+	// LedgerRetention is how long a settled ledger row is kept after its
+	// settlement (24h–8760h, default 720h). Pending obligations are never
+	// pruned; a terminal row protects against repeated callbacks for its
+	// exchange until it is pruned.
+	LedgerRetention string `yaml:"ledger_retention,omitempty" json:"ledger_retention,omitempty"`
+}
+
+// OpenShellSelfDestinationConfig configures the Talon-as-destination hop.
+type OpenShellSelfDestinationConfig struct {
+	// Hosts are exact lowercase hostnames the sandbox dials to reach Talon,
+	// optionally with a port ("talon.corp.example", "host.openshell.internal:8080").
+	// An entry without a port matches every port of that host. A host that
+	// also serves a configured provider must carry a port that differs from
+	// the provider's (a destination is either Talon or a provider).
+	Hosts []string `yaml:"hosts" json:"hosts"`
+	// AssertionTTL bounds the workload assertion lifetime (5s–5m, default 60s).
+	AssertionTTL string `yaml:"assertion_ttl,omitempty" json:"assertion_ttl,omitempty"`
 }
 
 // OpenShellTLSConfig points at the serving certificate.
@@ -1010,7 +1077,127 @@ func (o *OpenShellConfig) applyBounds() error {
 	if err != nil || d < 10*time.Millisecond || d > 30*time.Second {
 		return fmt.Errorf("request_timeout must be a duration between 10ms and 30s")
 	}
+	if o.SelfDestination != nil {
+		if err := o.SelfDestination.validate(); err != nil {
+			return fmt.Errorf("self_destination: %w", err)
+		}
+	}
+	if o.ResponseGovernance != nil {
+		if err := o.ResponseGovernance.validate(o.MaxPayloadBytes); err != nil {
+			return fmt.Errorf("response_governance: %w", err)
+		}
+	}
 	return nil
+}
+
+// DefaultOpenShellSelfDestinationAssertionTTL is the workload assertion
+// lifetime when self_destination.assertion_ttl is unset.
+const DefaultOpenShellSelfDestinationAssertionTTL = "60s"
+
+var selfDestinationHostRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?$`)
+
+// splitHostPort splits a validated "host" or "host:port" entry; port 0
+// means "any port".
+func splitHostPort(entry string) (host string, port uint32) {
+	entry = strings.ToLower(strings.TrimSpace(entry))
+	if i := strings.LastIndexByte(entry, ':'); i > 0 {
+		var p uint64
+		for _, ch := range entry[i+1:] {
+			if ch < '0' || ch > '9' {
+				return entry, 0
+			}
+			p = p*10 + uint64(ch-'0')
+		}
+		if p == 0 || p > 65535 {
+			return entry[:i], 0
+		}
+		return entry[:i], uint32(p)
+	}
+	return entry, 0
+}
+
+// providerPort is the port a provider's base_url addresses (scheme default
+// when absent).
+func (c *GatewayConfig) providerPort(name string) uint32 {
+	p, ok := c.Providers[name]
+	if !ok {
+		return 0
+	}
+	u, err := url.Parse(p.BaseURL)
+	if err != nil {
+		return 0
+	}
+	if _, port := splitHostPort(u.Host); port != 0 {
+		return port
+	}
+	if strings.EqualFold(u.Scheme, "http") {
+		return 80
+	}
+	return 443
+}
+
+func (sd *OpenShellSelfDestinationConfig) validate() error {
+	if len(sd.Hosts) == 0 {
+		return fmt.Errorf("hosts is required")
+	}
+	if len(sd.Hosts) > 32 {
+		return fmt.Errorf("at most 32 hosts")
+	}
+	seen := map[string]bool{}
+	for i, h := range sd.Hosts {
+		h = strings.TrimSpace(h)
+		if h == "" || len(h) > 259 || !selfDestinationHostRe.MatchString(h) {
+			return fmt.Errorf("hosts[%d]: %q is not a lowercase hostname or host:port (no scheme, no path)", i, sd.Hosts[i])
+		}
+		if host, port := splitHostPort(h); strings.Contains(h, ":") && port == 0 {
+			return fmt.Errorf("hosts[%d]: %q has an invalid port", i, h)
+		} else if len(host) > 253 {
+			return fmt.Errorf("hosts[%d]: hostname too long", i)
+		}
+		if seen[h] {
+			return fmt.Errorf("hosts[%d]: %q is listed twice", i, h)
+		}
+		seen[h] = true
+		sd.Hosts[i] = h
+	}
+	if sd.AssertionTTL == "" {
+		sd.AssertionTTL = DefaultOpenShellSelfDestinationAssertionTTL
+	}
+	d, err := time.ParseDuration(sd.AssertionTTL)
+	if err != nil || d < 5*time.Second || d > 5*time.Minute {
+		return fmt.Errorf("assertion_ttl must be a duration between 5s and 5m")
+	}
+	return nil
+}
+
+// IsSelfHost reports whether (host, port) names Talon itself for sandbox
+// traffic: an entry without a port matches any port; port 0 in the query
+// matches only port-less entries.
+func (sd *OpenShellSelfDestinationConfig) IsSelfHost(host string, port uint32) bool {
+	if sd == nil {
+		return false
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, entry := range sd.Hosts {
+		eh, ep := splitHostPort(entry)
+		if eh != host {
+			continue
+		}
+		if ep == 0 || ep == port {
+			return true
+		}
+	}
+	return false
+}
+
+// AssertionTTLDuration returns the validated assertion lifetime.
+func (sd *OpenShellSelfDestinationConfig) AssertionTTLDuration() time.Duration {
+	if sd == nil || sd.AssertionTTL == "" {
+		d, _ := time.ParseDuration(DefaultOpenShellSelfDestinationAssertionTTL)
+		return d
+	}
+	d, _ := time.ParseDuration(sd.AssertionTTL)
+	return d
 }
 
 // RequestTimeoutDuration returns the validated manifest timeout.
@@ -1020,4 +1207,85 @@ func (o *OpenShellConfig) RequestTimeoutDuration() time.Duration {
 		return 10 * time.Second
 	}
 	return d
+}
+
+// Defaults for the response hook.
+const (
+	DefaultOpenShellSettlementTimeout     = "5m"
+	DefaultOpenShellMaxCaptureBytes       = int64(1024 * 1024)
+	DefaultOpenShellMaxPendingSettlements = 10000
+	DefaultOpenShellLedgerRetention       = "720h"
+)
+
+func (r *OpenShellResponseGovernanceConfig) validate(maxPayload int64) error {
+	if !r.Enabled {
+		return nil
+	}
+	if r.SettlementTimeout == "" {
+		r.SettlementTimeout = DefaultOpenShellSettlementTimeout
+	}
+	d, err := time.ParseDuration(r.SettlementTimeout)
+	if err != nil || d < 30*time.Second || d > time.Hour {
+		return fmt.Errorf("settlement_timeout must be a duration between 30s and 1h")
+	}
+	if r.MaxCaptureBytes == 0 {
+		r.MaxCaptureBytes = DefaultOpenShellMaxCaptureBytes
+	}
+	if r.MaxCaptureBytes < 1024 || r.MaxCaptureBytes > DefaultOpenShellMaxPayloadBytes {
+		return fmt.Errorf("max_capture_bytes must be between 1024 and %d", DefaultOpenShellMaxPayloadBytes)
+	}
+	if maxPayload > 0 && r.MaxCaptureBytes > maxPayload {
+		return fmt.Errorf("max_capture_bytes must not exceed max_payload_bytes (%d)", maxPayload)
+	}
+	return r.validateLedger()
+}
+
+// validateLedger checks the settlement ledger bounds.
+func (r *OpenShellResponseGovernanceConfig) validateLedger() error {
+	if r.MaxPending != 0 && (r.MaxPending < 100 || r.MaxPending > 1000000) {
+		return fmt.Errorf("max_pending must be between 100 and 1000000")
+	}
+	if r.LedgerRetention == "" {
+		r.LedgerRetention = DefaultOpenShellLedgerRetention
+	}
+	if lr, err := time.ParseDuration(r.LedgerRetention); err != nil || lr < 24*time.Hour || lr > 365*24*time.Hour {
+		return fmt.Errorf("ledger_retention must be a duration between 24h and 8760h")
+	}
+	return nil
+}
+
+// LedgerRetentionDuration is how long terminal ledger rows are kept.
+func (r *OpenShellResponseGovernanceConfig) LedgerRetentionDuration() time.Duration {
+	if r == nil || r.LedgerRetention == "" {
+		d, _ := time.ParseDuration(DefaultOpenShellLedgerRetention)
+		return d
+	}
+	d, err := time.ParseDuration(r.LedgerRetention)
+	if err != nil {
+		d, _ = time.ParseDuration(DefaultOpenShellLedgerRetention)
+	}
+	return d
+}
+
+// ResponseGovernanceEnabled reports whether the response hook is on.
+func (o *OpenShellConfig) ResponseGovernanceEnabled() bool {
+	return o != nil && o.Enabled && o.ResponseGovernance != nil && o.ResponseGovernance.Enabled
+}
+
+// SettlementTimeoutDuration returns the validated settlement window.
+func (r *OpenShellResponseGovernanceConfig) SettlementTimeoutDuration() time.Duration {
+	if r == nil || r.SettlementTimeout == "" {
+		d, _ := time.ParseDuration(DefaultOpenShellSettlementTimeout)
+		return d
+	}
+	d, _ := time.ParseDuration(r.SettlementTimeout)
+	return d
+}
+
+// MaxPendingSettlements is the ledger bound (default 10,000).
+func (r *OpenShellResponseGovernanceConfig) MaxPendingSettlements() int {
+	if r == nil || r.MaxPending <= 0 {
+		return DefaultOpenShellMaxPendingSettlements
+	}
+	return r.MaxPending
 }

@@ -125,6 +125,12 @@ type Gateway struct {
 	// failure, rebuilt lazily from the evidence store after a restart.
 	budgetEventMu    sync.Mutex
 	budgetEventFired map[string]bool
+	// settlements is the durable ledger of delegated exchanges awaiting the
+	// runtime's response hook (#482 response side); nil when response
+	// governance is off.
+	settlements *settlementRepo
+	// settlementHooks are test-only fault-injection points (nil in production).
+	settlementHooks *settlementHooks
 }
 
 type gatewayCacheConfig struct {
@@ -234,7 +240,7 @@ func NewGateway(
 		// keyless gateway (quickstart) is a holder over a nil registry.
 		registry = NewRegistryHolder(nil)
 	}
-	return &Gateway{
+	g := &Gateway{
 		config:        config,
 		registry:      registry,
 		classifier:    classifier,
@@ -247,7 +253,18 @@ func NewGateway(
 		rateLimiter:   rl,
 		attExtractor:  ext,
 		attInjScanner: injScan,
-	}, nil
+	}
+	if config.OpenShell.ResponseGovernanceEnabled() {
+		if evidenceStore == nil {
+			return nil, fmt.Errorf("openshell response_governance requires the evidence store (settlement ledger)")
+		}
+		repo, err := newSettlementRepo(context.Background(), evidenceStore.DB())
+		if err != nil {
+			return nil, err
+		}
+		g.settlements = repo
+	}
+	return g, nil
 }
 
 // ServeHTTP implements the 10-step gateway pipeline.
@@ -948,8 +965,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-//nolint:gocyclo // evidence assembly branches on optional subsystems (cache, egress, attachments, tools)
 func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agent *ResolvedIdentity, provider, model string, start time.Time, inputText string, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, responsePII *ResponsePIIScanResult, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, cacheStored bool, ttftMS int64, tpotMS float64, estimatedCost float64, opts ...func(*RecordGatewayEvidenceParams)) (*evidence.Evidence, error) {
+	params := g.evidenceParams(ctx, correlationID, agent, provider, model, start, inputText, classification, usage, cost, durationMS, executionError, allowed, reasons, inputPIIRedacted, responsePII, attSummary, toolResult, cacheHit, cacheEntryID, cacheSimilarity, costSaved, cacheStored, ttftMS, tpotMS, estimatedCost, opts...)
+	return RecordGatewayEvidence(ctx, g.evidenceStore, params)
+}
+
+// evidenceParams assembles the record parameters without storing them, so a
+// caller that must commit the record together with other state (the
+// delegated settlement ledger) can insert it in its own transaction.
+//
+//nolint:gocyclo // evidence assembly branches on optional subsystems (cache, egress, attachments, tools)
+func (g *Gateway) evidenceParams(ctx context.Context, correlationID string, agent *ResolvedIdentity, provider, model string, start time.Time, inputText string, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, responsePII *ResponsePIIScanResult, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, cacheStored bool, ttftMS int64, tpotMS float64, estimatedCost float64, opts ...func(*RecordGatewayEvidenceParams)) RecordGatewayEvidenceParams {
 	if classification == nil {
 		classification = &classifier.Classification{}
 	}
@@ -1096,11 +1122,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agen
 	for _, opt := range opts {
 		opt(&params)
 	}
-	ev, err := RecordGatewayEvidence(ctx, g.evidenceStore, params)
-	if err != nil {
-		return nil, err
-	}
-	return ev, nil
+	return params
 }
 
 // buildScannerEvidence describes the scan engine for evidence, including the
@@ -1315,29 +1337,36 @@ func gatewayAnnotationsForEvidence(ctx context.Context, g *Gateway, agent *Resol
 // a reservation (zero estimate, reservation-time store failure) keep the
 // plain accumulate path.
 func (g *Gateway) trackSessionUsage(ctx context.Context, res *sessionReservation, sessionID, sessionSource, tenantID, callerName string, cost float64, tokens int) {
+	if err := g.settleSessionUsage(ctx, res, sessionID, sessionSource, tenantID, callerName, cost, tokens); err != nil {
+		log.Warn().Err(err).Str("session_id", sessionID).Msg("gateway_session_usage_failed")
+	}
+}
+
+// settleSessionUsage is trackSessionUsage with the failure reported to the
+// caller (the delegated settlement ledger records an owed session update
+// and retries it).
+func (g *Gateway) settleSessionUsage(ctx context.Context, res *sessionReservation, sessionID, sessionSource, tenantID, callerName string, cost float64, tokens int) error {
 	if g.sessionStore == nil || sessionID == "" || !isAssertedSessionSource(sessionSource) {
-		return
+		return nil
 	}
 	var rowID string
 	if res != nil && !res.done {
 		res.done = true
 		rowID = res.rowID
 		if err := g.sessionStore.SettleSessionUsage(ctx, res.rowID, res.estimate, cost, tokens); err != nil {
-			log.Warn().Err(err).Str("session_id", res.rowID).Msg("gateway_session_usage_failed")
-			return
+			res.done = false
+			return err
 		}
 	} else {
 		sess, err := g.sessionStore.GetOrCreateExternal(ctx, tenantID, callerName, sessionID, sessionSource)
 		if err != nil {
-			log.Warn().Err(err).Str("session_id", sessionID).Msg("gateway_session_create_failed")
-			return
+			return err
 		}
 		rowID = sess.ID
 		if usageErr := g.sessionStore.AddUsage(ctx, sess.ID, cost, tokens); usageErr != nil {
 			// AddUsage is also what refreshes updated_at (retention liveness);
 			// don't record stage counts for a request whose usage was lost.
-			log.Warn().Err(usageErr).Str("session_id", sess.ID).Msg("gateway_session_usage_failed")
-			return
+			return usageErr
 		}
 	}
 	if stage := stageFromContext(ctx); stage != "" {
@@ -1345,6 +1374,7 @@ func (g *Gateway) trackSessionUsage(ctx context.Context, res *sessionReservation
 			log.Warn().Err(err).Str("session_id", rowID).Str("stage", stage).Msg("stage count increment failed")
 		}
 	}
+	return nil
 }
 
 // isAssertedSessionSource reports whether the session id was asserted by the
@@ -1568,6 +1598,18 @@ func (g *Gateway) agentCostTotals(ctx context.Context, agent *ResolvedIdentity) 
 		return daily, 0, true
 	}
 	monthly = byAgent[agent.Name]
+	// Delegated requests awaiting their response settlement carry cost 0 in
+	// evidence; their estimates still count against the caps so an in-flight
+	// burst cannot slip under a budget (#482 response side).
+	if g.settlements != nil {
+		pending, perr := g.settlements.pendingEstimate(ctx, agent.TenantID, agent.Name)
+		if perr != nil {
+			log.Warn().Err(perr).Str("agent", agent.Name).Msg("gateway_pending_settlement_read_failed")
+			return daily, monthly, true
+		}
+		daily += pending
+		monthly += pending
+	}
 	return daily, monthly, false
 }
 

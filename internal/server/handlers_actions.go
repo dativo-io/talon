@@ -198,7 +198,11 @@ func (s *Server) handleActionEstablish(w http.ResponseWriter, r *http.Request) {
 	if !decodeActionBody(w, r, &body) {
 		return
 	}
-	res, err := svc.Establish(r.Context(), action.EstablishRequest{OperationID: body.OperationID, Action: body.Action, Arguments: body.Arguments})
+	ereq := action.EstablishRequest{OperationID: body.OperationID, Action: body.Action, Arguments: body.Arguments}
+	if _, viaHop := requestctx.WorkloadFactsFrom(r.Context()); viaHop {
+		ereq.IdentitySource = action.IdentityWorkloadAsserted
+	}
+	res, err := svc.Establish(r.Context(), ereq)
 	if err != nil {
 		writeDomainError(w, err)
 		return

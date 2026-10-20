@@ -15,6 +15,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,7 +28,28 @@ type record struct {
 	Authorization string `json:"authorization"`
 	Body          string `json:"body"`
 	ReceivedAt    string `json:"received_at"`
+	// Scenario is the response shape the caller asked for (X-Mock-Scenario).
+	Scenario string `json:"scenario,omitempty"`
 }
+
+// Response scenarios the harness selects per request through the
+// X-Mock-Scenario header (carried from the sandbox through OpenShell to the
+// provider untouched). They exercise Talon's RESPONSE side against the
+// real runtime: a body with PII, a body beyond the capture bound with PII
+// past the bound, and an error envelope echoing PII. X-Mock-Delay-Ms holds
+// the answer so the harness can restart Talon between request and response.
+const (
+	scenarioDefault     = ""
+	scenarioResponsePII = "response-pii"
+	scenarioOversized   = "oversized"
+	scenarioErrorPII    = "error-pii"
+	// mockPII is the sensitive value the scenarios carry; the harness asserts
+	// it never reaches the sandbox under a preventive policy and never
+	// appears in Talon's evidence or logs.
+	mockPII      = "jane.doe@example.com"
+	maxDelayMs   = 30000
+	oversizedPad = 5000
+)
 
 type state struct {
 	mu      sync.Mutex
@@ -49,7 +72,7 @@ func (s *state) record(r *http.Request, body []byte) (record, view) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++
-	rec := record{Seq: s.calls, Path: r.URL.Path, Method: r.Method, Authorization: r.Header.Get("Authorization"), Body: string(body), ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	rec := record{Seq: s.calls, Path: r.URL.Path, Method: r.Method, Authorization: r.Header.Get("Authorization"), Body: string(body), ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano), Scenario: r.Header.Get("X-Mock-Scenario")}
 	s.records = append(s.records, rec)
 	return rec, s.viewLocked()
 }
@@ -107,9 +130,18 @@ func newHandler(st *state, stateFile string, maxBody int64) http.Handler {
 			_ = os.WriteFile(stateFile, snap.json(), 0o600) //nolint:gosec // operator-provided --state-file path of the test harness
 			fileMu.Unlock()
 		}
-		log.Printf("provider call %d: %s %s body=%d bytes auth=%s", rec.Seq, rec.Method, rec.Path, len(body), describeAuth(rec.Authorization))
+		log.Printf("provider call %d: %s %s body=%d bytes auth=%s scenario=%q", rec.Seq, rec.Method, rec.Path, len(body), describeAuth(rec.Authorization), rec.Scenario)
+		if ms := delayMs(r.Header.Get("X-Mock-Delay-Ms")); ms > 0 {
+			select {
+			case <-time.After(time.Duration(ms) * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"id":"chatcmpl-mock-%d","object":"chat.completion","created":%d,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"mock completion %d"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`, rec.Seq, time.Now().Unix(), rec.Seq)
+		status, body := scenarioResponse(rec.Scenario, rec.Seq)
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mock provider: unknown route "+r.URL.Path, http.StatusNotFound)
@@ -127,6 +159,38 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// scenarioResponse is the provider's answer for one scenario: the default
+// completion carries usage 12/3 so the harness can assert priced actuals.
+func scenarioResponse(scenario string, seq int) (status int, body []byte) {
+	completion := func(content string) []byte {
+		return []byte(fmt.Sprintf(`{"id":"chatcmpl-mock-%d","object":"chat.completion","created":%d,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"%s"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`, seq, time.Now().Unix(), content))
+	}
+	switch scenario {
+	case scenarioResponsePII:
+		return http.StatusOK, completion("please contact " + mockPII + " about the refund")
+	case scenarioOversized:
+		return http.StatusOK, completion(strings.Repeat("x", oversizedPad) + " then mail " + mockPII)
+	case scenarioErrorPII:
+		return http.StatusBadRequest, []byte(`{"error":{"message":"invalid request: the input mentions ` + mockPII + `","type":"invalid_request_error"}}`)
+	default:
+		return http.StatusOK, completion(fmt.Sprintf("mock completion %d", seq))
+	}
+}
+
+func delayMs(h string) int {
+	if h == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(h)
+	if err != nil || n < 0 {
+		return 0
+	}
+	if n > maxDelayMs {
+		return maxDelayMs
+	}
+	return n
 }
 
 // describeAuth logs the SHAPE of the credential, never its value.

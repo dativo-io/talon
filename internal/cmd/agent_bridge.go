@@ -15,6 +15,7 @@ import (
 	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/server"
+	"github.com/dativo-io/talon/internal/workload"
 )
 
 // LoadedAgentFromPolicy is the shared policy → gateway adapter (#266). It
@@ -200,4 +201,25 @@ func resolveRunTenant(pol *policy.Policy, flagTenant string, flagSet bool) (stri
 		return "", fmt.Errorf("--tenant %q conflicts with agent.tenant_id %q in the agent policy — the agent file is authoritative (#266); drop the flag or fix the file", flagTenant, fileTenant)
 	}
 	return fileTenant, nil
+}
+
+// hopBinderFor re-resolves a verified workload principal against the
+// CURRENT generation for a request that arrived through an external
+// runtime's hop (#457/#482). The assertion names the agent/tenant the hop
+// bound; ingress trusts that only if the same binding still holds now and
+// the agent is enabled — a binding removed or an agent disabled between the
+// hop and ingress fails closed. Like holderKeyResolver, one Current() read
+// yields both the resolution and the generation the identity travels with.
+func hopBinderFor(holder *agentcatalog.RuntimeHolder) server.HopBinder {
+	return func(c *workload.HopClaims) (requestctx.AgentIdentity, bool) {
+		snap := holder.Current()
+		if snap == nil || snap.Registry == nil {
+			return requestctx.AgentIdentity{}, false
+		}
+		id, ok := snap.Registry.ResolveWorkload(c.Runtime, c.Subject)
+		if !ok || !id.Enabled || id.Name != c.Agent || normalizedTenant(id.TenantID) != normalizedTenant(c.Tenant) {
+			return requestctx.AgentIdentity{}, false
+		}
+		return requestctx.AgentIdentity{AgentID: id.Name, TenantID: id.TenantID, Team: id.Team, Generation: snap.Generation}, true
+	}
 }
