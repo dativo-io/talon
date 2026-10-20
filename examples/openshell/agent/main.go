@@ -71,6 +71,12 @@ import (
 	"github.com/openai/openai-go/shared"
 )
 
+// version and commit are set by the release build (-X main.version/-X main.commit).
+var (
+	version = "dev"
+	commit  = "unknown"
+)
+
 const (
 	exitOK         = 0
 	exitRefused    = 1
@@ -119,12 +125,50 @@ func configFromEnv() (config, error) {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "probe":
+			os.Exit(probe(os.Args[2:], os.Stdout))
+		case "version":
+			fmt.Printf("support-agent %s (%s)\n", version, commit)
+			os.Exit(exitOK)
+		}
+	}
 	cfg, err := configFromEnv()
 	if err != nil {
 		fmt.Printf("RESULT=failed STEP=config ERROR=%s\n", err)
 		os.Exit(exitTransport)
 	}
 	os.Exit(run(context.Background(), cfg, os.Stdout))
+}
+
+// probe is the sandbox-side reachability check the showcase runner uses:
+// `support-agent probe <url>...` attempts one GET per URL and prints
+// PROBE=<url> REACHABLE=yes|no. It carries no credential and sends no body;
+// the runner uses it to prove that the protected business service is NOT
+// reachable from the sandbox while Talon's host is.
+func probe(urls []string, out io.Writer) int {
+	if len(urls) == 0 {
+		fmt.Fprintln(out, "usage: support-agent probe <url> [url...]")
+		return exitTransport
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, u := range urls {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil) //nolint:gosec // operator-supplied probe targets by design
+		if err != nil {
+			fmt.Fprintf(out, "PROBE=%s REACHABLE=no ERROR=%s\n", u, sanitize(err.Error()))
+			continue
+		}
+		resp, err := client.Do(req) //nolint:gosec // operator-supplied probe targets by design
+		if err != nil {
+			fmt.Fprintf(out, "PROBE=%s REACHABLE=no ERROR=%s\n", u, sanitize(err.Error()))
+			continue
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+		_ = resp.Body.Close()
+		fmt.Fprintf(out, "PROBE=%s REACHABLE=yes STATUS=%d\n", u, resp.StatusCode)
+	}
+	return exitOK
 }
 
 type agent struct {

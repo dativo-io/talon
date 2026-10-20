@@ -81,20 +81,15 @@ PREFLIGHT_ONLY="${TALON_OPENSHELL_PREFLIGHT_ONLY:-0}"
 if [[ "${TALON_OPENSHELL_SELFTEST_FAIL:-0}" == "1" ]]; then echo "FAIL self-test: deliberate harness failure requested" >&2; exit 1; fi
 
 OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.1.3}"
-# sha256 from each release's openshell-checksums-sha256.txt and
-# openshell-gateway-checksums-sha256.txt. Only pinned versions can run.
+# Pinned checksums live in the showcase's shared library (one table for the
+# live lane, the canonical runner and the published bundle). Only pinned
+# versions can run.
+# shellcheck source=../examples/openshell/showcase/lib/openshell-release.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/examples/openshell/showcase/lib/openshell-release.sh"
+openshell_release_pins "$OPENSHELL_VERSION" || exit 2
 declare -A CLI_SHA GW_SHA
-case "$OPENSHELL_VERSION" in
-  v0.1.3) # released 2026-10-09; validated baseline
-    CLI_SHA=([x86_64]="ed08ea7874c47f22d6e5dcc4b27d9ef1ef5d2060f83035b35ff725d5160830a3" [aarch64]="07687dacefc52bc73b01943f5b58f7a5082c1ceaa228461b9a2a78023b8057c0")
-    GW_SHA=([x86_64]="da8dce943fe01cce90243b2bf2587c71a243e4d641a4b616528829b681ced198" [aarch64]="801214322227f64f2d3faa6989daaa5e6cd9ef1ab768b5860496deeb1158c27b")
-    ;;
-  v0.1.4) # released 2026-10-13; proto contract identical to v0.1.3 (comment-only diff), validated by the experimental matrix entry
-    CLI_SHA=([x86_64]="2b65178e62e1ece1d90d482555e9f1f98ff0296e058409b33418104b6333df07" [aarch64]="1cd6e63597e1947c44a753bf5352f949e8d8d02e344af92ab899b7c111112d95")
-    GW_SHA=([x86_64]="43f43554bcaabff2a8147444410d1ad0b7f51bdae7589c2d249982bc8b260b91" [aarch64]="d0f8a2045e613f612a542abe860e497906169c2483093a9bd52e41737df397f0")
-    ;;
-  *) echo "MISSING pin: OPENSHELL_VERSION=$OPENSHELL_VERSION has no pinned checksums in this harness" >&2; exit 2 ;;
-esac
+CLI_SHA=(["$OPENSHELL_ARCH"]="$OPENSHELL_CLI_SHA")
+GW_SHA=(["$OPENSHELL_ARCH"]="$OPENSHELL_GW_SHA")
 OPENSHELL_SEMVER="${OPENSHELL_VERSION#v}"
 RELEASE_BASE="https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_VERSION}"
 

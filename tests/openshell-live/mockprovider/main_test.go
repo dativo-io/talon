@@ -219,3 +219,52 @@ func TestMockProvider_ResponseScenarios(t *testing.T) {
 	var _ sync.Mutex
 	_ = json.Valid
 }
+
+// A request carrying a tools array is answered by the scripted model: the
+// next tool call keyed by the tool results already in the conversation,
+// ending in a final answer — the same script the fixture e2e drives.
+func TestMockProvider_ToolCallingScript(t *testing.T) {
+	srv := httptest.NewServer(newHandler(&state{}, "", 1<<20))
+	t.Cleanup(srv.Close)
+	c := newProviderClient(t, srv.URL)
+	conv := func(toolResults int) string {
+		msgs := `{"role":"user","content":"handle the refund"}`
+		for i := 0; i < toolResults; i++ {
+			msgs += `,{"role":"tool","tool_call_id":"c","content":"{}"}`
+		}
+		return `{"model":"gpt-4o-mini","messages":[` + msgs + `],"tools":[{"type":"function","function":{"name":"lookup_ticket"}}]}`
+	}
+	for i, want := range []string{"lookup_ticket", "delete_customer", "create_refund_request", ""} {
+		code, b := c.do(http.MethodPost, "/v1/chat/completions", conv(i), "Bearer x")
+		if code != 200 {
+			t.Fatalf("turn %d: %d %s", i, code, b)
+		}
+		var out struct {
+			Choices []struct {
+				FinishReason string `json:"finish_reason"`
+				Message      struct {
+					ToolCalls []struct {
+						Function struct {
+							Name string `json:"name"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(b, &out); err != nil || len(out.Choices) != 1 {
+			t.Fatalf("turn %d: %v %s", i, err, b)
+		}
+		if want == "" {
+			if out.Choices[0].FinishReason != "stop" || len(out.Choices[0].Message.ToolCalls) != 0 {
+				t.Fatalf("turn %d: expected the final answer: %s", i, b)
+			}
+			continue
+		}
+		if len(out.Choices[0].Message.ToolCalls) != 1 || out.Choices[0].Message.ToolCalls[0].Function.Name != want {
+			t.Fatalf("turn %d: expected tool %s: %s", i, want, b)
+		}
+	}
+	if st := c.state(); st.Calls != 4 || st.Records[0].Scenario != scenarioTools {
+		t.Fatalf("state: %+v", st)
+	}
+}

@@ -426,3 +426,18 @@ func TestRun_ChangedIntentIsAConflictNotASecondRefund(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, buf.String())
 	}
 }
+
+func TestProbe_ReportsReachability(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }))
+	t.Cleanup(srv.Close)
+	out := &syncBuffer{}
+	if code := probe([]string{srv.URL + "/tickets", "http://127.0.0.1:1/closed"}, out); code != exitOK {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "REACHABLE=yes STATUS=418") || !strings.Contains(out.String(), "/closed REACHABLE=no") {
+		t.Fatalf("probe output:\n%s", out.String())
+	}
+	if probe(nil, out) != exitTransport {
+		t.Fatal("no urls must be a usage error")
+	}
+}
