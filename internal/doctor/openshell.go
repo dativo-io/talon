@@ -32,8 +32,44 @@ func checkOpenShell(ctx context.Context, gwCfg *gateway.GatewayConfig, opts Opti
 		checkOpenShellBindings(ctx),
 		checkOpenShellSelfDestination(oc),
 		checkOpenShellResponseGovernance(oc),
+		checkOpenShellCaptureBound(gwCfg),
 	}
 	return results
+}
+
+// openShellPreventiveCaptureFloor is the capture bound below which a
+// preventive response policy blocks ordinary model answers: a few KiB of
+// JSON is a short completion, and everything beyond the bound is blocked
+// (output_scan_incomplete) rather than released half-inspected.
+const openShellPreventiveCaptureFloor = int64(64 * 1024)
+
+// checkOpenShellCaptureBound is a STATIC check of the configuration: with a
+// preventive response policy (block/redact) and a small max_capture_bytes,
+// responses beyond the bound are blocked by design. It reads only the
+// config; it cannot observe what sizes the provider actually returns.
+func checkOpenShellCaptureBound(gwCfg *gateway.GatewayConfig) CheckResult {
+	name := "openshell_capture_bound"
+	oc := gwCfg.OpenShell
+	if !oc.ResponseGovernanceEnabled() {
+		return CheckResult{Name: name, Category: "openshell", Status: "pass", Message: "response governance off: no capture bound applies"}
+	}
+	action := gwCfg.OrganizationPolicy.Defaults.ResponsePIIAction
+	if action == "" {
+		action = gwCfg.OrganizationPolicy.Defaults.PIIAction
+	}
+	bound := oc.ResponseGovernance.MaxCaptureBytes
+	if bound == 0 {
+		bound = gateway.DefaultOpenShellMaxCaptureBytes
+	}
+	preventive := action == "block" || action == "redact"
+	if preventive && bound < openShellPreventiveCaptureFloor {
+		return CheckResult{
+			Name: name, Category: "openshell", Status: "warn",
+			Message: fmt.Sprintf("response policy %q is preventive and max_capture_bytes is %d: every model response larger than that is BLOCKED (output_scan_incomplete), never delivered half-inspected", action, bound),
+			Fix:     fmt.Sprintf("Raise gateway.openshell.response_governance.max_capture_bytes (≤ max_payload_bytes, at most %d) to the largest response you expect, or accept that larger responses are blocked", gateway.DefaultOpenShellMaxPayloadBytes),
+		}
+	}
+	return CheckResult{Name: name, Category: "openshell", Status: "pass", Message: fmt.Sprintf("response policy %q with capture bound %d bytes (static check: responses beyond the bound are blocked under a preventive policy, observed as incomplete otherwise)", action, bound)}
 }
 
 // checkOpenShellTransport: the gateway registers Talon with an https

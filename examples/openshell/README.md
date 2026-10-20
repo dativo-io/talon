@@ -1,4 +1,9 @@
-# OpenShell reference sandbox agent
+# OpenShell reference sandbox agents
+
+Two reference agents live here. `agent/` (`support-agent`) is the
+**tool-using** agent on the official OpenAI Go SDK — the model chooses the
+tools, Talon governs each one — with its own README. `sandbox-agent.sh`,
+described below, is the deterministic protocol fixture the live lane runs.
 
 `sandbox-agent.sh` is the reference agent for the Talon ↔ NVIDIA OpenShell
 composition (#457/#482). It runs **inside** an OpenShell sandbox with nothing

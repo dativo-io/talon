@@ -150,6 +150,18 @@ func TestOpenShellChecks_SelfDestinationAndResponse(t *testing.T) {
 	r = checkOpenShellResponseGovernance(c)
 	assert.Equal(t, "pass", r.Status)
 	assert.Contains(t, r.Message, "5m")
+
+	// The capture bound is a static warning under a preventive policy.
+	gw := &gateway.GatewayConfig{OpenShell: c, OrganizationPolicy: gateway.OrganizationPolicy{Defaults: gateway.OrgDefaults{PIIAction: "redact"}}}
+	assert.Equal(t, "pass", checkOpenShellCaptureBound(gw).Status)
+	c.ResponseGovernance.MaxCaptureBytes = 4096
+	r = checkOpenShellCaptureBound(gw)
+	assert.Equal(t, "warn", r.Status)
+	assert.Contains(t, r.Message, "BLOCKED")
+	gw.OrganizationPolicy.Defaults.PIIAction = "warn"
+	assert.Equal(t, "pass", checkOpenShellCaptureBound(gw).Status, "an observational policy never blocks on the bound")
+	c.ResponseGovernance.Enabled = false
+	assert.Equal(t, "pass", checkOpenShellCaptureBound(gw).Status)
 }
 
 // The checks appear in a doctor run only when the OpenShell block is on.

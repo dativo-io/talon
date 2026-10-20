@@ -37,6 +37,7 @@ var (
 	auditSession         string
 	auditRuntimeRef      string
 	auditOffset          int
+	auditReport          bool
 )
 
 var auditCmd = &cobra.Command{
@@ -77,6 +78,7 @@ func init() {
 	auditListCmd.Flags().StringVar(&auditSession, "session", "", "Show a per-session summary and the session's records (session_id)")
 	auditListCmd.Flags().StringVar(&auditRuntimeRef, "runtime-ref", "", "Show every record attributed to one external-runtime workload reference (e.g. an OpenShell sandbox id): delegated decisions, response settlements, action lifecycle and imported containment events (#482). Indexed and complete over the store; paged by --limit/--offset, newest first, and the header states the total")
 	auditListCmd.Flags().IntVar(&auditOffset, "offset", 0, "Skip this many records (paging for --runtime-ref)")
+	auditListCmd.Flags().BoolVar(&auditReport, "report", false, "With --runtime-ref: render the operator walkthrough (identity, model requests with their settlements, action lifecycles with the human decision and the downstream result, imported runtime events kept apart as external assertions, verification status) instead of the flat record list")
 
 	auditVerifyCmd.Flags().StringVar(&auditVerifyFile, "file", "", "Verify all records from a signed export file")
 	auditVerifyCmd.Flags().StringVar(&auditSession, "session", "", "Verify every record in a session (session_id)")
@@ -150,6 +152,10 @@ func auditList(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stdout, "More records exist: rerun with --offset %d (or a larger --limit) to continue.\n", auditOffset+len(page.Records))
 		}
 		fmt.Fprintln(os.Stdout)
+		if auditReport {
+			renderRuntimeReport(os.Stdout, store, page.Records)
+			return nil
+		}
 		renderSessionRecords(os.Stdout, page.Records)
 		return nil
 	}
@@ -1414,4 +1420,182 @@ func renderLifecycleRecord(out io.Writer, r *evidence.Evidence, sigOK bool) {
 		extra = " code=" + l.RefusalCode
 	}
 	fmt.Fprintf(out, "  %s #%d %-24s %s op_status=%s%s\n", mark, l.Sequence, l.Event, r.ID, l.OperationStatus, extra)
+}
+
+// renderRuntimeReport is the operator walkthrough of one external-runtime
+// reference (an OpenShell sandbox): what happened, who asked, which policy
+// decided, what was prevented, what happened downstream, and whether the
+// claim verifies. It renders ONLY what the records carry, in deterministic
+// order (oldest first within each section), keeps Talon-observed records
+// and imported external assertions in separate sections, and never prints
+// credentials or payload values.
+//
+//nolint:gocyclo // one report over several record classes; the branches are its sections
+func renderRuntimeReport(w io.Writer, store *evidence.Store, records []*evidence.Evidence) {
+	// Oldest first for narrative order.
+	ordered := make([]*evidence.Evidence, 0, len(records))
+	for i := len(records) - 1; i >= 0; i-- {
+		ordered = append(ordered, records[i])
+	}
+	verified := 0
+	verify := func(ev *evidence.Evidence) string {
+		if store != nil && store.VerifyRecord(ev) {
+			verified++
+			return "verified"
+		}
+		return "UNVERIFIED"
+	}
+	// Identity: the first Talon-observed record that carries a verified identity.
+	fmt.Fprintln(w, "IDENTITY")
+	identity := false
+	for _, ev := range ordered {
+		if wi := ev.WorkloadIdentity; wi != nil && wi.Status == evidence.WorkloadIdentityVerified && (ev.Enforcement == nil || ev.Enforcement.Provenance != evidence.ProvenanceExternalAsserted) {
+			fmt.Fprintf(w, "  runtime=%s issuer=%s subject=%s auth=%s (verified by Talon)\n", wi.Runtime, wi.Issuer, wi.Subject, wi.AuthMethod)
+			fmt.Fprintf(w, "  tenant=%s use_case=%s\n", ev.TenantID, ev.AgentID)
+			identity = true
+			break
+		}
+	}
+	if !identity {
+		fmt.Fprintln(w, "  no Talon-verified identity record in this page")
+	}
+
+	// Model requests: decision + settlement(s) per correlation id.
+	type modelExchange struct {
+		decision    *evidence.Evidence
+		settlements []*evidence.Evidence
+	}
+	exchanges := map[string]*modelExchange{}
+	var order []string
+	var actions map[string][]*evidence.Evidence
+	var actionOrder []string
+	var external []*evidence.Evidence
+	for _, ev := range ordered {
+		switch {
+		case ev.Enforcement != nil && ev.Enforcement.Provenance == evidence.ProvenanceExternalAsserted:
+			external = append(external, ev)
+		case ev.InvocationType == "gateway" || ev.InvocationType == "gateway_count_tokens":
+			x, ok := exchanges[ev.CorrelationID]
+			if !ok {
+				x = &modelExchange{}
+				exchanges[ev.CorrelationID] = x
+				order = append(order, ev.CorrelationID)
+			}
+			x.decision = ev
+		case ev.InvocationType == "gateway_response":
+			x, ok := exchanges[ev.CorrelationID]
+			if !ok {
+				x = &modelExchange{}
+				exchanges[ev.CorrelationID] = x
+				order = append(order, ev.CorrelationID)
+			}
+			x.settlements = append(x.settlements, ev)
+		case ev.ActionLifecycle != nil:
+			if actions == nil {
+				actions = map[string][]*evidence.Evidence{}
+			}
+			key := ev.ActionLifecycle.OperationID
+			if _, ok := actions[key]; !ok {
+				actionOrder = append(actionOrder, key)
+			}
+			actions[key] = append(actions[key], ev)
+		}
+	}
+	fmt.Fprintf(w, "\nMODEL REQUESTS (%d)\n", len(order))
+	for _, cid := range order {
+		x := exchanges[cid]
+		if d := x.decision; d != nil {
+			verdict := "ALLOW"
+			if !d.PolicyDecision.Allowed {
+				verdict = "DENY"
+			}
+			line := fmt.Sprintf("  %s %s %s model=%s verdict=%s", d.Timestamp.UTC().Format(time.RFC3339), cid, d.ID, d.Execution.ModelUsed, verdict)
+			if d.Classification.InputPIIRedacted {
+				line += " request_pii=redacted"
+			} else if len(d.Classification.PIIDetected) > 0 {
+				line += " request_pii=detected"
+			}
+			if tg := d.ToolGovernance; tg != nil && len(tg.ToolsFiltered) > 0 {
+				line += fmt.Sprintf(" tools_removed=%v", tg.ToolsFiltered)
+			}
+			if d.Execution.PricingBasis != "" {
+				line += " pricing=" + d.Execution.PricingBasis
+			}
+			if d.Enforcement != nil {
+				line += " provenance=" + d.Enforcement.Provenance
+			}
+			fmt.Fprintf(w, "%s [%s]\n", line, verify(d))
+		} else {
+			fmt.Fprintf(w, "  %s (decision record not in this page)\n", cid)
+		}
+		for _, s := range x.settlements {
+			line := fmt.Sprintf("    settlement %s tokens=%d/%d cost=%s basis=%s", s.ID, s.Execution.Tokens.Input, s.Execution.Tokens.Output, formatMoney(s.Execution.Currency, s.Execution.Cost), s.Execution.PricingBasis)
+			if s.Status != "" {
+				line += " status=" + s.Status
+			}
+			if s.FailureReason != "" {
+				line += " failure=" + s.FailureReason
+			}
+			if rs := s.Classification.ResponseScan; rs != nil {
+				line += fmt.Sprintf(" response_scan=%s/%s", rs.Enforcement, rs.Status)
+				if rs.IncompleteReason != "" {
+					line += "(" + rs.IncompleteReason + ")"
+				}
+			}
+			if s.Classification.OutputPIIDetected {
+				line += fmt.Sprintf(" response_pii=%v", s.Classification.OutputPIITypes)
+			}
+			if !s.PolicyDecision.Allowed {
+				line += " delivery=BLOCKED"
+			}
+			fmt.Fprintf(w, "%s [%s]\n", line, verify(s))
+		}
+	}
+
+	fmt.Fprintf(w, "\nACTIONS (%d operations)\n", len(actionOrder))
+	for _, opID := range actionOrder {
+		evs := actions[opID]
+		first := evs[0].ActionLifecycle
+		fmt.Fprintf(w, "  %s action=%s verdict=%s", opID, first.Action, first.Verdict)
+		if first.MatchedRuleID != "" {
+			fmt.Fprintf(w, " rule=%s", first.MatchedRuleID)
+		}
+		fmt.Fprintln(w)
+		for _, ev := range evs {
+			al := ev.ActionLifecycle
+			line := fmt.Sprintf("    %s %s %s", ev.Timestamp.UTC().Format(time.RFC3339), al.Event, ev.ID)
+			switch {
+			case al.ReviewerPrincipal != "":
+				line += fmt.Sprintf(" reviewer=%s group=%s approval=%s", al.ReviewerPrincipal, al.ReviewerGroup, al.ApprovalStatus)
+			case al.AttemptStatus != "":
+				line += " attempt=" + al.AttemptStatus
+				if al.DispatchArmed {
+					line += " dispatch=armed"
+				}
+			}
+			if al.OperationStatus != "" {
+				line += " operation=" + al.OperationStatus
+			}
+			if ev.Enforcement != nil {
+				line += " provenance=" + ev.Enforcement.Provenance
+			}
+			if !ev.PolicyDecision.Allowed {
+				line += " (refused)"
+			}
+			fmt.Fprintf(w, "%s [%s]\n", line, verify(ev))
+		}
+	}
+
+	fmt.Fprintf(w, "\nIMPORTED RUNTIME EVENTS (%d) — external assertions recorded by Talon, NOT verified by Talon\n", len(external))
+	for _, ev := range external {
+		line := fmt.Sprintf("  %s %s %s", ev.Timestamp.UTC().Format(time.RFC3339), ev.InvocationType, ev.ID)
+		if ev.Enforcement != nil {
+			line += " boundary=" + ev.Enforcement.Boundary + " provenance=" + ev.Enforcement.Provenance
+		}
+		if !ev.PolicyDecision.Allowed {
+			line += " action=denied"
+		}
+		fmt.Fprintf(w, "%s [signature %s]\n", line, verify(ev))
+	}
+	fmt.Fprintf(w, "\nVERIFICATION: %d of %d records on this page carry a valid Talon signature (a valid signature proves Talon recorded the fact; for imported events it does not prove the runtime enforced it)\n", verified, len(ordered))
 }
