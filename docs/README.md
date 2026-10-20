@@ -45,9 +45,9 @@ Choose the shortest path for your situation:
 
 1. **"I need to apply company policy and authorize consequential actions before execution."**
    - Choose the boundary: [Integration paths](guides/choosing-integration-path.md)
-   - Exact action and human decision: [Action Gateway](reference/action-gateway.md) (shipped on HTTP; MCP/native convergence remains roadmap)
+   - Exact action and human decision: [Action Gateway](reference/action-gateway.md) and [repeatable no-key action proof](tutorials/action-gateway-proof.md) (shipped on HTTP; MCP/native convergence remains roadmap)
    - Runtime policy: [Policy cookbook](guides/policy-cookbook.md) · [Control-plane boundaries](reference/control-plane-boundaries.md)
-   - Containment integration: [OpenShell v0.1.3](integration/openshell.md) (delegated request-side enforcement)
+   - Containment integration: [OpenShell](integration/openshell.md) (delegated request policy, opt-in response governance, verified sandbox-to-Action-Gateway hop; v0.1.3 live baseline, newer integration capabilities require fixture/live qualification)
 2. **"I need to operate my AI use cases: budgets, reliability, one policy, session visibility."**
    - Cost: [Cap AI spend per agent](guides/cost-governance-by-agent.md)
    - Reliability: [Provider fallback chains](reference/configuration.md#provider-fallback-chains-error-driven-failover)
@@ -76,6 +76,7 @@ Choose the shortest path for your situation:
 | Doc | Pillar | Description |
 |-----|--------|-------------|
 | [60-Second Demo (no API key)](tutorials/quickstart-demo.md) | Integrate | Docker Compose demo with mock provider — see the full pipeline in action in 60 seconds. |
+| [Exact-action proof (no provider key)](tutorials/action-gateway-proof.md) | Actions | Run the counting-target HTTP Action Gateway smoke: denial, approval, exactly one claim-dispatch, replay and signed lifecycle verification. |
 | [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Proof | End-to-end tamper-evidence demo: verify in dashboard, export signed evidence, tamper one field, verify failure with CLI. |
 | [Your first governed agent](tutorials/first-governed-agent.md) | Integrate | Install → init → run → see evidence. Native Talon (requires Go + API key). |
 | [Manual governed session](tutorials/manual-governed-session.md) | Sessions | Reproduce a governed session by hand: tools, enforcement, sovereignty, session budgets, tamper check. |
@@ -100,7 +101,8 @@ Choose the shortest path for your situation:
 | [How to verify memory is used](guides/memory-verification.md) | Policy | CLI steps to confirm memory is written and injected into prompts (optional layer). |
 | [How to test and operate Plan Review](guides/plan-review-operators.md) | Policy | Human oversight gate for native agents (optional layer): configure, trigger, approve, dispatch, verify evidence. |
 | [Plan Review E2E test case](guides/plan-review-e2e-testcase.md) | Policy | Feature inventory (F1–F30) and phased testcase TC-PR-001–012 with pass criteria. |
-| [How to choose your integration path](guides/choosing-integration-path.md) | Integrate | Pick MCP proxy vs LLM gateway vs native Talon. |
+| [How to choose your integration path](guides/choosing-integration-path.md) | Integrate | Choose between model gateway, MCP, exact HTTP actions, native and OpenShell delegated boundaries. |
+| [Migrate to MCP 2026-07-28 and enforced policy](guides/mcp-2026-migration.md) | Integrate | Breaking protocol, config and governance error-contract migration checklist. |
 | [Add Talon to your existing app](guides/add-talon-to-existing-app.md) | Integrate | Point your existing app (Python, Node, curl) at Talon in a few minutes; first real request and evidence. |
 | [Docker primer: OpenClaw + Talon (cloud-ready)](guides/openclaw-talon-primer/docker-openclaw-talon-primer.md) | Integrate | Predefined Docker setup to run Talon gateway for OpenClaw; deploy in the cloud. |
 | [Slack bot integration](guides/slack-bot-integration.md) | Integrate | Route your Slack bot's LLM calls through Talon for cost caps, PII controls, and an audit trail. |
@@ -119,7 +121,7 @@ Choose the shortest path for your situation:
 | [Control-plane boundaries](reference/control-plane-boundaries.md) | Living architecture reference for ADR-004: component ownership, model vs action governance, execution profiles, continuation ownership, MCP 2026-07-28, OpenShell DELEGATE, identity classes, provenance, current-surface disposition and shipped-vs-target status. |
 | [MCP governance extension](reference/mcp-governance-extension.md) | `io.dativo.talon/governance`: stable governance codes shared across HTTP/MCP, retryability, placement in error.data / result _meta, committed evidence references, protocol-vs-governance boundary. |
 | [Action Gateway](reference/action-gateway.md) | The shipped exact-action spine: declaring actions and trusted MCP sources, immutable operations, approver decisions, at-most-once `talon_forwarded` dispatch, outcome truth table. |
-| [NVIDIA OpenShell composition](integration/openshell.md) | Talon as OpenShell's supervisor middleware (DELEGATE): contract, identity, evidence semantics, fixture and live lanes, honest bypass model. |
+| [NVIDIA OpenShell composition](integration/openshell.md) | Request-side DELEGATE, opt-in PRE_RETURN response governance, actual-usage settlement and sandbox-to-HTTP-action hop; fixture versus live validation and bypass limits. |
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Normative signed-record spec: fields, canonical serialization, HMAC-SHA256 signing, and the independent verification procedure. |
 | [Presidio compatibility matrix](reference/presidio-compatibility-matrix.md) | Scanner boundary contract: Presidio-shaped result ingress, canonical mapping, and byte-offset normalization rules. |
