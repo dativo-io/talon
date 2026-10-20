@@ -1384,3 +1384,52 @@ func BenchmarkCostTotal(b *testing.B) {
 		_, _ = store.CostTotal(ctx, "acme", "", dayStart, dayEnd)
 	}
 }
+
+// `audit list --runtime-ref` is a complete, indexed query: every record
+// attributed to the reference through enforcement.runtime.reference or
+// workload_identity.subject, scoped, newest first, paged with a total.
+func TestStore_ListByRuntimeRef(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	write := func(id, tenant, agent, ref, subject string, ts time.Time) {
+		ev := &Evidence{
+			ID: id, CorrelationID: "c_" + id, Timestamp: ts, TenantID: tenant, AgentID: agent, InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		}
+		if ref != "" {
+			ev.Enforcement = &Enforcement{Provenance: ProvenanceDelegatedExpected, Runtime: &ExternalRuntimeRef{Type: "openshell", Reference: ref}}
+		}
+		if subject != "" {
+			ev.WorkloadIdentity = &WorkloadIdentity{Status: WorkloadIdentityVerified, Runtime: "openshell", Subject: subject}
+		}
+		require.NoError(t, store.Store(ctx, ev))
+	}
+	base := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 30; i++ {
+		write(fmt.Sprintf("ref_%02d", i), "acme", "bot", "sb-42", "", base.Add(time.Duration(i)*time.Minute))
+	}
+	write("imported", "acme", "bot", "", "spiffe://openshell/sandbox/sb-42", base.Add(time.Hour))
+	write("other_sandbox", "acme", "bot", "sb-43", "", base)
+	write("other_tenant", "globex", "bot", "sb-42", "", base)
+	write("suffix_trap", "acme", "bot", "", "spiffe://openshell/sandbox/xsb-42", base)
+
+	page, err := store.ListByRuntimeRef(ctx, "acme", "", "sb-42", 10, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 31, page.Total, "30 referenced + 1 imported; other sandbox, other tenant and the suffix trap excluded")
+	require.Len(t, page.Records, 10)
+	assert.Equal(t, "imported", page.Records[0].ID, "newest first")
+	assert.Equal(t, "ref_29", page.Records[1].ID)
+
+	page2, err := store.ListByRuntimeRef(ctx, "acme", "", "sb-42", 10, 30)
+	require.NoError(t, err)
+	assert.Equal(t, 31, page2.Total)
+	require.Len(t, page2.Records, 1)
+	assert.Equal(t, "ref_00", page2.Records[0].ID, "the oldest record is reachable by paging, not cut by a window")
+
+	all, err := store.ListByRuntimeRef(ctx, "", "", "sb-42", 0, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 32, all.Total, "unscoped: the other tenant's record too")
+	none, err := store.ListByRuntimeRef(ctx, "acme", "", "sb-%", 10, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 0, none.Total, "LIKE metacharacters in the reference are literal")
+}

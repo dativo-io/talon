@@ -717,6 +717,7 @@ gateway:
       settlement_timeout: 5m                          # unobserved responses settle with the estimate after this (30s–1h)
       max_capture_bytes: 1048576                      # response body bound (≤ max_payload_bytes)
       max_pending: 10000                              # settlement ledger bound; new requests refused beyond it (100–1000000)
+      ledger_retention: 720h                          # settled ledger rows pruned after this (24h–8760h); pending rows never
     middleware_name: talon            # default talon; must equal the gateway.toml registration name
     max_payload_bytes: 4194304        # default and ceiling 4 MiB
     request_timeout: 10s              # advertised in the manifest; 10ms–30s

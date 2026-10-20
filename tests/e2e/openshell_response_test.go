@@ -265,6 +265,7 @@ gateway:
     response_governance:
       enabled: true
       settlement_timeout: 30s
+      max_capture_bytes: 4096
 `, osPort, osIssuer, osAudience, jwksPath))...)
 	if err := os.WriteFile(cfgPath, cfg, 0o600); err != nil {
 		t.Fatal(err)
@@ -363,6 +364,16 @@ gateway:
 	}
 	errorSettlementID := respMeta["talon_evidence_id"]
 
+	// 4e. A response larger than max_capture_bytes whose PII sits BEYOND the
+	// bound: only a prefix can be scanned, and a preventive policy does not
+	// release a body it could not inspect — zero bytes reach the sandbox.
+	provider.next.Store(`{"id":"cmpl-5","model":"gpt-4o-mini","choices":[{"message":{"role":"assistant","content":"` + strings.Repeat("x", 5000) + ` mail ` + email + `"}}],"usage":{"prompt_tokens":5,"completion_tokens":1}}`)
+	status, delivered, _, respMeta = sup.forwardAndReturn(t, token(), `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"long answer please"}]}`, provider)
+	if status != http.StatusForbidden || len(delivered) != 0 || respMeta["talon_decision"] != "block" {
+		t.Fatalf("oversized body under redact must be blocked: %d %d bytes meta=%v", status, len(delivered), respMeta)
+	}
+	oversizedSettlementID := respMeta["talon_evidence_id"]
+
 	// 5. Evidence.
 	recs := exportRecords(t, dir)
 	byID := map[string]map[string]any{}
@@ -413,6 +424,18 @@ gateway:
 	if !strings.Contains(annotations(eset), "provider_error_body_scanned") {
 		t.Fatalf("error settlement annotations: %s", annotations(eset))
 	}
+	oset := byID[oversizedSettlementID]
+	if oset == nil {
+		t.Fatalf("oversized settlement missing")
+	}
+	if pd, _ := oset["policy_decision"].(map[string]any); pd["allowed"] != false {
+		t.Fatalf("oversized settlement must be a block: %v", pd)
+	}
+	if ocls, _ := oset["classification"].(map[string]any); ocls != nil {
+		if oscan, _ := ocls["response_scan"].(map[string]any); oscan["status"] != "incomplete" || oscan["incomplete_reason"] != "capture_limit_exceeded" {
+			t.Fatalf("oversized settlement must record the incomplete scan: %v", oscan)
+		}
+	}
 	for _, r := range recs {
 		if r["invocation_type"] == "gateway_response" && strings.Contains(annotations(r), "decision_unmatched") {
 			t.Fatalf("no settlement may lose its request half: %v", r["id"])
@@ -441,7 +464,7 @@ gateway:
 		c, _ := exec(r)["cost"].(float64)
 		sessionCost += c
 	}
-	if sessionDecisions != 5 || sessionSettlements != 5 {
+	if sessionDecisions != 6 || sessionSettlements != 6 {
 		t.Fatalf("session records: decisions=%v settlements=%v (the duplicate callback must not add a record)", sessionDecisions, sessionSettlements)
 	}
 	var settledSum float64
@@ -459,7 +482,7 @@ gateway:
 			t.Errorf("leak of %q in evidence or logs", leak)
 		}
 	}
-	for _, id := range []string{decisionID, settlementID, redactedSettlementID, restartSettlementID, errorSettlementID} {
+	for _, id := range []string{decisionID, settlementID, redactedSettlementID, restartSettlementID, errorSettlementID, oversizedSettlementID} {
 		if out, _, code := RunTalon(t, dir, nil, "audit", "verify", id); code != 0 || !strings.Contains(strings.ToUpper(out), "VALID") {
 			t.Errorf("audit verify %s: %d %s", id, code, out)
 		}
@@ -468,7 +491,7 @@ gateway:
 	if !strings.Contains(show, "gateway_response") {
 		t.Errorf("audit show of the settlement:\n%s", show)
 	}
-	if provider.calls.Load() != 5 {
-		t.Fatalf("provider calls = %d, want 5 (a repeated callback never re-reaches the provider)", provider.calls.Load())
+	if provider.calls.Load() != 6 {
+		t.Fatalf("provider calls = %d, want 6 (a repeated callback never re-reaches the provider)", provider.calls.Load())
 	}
 }

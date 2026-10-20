@@ -975,6 +975,11 @@ type OpenShellResponseGovernanceConfig struct {
 	// (settlement_capacity_exhausted) — obligations are never discarded
 	// (100–1,000,000, default 10,000).
 	MaxPending int `yaml:"max_pending,omitempty" json:"max_pending,omitempty"`
+	// LedgerRetention is how long a settled ledger row is kept after its
+	// settlement (24h–8760h, default 720h). Pending obligations are never
+	// pruned; a terminal row protects against repeated callbacks for its
+	// exchange until it is pruned.
+	LedgerRetention string `yaml:"ledger_retention,omitempty" json:"ledger_retention,omitempty"`
 }
 
 // OpenShellSelfDestinationConfig configures the Talon-as-destination hop.
@@ -1209,6 +1214,7 @@ const (
 	DefaultOpenShellSettlementTimeout     = "5m"
 	DefaultOpenShellMaxCaptureBytes       = int64(1024 * 1024)
 	DefaultOpenShellMaxPendingSettlements = 10000
+	DefaultOpenShellLedgerRetention       = "720h"
 )
 
 func (r *OpenShellResponseGovernanceConfig) validate(maxPayload int64) error {
@@ -1231,10 +1237,34 @@ func (r *OpenShellResponseGovernanceConfig) validate(maxPayload int64) error {
 	if maxPayload > 0 && r.MaxCaptureBytes > maxPayload {
 		return fmt.Errorf("max_capture_bytes must not exceed max_payload_bytes (%d)", maxPayload)
 	}
+	return r.validateLedger()
+}
+
+// validateLedger checks the settlement ledger bounds.
+func (r *OpenShellResponseGovernanceConfig) validateLedger() error {
 	if r.MaxPending != 0 && (r.MaxPending < 100 || r.MaxPending > 1000000) {
 		return fmt.Errorf("max_pending must be between 100 and 1000000")
 	}
+	if r.LedgerRetention == "" {
+		r.LedgerRetention = DefaultOpenShellLedgerRetention
+	}
+	if lr, err := time.ParseDuration(r.LedgerRetention); err != nil || lr < 24*time.Hour || lr > 365*24*time.Hour {
+		return fmt.Errorf("ledger_retention must be a duration between 24h and 8760h")
+	}
 	return nil
+}
+
+// LedgerRetentionDuration is how long terminal ledger rows are kept.
+func (r *OpenShellResponseGovernanceConfig) LedgerRetentionDuration() time.Duration {
+	if r == nil || r.LedgerRetention == "" {
+		d, _ := time.ParseDuration(DefaultOpenShellLedgerRetention)
+		return d
+	}
+	d, err := time.ParseDuration(r.LedgerRetention)
+	if err != nil {
+		d, _ = time.ParseDuration(DefaultOpenShellLedgerRetention)
+	}
+	return d
 }
 
 // ResponseGovernanceEnabled reports whether the response hook is on.

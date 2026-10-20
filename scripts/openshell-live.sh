@@ -357,6 +357,7 @@ gateway:
     response_governance:
       enabled: true
       settlement_timeout: "60s"
+      max_capture_bytes: 4096            # case P: a body beyond this bound is blocked under the redact policy
 EOT
 # Trusted action catalog of the use case (the sandbox cannot change it): a
 # read, a consequential refund that needs a human reviewer, and a forbidden
@@ -611,10 +612,10 @@ for ((i=0; i<40; i++)); do
 done
 grep -q "agent_config_reload_activated" "$LOGS/talon-serve.log" || die "talon did not activate the binding generation"
 
-sandbox_request() { # sandbox body -> prints "<http_code>\n<response body>"; stdout only, no file writes in the sandbox
-  local sb="$1" body="$2"
-  "${CLI[@]}" sandbox exec --name "$sb" --no-tty --no-login-shell --timeout 60 --env "TALON_BODY=$body" -- \
-    "$SH_BIN" -c 'out=$('"$CURL_BIN"' -sS --max-time 40 -w "\n__CODE__%{http_code}" -X POST "http://host.openshell.internal:'"$MOCK_PORT"'/v1/chat/completions" -H "Authorization: Bearer $OPENAI_API_KEY" -H "content-type: application/json" -H "X-Talon-Session-ID: sess-live-'"$RUN_ID"'" --data "$TALON_BODY"); echo "${out##*__CODE__}"; printf "%s\n" "${out%__CODE__*}"' 2>>"$LOGS/setup.log"
+sandbox_request() { # sandbox body [extra-header] -> prints "<http_code>\n<response body>"; stdout only, no file writes in the sandbox
+  local sb="$1" body="$2" extra="${3:-}"
+  "${CLI[@]}" sandbox exec --name "$sb" --no-tty --no-login-shell --timeout 60 --env "TALON_BODY=$body" --env "TALON_EXTRA_HEADER=$extra" -- \
+    "$SH_BIN" -c 'out=$('"$CURL_BIN"' -sS --max-time 40 -w "\n__CODE__%{http_code}" -X POST "http://host.openshell.internal:'"$MOCK_PORT"'/v1/chat/completions" -H "Authorization: Bearer $OPENAI_API_KEY" -H "content-type: application/json" -H "X-Talon-Session-ID: sess-live-'"$RUN_ID"'" ${TALON_EXTRA_HEADER:+-H "$TALON_EXTRA_HEADER"} --data "$TALON_BODY"); echo "${out##*__CODE__}"; printf "%s\n" "${out%__CODE__*}"' 2>>"$LOGS/setup.log"
 }
 
 # ---------------------------------------------------------------- CASE A — allowed
@@ -668,6 +669,56 @@ OUT="$(sandbox_request "$SANDBOX_A" "$BODY_A")"; CODE="$(head -n1 <<<"$OUT")"
 [[ "$CODE" == "200" ]] || die "CASE F expected 200 after talon restart without a gateway restart, got $CODE: $OUT"
 [[ "$(provider_calls)" == "3" ]] || die "CASE F provider calls = $(provider_calls), want 3"
 pass "CASE F talon restarted: governed again without a gateway restart"
+
+# ---------------------------------------------------------------- response side against the real runtime
+# The mock provider answers scripted RESPONSE shapes selected per request
+# (X-Mock-Scenario, carried from the sandbox through OpenShell untouched).
+# The org policy is redact, a preventive response policy: Talon holds the
+# whole body at PRE_RETURN and OpenShell enforces its answer.
+
+# ---------------------------------------------------------------- CASE O — response PII redacted before the sandbox sees it
+OUT="$(sandbox_request "$SANDBOX_A" "$BODY_A" "X-Mock-Scenario: response-pii")"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "200" ]] || die "CASE O expected 200 (transformed response delivered), got $CODE: $OUT"
+[[ "$(provider_calls)" == "4" ]] || die "CASE O provider calls = $(provider_calls), want 4"
+grep -qF "$PII_EMAIL" <<<"$OUT" && die "CASE O the sandbox received the provider's sensitive value"
+grep -q "refund" <<<"$OUT" || die "CASE O the sandbox did not receive Talon's replacement body: $OUT"
+grep -q '"usage"' <<<"$OUT" || die "CASE O the replacement body lost the envelope: $OUT"
+pass "CASE O response PII: OpenShell held the body, Talon transformed it, the sandbox never saw $PII_EMAIL"
+
+# ---------------------------------------------------------------- CASE P — response beyond the capture bound: blocked, zero bytes delivered
+OUT="$(sandbox_request "$SANDBOX_A" "$BODY_A" "X-Mock-Scenario: oversized")"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" != "200" ]] || die "CASE P a response beyond max_capture_bytes under a preventive policy must not be delivered: $CODE"
+[[ "$(provider_calls)" == "5" ]] || die "CASE P provider calls = $(provider_calls), want 5"
+grep -qF "$PII_EMAIL" <<<"$OUT" && die "CASE P the sandbox received the sensitive value past the capture bound"
+grep -q 'xxxxxxxxxxxxxxxx' <<<"$OUT" && die "CASE P the sandbox received body bytes of a blocked response"
+pass "CASE P oversized response (PII past the 4 KiB bound): delivery blocked (code $CODE), zero body bytes reached the sandbox"
+
+# ---------------------------------------------------------------- CASE Q — provider error body echoing PII: blocked under redact
+OUT="$(sandbox_request "$SANDBOX_A" "$BODY_A" "X-Mock-Scenario: error-pii")"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" != "200" && "$CODE" != "400" ]] || die "CASE Q the provider's error body with PII must not be delivered as is: $CODE: $OUT"
+[[ "$(provider_calls)" == "6" ]] || die "CASE Q provider calls = $(provider_calls), want 6"
+grep -qF "$PII_EMAIL" <<<"$OUT" && die "CASE Q the sandbox received the provider error's sensitive value"
+pass "CASE Q provider 400 echoing PII: delivery blocked (code $CODE), the sandbox never saw $PII_EMAIL"
+
+# ---------------------------------------------------------------- CASE R — talon restarts while a response is in flight
+# The provider holds its answer; Talon is restarted after the decision and
+# before the response; the response reaches the NEW process, which settles
+# it against the ledger row the old process committed with the decision.
+RESTART_OUT="$WORK/case-r.out"
+( sandbox_request "$SANDBOX_A" "$BODY_A" "X-Mock-Delay-Ms: 15000" >"$RESTART_OUT" 2>&1 ) &
+RESTART_PID=$!
+for ((i=0; i<80; i++)); do
+  [[ "$(provider_calls)" == "7" ]] && break
+  sleep 0.25
+done
+[[ "$(provider_calls)" == "7" ]] || die "CASE R the provider never received the decided request"
+kill "$TALON_PID"; wait "$TALON_PID" 2>/dev/null || true; TALON_PID=""
+start_talon
+wait "$RESTART_PID" || true
+OUT="$(cat "$RESTART_OUT")"; CODE="$(head -n1 <<<"$OUT")"
+[[ "$CODE" == "200" ]] || die "CASE R expected 200 after a Talon restart during the response, got $CODE: $OUT"
+grep -q '"chatcmpl-mock-7"' <<<"$OUT" || die "CASE R the sandbox did not receive the held completion: $OUT"
+pass "CASE R talon restarted between decision and response: the new process settled the response against the durable ledger"
 
 # ---------------------------------------------------------------- action gateway through the hop
 SESSION="sess-live-$RUN_ID"
@@ -822,11 +873,22 @@ DECISIONS_ALLOWED="$(jq '[.records[] | select(.invocation_type=="gateway" and .e
 AWAITING="$(jq '[.records[] | select(.invocation_type=="gateway" and .enforcement.provenance=="delegated_expected" and .policy_decision.allowed==true and .execution.pricing_basis=="awaiting_settlement" and .execution.cost==0)] | length' "$EXPORT")"
 [[ "$AWAITING" == "$DECISIONS_ALLOWED" && "${AWAITING:-0}" -ge 3 ]] || die "allowed decisions=$DECISIONS_ALLOWED but awaiting_settlement records=$AWAITING (every allowed delegated decision must defer its cost to the settlement)"
 SETTLED="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .execution.tokens.input==12 and .execution.tokens.output==3 and .execution.cost>0 and .execution.pricing_basis!="awaiting_settlement" and .execution.pricing_basis!="estimate_no_usage" and .execution.pricing_basis!="estimate_unsettled" and (.gateway_annotations|index("response_observed")!=null))] | length' "$EXPORT")"
-[[ "$SETTLED" == "$DECISIONS_ALLOWED" ]] || die "settled responses with the provider's actual usage=$SETTLED, want $DECISIONS_ALLOWED"
+# Cases P (oversized: usage sits past the bound) and Q (provider error:
+# nothing billed) settle without priced usage; every other allowed decision
+# carries the mock's actual usage.
+[[ "$SETTLED" == "$((DECISIONS_ALLOWED - 2))" ]] || die "settled responses with the provider's actual usage=$SETTLED, want $((DECISIONS_ALLOWED - 2))"
+OVERSIZED_BLOCKED="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==false and .classification.response_scan.status=="incomplete" and .classification.response_scan.incomplete_reason=="capture_limit_exceeded")] | length' "$EXPORT")"
+[[ "$OVERSIZED_BLOCKED" == "1" ]] || die "case P: expected one blocked settlement with an incomplete (capture_limit_exceeded) scan, found $OVERSIZED_BLOCKED"
+ERROR_BLOCKED="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==false and .status=="failed" and .classification.output_pii_detected==true and .execution.cost==0)] | length' "$EXPORT")"
+[[ "$ERROR_BLOCKED" == "1" ]] || die "case Q: expected one blocked, unbilled error settlement with PII detected, found $ERROR_BLOCKED"
+PII_REDACTED_RESPONSE="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .classification.output_pii_detected==true and .classification.response_scan.enforcement=="preventive" and .execution.tokens.input==12)] | length' "$EXPORT")"
+[[ "$PII_REDACTED_RESPONSE" == "1" ]] || die "case O: expected one preventively redacted settlement with usage, found $PII_REDACTED_RESPONSE"
+grep -qF "$PII_EMAIL" "$EXPORT" && die "the provider's sensitive value appears in Talon's evidence export"
+grep -qF "$PII_EMAIL" "$LOGS/talon-serve.log" && die "the provider's sensitive value appears in Talon's logs"
 JOINED="$(jq '[.records[] | select(.invocation_type=="gateway" and .policy_decision.allowed==true and .enforcement.provenance=="delegated_expected") | .correlation_id] as $c | [.records[] | select(.invocation_type=="gateway_response" and (.correlation_id as $x | $c | index($x)) != null)] | length' "$EXPORT")"
 [[ "$JOINED" == "$DECISIONS_ALLOWED" ]] || die "settlements joined to their decision by correlation id=$JOINED, want $DECISIONS_ALLOWED"
 jq -e '[.records[] | select(.invocation_type=="gateway_response" and (.gateway_annotations|index("decision_unmatched")!=null))] | length == 0' "$EXPORT" >/dev/null || die "a settlement lost its request half"
-pass "evidence: $SETTLED response settlements carry the provider's actual usage (12/3) priced from the table under their decision's correlation id; decisions booked 0 while awaiting settlement"
+pass "evidence: $SETTLED response settlements carry the provider's actual usage (12/3) priced from the table under their decision's correlation id; decisions booked 0 while awaiting settlement; case O redacted preventively, P blocked (capture bound), Q blocked (error PII), none carrying $PII_EMAIL"
 # Action lifecycle records: the REAL sandbox identity verified through the
 # hop, Talon-enforced execution with the runtime reference, the session spine
 # shared with the model records, lifecycle verification, and no credential.
@@ -868,6 +930,7 @@ ALL PASS openshell live smoke
   sandbox binaries:   curl=$DETECTED_CURL sh=$DETECTED_SH sleep=$DETECTED_SLEEP ($CURL_VERSION_LINE)
   openshell images:   $(docker ps -a --format '{{.Image}}' | grep -i openshell | sort -u | tr '\n' ' ')
   host address:       $HOST_IP (talon middleware https://$HOST_IP:$TALON_GRPC_PORT, talon http :$TALON_HTTP_PORT, mock provider :$MOCK_PORT, protected service :$PROTECTED_PORT)
+  response cases:     O response PII redacted, P oversized body blocked (PII past the bound), Q provider error with PII blocked, R talon restart between decision and response
   action cases:       G allow=1 dispatch, H deny=0, I approval→1 dispatch (replay 0), J unbound, K assertion overwrite/forgery, L direct egress blocked, M reviewer route closed, N reference agent end to end
   ocsf (gateway):     $LOGS/gateway-ocsf.jsonl ($(wc -l <"$LOGS/gateway-ocsf.jsonl" 2>/dev/null || echo 0) lines)
 EOT

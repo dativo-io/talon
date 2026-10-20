@@ -96,7 +96,7 @@ func delegatedReq(principal *workload.Principal, body string) DelegatedRequest {
 
 func listDelegated(t *testing.T, store *evidence.Store, agent string) []evidence.Evidence {
 	t.Helper()
-	recs, err := store.List(context.Background(), "acme", agent, time.Time{}, time.Time{}, 10)
+	recs, err := store.List(context.Background(), "acme", agent, time.Time{}, time.Time{}, 1000)
 	require.NoError(t, err)
 	return recs
 }

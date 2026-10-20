@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
 
@@ -113,6 +114,28 @@ type RecordGatewayEvidenceParams struct {
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
 // Never logs or stores real provider API keys.
 func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params RecordGatewayEvidenceParams) (*evidence.Evidence, error) {
+	ev := buildGatewayEvidence(params)
+	if err := store.Store(ctx, ev); err != nil {
+		return nil, err
+	}
+	return ev, nil
+}
+
+// storeGatewayEvidenceTx signs and inserts the record inside a caller-owned
+// transaction (the delegated settlement ledger commits its state transition
+// and its record together, #482). Post-commit projections fire when the
+// caller reports the commit through the TxWriter.
+func storeGatewayEvidenceTx(ctx context.Context, w *evidence.TxWriter, tx *sql.Tx, params RecordGatewayEvidenceParams) (*evidence.Evidence, error) {
+	ev := buildGatewayEvidence(params)
+	if err := w.Store(ctx, tx, ev); err != nil {
+		return nil, err
+	}
+	return ev, nil
+}
+
+// buildGatewayEvidence assembles the unsigned record; the id is assigned
+// here so a ledger row can name it in the same transaction.
+func buildGatewayEvidence(params RecordGatewayEvidenceParams) *evidence.Evidence {
 	var toolGov *evidence.ToolGovernance
 	if len(params.ToolsRequested) > 0 || len(params.ToolsFiltered) > 0 || len(params.ToolsForwarded) > 0 {
 		toolGov = &evidence.ToolGovernance{
@@ -227,10 +250,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		}
 	}
 	ev.Explanations = explanation.BuildFromFacts(facts)
-	if err := store.Store(ctx, ev); err != nil {
-		return nil, err
-	}
-	return ev, nil
+	return ev
 }
 
 // What happened to a response in which PII was detected.
@@ -291,6 +311,7 @@ func sanitizeGatewayAnnotations(in []string) []string {
 		annotationProviderError:     {}, // settlement: the provider answered an error status; nothing billed
 		annotationErrorBodyScanned:  {}, // settlement: the provider's error body was scanned under the response policy
 		annotationResponseLate:      {}, // reconciliation: the response arrived after the estimate was booked as unobserved
+		annotationRawTextScanned:    {}, // settlement: a text/* body was scanned as raw text under the response policy
 	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(in))

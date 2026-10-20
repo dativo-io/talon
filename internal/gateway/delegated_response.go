@@ -25,10 +25,10 @@ import (
 // sees the provider's answer at PRE_RETURN before the sandbox does. The two
 // halves are joined by the runtime's own request id through the durable
 // settlement ledger (settlement_repo.go): the request half writes a pending
-// row (estimate, session reservation, the response policy in force); the
-// response half claims it, observes actual usage, prices it, settles the
-// session budget, applies the response PII policy, and commits a second
-// signed record under the SAME correlation id.
+// row (estimate, session reservation, the response policy in force) in the
+// same transaction as the decision record; the response half observes the
+// response, then commits — in ONE transaction — the row's status transition
+// with its outcome and the signed settlement record.
 //
 // Cost truth: while a settlement is pending the decision record carries
 // cost 0 with PricingBasisAwaitingSettlement, so spend sums never count an
@@ -39,10 +39,34 @@ import (
 // estimate. A response that arrives after that writes a reconciliation whose
 // cost is only the amount by which the actual exceeded the booked estimate,
 // so the sum over records is max(estimate, actual), never estimate plus
-// actual. Repeated callbacks for one exchange replay the recorded outcome
-// and write nothing. Pending estimates still count toward the daily/monthly
-// budget check, and the ledger is bounded by refusing NEW delegated
-// requests when it is full — never by discarding an obligation.
+// actual. This is deliberately conservative: when the late actual is BELOW
+// the booked estimate the estimate stands and the reconciliation books 0 —
+// the ledger and the records say so (late_reconciliation), and nothing
+// presents it as exact actual spend. Repeated callbacks for one exchange
+// replay the recorded outcome and write nothing. Pending estimates still
+// count toward the daily/monthly budget check, and the ledger is bounded by
+// refusing NEW delegated requests when it is full — never by discarding an
+// obligation.
+//
+// Session budget. The session store is a separate database and cannot join
+// the ledger transaction. Each committed transition records what it owes
+// the session (session_state = owed, with the cost/tokens); the session
+// update runs right after COMMIT and marks the row settled; a failed update
+// leaves the row owed and the sweeper retries it. This is at-least-once:
+// the one window in which the session can be charged twice is "the session
+// update succeeded but the mark did not reach the ledger", which a crash
+// between the two writes opens. Session totals bound admission (a
+// conservative input, healed for stale reservations); the signed records
+// are the spend of record, and they are exactly once.
+//
+// Prevention. A preventive response policy (block/redact) promises the
+// sandbox never receives ungoverned bytes. Every path that cannot prove the
+// body was fully inspected fails closed: a body beyond the capture bound, a
+// compressed or partial body, an unsupported content type, a scanner
+// failure, a body mode less restrictive than the trusted plan, and a
+// settlement that cannot be committed all BLOCK delivery. Observational
+// policies (warn) pass such responses and record the observation as
+// incomplete, never as a clean scan.
 
 const (
 	// InvocationTypeGatewayResponse is the settlement record of one
@@ -70,6 +94,7 @@ const (
 	annotationBodyUninspectable = "response_body_uninspectable"
 	annotationErrorBodyScanned  = "provider_error_body_scanned"
 	annotationProviderError     = "provider_error"
+	annotationRawTextScanned    = "response_text_body_scanned"
 
 	// FailureReasonResponseUnobserved marks an unobserved settlement.
 	FailureReasonResponseUnobserved = "response_unobserved"
@@ -81,7 +106,21 @@ const (
 	ResponseModeStream      = "stream"
 
 	// Codes specific to the response hop.
+	// CodeResponseScanUnavailable: the body cannot be inspected (compressed,
+	// partial, no body) and the policy is preventive.
 	CodeResponseScanUnavailable = "output_scan_unavailable"
+	// CodeResponseScanIncomplete: the body exceeded the capture bound; only
+	// a prefix could be scanned and the policy is preventive.
+	CodeResponseScanIncomplete = "output_scan_incomplete"
+	// CodeResponseContentUnsupported: a body Talon has no inspector for
+	// (binary, unknown media type) under a preventive policy.
+	CodeResponseContentUnsupported = "output_content_unsupported"
+	// CodeResponseModeMismatch: the body arrived in a less restrictive mode
+	// than the trusted plan asked for, under a preventive policy.
+	CodeResponseModeMismatch = "response_mode_mismatch"
+	// CodeWorkloadIdentityConflict: the response callback's verified
+	// principal is not the one the request half was decided for.
+	CodeWorkloadIdentityConflict = "workload_identity_conflict"
 	// CodeSettlementCapacityExhausted: the ledger holds max_pending
 	// obligations; new delegated requests are refused until some settle.
 	CodeSettlementCapacityExhausted = "settlement_capacity_exhausted"
@@ -92,8 +131,42 @@ const (
 	CodeSettlementReplayed = "settlement_replayed"
 
 	settlementSweepBatch  = 500
+	settlementPruneBatch  = 1000
 	settlementReplayBasis = "replay"
 )
+
+// settlementKind is which ledger transition a settlement performs.
+type settlementKind int
+
+const (
+	settleFirst      settlementKind = iota // pending → settled
+	settleLate                             // unobserved → reconciled
+	settleUnmatched                        // no row: observed once under a fresh terminal row
+	settleUnobserved                       // sweeper: pending → unobserved
+)
+
+func (k settlementKind) String() string {
+	switch k {
+	case settleFirst:
+		return "settled"
+	case settleLate:
+		return "reconciled"
+	case settleUnmatched:
+		return "unmatched"
+	case settleUnobserved:
+		return "unobserved"
+	}
+	return "unknown"
+}
+
+// settlementHooks are fault-injection points for tests (nil in production):
+// beforeCommit runs inside the ledger transaction, after the status
+// transition and the record insert, immediately before COMMIT. Returning an
+// error rolls the transaction back, which is exactly what a crash there
+// does.
+type settlementHooks struct {
+	beforeCommit func(kind settlementKind, key settlementKey) error
+}
 
 // responseGovernanceEnabled reports whether decisions park a settlement.
 func (g *Gateway) responseGovernanceEnabled() bool {
@@ -108,8 +181,16 @@ func (g *Gateway) settlementTimeout() time.Duration {
 	return g.config.OpenShell.ResponseGovernance.SettlementTimeoutDuration()
 }
 
+func (g *Gateway) ledgerRetention() time.Duration {
+	if g.config == nil || g.config.OpenShell == nil || g.config.OpenShell.ResponseGovernance == nil {
+		return 0
+	}
+	return g.config.OpenShell.ResponseGovernance.LedgerRetentionDuration()
+}
+
 // RunDelegatedSettlementSweeper settles pending exchanges whose response
-// never arrived within the settlement window, until ctx ends.
+// never arrived within the settlement window, repairs owed session
+// bookkeeping and prunes terminal rows past their retention, until ctx ends.
 func (g *Gateway) RunDelegatedSettlementSweeper(ctx context.Context) {
 	if g.settlements == nil {
 		return
@@ -126,15 +207,19 @@ func (g *Gateway) RunDelegatedSettlementSweeper(ctx context.Context) {
 			return
 		case now := <-t.C:
 			g.SweepDelegatedPending(ctx, now)
+			g.RepairOwedSessionSettlements(ctx)
+			g.PruneSettlementLedger(ctx, now)
 		}
 	}
 }
 
 // SweepDelegatedPending settles every expired pending exchange as
 // unobserved: the estimate stands as the cost, the session reservation is
-// settled with it, and the record says no response was seen. Each row is
-// claimed (pending → unobserved) before anything is written, so a response
-// arriving concurrently either wins the claim or reconciles afterwards.
+// settled with it, and the record says no response was seen. Each row's
+// transition and record commit in one transaction, so a response arriving
+// concurrently either commits first (and the sweeper's transition finds
+// nothing to claim) or reads a complete unobserved settlement to reconcile
+// against — never a half-written one.
 func (g *Gateway) SweepDelegatedPending(ctx context.Context, now time.Time) int {
 	if g.settlements == nil {
 		return 0
@@ -146,24 +231,21 @@ func (g *Gateway) SweepDelegatedPending(ctx context.Context, now time.Time) int 
 	}
 	n := 0
 	for _, r := range rows {
-		claimed, err := g.settlements.claim(ctx, r.key, settlementPending, settlementUnobserved)
-		if err != nil || !claimed {
-			continue
+		if g.settleUnobserved(ctx, r) {
+			n++
 		}
-		g.settleUnobserved(ctx, r)
-		n++
 	}
 	return n
 }
 
-func (g *Gateway) settleUnobserved(ctx context.Context, r *settlementRow) {
+func (g *Gateway) settleUnobserved(ctx context.Context, r *settlementRow) bool {
 	ctx = g.delegatedContext(ctx, r.sessionID, r.sessionSource)
 	agent := g.settlementAgent(r)
 	cost := r.estimate
 	if r.isCountTokens {
 		cost = 0
 	}
-	persisted, err := g.recordEvidence(ctx, r.correlationID, agent, r.provider, r.model, r.startedAt, "", nil, nil, cost,
+	params := g.evidenceParams(ctx, r.correlationID, agent, r.provider, r.model, r.startedAt, "", nil, nil, cost,
 		time.Since(r.startedAt).Milliseconds(), "", true, nil, false, nil, nil, nil, false, "", 0, 0, false, 0, 0, r.estimate,
 		g.settlementProvenance(r), func(p *RecordGatewayEvidenceParams) {
 			p.InvocationType = InvocationTypeGatewayResponse
@@ -177,19 +259,98 @@ func (g *Gateway) settleUnobserved(ctx context.Context, r *settlementRow) {
 				Trigger: FailureReasonResponseUnobserved,
 			}}
 		})
+	owes := g.sessionWork(r.sessionID, r.sessionSource, r.reservation(), cost, settleUnobserved)
+	out := settlementOutcome{cost: cost, code: FailureReasonResponseUnobserved, sessionState: sessionStateNone, sessionCost: cost}
+	if owes {
+		out.sessionState = sessionStateOwed
+	}
+	ev, committed, err := g.commitTransition(ctx, r.key, settleUnobserved, params, out, nil)
 	if err != nil {
-		// The obligation stays: back to pending so the next sweep retries.
 		g.handleEvidenceWriteFailure(ctx, err)
-		if _, rerr := g.settlements.claim(ctx, r.key, settlementUnobserved, settlementPending); rerr != nil {
-			log.Error().Err(rerr).Str("correlation_id", r.correlationID).Msg("delegated_settlement_revert_failed")
+		return false
+	}
+	if !committed {
+		return false // a response won the claim meanwhile
+	}
+	if owes {
+		g.applySessionWork(ctx, r.key, r.reservation(), r.sessionID, r.sessionSource, r.tenantID, r.agentName, cost, 0)
+	}
+	log.Warn().Str("correlation_id", r.correlationID).Str("agent", r.agentName).Str("evidence_id", ev.ID).Msg("delegated_response_unobserved")
+	return true
+}
+
+// RepairOwedSessionSettlements retries the session update of committed
+// settlements whose session work did not complete (see the package comment
+// for the at-least-once guarantee this gives).
+func (g *Gateway) RepairOwedSessionSettlements(ctx context.Context) int {
+	if g.settlements == nil || g.sessionStore == nil {
+		return 0
+	}
+	rows, err := g.settlements.owedSessions(ctx, settlementSweepBatch)
+	if err != nil {
+		log.Warn().Err(err).Msg("delegated_settlement_session_repair_failed")
+		return 0
+	}
+	n := 0
+	for _, r := range rows {
+		var res *sessionReservation
+		if r.status != settlementReconciled {
+			res = r.reservation()
 		}
-		return
+		if g.applySessionWork(ctx, r.key, res, r.sessionID, r.sessionSource, r.tenantID, r.agentName, r.sessionCost, r.sessionTokens) {
+			n++
+		}
 	}
-	if err := g.settlements.finish(ctx, r.key, persisted.ID, cost, false, FailureReasonResponseUnobserved, time.Now()); err != nil {
-		log.Error().Err(err).Str("correlation_id", r.correlationID).Msg("delegated_settlement_finish_failed")
+	return n
+}
+
+// PruneSettlementLedger removes terminal rows older than the ledger
+// retention (bounded per call). Pending obligations and rows whose session
+// work is still owed are never pruned. A response callback for a pruned
+// exchange — impossible in the OpenShell protocol, whose response exchange
+// lives for one in-flight HTTP response — would be observed once as
+// decision_unmatched under a fresh row; the retention is the horizon after
+// which that is the documented behavior.
+func (g *Gateway) PruneSettlementLedger(ctx context.Context, now time.Time) int64 {
+	retention := g.ledgerRetention()
+	if g.settlements == nil || retention <= 0 {
+		return 0
 	}
-	g.trackSessionUsage(ctx, r.reservation(), r.sessionID, r.sessionSource, r.tenantID, r.agentName, cost, 0)
-	log.Warn().Str("correlation_id", r.correlationID).Str("agent", r.agentName).Msg("delegated_response_unobserved")
+	n, err := g.settlements.pruneTerminal(ctx, now.Add(-retention), settlementPruneBatch)
+	if err != nil {
+		log.Warn().Err(err).Msg("delegated_settlement_prune_failed")
+		return 0
+	}
+	if n > 0 {
+		log.Info().Int64("pruned", n).Dur("retention", retention).Msg("delegated_settlement_ledger_pruned")
+	}
+	return n
+}
+
+// sessionWork reports whether a transition owes the session store an update.
+func (g *Gateway) sessionWork(sessionID, sessionSource string, res *sessionReservation, cost float64, kind settlementKind) bool {
+	if g.sessionStore == nil || sessionID == "" || !isAssertedSessionSource(sessionSource) {
+		return false
+	}
+	if kind == settleLate {
+		return cost > 0
+	}
+	return res != nil || cost > 0
+}
+
+// applySessionWork performs the session update a committed settlement owes
+// and marks the ledger row; false when the update failed (the row stays
+// owed for the repair pass).
+func (g *Gateway) applySessionWork(ctx context.Context, key settlementKey, res *sessionReservation, sessionID, sessionSource, tenantID, agentName string, cost float64, tokens int) bool {
+	if err := g.settleSessionUsage(ctx, res, sessionID, sessionSource, tenantID, agentName, cost, tokens); err != nil {
+		log.Warn().Err(err).Str("session_id", sessionID).Msg("delegated_settlement_session_owed")
+		return false
+	}
+	if err := g.settlements.markSession(ctx, key, sessionStateSettled); err != nil {
+		log.Warn().Err(err).Msg("delegated_settlement_session_mark_failed")
+		return false
+	}
+	return true
 }
 
 // settlementAgent resolves the current identity of the row's use case, or a
@@ -216,6 +377,64 @@ func (g *Gateway) delegatedContext(ctx context.Context, sessionID, sessionSource
 	ctx = context.WithValue(ctx, gatewaySessionIDKey, sessionID)
 	ctx = context.WithValue(ctx, gatewaySessionSourceKey, sessionSource)
 	return context.WithValue(ctx, gatewayUpstreamAuthMode, UpstreamAuthModeExternalRuntime)
+}
+
+// commitTransition is the one durable write of a settlement: the row's
+// status transition with its outcome and the signed record, in a single
+// write transaction. For settleUnmatched the row is inserted terminal. It
+// returns (record, true, nil) on commit; (nil, false, nil) when another
+// writer moved the row first (the caller replays from the committed row);
+// and an error when nothing was written.
+func (g *Gateway) commitTransition(ctx context.Context, key settlementKey, kind settlementKind, params RecordGatewayEvidenceParams, out settlementOutcome, unmatched *settlementRow) (*evidence.Evidence, bool, error) {
+	tx, err := g.settlements.begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	w := g.evidenceStore.NewTxWriter()
+	defer func() {
+		_ = tx.Rollback()
+		w.Discard()
+	}()
+	ev, err := storeGatewayEvidenceTx(ctx, w, tx, params)
+	if err != nil {
+		return nil, false, err
+	}
+	out.evidenceID = ev.ID
+	now := time.Now()
+	switch kind {
+	case settleUnmatched:
+		if err := g.settlements.insertTerminal(ctx, tx, unmatched, settlementSettled, out, now); err != nil {
+			if errors.Is(err, errSettlementExists) {
+				return nil, false, nil
+			}
+			return nil, false, err
+		}
+	default:
+		from, to := settlementPending, settlementSettled
+		switch kind {
+		case settleLate:
+			from, to = settlementUnobserved, settlementReconciled
+		case settleUnobserved:
+			from, to = settlementPending, settlementUnobserved
+		}
+		ok, err := g.settlements.transition(ctx, tx, key, from, to, out, now)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			return nil, false, nil
+		}
+	}
+	if g.settlementHooks != nil && g.settlementHooks.beforeCommit != nil {
+		if err := g.settlementHooks.beforeCommit(kind, key); err != nil {
+			return nil, false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	w.Committed(ctx)
+	return ev, true, nil
 }
 
 // ---- preflight -------------------------------------------------------
@@ -264,11 +483,13 @@ func preventive(action string) bool { return action == "block" || action == "red
 // resolveResponseContext finds the request half or reconstructs it. It
 // never relaxes policy: without a row, the response policy comes from the
 // use case's CURRENT effective policy, and an unbound principal is refused.
+// With a row, the callback's verified principal must be the one the
+// request was decided for.
 func (g *Gateway) resolveResponseContext(ctx context.Context, pf DelegatedResponsePreflight) (*responseContext, *DelegatedResponsePlan) {
 	key := settlementKey{pf.RuntimeID, pf.SandboxRef, pf.RequestID}
 	var row *settlementRow
 	if g.settlements != nil {
-		r, err := g.settlements.get(ctx, key)
+		r, err := g.settlements.get(ctx, g.settlements.db, key)
 		if err != nil {
 			log.Error().Err(err).Msg("delegated_settlement_read_failed")
 			return nil, &DelegatedResponsePlan{Block: true, Code: CodeSettlementUnavailable, Message: CodeSettlementUnavailable + ": Talon could not read the settlement ledger (fail-closed)"}
@@ -276,6 +497,10 @@ func (g *Gateway) resolveResponseContext(ctx context.Context, pf DelegatedRespon
 		row = r
 	}
 	if row != nil {
+		if row.principal.Subject != "" && pf.Principal != nil && (row.principal.Subject != pf.Principal.Subject || row.principal.Issuer != pf.Principal.Issuer) {
+			RecordGatewayError(ctx, CodeWorkloadIdentityConflict)
+			return nil, &DelegatedResponsePlan{Block: true, Code: CodeWorkloadIdentityConflict, Message: CodeWorkloadIdentityConflict + ": the response callback's verified principal is not the one this request was decided for"}
+		}
 		return &responseContext{row: row, agent: g.settlementAgent(row), provider: row.provider, action: row.responsePIIAction}, nil
 	}
 	// No request half: Talon's own API behind the same hostname, a runtime
@@ -328,40 +553,69 @@ func (g *Gateway) PlanDelegatedResponse(ctx context.Context, pf DelegatedRespons
 	return plan
 }
 
+// responseShape classifies the response from its headers.
+type responseShape struct {
+	isSSE, isJSON, isText bool
+	uninspectable         bool
+}
+
+func shapeOf(pf DelegatedResponsePreflight) responseShape {
+	mt := strings.ToLower(strings.TrimSpace(pf.ContentType))
+	if i := strings.Index(mt, ";"); i >= 0 {
+		mt = strings.TrimSpace(mt[:i])
+	}
+	return responseShape{
+		isSSE:         mt == "text/event-stream",
+		isJSON:        mt == "application/json" || strings.HasSuffix(mt, "+json"),
+		isText:        strings.HasPrefix(mt, "text/") && mt != "text/event-stream",
+		uninspectable: !pf.BodyInspectable || (pf.ContentEncoding != "" && !strings.EqualFold(pf.ContentEncoding, "identity")),
+	}
+}
+
 // planResponseMode maps the response policy and the response shape to an
-// inspection mode (or a block). Provider error bodies are NOT assumed to be
-// harmless: under an observing policy an inspectable error body is scanned
-// like any other, and under a preventive one an uninspectable error body
-// is blocked.
+// inspection mode (or a block). The contract is conservative: JSON and SSE
+// are model bodies Talon can inspect field by field; text/* is inspected as
+// raw text (observed under warn, blocked rather than rewritten on PII under
+// redact); anything else — binary, unknown media types — has no inspector,
+// so a preventive policy blocks it and an observational one records it as
+// uninspectable. Provider error bodies are NOT assumed harmless.
 func planResponseMode(action string, pf DelegatedResponsePreflight) DelegatedResponsePlan {
 	prevent := preventive(action)
 	observing := action != "" && action != "allow"
-	ct := strings.ToLower(pf.ContentType)
-	isSSE := strings.Contains(ct, "text/event-stream")
-	isJSON := strings.Contains(ct, "application/json")
-	isText := strings.HasPrefix(ct, "text/")
-	uninspectable := !pf.BodyInspectable || (pf.ContentEncoding != "" && !strings.EqualFold(pf.ContentEncoding, "identity"))
+	sh := shapeOf(pf)
 	if pf.Status >= http.StatusBadRequest {
-		return planErrorResponseMode(observing, prevent, uninspectable, isJSON || isText)
+		return planErrorResponseMode(observing, prevent, sh.uninspectable, sh.isJSON || sh.isText)
 	}
+	return planSuccessResponseMode(observing, prevent, pf.StreamPermitted, sh)
+}
+
+// planSuccessResponseMode is the plan for a 2xx/3xx response.
+func planSuccessResponseMode(observing, prevent, streamPermitted bool, sh responseShape) DelegatedResponsePlan {
 	switch {
-	case !isSSE && !isJSON:
-		// Not a model body: nothing to scan or price; settle from the headers.
-		return DelegatedResponsePlan{Mode: ResponseModeHeadersOnly}
-	case uninspectable && prevent:
+	case sh.uninspectable && prevent:
 		// The policy promises prevention and the body cannot be seen: fail
 		// closed, never deliver unscanned bytes.
 		return DelegatedResponsePlan{Block: true, Code: CodeResponseScanUnavailable, Message: "response body cannot be inspected and the response PII policy is preventive"}
-	case uninspectable:
+	case sh.uninspectable:
 		return DelegatedResponsePlan{Mode: ResponseModeHeadersOnly, Code: annotationBodyUninspectable}
-	case isSSE && !prevent && pf.StreamPermitted:
+	case sh.isSSE && !prevent && streamPermitted:
 		// Observation: the sandbox streams while Talon watches; the record
 		// says post-delivery.
 		return DelegatedResponsePlan{Mode: ResponseModeStream}
-	default:
+	case sh.isSSE || sh.isJSON:
 		// Preventive (block/redact) or non-streaming: the runtime holds the
 		// whole body until Talon answers.
 		return DelegatedResponsePlan{Mode: ResponseModeWholeBody}
+	case sh.isText && observing:
+		return DelegatedResponsePlan{Mode: ResponseModeWholeBody}
+	case sh.isText:
+		return DelegatedResponsePlan{Mode: ResponseModeHeadersOnly}
+	case prevent:
+		return DelegatedResponsePlan{Block: true, Code: CodeResponseContentUnsupported, Message: "response media type has no inspector and the response PII policy is preventive"}
+	case observing:
+		return DelegatedResponsePlan{Mode: ResponseModeHeadersOnly, Code: annotationBodyUninspectable}
+	default:
+		return DelegatedResponsePlan{Mode: ResponseModeHeadersOnly}
 	}
 }
 
@@ -373,11 +627,26 @@ func planErrorResponseMode(observing, prevent, uninspectable, textual bool) Dele
 		return DelegatedResponsePlan{Mode: ResponseModeHeadersOnly}
 	case uninspectable && prevent:
 		return DelegatedResponsePlan{Block: true, Code: CodeResponseScanUnavailable, Message: "provider error body cannot be inspected and the response PII policy is preventive"}
+	case !textual && prevent:
+		return DelegatedResponsePlan{Block: true, Code: CodeResponseContentUnsupported, Message: "provider error body has no inspector and the response PII policy is preventive"}
 	case uninspectable || !textual:
 		return DelegatedResponsePlan{Mode: ResponseModeHeadersOnly, Code: annotationBodyUninspectable}
 	default:
 		return DelegatedResponsePlan{Mode: ResponseModeWholeBody}
 	}
+}
+
+// modeRank orders body modes by how much of the body Talon sees.
+func modeRank(mode string) int {
+	switch mode {
+	case ResponseModeWholeBody:
+		return 3
+	case ResponseModeStream:
+		return 2
+	case ResponseModeHeadersOnly:
+		return 1
+	}
+	return 0
 }
 
 // ---- settlement ------------------------------------------------------
@@ -388,7 +657,7 @@ type DelegatedResponseBody struct {
 	Preflight DelegatedResponsePreflight
 	Mode      string
 	Body      []byte
-	// Truncated: the stream capture hit its bound; usage/scan are partial.
+	// Truncated: the capture hit its bound; usage/scan are partial.
 	Truncated bool
 	// Incomplete names why the stream ended abnormally ("" = complete).
 	Incomplete string
@@ -415,22 +684,11 @@ type DelegatedSettlement struct {
 	Replayed bool
 }
 
-// settlementKind is which ledger transition a settlement performs.
-type settlementKind int
-
-const (
-	settleFirst     settlementKind = iota // pending → settled
-	settleLate                            // unobserved → reconciled
-	settleUnmatched                       // no row: observed once under a fresh row
-)
-
 // SettleDelegatedResponse observes one response: usage, cost, response PII
-// policy, session budget, signed record. It is idempotent per runtime
-// exchange: the ledger row is claimed before anything is written, a
-// repeated callback replays the recorded verdict, and a response that
+// policy, signed record, then session budget. It is idempotent per runtime
+// exchange: the transition and the record commit together or not at all, a
+// repeated callback replays the committed verdict, and a response that
 // arrives after the sweeper booked the estimate reconciles against it.
-//
-//nolint:gocyclo // one ordered transition protocol; splitting it would hide the order
 func (g *Gateway) SettleDelegatedResponse(ctx context.Context, in DelegatedResponseBody) DelegatedSettlement {
 	pf := in.Preflight
 	if pf.Principal == nil {
@@ -441,73 +699,99 @@ func (g *Gateway) SettleDelegatedResponse(ctx context.Context, in DelegatedRespo
 		return DelegatedSettlement{Block: refused.Block, Code: refused.Code, Message: refused.Message}
 	}
 	key := settlementKey{pf.RuntimeID, pf.SandboxRef, pf.RequestID}
-	kind := settleFirst
-	switch {
-	case rc.row == nil:
-		kind = settleUnmatched
-		if g.settlements != nil {
-			// Give the unmatched exchange a row first so a repeated callback
-			// replays instead of observing twice; losing the race to another
-			// callback means that callback owns the settlement.
-			row := g.newUnmatchedRow(key, pf, rc)
-			if err := g.settlements.insert(ctx, row); err != nil {
-				if errors.Is(err, errSettlementExists) {
-					return g.replaySettlement(ctx, key, in, rc)
-				}
-				log.Error().Err(err).Msg("delegated_settlement_insert_failed")
-				return g.failClosed(rc.action, CodeSettlementUnavailable)
-			}
-			rc.row = row
-		}
-	case rc.row.status == settlementSettled, rc.row.status == settlementReconciled:
+	kind, replay := settlementKindFor(rc.row)
+	if replay {
 		return g.replaySettlement(ctx, key, in, rc)
-	case rc.row.status == settlementUnobserved:
-		kind = settleLate
 	}
-	if g.settlements != nil {
-		from, to := settlementPending, settlementSettled
-		if kind == settleLate {
-			from, to = settlementUnobserved, settlementReconciled
-		}
-		claimed, err := g.settlements.claim(ctx, key, from, to)
-		if err != nil {
-			log.Error().Err(err).Msg("delegated_settlement_claim_failed")
-			return g.failClosed(rc.action, CodeSettlementUnavailable)
-		}
-		if !claimed {
-			// A concurrent callback or the sweeper moved the row first.
-			return g.replaySettlement(ctx, key, in, rc)
-		}
-	}
-	out := g.observeAndRecord(ctx, in, rc, kind)
 	if g.settlements == nil {
-		return out
+		// Response governance without a ledger does not exist (NewGateway
+		// refuses it); kept so the type system is honest about nil.
+		return g.failClosed(rc.action, CodeSettlementUnavailable)
 	}
-	if out.EvidenceID == "" {
-		// Nothing committed: the obligation stays open for the sweeper, and
-		// a row that never had a decision is removed again.
-		switch kind {
-		case settleUnmatched:
-			_ = g.settlements.delete(ctx, key)
-		case settleLate:
-			if _, err := g.settlements.claim(ctx, key, settlementReconciled, settlementUnobserved); err != nil {
-				log.Error().Err(err).Msg("delegated_settlement_revert_failed")
-			}
-		default:
-			if _, err := g.settlements.claim(ctx, key, settlementSettled, settlementPending); err != nil {
-				log.Error().Err(err).Msg("delegated_settlement_revert_failed")
-			}
+	obs := g.observe(ctx, in, rc, kind)
+	var unmatched *settlementRow
+	if kind == settleUnmatched {
+		unmatched = g.newUnmatchedRow(key, pf, rc)
+		obs.params.CorrelationID = unmatched.correlationID
+		obs.params.SessionID = unmatched.sessionID
+	}
+	ev, committed, err := g.commitTransition(obs.ctx, key, kind, obs.params, obs.outcome, unmatched)
+	if err != nil {
+		g.handleEvidenceWriteFailure(ctx, err)
+		// Nothing was written: the obligation is still pending for the
+		// sweeper. A preventive policy cannot release bytes whose verdict
+		// has no record.
+		if preventive(rc.action) {
+			return DelegatedSettlement{Block: true, Code: "evidence_unavailable", Message: "Talon could not commit the signed record (fail-closed)"}
 		}
-		return out
+		return DelegatedSettlement{Code: "evidence_unavailable", Body: obs.result.Body}
 	}
-	booked := out.Cost
-	if kind == settleLate {
-		booked = rc.row.settledCost + out.Cost
+	if !committed && kind == settleFirst {
+		// The sweeper committed the unobserved settlement while this
+		// response was being observed: this response is late now, and it
+		// reconciles against the booked estimate instead of replaying.
+		var late *observation
+		late, ev, committed, err = g.reconcileAfterLostClaim(ctx, key, in, rc)
+		if err != nil {
+			g.handleEvidenceWriteFailure(ctx, err)
+			return g.failClosed(rc.action, "evidence_unavailable")
+		}
+		if late != nil {
+			obs, kind = late, settleLate
+		}
 	}
-	if err := g.settlements.finish(ctx, key, out.EvidenceID, booked, out.Block, out.Code, time.Now()); err != nil {
-		log.Error().Err(err).Msg("delegated_settlement_finish_failed")
+	if !committed {
+		// A concurrent callback or the sweeper committed first.
+		return g.replaySettlement(ctx, key, in, rc)
 	}
+	out := obs.result
+	out.EvidenceID = ev.ID
+	g.settleOwedSession(obs, kind, key, rc.agent)
 	return out
+}
+
+// settlementKindFor maps the committed row to the transition a response
+// performs; replay is true when the row is already terminal.
+func settlementKindFor(row *settlementRow) (kind settlementKind, replay bool) {
+	switch {
+	case row == nil:
+		return settleUnmatched, false
+	case row.status == settlementSettled, row.status == settlementReconciled:
+		return settleFirst, true
+	case row.status == settlementUnobserved:
+		return settleLate, false
+	}
+	return settleFirst, false
+}
+
+// settleOwedSession applies the session work a committed transition owes.
+func (g *Gateway) settleOwedSession(obs *observation, kind settlementKind, key settlementKey, agent *ResolvedIdentity) {
+	if obs.outcome.sessionState != sessionStateOwed {
+		return
+	}
+	res := obs.reservation
+	if kind == settleLate {
+		res = nil
+	}
+	g.applySessionWork(obs.ctx, key, res, obs.sessionID, obs.sessionSource, agent.TenantID, agent.Name, obs.outcome.sessionCost, obs.outcome.sessionTokens)
+}
+
+// reconcileAfterLostClaim re-reads the row after a pending→settled claim
+// found nothing to claim; when the sweeper moved it to unobserved, the
+// response is observed again as a late reconciliation and committed.
+// (nil, nil, false, nil) means the row is not unobserved (replay instead).
+func (g *Gateway) reconcileAfterLostClaim(ctx context.Context, key settlementKey, in DelegatedResponseBody, rc *responseContext) (*observation, *evidence.Evidence, bool, error) {
+	row, err := g.settlements.get(ctx, g.settlements.db, key)
+	if err != nil || row == nil || row.status != settlementUnobserved {
+		return nil, nil, false, nil
+	}
+	rc.row = row
+	obs := g.observe(ctx, in, rc, settleLate)
+	ev, committed, err := g.commitTransition(obs.ctx, key, settleLate, obs.params, obs.outcome, nil)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return obs, ev, committed, nil
 }
 
 // failClosed answers a ledger failure: a preventive policy blocks delivery
@@ -521,8 +805,8 @@ func (g *Gateway) failClosed(action, code string) DelegatedSettlement {
 }
 
 // newUnmatchedRow is the ledger row for a response whose request half is
-// unknown (Talon restarted before the ledger existed, or the row aged out):
-// a fresh correlation id, the current policy, no reservation.
+// unknown (decided before the ledger existed, or pruned past retention): a
+// fresh correlation id, the current policy, no reservation.
 func (g *Gateway) newUnmatchedRow(key settlementKey, pf DelegatedResponsePreflight, rc *responseContext) *settlementRow {
 	correlationID := "gw_" + uuid.New().String()[:12]
 	return &settlementRow{
@@ -542,16 +826,14 @@ func principalProjection(p *workload.Principal) settlementPrincipal {
 	}
 }
 
-// replaySettlement answers a repeated callback from the ledger: the recorded
-// verdict, the recorded evidence id, no new record, no cost. An allowed
-// response under a preventive policy is re-inspected so the replacement
-// body is reproduced byte for byte.
+// replaySettlement answers a repeated callback from the committed row: the
+// recorded verdict, the recorded evidence id, no new record, no cost. An
+// allowed response under a preventive policy is re-inspected so the
+// replacement body is reproduced; if that re-inspection cannot be completed
+// the replay fails closed rather than release the original bytes.
 func (g *Gateway) replaySettlement(ctx context.Context, key settlementKey, in DelegatedResponseBody, rc *responseContext) DelegatedSettlement {
-	row := rc.row
-	if row == nil && g.settlements != nil {
-		row, _ = g.settlements.get(ctx, key)
-	}
-	if row == nil {
+	row, err := g.settlements.get(ctx, g.settlements.db, key)
+	if err != nil || row == nil || row.status == settlementPending {
 		return g.failClosed(rc.action, CodeSettlementUnavailable)
 	}
 	out := DelegatedSettlement{Replayed: true, Basis: settlementReplayBasis, Code: CodeSettlementReplayed, EvidenceID: row.settledEvidenceID}
@@ -559,28 +841,55 @@ func (g *Gateway) replaySettlement(ctx context.Context, key settlementKey, in De
 		out.Block, out.Code, out.Message = true, row.settledCode, "replay of a blocked response"
 		return out
 	}
-	if in.Mode == ResponseModeWholeBody && len(in.Body) > 0 && preventive(rc.action) && in.Preflight.Status < http.StatusBadRequest {
-		body, scan := g.applyResponsePolicy(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), in, rc.action, g.config.providerAPIFamily(rc.provider))
-		if scan != nil && scan.Blocked {
-			out.Block, out.Code = true, scan.BlockReason
-			return out
-		}
-		out.Body, out.BodyChanged = body, !bytes.Equal(body, in.Body)
+	if preventive(rc.action) && in.Mode == ResponseModeWholeBody && len(in.Body) > 0 && in.Preflight.Status < http.StatusBadRequest {
+		g.replayPreventiveBody(ctx, in, rc, &out)
 	}
 	return out
 }
 
-// observeAndRecord is the observation proper: usage, cost, policy, record,
-// session. kind decides the cost semantics and the annotations.
+// replayPreventiveBody reproduces the delivered body of a replayed,
+// allowed response under a preventive policy, failing closed when the
+// re-inspection cannot be completed.
+func (g *Gateway) replayPreventiveBody(ctx context.Context, in DelegatedResponseBody, rc *responseContext, out *DelegatedSettlement) {
+	if in.Truncated {
+		out.Block, out.Code = true, CodeResponseScanIncomplete
+		return
+	}
+	body, scan := g.applyResponsePolicy(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), in, rc.action, g.config.providerAPIFamily(rc.provider))
+	incomplete := scan != nil && scan.Status == evidence.ResponseScanStatusIncomplete && scan.IncompleteReason != evidence.ResponseScanIncompleteNoTextContent
+	if scan == nil || scan.Blocked || incomplete {
+		out.Block, out.Code = true, CodeResponseScanUnavailable
+		if scan != nil && scan.BlockReason != "" {
+			out.Code = scan.BlockReason
+		}
+		return
+	}
+	out.Body, out.BodyChanged = body, !bytes.Equal(body, in.Body)
+}
+
+// observation is everything a settlement computed before touching the
+// ledger: the record parameters, the ledger outcome and the hook's answer.
+type observation struct {
+	ctx           context.Context
+	params        RecordGatewayEvidenceParams
+	outcome       settlementOutcome
+	result        DelegatedSettlement
+	reservation   *sessionReservation
+	sessionID     string
+	sessionSource string
+}
+
+// observe runs the observation proper — usage, cost, response policy — with
+// no database writes. kind decides the cost semantics and the annotations.
 //
 //nolint:gocyclo // one ordered observation; the branches are its facts
-func (g *Gateway) observeAndRecord(ctx context.Context, in DelegatedResponseBody, rc *responseContext, kind settlementKind) DelegatedSettlement {
+func (g *Gateway) observe(ctx context.Context, in DelegatedResponseBody, rc *responseContext, kind settlementKind) *observation {
 	pf := in.Preflight
 	row := rc.row
 	agent := rc.agent
-	provider, model, correlationID := rc.provider, "", "gw_"+uuid.New().String()[:12]
+	provider, model, correlationID := rc.provider, "", ""
 	var estimate float64
-	sessionID, sessionSo := "sess_"+correlationID, "synthetic"
+	sessionID, sessionSo := "", "synthetic"
 	var reservation *sessionReservation
 	start := time.Now()
 	provenanceOpt := delegatedProvenance(DelegatedRequest{
@@ -602,13 +911,31 @@ func (g *Gateway) observeAndRecord(ctx context.Context, in DelegatedResponseBody
 	ctx = g.delegatedContext(ctx, sessionID, sessionSo)
 	wire := g.config.providerAPIFamily(provider)
 	action := rc.action
+	prevent := preventive(action)
+	observing := action != "" && action != "allow"
 	providerError := pf.Status >= http.StatusBadRequest
+	sh := shapeOf(pf)
+
+	// The trusted plan, recomputed: the body may not arrive in a less
+	// restrictive mode than the plan asked for, and a plan that blocks at
+	// preflight blocks here too (a restart between the two, say).
+	plan := planResponseMode(action, pf)
+	forced := ""
+	switch {
+	case plan.Block:
+		forced = plan.Code
+	case prevent && in.Mode != "" && modeRank(in.Mode) < modeRank(plan.Mode):
+		forced = CodeResponseModeMismatch
+	case prevent && in.Truncated && in.Mode == ResponseModeWholeBody:
+		// Only a prefix could be scanned: the unscanned remainder may carry
+		// what the policy forbids.
+		forced = CodeResponseScanIncomplete
+	}
 
 	// Usage and cost.
 	var usage TokenUsage
-	isSSE := strings.Contains(strings.ToLower(pf.ContentType), "text/event-stream")
-	if len(in.Body) > 0 && !providerError {
-		if isSSE {
+	if len(in.Body) > 0 && !providerError && (sh.isJSON || sh.isSSE) {
+		if sh.isSSE {
 			for _, block := range bytes.Split(in.Body, []byte("\n\n")) {
 				extractUsageFromSSELine(block, &usage)
 			}
@@ -616,7 +943,7 @@ func (g *Gateway) observeAndRecord(ctx context.Context, in DelegatedResponseBody
 			parseUsageFromJSON(in.Body, wire, &usage)
 		}
 		if model == "" {
-			model = responseModel(in.Body, isSSE)
+			model = responseModel(in.Body, sh.isSSE)
 		}
 	}
 	cost, basis, known := estimate, PricingBasisEstimateNoUsage, false
@@ -628,7 +955,9 @@ func (g *Gateway) observeAndRecord(ctx context.Context, in DelegatedResponseBody
 		cost = 0
 	}
 	if providerError {
-		// The provider refused: nothing was generated and nothing is billed.
+		// The provider refused: no generation is billed. (Providers do not
+		// bill refused requests on the supported chat APIs; a provider that
+		// did would show it in a usage block, which an error body lacks.)
 		cost, basis, known = 0, PricingBasisEstimateNoUsage, false
 		annotations = append(annotations, annotationProviderError)
 	}
@@ -646,24 +975,56 @@ func (g *Gateway) observeAndRecord(ctx context.Context, in DelegatedResponseBody
 	var scan *ResponsePIIScanResult
 	body := in.Body
 	bodyChanged := false
-	observing := action != "" && action != "allow"
+	scanCtx := classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse)
 	switch {
-	case !observing || len(in.Body) == 0:
-	case providerError && in.Mode == ResponseModeWholeBody:
-		scan = g.scanErrorBody(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), in.Body, action)
-		annotations = append(annotations, annotationErrorBodyScanned)
+	case forced != "" || !observing || len(in.Body) == 0:
+	case in.Mode == ResponseModeWholeBody && (providerError || (!sh.isJSON && !sh.isSSE)):
+		// Error envelopes and plain text: scan the whole text; a preventive
+		// policy blocks on PII rather than rewrite an envelope it does not
+		// understand.
+		scan = g.scanRawTextBody(scanCtx, in.Body, action)
+		if providerError {
+			annotations = append(annotations, annotationErrorBodyScanned)
+		} else {
+			annotations = append(annotations, annotationRawTextScanned)
+		}
 	case in.Mode == ResponseModeWholeBody:
-		body, scan = g.applyResponsePolicy(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), in, action, wire)
+		body, scan = g.applyResponsePolicy(scanCtx, in, action, wire)
 		bodyChanged = scan != nil && !scan.Blocked && !bytes.Equal(body, in.Body)
 	case in.Mode == ResponseModeStream:
-		scan = g.observeDelegatedStream(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), in, action)
+		scan = g.observeDelegatedStream(scanCtx, in, action)
 	}
-	if scan != nil && in.Incomplete != "" && scan.Status == evidence.ResponseScanStatusComplete {
+	if scan != nil && in.Mode == ResponseModeWholeBody {
+		// For a held body the capture bound or an abnormal end is the ROOT
+		// cause of any gap (an unparsable prefix is its consequence), so it
+		// overrides whatever the scan of the prefix concluded.
+		switch {
+		case in.Incomplete != "":
+			scan.Status, scan.IncompleteReason = evidence.ResponseScanStatusIncomplete, in.Incomplete
+		case in.Truncated:
+			scan.Status, scan.IncompleteReason = evidence.ResponseScanStatusIncomplete, evidence.ResponseScanIncompleteCaptureLimitExceeded
+		}
+	} else if scan != nil && in.Incomplete != "" && scan.Status == evidence.ResponseScanStatusComplete {
 		scan.markIncomplete(in.Incomplete)
 	}
 	blocked := scan != nil && scan.Blocked
 	var reasons []string
-	if blocked {
+	switch {
+	case forced != "":
+		blocked = true
+		reasons = []string{forced}
+		if scan == nil {
+			scan = newResponseScanResult(action, false)
+		}
+		switch forced {
+		case CodeResponseScanIncomplete:
+			scan.markIncomplete(evidence.ResponseScanIncompleteCaptureLimitExceeded)
+		case CodeResponseScanUnavailable, CodeResponseContentUnsupported, CodeResponseModeMismatch:
+			scan.markIncomplete(evidence.ResponseScanIncompleteScannerUnavailable)
+		}
+		scan.Blocked, scan.BlockReason = true, forced
+		RecordGatewayError(ctx, forced)
+	case blocked:
 		reason := scan.BlockReason
 		if reason == "" {
 			reason = "output_pii_blocked"
@@ -675,7 +1036,7 @@ func (g *Gateway) observeAndRecord(ctx context.Context, in DelegatedResponseBody
 		annotations = append(annotations, annotationBodyUninspectable)
 	}
 
-	persisted, err := g.recordEvidence(ctx, correlationID, agent, provider, model, start, "", nil, &usage, cost,
+	params := g.evidenceParams(ctx, correlationID, agent, provider, model, start, "", nil, &usage, cost,
 		time.Since(start).Milliseconds(), "", !blocked, reasons, false, scan, nil, nil, false, "", 0, 0, false, 0, 0, estimate,
 		provenanceOpt, func(p *RecordGatewayEvidenceParams) {
 			p.InvocationType = InvocationTypeGatewayResponse
@@ -687,31 +1048,23 @@ func (g *Gateway) observeAndRecord(ctx context.Context, in DelegatedResponseBody
 				p.FailureReason = FailureReasonProviderPermanentOrTransient(pf.Status)
 			}
 		})
-	out := DelegatedSettlement{Block: blocked, Body: body, BodyChanged: bodyChanged, Cost: cost, Tokens: usage, Basis: basis}
+	result := DelegatedSettlement{Block: blocked, Body: body, BodyChanged: bodyChanged && !blocked, Cost: cost, Tokens: usage, Basis: basis}
+	if blocked {
+		result.Body, result.BodyChanged = nil, false
+		result.Code, result.Message = reasons[0], "response blocked by Talon response policy"
+	}
 	if scan != nil {
-		out.PIITypes, out.Redacted = scan.PIITypes, scan.Redacted
-		if blocked {
-			out.Code, out.Message = scan.BlockReason, "response blocked by Talon response policy"
-		}
+		result.PIITypes, result.Redacted = scan.PIITypes, scan.Redacted && !blocked
 	}
-	if err != nil {
-		g.handleEvidenceWriteFailure(ctx, err)
-		if preventive(action) {
-			// A preventive policy whose verdict cannot be recorded does not
-			// release the body: evidence-before-delivery (fail closed).
-			out.Block, out.Code, out.Message = true, "evidence_unavailable", "Talon could not commit the signed record (fail-closed)"
-		}
-		return out
-	}
-	out.EvidenceID = persisted.ID
 	tokens := usage.Input + usage.Output
-	switch {
-	case kind == settleLate && cost > 0:
-		g.trackSessionUsage(ctx, nil, sessionID, sessionSo, agent.TenantID, agent.Name, cost, tokens)
-	case kind != settleLate:
-		g.trackSessionUsage(ctx, reservation, sessionID, sessionSo, agent.TenantID, agent.Name, cost, tokens)
+	out := settlementOutcome{cost: cost, block: blocked, sessionState: sessionStateNone, sessionCost: cost, sessionTokens: tokens}
+	if blocked {
+		out.code = reasons[0]
 	}
-	return out
+	if g.sessionWork(sessionID, sessionSo, reservation, cost, kind) {
+		out.sessionState = sessionStateOwed
+	}
+	return &observation{ctx: ctx, params: params, outcome: out, result: result, reservation: reservation, sessionID: sessionID, sessionSource: sessionSo}
 }
 
 // applyResponsePolicy runs the proxy path's response scan helpers over a
@@ -731,12 +1084,12 @@ func (g *Gateway) applyResponsePolicy(ctx context.Context, in DelegatedResponseB
 	return scanResponseForPII(ctx, wire, in.Body, action, g.classifier)
 }
 
-// scanErrorBody inspects a provider ERROR body under the response policy.
-// Error bodies echo inputs and validation detail, so the whole text is
-// scanned, not only model content fields. Under a preventive policy any PII
-// blocks delivery (a sanitized error is not reconstructible without
-// understanding the vendor's envelope); under warn it is observed.
-func (g *Gateway) scanErrorBody(ctx context.Context, body []byte, action string) *ResponsePIIScanResult {
+// scanRawTextBody inspects a body Talon cannot parse field by field — a
+// provider error envelope, a text/* response — as one text. Under a
+// preventive policy any PII blocks delivery (the envelope is not
+// reconstructible without understanding it, so it is not rewritten); under
+// warn it is observed. A scanner failure fails closed under prevention.
+func (g *Gateway) scanRawTextBody(ctx context.Context, body []byte, action string) *ResponsePIIScanResult {
 	result := newResponseScanResult(action, false)
 	text := string(body)
 	if strings.TrimSpace(text) == "" {
@@ -768,9 +1121,9 @@ func (g *Gateway) scanErrorBody(ctx context.Context, body []byte, action string)
 	result.Tier = cls.Tier
 	if preventive(action) {
 		result.Blocked, result.BlockReason = true, "output_pii_blocked"
-		log.Warn().Strs("pii_types", result.PIITypes).Msg("delegated_provider_error_body_blocked")
+		log.Warn().Strs("pii_types", result.PIITypes).Msg("delegated_text_body_blocked")
 	} else {
-		log.Warn().Strs("pii_types", result.PIITypes).Msg("delegated_provider_error_body_pii_detected")
+		log.Warn().Strs("pii_types", result.PIITypes).Msg("delegated_text_body_pii_detected")
 	}
 	return result
 }

@@ -254,21 +254,10 @@ func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agen
 	// observed); the decision record says so instead of booking the estimate.
 	settling := g.responseGovernanceEnabled() && !isCountTokens
 	recordCost := dec.EstimatedCost
-	var row *settlementRow
 	if settling {
 		recordCost = 0
-		// The ledger row is written BEFORE the decision record: an allow that
-		// cannot be tracked to its settlement is not an allow. Capacity is a
-		// refusal, never an eviction of an existing obligation.
-		if d := g.parkSettlement(ctx, correlationID, agent, providerName, start, req, outcome, sessionID, sessionSource, responsePIIAction); d != nil {
-			if outcome.SessReservation != nil {
-				g.releaseSessionReservation(outcome.SessReservation)
-			}
-			return g.delegatedDeny(ctx, correlationID, agent, providerName, start, d, provenanceOpt)
-		}
-		row = &settlementRow{key: settlementKey{req.RuntimeID, req.Reference, req.RequestID}}
 	}
-	persisted, err := g.recordEvidence(ctx, correlationID, agent, providerName, dec.Extracted.Model, start, dec.Extracted.Text,
+	params := g.evidenceParams(ctx, correlationID, agent, providerName, dec.Extracted.Model, start, dec.Extracted.Text,
 		dec.Classification, nil, recordCost, durationMS, "", true, nil, dec.InputPIIRedacted, nil, dec.AttSummary, dec.ToolResult,
 		false, "", 0, 0, false, 0, 0, dec.EstimatedCost, provenanceOpt, func(p *RecordGatewayEvidenceParams) {
 			p.ToolContent = dec.ToolContentScan
@@ -284,13 +273,26 @@ func (g *Gateway) delegatedAllow(ctx context.Context, correlationID string, agen
 				p.GatewayAnnotations = append(p.GatewayAnnotations, annotationSettlementPending)
 			}
 		})
+	var persisted *evidence.Evidence
+	var err error
+	if settling {
+		// The ledger row and the decision record commit together: an allow
+		// that cannot be tracked to its settlement is not an allow, and a
+		// tracked obligation always has its decision. Capacity is a refusal
+		// inside the same write transaction, never an eviction.
+		persisted, err = g.commitDecisionWithSettlement(ctx, correlationID, agent, providerName, start, req, outcome, sessionID, sessionSource, responsePIIAction, params)
+		if d := settlementAdmissionDeny(err); d != nil {
+			if outcome.SessReservation != nil {
+				g.releaseSessionReservation(outcome.SessReservation)
+			}
+			return g.delegatedDeny(ctx, correlationID, agent, providerName, start, d, provenanceOpt)
+		}
+	} else {
+		persisted, err = RecordGatewayEvidence(ctx, g.evidenceStore, params)
+	}
 	if err != nil {
 		if outcome.SessReservation != nil {
 			g.releaseSessionReservation(outcome.SessReservation)
-		}
-		if row != nil {
-			// No decision record, no obligation: drop the row again.
-			_ = g.settlements.delete(ctx, row.key)
 		}
 		g.handleEvidenceWriteFailure(ctx, err)
 		return DelegatedDecision{
@@ -382,25 +384,13 @@ func piiTypesOf(c *classifier.Classification) []string {
 	return uniqueEntityTypes(c.Entities)
 }
 
-// parkSettlement writes the pending ledger row for an allowed delegated
-// request. It refuses (fail closed, before the decision record) when the
-// ledger is at capacity or cannot be written.
-func (g *Gateway) parkSettlement(ctx context.Context, correlationID string, agent *ResolvedIdentity, providerName string, start time.Time, req DelegatedRequest, outcome decisionOutcome, sessionID, sessionSource, responsePIIAction string) *decisionDeny {
-	n, err := g.settlements.countPending(ctx)
-	if err != nil {
-		log.Error().Err(err).Msg("delegated_settlement_count_failed")
-		return &decisionDeny{
-			Status: http.StatusServiceUnavailable, ErrorCode: CodeSettlementUnavailable, MetricsError: true,
-			Message: CodeSettlementUnavailable + ": Talon could not read the settlement ledger (fail-closed)", Reasons: []string{"settlement ledger unavailable"},
-		}
-	}
-	if maxPending := g.config.OpenShell.ResponseGovernance.MaxPendingSettlements(); n >= maxPending {
-		log.Warn().Int("pending", n).Int("max", maxPending).Msg("delegated_settlement_capacity_exhausted")
-		return &decisionDeny{
-			Status: http.StatusServiceUnavailable, ErrorCode: CodeSettlementCapacityExhausted, MetricsError: true,
-			Message: CodeSettlementCapacityExhausted + ": too many delegated requests await their response settlement; retry later", Reasons: []string{"settlement ledger at capacity"},
-		}
-	}
+// commitDecisionWithSettlement writes the pending ledger row and the
+// decision record in one write transaction. The row is admitted only while
+// the ledger holds fewer than max_pending pending obligations (count and
+// insert are one statement under the write lock, so concurrent admissions
+// cannot exceed the bound), and a runtime request id that is still pending
+// is refused rather than overwritten.
+func (g *Gateway) commitDecisionWithSettlement(ctx context.Context, correlationID string, agent *ResolvedIdentity, providerName string, start time.Time, req DelegatedRequest, outcome decisionOutcome, sessionID, sessionSource, responsePIIAction string, params RecordGatewayEvidenceParams) (*evidence.Evidence, error) {
 	row := &settlementRow{
 		key: settlementKey{req.RuntimeID, req.Reference, req.RequestID}, runtime: req.Runtime, correlationID: correlationID,
 		tenantID: agent.TenantID, agentName: agent.Name, provider: providerName, model: outcome.Allow.Extracted.Model,
@@ -410,19 +400,48 @@ func (g *Gateway) parkSettlement(ctx context.Context, correlationID string, agen
 	if res := outcome.SessReservation; res != nil {
 		row.reservationRow, row.reservationEstimate = res.rowID, res.estimate
 	}
-	if err := g.settlements.insert(ctx, row); err != nil {
-		if errors.Is(err, errSettlementExists) {
-			// The runtime reused a request id: refuse rather than overwrite
-			// another exchange's obligation.
-			return &decisionDeny{
-				Status: http.StatusConflict, ErrorCode: CodeSettlementUnavailable, MetricsError: true,
-				Message: CodeSettlementUnavailable + ": a settlement already exists for this runtime request id", Reasons: []string{"duplicate runtime request id"},
-			}
+	tx, err := g.settlements.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w := g.evidenceStore.NewTxWriter()
+	defer func() {
+		_ = tx.Rollback()
+		w.Discard()
+	}()
+	if err := g.settlements.insertPending(ctx, tx, row, g.config.OpenShell.ResponseGovernance.MaxPendingSettlements()); err != nil {
+		return nil, err
+	}
+	ev, err := storeGatewayEvidenceTx(ctx, w, tx, params)
+	if err != nil {
+		return nil, err
+	}
+	if g.settlementHooks != nil && g.settlementHooks.beforeCommit != nil {
+		if err := g.settlementHooks.beforeCommit(settleFirst, row.key); err != nil {
+			return nil, err
 		}
-		log.Error().Err(err).Msg("delegated_settlement_insert_failed")
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	w.Committed(ctx)
+	return ev, nil
+}
+
+// settlementAdmissionDeny maps a ledger admission refusal to a decision
+// denial (nil for other errors, which are evidence failures).
+func settlementAdmissionDeny(err error) *decisionDeny {
+	switch {
+	case errors.Is(err, errSettlementCapacity):
+		log.Warn().Msg("delegated_settlement_capacity_exhausted")
 		return &decisionDeny{
-			Status: http.StatusServiceUnavailable, ErrorCode: CodeSettlementUnavailable, MetricsError: true,
-			Message: CodeSettlementUnavailable + ": Talon could not write the settlement ledger (fail-closed)", Reasons: []string{"settlement ledger unavailable"},
+			Status: http.StatusServiceUnavailable, ErrorCode: CodeSettlementCapacityExhausted, MetricsError: true,
+			Message: CodeSettlementCapacityExhausted + ": too many delegated requests await their response settlement; retry later", Reasons: []string{"settlement ledger at capacity"},
+		}
+	case errors.Is(err, errSettlementExists):
+		return &decisionDeny{
+			Status: http.StatusConflict, ErrorCode: CodeSettlementUnavailable, MetricsError: true,
+			Message: CodeSettlementUnavailable + ": a settlement already exists for this runtime request id", Reasons: []string{"duplicate runtime request id"},
 		}
 	}
 	return nil

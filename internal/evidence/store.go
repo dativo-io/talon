@@ -627,6 +627,13 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_orch_session ON evidence(session_id, timestamp) WHERE json_extract(evidence_json, '$.orchestration') IS NOT NULL")
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_step_evidence_session ON step_evidence(session_id)")
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_graph_run ON evidence(graph_run_id)")
+	// Expression indexes for the external-runtime reference lookups (#482):
+	// `audit list --runtime-ref` is a complete, indexed query over the
+	// sandbox reference a record carries in enforcement.runtime.reference
+	// (decisions, settlements, hop-established action lifecycle) or in
+	// workload_identity.subject (imported containment events).
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_runtime_ref ON evidence(json_extract(evidence_json, '$.enforcement.runtime.reference'), timestamp)")
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_workload_subject ON evidence(json_extract(evidence_json, '$.workload_identity.subject'), timestamp)")
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_step_evidence_graph_run ON step_evidence(graph_run_id)")
 
 	_, _ = db.ExecContext(context.Background(), `
@@ -1023,6 +1030,76 @@ func (s *Store) queryEvidenceJSON(ctx context.Context, scope, query, arg string)
 		results = append(results, &ev)
 	}
 	return results, rows.Err()
+}
+
+// RuntimeRefPage is one page of records attributed to an external-runtime
+// reference, with the total so a caller can say how much it is NOT showing.
+type RuntimeRefPage struct {
+	Records []*Evidence
+	Total   int
+}
+
+// ListByRuntimeRef returns the records attributed to one external-runtime
+// workload reference (an OpenShell sandbox id): every record whose
+// enforcement.runtime.reference is the reference, plus records whose
+// workload_identity.subject is the reference or ends in "/<reference>"
+// (imported containment events name the SPIFFE-style subject). The query
+// is complete over the store (indexed on both expressions), scoped by
+// tenant/agent when given, ordered newest first with the id as tie-break,
+// and paged by limit/offset.
+func (s *Store) ListByRuntimeRef(ctx context.Context, tenantID, agentID, ref string, limit, offset int) (*RuntimeRefPage, error) {
+	ctx, span := tracer.Start(ctx, "evidence.list_by_runtime_ref",
+		trace.WithAttributes(attribute.String("runtime_ref", ref)))
+	defer span.End()
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, fmt.Errorf("runtime reference is required")
+	}
+	where := ` WHERE (json_extract(evidence_json, '$.enforcement.runtime.reference') = ?
+		OR json_extract(evidence_json, '$.workload_identity.subject') = ?
+		OR json_extract(evidence_json, '$.workload_identity.subject') LIKE ? ESCAPE '\')`
+	args := []any{ref, ref, "%/" + escapeLike(ref)}
+	if tenantID != "" {
+		where += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	if agentID != "" {
+		where += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	page := &RuntimeRefPage{}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM evidence`+where, args...).Scan(&page.Total); err != nil {
+		return nil, fmt.Errorf("counting evidence by runtime reference: %w", err)
+	}
+	query := `SELECT evidence_json FROM evidence` + where + ` ORDER BY timestamp DESC, id DESC`
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying evidence by runtime reference: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var evidenceJSON string
+		if err := rows.Scan(&evidenceJSON); err != nil {
+			return nil, fmt.Errorf("scanning evidence row: %w", err)
+		}
+		var ev Evidence
+		if err := json.Unmarshal([]byte(evidenceJSON), &ev); err != nil {
+			return nil, fmt.Errorf("unmarshaling evidence: %w", err)
+		}
+		page.Records = append(page.Records, &ev)
+	}
+	return page, rows.Err()
+}
+
+// escapeLike escapes the LIKE metacharacters in a literal suffix.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "%", `\%`)
+	return strings.ReplaceAll(s, "_", `\_`)
 }
 
 // ListByCorrelationID returns all evidence records sharing a correlation ID,
