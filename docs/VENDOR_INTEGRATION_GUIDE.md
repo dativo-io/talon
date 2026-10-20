@@ -8,7 +8,9 @@
 
 This guide explains how to apply Talon's supported enforcement controls to **existing AI automation**, whether custom-built or third-party SaaS vendors. Talon does not replace the vendor, inspect bypassed traffic, or determine the operator's compliance; it records signed evidence for interactions routed through its boundaries.
 
-**Two integration patterns (both shipped):**
+**Version scope:** this guide documents behavior on `talon/main`. The latest published binary may predate the MCP `2026-07-28` and governance-extension work; [verify the release tag](https://github.com/dativo-io/talon/releases/latest) before using examples against a prebuilt binary.
+
+**Two integration patterns (implemented on main):**
 1. **MCP Proxy** (recommended) — Talon sits between the vendor and your data (`talon serve --proxy-config`)
 2. **LLM API Gateway** — the vendor/bot calls its LLM provider *through* Talon (`talon serve --gateway`)
 
@@ -70,7 +72,7 @@ Third-Party AI Agent → Talon MCP Server → Your Zendesk/CRM
 ```bash
 # On your infrastructure (VM, EC2, on-prem server) — check
 # https://github.com/dativo-io/talon/releases/latest for the newest version
-TALON_VERSION=1.9.1   # set to the latest release tag
+TALON_VERSION=1.10.0  # published-release example; check the link above for the current tag
 wget https://github.com/dativo-io/talon/releases/download/v${TALON_VERSION}/talon_${TALON_VERSION}_linux_amd64.tar.gz
 tar -xzf talon_${TALON_VERSION}_linux_amd64.tar.gz
 sudo mv talon /usr/local/bin/talon
