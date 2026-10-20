@@ -236,10 +236,17 @@ gateway:
 EOT
       chmod 0600 "$CONFIG"
     fi
-    if [[ -z "${TALON_SECRETS_KEY:-}" ]]; then
-      [[ -f "$RUN_DIR/talon.env" ]] || { ( umask 077; printf 'export TALON_SECRETS_KEY=%q\nexport TALON_SIGNING_KEY=%q\nexport TALON_ADMIN_KEY=%q\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 24)" "admin-$(openssl rand -hex 8)" >"$RUN_DIR/talon.env"; ); }
-      source "$RUN_DIR/talon.env"
-    fi
+    # Our own Talon's keys (standalone mode): whichever of the three is not
+    # already in the environment is generated once and kept in talon.env.
+    [[ ! -f "$RUN_DIR/talon.env" ]] || source "$RUN_DIR/talon.env"
+    local kv
+    for kv in "TALON_SECRETS_KEY:$(openssl rand -hex 16)" "TALON_SIGNING_KEY:$(openssl rand -hex 24)" "TALON_ADMIN_KEY:admin-$(openssl rand -hex 8)"; do
+      local k="${kv%%:*}" v="${kv#*:}"
+      [[ -n "${!k:-}" ]] && continue
+      ( umask 077; printf 'export %s=%q\n' "$k" "$v" >>"$RUN_DIR/talon.env" )
+      export "$k=$v"
+    done
+    chmod 0600 "$RUN_DIR/talon.env" 2>/dev/null || true
   fi
   [[ -n "${TALON_SECRETS_KEY:-}" ]] || die "TALON_SECRETS_KEY is required: the shared Talon key in embedded mode"
   export TALON_SECRETS_KEY
@@ -384,7 +391,9 @@ cmd_start() {
   else
     TALON_URL="http://127.0.0.1:$SHOWCASE_TALON_HTTP_PORT"; save_state SHOWCASE_TALON_URL "$TALON_URL"
     own_or_free talon "$TALON_URL/health"
-    start_bg talon env TALON_DATA_DIR="$DATA_DIR" TALON_AGENTS_RELOAD_INTERVAL=1s "$TALON" serve --port "$SHOWCASE_TALON_HTTP_PORT" --gateway --gateway-config "$CONFIG"
+    # Run from the config directory: agents_dir in talon.config.yaml is
+    # relative to where talon serve runs.
+    start_bg talon sh -c "cd '$CONFIG_DIR' && exec env TALON_DATA_DIR='$DATA_DIR' TALON_AGENTS_RELOAD_INTERVAL=1s '$TALON' serve --port '$SHOWCASE_TALON_HTTP_PORT' --gateway --gateway-config '$(basename "$CONFIG")'"
     wait_http "$TALON_URL/health" 30 || die "talon serve did not become healthy (see $LOGS/talon.log)"
   fi
   local i; for ((i=0; i<40; i++)); do (exec 3<>"/dev/tcp/$HOST_IP/$SHOWCASE_TALON_GRPC_PORT") 2>/dev/null && break; sleep 0.25; done
@@ -690,7 +699,12 @@ cmd_validate() {
   local vdir; vdir="$(mktemp -d "${TMPDIR:-/tmp}/talon-openshell-showcase.XXXXXX")"
   log "validate: private run dir $vdir, OpenShell $OPENSHELL_VERSION"
   local self="${BASH_SOURCE[0]}"
-  local envv=(env TALON_SHOWCASE_RUN_DIR="$vdir" TALON_SHOWCASE_EMBEDDED=0 TALON_SHOWCASE_PROVIDER_MODE=mock TALON_SHOWCASE_APPROVAL_WAIT_S=120)
+  # The private run must not inherit the state this process loaded from
+  # its own run dir (ports, ids, resolved binaries) or the caller's Talon keys.
+  local unset_vars=()
+  local v
+  for v in $(compgen -v | grep -E '^(SHOWCASE_|TALON_BIN_RESOLVED$|TALON_SHOWCASE_(SESSION|OPERATION_PREFIX|CONFIG_DIR|TALON_DATA_DIR|TALON_URL)$|TALON_SIGNING_KEY$|TALON_ADMIN_KEY$)'); do unset_vars+=(-u "$v"); done
+  local envv=(env "${unset_vars[@]}" TALON_SHOWCASE_RUN_DIR="$vdir" TALON_SHOWCASE_EMBEDDED=0 TALON_SHOWCASE_PROVIDER_MODE=mock TALON_SHOWCASE_APPROVAL_WAIT_S=120)
   "${envv[@]}" bash "$self" prepare || die "validate: prepare"
   "${envv[@]}" bash "$self" start || { "${envv[@]}" bash "$self" stop || true; die "validate: start"; }
   "${envv[@]}" bash "$self" status || { "${envv[@]}" bash "$self" stop || true; die "validate: status"; }
