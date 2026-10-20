@@ -6,7 +6,7 @@
 
 ## Overview
 
-This guide shows how to add Talon compliance to **existing AI automation**, whether custom-built or third-party SaaS vendors. Talon doesn't replace your existing tools — it adds governance, audit trails, and compliance controls.
+This guide explains how to apply Talon's supported enforcement controls to **existing AI automation**, whether custom-built or third-party SaaS vendors. Talon does not replace the vendor, inspect bypassed traffic, or determine the operator's compliance; it records signed evidence for interactions routed through its boundaries.
 
 **Two integration patterns (both shipped):**
 1. **MCP Proxy** (recommended) — Talon sits between the vendor and your data (`talon serve --proxy-config`)
@@ -51,10 +51,10 @@ You're using great AI tools like:
 BEFORE (Black box):
 Third-Party AI Agent → Directly accesses your Zendesk/CRM → No visibility
 
-AFTER (Full audit trail):
+AFTER (Evidence for traffic routed through Talon):
                     ┌──────────────────────────────────┐
                     │  Talon (your infrastructure)     │
-                    │  - Logs all access               │
+                    │  - Records intercepted access    │
                     │  - Redacts PII                   │
                     │  - Enforces policies             │
                     │  - Generates audit trail         │
@@ -62,7 +62,7 @@ AFTER (Full audit trail):
                                  ↓
 Third-Party AI Agent → Talon MCP Server → Your Zendesk/CRM
                                  ↓
-                    You have complete evidence trail
+                    You have evidence for intercepted calls
 ```
 
 ### Implementation (30 minutes)
@@ -204,12 +204,12 @@ tools you listed in allowed_tools.
 ```
 
 **Benefits:**
-- ✅ Vendor functionality unchanged (transparent proxy)
-- ✅ Full visibility into vendor data access
-- ✅ PII never reaches vendor's systems unredacted
+- ✅ Existing vendor workflows can often keep their MCP interface (provided they support Talon's `2026-07-28` wire)
+- ✅ Visibility into supported MCP calls that traverse Talon; bypassed vendor activity is not observed
+- ✅ Configured PII redaction/blocking applies on supported intercepted fields; unrecognized data and bypassed paths are not guaranteed clean
 - ✅ Can block forbidden operations (user deletes, mass exports)
-- ✅ Generate GDPR Article 30 records on demand
-- ✅ Prove NIS2 compliance to auditors
+- ✅ Export signed evidence and supporting GDPR Article 30 processing records when required declarations exist
+- ✅ Provide supporting evidence for NIS2 control assessments; compliance is not determined by Talon
 
 ---
 
@@ -576,12 +576,12 @@ there is no passive mode that polls the vendor's own audit logs.
 - ❌ Manual evidence gathering during audits (weeks)
 
 ### After Talon
-- ✅ Independent audit trail (vendor-agnostic)
-- ✅ Real-time verification of vendor behavior against your policies
-- ✅ One-command GDPR Article 30 exports
-- ✅ PII automatically redacted before vendor access
-- ✅ Systematic human oversight (visual plan review)
-- ✅ Audit-ready in minutes (not weeks)
+- ✅ Signed evidence for supported intercepted interactions (vendor-independent)
+- ✅ Evidence of Talon's own policy decisions on routed traffic, not verification of all vendor behavior
+- ✅ GDPR Article 30 supporting exports with the required processing declarations
+- ✅ Supported PII controls applied to intercepted data under the configured policy
+- ✅ HTTP Action Gateway supports bound human authorization on its own action adapter; MCP tool calls have not converged onto it
+- ✅ Evidence can be exported and independently verified; audit readiness still requires organizational review
 
 ---
 
@@ -623,7 +623,7 @@ there is no passive mode that polls the vendor's own audit logs.
    - Monitor for issues (latency, errors, false denials) and tighten `allowed_tools`/`forbidden_tools` rule by rule
    - Route the rest after validation
 
-4. **Prove compliance:**
+4. **Prepare supporting compliance evidence:**
    - Generate first GDPR Article 30 report
    - Show to compliance officer/auditors
    - Document time saved vs. manual process

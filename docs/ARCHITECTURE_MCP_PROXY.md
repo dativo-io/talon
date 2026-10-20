@@ -8,14 +8,14 @@
 
 ### Overview
 
-Talon's MCP server can operate in **three modes**:
-1. **Native** — Expose Talon-governed tools to agents (default)
-2. **Proxy** — Sit between third-party vendors and your data sources
-3. **Hybrid** — Mix of native tools and proxied vendor access
+Talon currently exposes **two MCP execution surfaces** using the same stateless `2026-07-28` wire:
 
-The proxy mode enables compliance for third-party AI vendors (Zendesk, Intercom, HubSpot) without vendor rewrites.
+1. **Native `POST /mcp`** exposes Talon-governed registered tools.
+2. **Proxied `POST /mcp/proxy`** intercepts supported tool calls between an authenticated AI use case and a trusted upstream MCP server (for example a CRM or support integration).
 
-> **Disposition.** Native, proxy and hybrid describe the *current* `/mcp` and `/mcp/proxy` routes. The target architecture ([ADR-004](contributor/adr/ADR-004-modular-control-plane-and-runtime-boundaries.md), [#431](https://github.com/dativo-io/talon/issues/431)) converges them onto one governed `POST /mcp` over ActionGovernance, removes the separate native/proxy/hybrid product modes and the process-local business-tool registry as an extension model, and replaces synthetic fallback identities with the authenticated use case. The 2026-07-28 wire described below is shared and stays.
+These are *transport adapters*, not separate company-policy modes. Neither currently uses the HTTP Action Gateway's immutable operation/approval/at-most-once dispatch kernel; existing MCP `tools/call` enforcement remains on the legacy policy path. MCP-sourced definitions can join Talon's trusted action catalog but cannot yet be executed by the HTTP action adapter.
+
+**Direction, not shipped:** [ADR-004](contributor/adr/ADR-004-modular-control-plane-and-runtime-boundaries.md) and [#431](https://github.com/dativo-io/talon/issues/431) converge both onto a governed `POST /mcp` backed by ActionGovernance. Before upgrading an older client, follow the [MCP 2026-07-28 migration guide](guides/mcp-2026-migration.md). Talon governs only traffic that traverses its configured boundary; it does not certify a third-party vendor's compliance.
 
 ---
 

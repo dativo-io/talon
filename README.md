@@ -36,9 +36,9 @@ Every AI use case — a customer-support assistant, a coding assistant, a docume
 | **LLM gateway** | Organization + per-use-case policy, PII and egress checks, budget denial before provider access, retries and policy-valid fallback, signed evidence | Only requests routed through Talon; active policy is always enforced (no global shadow/log-only) |
 | **HTTP Action Gateway** | Trusted exact-action catalog, immutable operation/payload binding, authenticated human approval, at-most-once `talon_forwarded` HTTP dispatch, signed lifecycle evidence | MCP-sourced actions may be catalogued but cannot dispatch through this adapter yet; native and MCP tool execution remain separate (#431/#430) |
 | **MCP** | Tool interception on the **2026-07-28 protocol only**, with signed denials | No previous MCP version or `initialize`; `tools/call` does not yet use ActionGovernance |
-| **OpenShell v0.1.3** | Delegated *request-side* policy via supervisor middleware before credential injection | OpenShell enforces; Talon cannot verify its enforcement or inspect provider responses on that path |
+| **OpenShell supervisor middleware (v0.1.3 validated baseline)** | Delegated request policy, opt-in `PRE_RETURN` response governance and actual-usage settlement, and verified sandbox → HTTP Action Gateway hop | OpenShell enforces delegated model decisions; Talon cannot attest that enforcement or provide model-path retry/fallback. Response/action additions are fixture-tested; check the dedicated live workflow for runtime verification (v0.1.4 remains experimental). |
 
-Start with the [integration chooser](docs/guides/choosing-integration-path.md), the [Action Gateway reference](docs/reference/action-gateway.md), or the [OpenShell integration](docs/integration/openshell.md). For which state or operation Talon owns, see [Control-plane boundaries](docs/reference/control-plane-boundaries.md).
+Start with the [integration chooser](docs/guides/choosing-integration-path.md), [reproduce the exact-action proof](docs/tutorials/action-gateway-proof.md) (no provider key), the [Action Gateway reference](docs/reference/action-gateway.md), or the [OpenShell integration](docs/integration/openshell.md). For which state or operation Talon owns, see [Control-plane boundaries](docs/reference/control-plane-boundaries.md).
 
 ## Is this you?
 
