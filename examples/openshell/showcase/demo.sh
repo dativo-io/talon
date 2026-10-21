@@ -357,7 +357,7 @@ agent_image() {
   short="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
   tag="talon-openshell-agent:local-$short"
   if ! docker image inspect "$tag" >/dev/null 2>&1; then
-    log "building the sandbox agent image $tag (development path)"
+    log "building the sandbox agent image $tag (development path)" >&2  # stdout is the image name
     docker build -q -t "$tag" --build-arg "VERSION=local" --build-arg "COMMIT=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)" "$REPO_ROOT/examples/openshell/agent" >>"$LOGS/setup.log" 2>&1 || die "docker build of the agent image (see $LOGS/setup.log)"
   fi
   printf '%s\n' "$tag"
@@ -517,11 +517,17 @@ network_policies:
 EOT
   local image sandbox
   image="$(agent_image)"; save_state SHOWCASE_AGENT_IMAGE "$image"
+  [[ "$image" =~ ^[a-z0-9][a-z0-9._/:@-]*$ ]] || die "agent image reference is not a valid lowercase reference: '$image'"
   sandbox="${SHOWCASE_SANDBOX_NAME:-sc-$(openssl rand -hex 4)}"
-  if ! openshell_cli sandbox list 2>>"$LOGS/setup.log" | grep -q "$sandbox"; then
-    openshell_cli sandbox create --name "$sandbox" --from "$image" --policy "$RUN_DIR/policy.yaml" --provider showcase-openai --no-tty --detach -- /bin/sleep 2147483647 >>"$LOGS/setup.log" 2>&1 || die "openshell sandbox create from $image (see $LOGS/setup.log)"
-  fi
+  # The name is recorded BEFORE creation so stop can always remove it, even
+  # when the sandbox ends up in an error phase.
   save_state SHOWCASE_SANDBOX_NAME "$sandbox"
+  if ! openshell_cli sandbox list 2>>"$LOGS/setup.log" | grep -q "$sandbox"; then
+    if ! openshell_cli sandbox create --name "$sandbox" --from "$image" --policy "$RUN_DIR/policy.yaml" --provider showcase-openai --no-tty --detach -- /bin/sleep 2147483647 >>"$LOGS/setup.log" 2>&1; then
+      openshell_cli sandbox delete "$sandbox" >>"$LOGS/setup.log" 2>&1 || true
+      die "openshell sandbox create from $image failed (see $LOGS/setup.log; a locally built image must be visible to the Docker daemon OpenShell uses, or set TALON_SHOWCASE_AGENT_IMAGE to a pullable reference)"
+    fi
+  fi
   local sid; sid="$(openshell_cli sandbox list --ids 2>>"$LOGS/setup.log" | head -n1)"
   [[ -n "$sid" ]] || die "could not read the sandbox id"
   save_state SHOWCASE_SANDBOX_ID "$sid"
@@ -756,7 +762,7 @@ cmd_validate() {
 
 # ---------------------------------------------------------------- stop
 cmd_stop() {
-  if [[ -n "${SHOWCASE_SANDBOX_NAME:-}" && -x "$BIN/openshell" ]] && pid_alive gateway; then
+  if [[ -n "${SHOWCASE_SANDBOX_NAME:-}" && -x "$BIN/openshell" ]] && listening "http://127.0.0.1:${SHOWCASE_GW_HEALTH_PORT:-0}/healthz"; then
     openshell_cli sandbox delete "$SHOWCASE_SANDBOX_NAME" >>"$LOGS/setup.log" 2>&1 || true
   fi
   stop_bg gateway; stop_bg mockprovider; stop_bg protectedservice
