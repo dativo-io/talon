@@ -582,8 +582,8 @@ cmd_status() {
     else
       while IFS= read -r line; do
         case "$line" in
-          *✗*|*"[fail]"*) check 1 "doctor" "$(sed 's/^ *//' <<<"$line")" ;;
-          *) check 0 "doctor" "$(sed 's/^ *//' <<<"$line")" ;;
+          *✗*|*"[fail]"*) check 1 "doctor" "${line#"${line%%[![:space:]]*}"}" ;;
+          *) check 0 "doctor" "${line#"${line%%[![:space:]]*}"}" ;;
         esac
       done <<<"$doctor"
     fi
