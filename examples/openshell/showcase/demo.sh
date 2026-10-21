@@ -612,6 +612,7 @@ protected() { curl -fsS "http://127.0.0.1:$SHOWCASE_PROTECTED_PORT/__state" | jq
 cmd_run() {
   [[ -n "${SHOWCASE_SANDBOX_NAME:-}" ]] || die "run 'start' first"
   for c in jq curl; do need "$c" "required by run"; done
+  resolve_talon
   if [[ "$EMBEDDED" == "1" ]]; then
     [[ -n "${TALON_SHOWCASE_SESSION:-}" && -n "${TALON_SHOWCASE_OPERATION_PREFIX:-}" ]] || die "embedded mode supplies TALON_SHOWCASE_SESSION and TALON_SHOWCASE_OPERATION_PREFIX"
   else
