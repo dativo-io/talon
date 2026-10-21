@@ -37,7 +37,7 @@ jobs:
             -v $HOME/.docker:/root/.docker \
             -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
             -e CGO_ENABLED=1 \
-            ghcr.io/goreleaser/goreleaser-cross:v1.26.4 \
+            ghcr.io/goreleaser/goreleaser-cross:v1.26.10 \
             release --clean
 
   # OpenShell showcase bundle (#482/#463): the canonical runner, its helpers
