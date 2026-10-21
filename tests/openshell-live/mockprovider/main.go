@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -43,6 +44,12 @@ const (
 	scenarioResponsePII = "response-pii"
 	scenarioOversized   = "oversized"
 	scenarioErrorPII    = "error-pii"
+	// scenarioTools is the deterministic MODEL for the tool-using agent: it
+	// reads the conversation and chooses the next tool — look the ticket up,
+	// try the forbidden deletion, request the refund, then answer — keyed by
+	// how many tool results the conversation already carries. Selected
+	// automatically when the request carries a tools array.
+	scenarioTools = "tools"
 	// mockPII is the sensitive value the scenarios carry; the harness asserts
 	// it never reaches the sandbox under a preventive policy and never
 	// appears in Talon's evidence or logs.
@@ -124,6 +131,11 @@ func newHandler(st *state, stateFile string, maxBody int64) http.Handler {
 			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
+		// Tool-calling conversations (the SDK agent) get the scripted tool
+		// choices; plain prompts (the curl cases) get the fixed completion.
+		if scenario := r.Header.Get("X-Mock-Scenario"); scenario == "" && bytes.Contains(body, []byte(`"tools"`)) {
+			r.Header.Set("X-Mock-Scenario", scenarioTools)
+		}
 		rec, snap := st.record(r, body)
 		if stateFile != "" {
 			fileMu.Lock()
@@ -139,9 +151,15 @@ func newHandler(st *state, stateFile string, maxBody int64) http.Handler {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		status, body := scenarioResponse(rec.Scenario, rec.Seq)
+		var status int
+		var answer []byte
+		if rec.Scenario == scenarioTools {
+			status, answer = toolsResponse(body, rec.Seq)
+		} else {
+			status, answer = scenarioResponse(rec.Scenario, rec.Seq)
+		}
 		w.WriteHeader(status)
-		_, _ = w.Write(body)
+		_, _ = w.Write(answer)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mock provider: unknown route "+r.URL.Path, http.StatusNotFound)
@@ -159,6 +177,38 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// toolsResponse is the scripted model's next step for a tool-calling
+// conversation on the OpenAI chat-completions wire. The script ignores the
+// tool list it was offered — a model asking for a tool it was not given is
+// exactly the case Talon's execution boundary must refuse.
+func toolsResponse(reqBody []byte, seq int) (status int, body []byte) {
+	var req struct {
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+	}
+	_ = json.Unmarshal(reqBody, &req)
+	toolResults := 0
+	for _, m := range req.Messages {
+		if m.Role == "tool" {
+			toolResults++
+		}
+	}
+	var msg, finish string
+	switch toolResults {
+	case 0:
+		msg, finish = `{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup_ticket","arguments":"{\"ticket_id\":\"T-1842\"}"}}]}`, "tool_calls"
+	case 1:
+		msg, finish = `{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"delete_customer","arguments":"{\"customer_id\":\"c-9\"}"}}]}`, "tool_calls"
+	case 2:
+		msg, finish = `{"role":"assistant","content":null,"tool_calls":[{"id":"call_3","type":"function","function":{"name":"create_refund_request","arguments":"{\"ticket_id\":\"T-1842\",\"amount\":50,\"currency\":\"EUR\"}"}}]}`, "tool_calls"
+	default:
+		msg, finish = `{"role":"assistant","content":"Ticket T-1842 handled: the EUR 50 refund request was approved by a reviewer and submitted once."}`, "stop"
+	}
+	return http.StatusOK, []byte(fmt.Sprintf(`{"id":"chatcmpl-mock-%d","object":"chat.completion","created":%d,"model":"gpt-4o-mini","choices":[{"index":0,"message":%s,"finish_reason":"%s"}],"usage":{"prompt_tokens":%d,"completion_tokens":12,"total_tokens":%d}}`,
+		seq, time.Now().Unix(), msg, finish, 40+10*toolResults, 52+10*toolResults))
 }
 
 // scenarioResponse is the provider's answer for one scenario: the default

@@ -40,6 +40,33 @@ jobs:
             ghcr.io/goreleaser/goreleaser-cross:v1.26.4 \
             release --clean
 
+  # OpenShell showcase bundle (#482/#463): the canonical runner, its helpers
+  # and a sha256 manifest naming the pinned agent image, uploaded next to the
+  # archives so the customer path needs no source checkout. The agent image
+  # itself is published by goreleaser (ghcr.io/dativo-io/talon-openshell-agent:<version>).
+  release-showcase-bundle:
+    name: OpenShell showcase bundle
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build the bundle
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash scripts/build-showcase-bundle.sh "$VERSION" dist "ghcr.io/dativo-io/talon-openshell-agent:${VERSION}"
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "${GITHUB_REF_NAME}" dist/talon-openshell-showcase_*.tar.gz dist/talon-openshell-showcase_*.tar.gz.sha256 dist/talon-openshell-showcase_*.manifest.json --clobber
+
   # Darwin binaries (#359): built natively on a macOS runner because the
   # evidence store is CGO (mattn/go-sqlite3) — Apple clang builds both
   # arm64 and amd64 (-arch x86_64) without osxcross. Runs after the

@@ -1,0 +1,8 @@
+# Release image for the sandbox agent: goreleaser supplies the prebuilt
+# static support-agent binary (build id support-agent) in the context.
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates && adduser -D -u 1000 agent
+COPY support-agent /usr/local/bin/support-agent
+USER agent
+WORKDIR /home/agent
+ENTRYPOINT ["/bin/sleep", "2147483647"]

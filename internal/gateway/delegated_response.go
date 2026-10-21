@@ -51,13 +51,15 @@ import (
 // Session budget. The session store is a separate database and cannot join
 // the ledger transaction. Each committed transition records what it owes
 // the session (session_state = owed, with the cost/tokens); the session
-// update runs right after COMMIT and marks the row settled; a failed update
-// leaves the row owed and the sweeper retries it. This is at-least-once:
-// the one window in which the session can be charged twice is "the session
-// update succeeded but the mark did not reach the ledger", which a crash
-// between the two writes opens. Session totals bound admission (a
-// conservative input, healed for stale reservations); the signed records
-// are the spend of record, and they are exactly once.
+// update runs right after COMMIT under an application id derived from the
+// transition (sessionApplicationID) and is recorded in the session store
+// in the same transaction as the balance change; then the ledger row is
+// marked settled. A failed update leaves the row owed and the sweeper
+// retries; a crash after the session store applied the work but before the
+// mark retries into a no-op (the application is already recorded). No
+// cross-database transaction is claimed: the two stores converge through
+// the owed mark and the idempotent application, and the signed records
+// remain the spend of record.
 //
 // Prevention. A preventive response policy (block/redact) promises the
 // sandbox never receives ungoverned bytes. Every path that cannot prove the
@@ -166,6 +168,18 @@ func (k settlementKind) String() string {
 // does.
 type settlementHooks struct {
 	beforeCommit func(kind settlementKind, key settlementKey) error
+	// afterSessionApply runs after the session store applied the owed work
+	// and before the ledger is marked settled: the crash window in which a
+	// non-idempotent design would charge the session twice on retry.
+	afterSessionApply func(key settlementKey) error
+}
+
+// sessionApplicationID is the exactly-once key of one ledger transition's
+// session work: the exchange plus the status the transition reached. The
+// unobserved settlement (estimate) and a later reconciliation (excess) are
+// two applications; a retry of either is the same application.
+func sessionApplicationID(key settlementKey, status string) string {
+	return "delegated:" + key.runtimeID + "|" + key.sandboxRef + "|" + key.requestID + "|" + status
 }
 
 // responseGovernanceEnabled reports whether decisions park a settlement.
@@ -273,7 +287,7 @@ func (g *Gateway) settleUnobserved(ctx context.Context, r *settlementRow) bool {
 		return false // a response won the claim meanwhile
 	}
 	if owes {
-		g.applySessionWork(ctx, r.key, r.reservation(), r.sessionID, r.sessionSource, r.tenantID, r.agentName, cost, 0)
+		g.applySessionWork(ctx, r.key, settlementUnobserved, r.reservation(), r.sessionID, r.sessionSource, r.tenantID, r.agentName, cost, 0)
 	}
 	log.Warn().Str("correlation_id", r.correlationID).Str("agent", r.agentName).Str("evidence_id", ev.ID).Msg("delegated_response_unobserved")
 	return true
@@ -297,7 +311,7 @@ func (g *Gateway) RepairOwedSessionSettlements(ctx context.Context) int {
 		if r.status != settlementReconciled {
 			res = r.reservation()
 		}
-		if g.applySessionWork(ctx, r.key, res, r.sessionID, r.sessionSource, r.tenantID, r.agentName, r.sessionCost, r.sessionTokens) {
+		if g.applySessionWork(ctx, r.key, r.status, res, r.sessionID, r.sessionSource, r.tenantID, r.agentName, r.sessionCost, r.sessionTokens) {
 			n++
 		}
 	}
@@ -339,18 +353,59 @@ func (g *Gateway) sessionWork(sessionID, sessionSource string, res *sessionReser
 }
 
 // applySessionWork performs the session update a committed settlement owes
-// and marks the ledger row; false when the update failed (the row stays
-// owed for the repair pass).
-func (g *Gateway) applySessionWork(ctx context.Context, key settlementKey, res *sessionReservation, sessionID, sessionSource, tenantID, agentName string, cost float64, tokens int) bool {
-	if err := g.settleSessionUsage(ctx, res, sessionID, sessionSource, tenantID, agentName, cost, tokens); err != nil {
+// — exactly once per ledger transition, keyed by sessionApplicationID — and
+// marks the ledger row; false when the update failed (the row stays owed
+// for the repair pass). A crash after the session store applied the work
+// and before the mark is harmless: the retry finds the application already
+// recorded and only marks.
+func (g *Gateway) applySessionWork(ctx context.Context, key settlementKey, status string, res *sessionReservation, sessionID, sessionSource, tenantID, agentName string, cost float64, tokens int) bool {
+	if err := g.applySessionUsageOnce(ctx, sessionApplicationID(key, status), res, sessionID, sessionSource, tenantID, agentName, cost, tokens); err != nil {
 		log.Warn().Err(err).Str("session_id", sessionID).Msg("delegated_settlement_session_owed")
 		return false
+	}
+	if g.settlementHooks != nil && g.settlementHooks.afterSessionApply != nil {
+		if err := g.settlementHooks.afterSessionApply(key); err != nil {
+			return false
+		}
 	}
 	if err := g.settlements.markSession(ctx, key, sessionStateSettled); err != nil {
 		log.Warn().Err(err).Msg("delegated_settlement_session_mark_failed")
 		return false
 	}
 	return true
+}
+
+// applySessionUsageOnce resolves the session row (the reservation's, or the
+// asserted external session's) and applies the usage under applicationID.
+func (g *Gateway) applySessionUsageOnce(ctx context.Context, applicationID string, res *sessionReservation, sessionID, sessionSource, tenantID, agentName string, cost float64, tokens int) error {
+	if g.sessionStore == nil || sessionID == "" || !isAssertedSessionSource(sessionSource) {
+		return nil
+	}
+	rowID, estimate := "", 0.0
+	if res != nil {
+		rowID, estimate = res.rowID, res.estimate
+	} else {
+		sess, err := g.sessionStore.GetOrCreateExternal(ctx, tenantID, agentName, sessionID, sessionSource)
+		if err != nil {
+			return err
+		}
+		rowID = sess.ID
+	}
+	applied, err := g.sessionStore.ApplyUsageOnce(ctx, applicationID, rowID, estimate, cost, tokens)
+	if err != nil {
+		return err
+	}
+	if res != nil {
+		res.done = true
+	}
+	if applied {
+		if stage := stageFromContext(ctx); stage != "" {
+			if err := g.sessionStore.IncrementStageCount(ctx, rowID, stage); err != nil {
+				log.Warn().Err(err).Str("session_id", rowID).Str("stage", stage).Msg("stage count increment failed")
+			}
+		}
+	}
+	return nil
 }
 
 // settlementAgent resolves the current identity of the row's use case, or a
@@ -770,10 +825,11 @@ func (g *Gateway) settleOwedSession(obs *observation, kind settlementKind, key s
 		return
 	}
 	res := obs.reservation
+	status := settlementSettled
 	if kind == settleLate {
-		res = nil
+		res, status = nil, settlementReconciled
 	}
-	g.applySessionWork(obs.ctx, key, res, obs.sessionID, obs.sessionSource, agent.TenantID, agent.Name, obs.outcome.sessionCost, obs.outcome.sessionTokens)
+	g.applySessionWork(obs.ctx, key, status, res, obs.sessionID, obs.sessionSource, agent.TenantID, agent.Name, obs.outcome.sessionCost, obs.outcome.sessionTokens)
 }
 
 // reconcileAfterLostClaim re-reads the row after a pending→settled claim

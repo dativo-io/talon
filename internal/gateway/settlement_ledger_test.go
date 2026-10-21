@@ -447,3 +447,159 @@ func TestSettlement_SessionWorkOwedAndRepaired(t *testing.T) {
 	gw.config.OpenShell.ResponseGovernance.LedgerRetention = "24h"
 	assert.Equal(t, int64(0), gw.PruneSettlementLedger(context.Background(), time.Now().Add(48*time.Hour)))
 }
+
+// Session application is exactly once per ledger transition across every
+// crash window the previous design left open. Each subtest injects the
+// failure at a precise point and then asserts the session total, the
+// reservation, the ledger state and the signed spend records agree.
+func TestSettlement_SessionApplicationIsExactlyOnce(t *testing.T) {
+	type world struct {
+		gw        *Gateway
+		store     *evidence.Store
+		sess      *session.Store
+		path      string
+		estimate  float64
+		sessionID string
+	}
+	setup := func(t *testing.T) *world {
+		t.Helper()
+		gw, store := setupDelegatedGatewayWith(t, "warn", nil, responseGoverned)
+		path := filepath.Join(t.TempDir(), "sessions.db")
+		sess, err := session.NewStore(path)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sess.Close() })
+		gw.SetSessionStore(sess)
+		req := delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)
+		req.SessionID = "sess-once-1"
+		require.True(t, gw.EvaluateDelegated(context.Background(), req).Allowed)
+		return &world{gw: gw, store: store, sess: sess, path: path, estimate: recordsOfType(t, store, "gateway")[0].Execution.EstimatedCost, sessionID: "sess-once-1"}
+	}
+	sessionOf := func(t *testing.T, w *world) *session.Session {
+		t.Helper()
+		s, err := w.sess.GetByExternal(context.Background(), "acme", "sandboxed-agent", w.sessionID)
+		require.NoError(t, err)
+		return s
+	}
+	actualBody := DelegatedResponseBody{Preflight: preflightFor(200, "application/json"), Mode: ResponseModeWholeBody, Body: []byte(bigUsageBody)}
+
+	t.Run("crash after session apply before ledger mark", func(t *testing.T) {
+		w := setup(t)
+		crash := errors.New("simulated crash after session apply")
+		w.gw.settlementHooks = &settlementHooks{afterSessionApply: func(settlementKey) error { return crash }}
+		st := w.gw.SettleDelegatedResponse(context.Background(), actualBody)
+		require.NotEmpty(t, st.EvidenceID)
+		row := ledgerRow(t, w.gw, "req-1")
+		assert.Equal(t, sessionStateOwed, row.sessionState, "the mark never happened")
+		s := sessionOf(t, w)
+		assert.InDelta(t, st.Cost, s.TotalCost, 1e-9, "the session was charged once before the crash")
+		assert.InDelta(t, 0, s.ReservedCost, 1e-9)
+		// Recovery: the repair pass finds the application already recorded.
+		w.gw.settlementHooks = nil
+		assert.Equal(t, 1, w.gw.RepairOwedSessionSettlements(context.Background()))
+		assert.Equal(t, sessionStateSettled, ledgerRow(t, w.gw, "req-1").sessionState)
+		s = sessionOf(t, w)
+		assert.InDelta(t, st.Cost, s.TotalCost, 1e-9, "no second charge on retry")
+		assert.InDelta(t, 0, s.ReservedCost, 1e-9)
+		assert.Equal(t, 0, w.gw.RepairOwedSessionSettlements(context.Background()))
+		assert.InDelta(t, st.Cost, settlementCostTotal(t, w.store), 1e-9, "the signed spend agrees with the session")
+	})
+
+	t.Run("crash before session apply", func(t *testing.T) {
+		w := setup(t)
+		require.NoError(t, w.sess.Close())
+		st := w.gw.SettleDelegatedResponse(context.Background(), actualBody)
+		require.NotEmpty(t, st.EvidenceID)
+		assert.Equal(t, sessionStateOwed, ledgerRow(t, w.gw, "req-1").sessionState)
+		// Reopen on the same file the setup created.
+		sess2, err := session.NewStore(w.path)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sess2.Close() })
+		w.gw.SetSessionStore(sess2)
+		w.sess = sess2
+		assert.Equal(t, 1, w.gw.RepairOwedSessionSettlements(context.Background()))
+		s := sessionOf(t, w)
+		assert.InDelta(t, st.Cost, s.TotalCost, 1e-9)
+		assert.InDelta(t, 0, s.ReservedCost, 1e-9)
+		assert.Equal(t, 0, w.gw.RepairOwedSessionSettlements(context.Background()))
+	})
+
+	t.Run("concurrent repair passes apply once", func(t *testing.T) {
+		w := setup(t)
+		w.gw.settlementHooks = &settlementHooks{afterSessionApply: func(settlementKey) error { return errors.New("crash") }}
+		st := w.gw.SettleDelegatedResponse(context.Background(), actualBody)
+		require.NotEmpty(t, st.EvidenceID)
+		w.gw.settlementHooks = nil
+		// Pretend the application never happened from the ledger's point of
+		// view and let two repairers race: the session store's application
+		// record is the arbiter.
+		var wg sync.WaitGroup
+		results := make([]int, 4)
+		for i := range results {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				results[i] = w.gw.RepairOwedSessionSettlements(context.Background())
+			}(i)
+		}
+		wg.Wait()
+		s := sessionOf(t, w)
+		assert.InDelta(t, st.Cost, s.TotalCost, 1e-9, "four concurrent repairs, one charge")
+		assert.Equal(t, sessionStateSettled, ledgerRow(t, w.gw, "req-1").sessionState)
+	})
+
+	t.Run("sweeper and late response apply their own transitions once", func(t *testing.T) {
+		w := setup(t)
+		actual := w.gw.costEstimate("openai", "gpt-4o-mini", Usage{Input: 100000, Output: 50000}).Amount
+		require.Greater(t, actual, w.estimate)
+		sweeperInTx, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		w.gw.settlementHooks = &settlementHooks{beforeCommit: func(kind settlementKind, _ settlementKey) error {
+			if kind == settleUnobserved {
+				once.Do(func() { close(sweeperInTx) })
+				<-release
+			}
+			return nil
+		}}
+		swept := make(chan int, 1)
+		go func() { swept <- w.gw.SweepDelegatedPending(context.Background(), time.Now().Add(31*time.Second)) }()
+		<-sweeperInTx
+		settled := make(chan DelegatedSettlement, 1)
+		go func() { settled <- w.gw.SettleDelegatedResponse(context.Background(), actualBody) }()
+		close(release)
+		require.Equal(t, 1, <-swept)
+		st := <-settled
+		require.Equal(t, PricingBasisLateReconciliation, st.Basis)
+		s := sessionOf(t, w)
+		assert.InDelta(t, actual, s.TotalCost, 1e-9, "estimate (unobserved) + excess (reconciled) = actual, each applied once")
+		assert.InDelta(t, 0, s.ReservedCost, 1e-9)
+		assert.InDelta(t, actual, settlementCostTotal(t, w.store), 1e-9)
+		// Repeated callbacks and repeated repairs change nothing.
+		for i := 0; i < 3; i++ {
+			assert.True(t, w.gw.SettleDelegatedResponse(context.Background(), actualBody).Replayed)
+		}
+		w.gw.settlements.db.ExecContext(context.Background(), `UPDATE delegated_settlements SET session_state = 'owed'`) //nolint:errcheck // test fixture: pretend both marks were lost
+		assert.Equal(t, 1, w.gw.RepairOwedSessionSettlements(context.Background()), "the repair re-marks the row")
+		s = sessionOf(t, w)
+		assert.InDelta(t, actual, s.TotalCost, 1e-9, "a lost mark never re-applies the unobserved or the reconciled delta")
+		applied, err := w.sess.UsageApplied(context.Background(), sessionApplicationID(settlementKey{delegatedIssuer, "sb-42", "req-1"}, settlementUnobserved))
+		require.NoError(t, err)
+		assert.True(t, applied)
+		applied, err = w.sess.UsageApplied(context.Background(), sessionApplicationID(settlementKey{delegatedIssuer, "sb-42", "req-1"}, settlementReconciled))
+		require.NoError(t, err)
+		assert.True(t, applied)
+	})
+
+	t.Run("late reconciliation below the estimate applies nothing twice", func(t *testing.T) {
+		w := setup(t)
+		require.Equal(t, 1, w.gw.SweepDelegatedPending(context.Background(), time.Now().Add(31*time.Second)))
+		booked := sessionOf(t, w).TotalCost
+		assert.InDelta(t, w.estimate, booked, 1e-9)
+		small := DelegatedResponseBody{Preflight: preflightFor(200, "application/json"), Mode: ResponseModeWholeBody, Body: []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1},"choices":[{"message":{"content":"late"}}]}`)}
+		st := w.gw.SettleDelegatedResponse(context.Background(), small)
+		assert.Equal(t, 0.0, st.Cost)
+		assert.True(t, w.gw.SettleDelegatedResponse(context.Background(), small).Replayed)
+		w.gw.settlements.db.ExecContext(context.Background(), `UPDATE delegated_settlements SET session_state = 'owed'`) //nolint:errcheck // test fixture
+		w.gw.RepairOwedSessionSettlements(context.Background())
+		assert.InDelta(t, booked, sessionOf(t, w).TotalCost, 1e-9, "the estimate stands; nothing is applied twice")
+	})
+}
