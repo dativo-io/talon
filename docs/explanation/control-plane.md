@@ -43,7 +43,7 @@ Always-enforced posture: no global non-enforcing live posture (#442)
 MCP 2026-07-28 wire only: stateless, self-describing, header/body integrity (#447)
 Trusted action catalog: explicit + MCP-discovered definitions in the runtime generation (#427)
 Exact governed actions over the public Action Gateway: immutable operation, approver-only decision, at most one Talon-forwarded effect, signed lifecycle evidence (#458)
-OpenShell v0.1.3 DELEGATE composition: Talon decides at PRE_CREDENTIALS, OpenShell enforces and injects the credential, proven against the released runtime (#482)
+OpenShell DELEGATE composition: Talon decides at PRE_CREDENTIALS and OpenShell enforces/injects credentials (v0.1.3 live baseline); opt-in PRE_RETURN response/usage settlement and a verified sandbox → HTTP Action Gateway hop are implemented and fixture-tested, with live status tracked separately (#482/#457)
 
 Active MVP direction
 ────────────────────
