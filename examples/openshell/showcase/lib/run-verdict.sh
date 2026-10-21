@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Verdict of one `demo.sh run` from the agent's exit code, its transcript and
 # the protected service's count deltas observed around the run. Sourced by
 # demo.sh and tested offline by test-contract.sh with synthetic transcripts.
