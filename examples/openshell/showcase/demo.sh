@@ -476,7 +476,16 @@ endpoints:
     enforcement: enforce
 binaries: [/usr/local/bin/support-agent]
 EOT
-  openshell_cli profile import -f "$RUN_DIR/profile.yaml" --global >>"$LOGS/setup.log" 2>&1 || die "openshell profile import"
+  # The profile and the provider live in the gateway's database (gateway.db
+  # in the run dir) and survive stop/start: import once per gateway identity.
+  if [[ "${SHOWCASE_PROFILE_IMPORTED:-}" != "$SHOWCASE_GATEWAY_ID" ]]; then
+    local import_out
+    if ! import_out="$(openshell_cli profile import -f "$RUN_DIR/profile.yaml" --global 2>&1)"; then
+      printf '%s\n' "$import_out" >>"$LOGS/setup.log"
+      grep -q 'already exists' <<<"$import_out" || die "openshell profile import (see $LOGS/setup.log)"
+    fi
+    save_state SHOWCASE_PROFILE_IMPORTED "$SHOWCASE_GATEWAY_ID"
+  fi
   if [[ "${SHOWCASE_PROVIDER_CREATED:-}" != "$SHOWCASE_GATEWAY_ID" ]]; then
     openshell_cli provider create --name showcase-openai --type talon-showcase-openai --global-profile --credential "OPENAI_API_KEY=$provider_cred" >>"$LOGS/setup.log" 2>&1 || die "openshell provider create"
     save_state SHOWCASE_PROVIDER_CREATED "$SHOWCASE_GATEWAY_ID"
