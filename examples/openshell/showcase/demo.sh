@@ -104,7 +104,12 @@ if [[ -f "$SCRIPT_DIR/../../../go.mod" ]] && grep -q 'module github.com/dativo-i
   REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 fi
 # Persisted state (ports, ids, paths) so every phase sees the same world.
-load_state() { [[ -f "$STATE" ]] && source "$STATE"; return 0; }
+load_state() {
+  [[ -f "$STATE" ]] && source "$STATE"
+  # Standalone: the run dir's talon.env is the only source of Talon's keys.
+  [[ "$EMBEDDED" == "1" || ! -f "$RUN_DIR/talon.env" ]] || source "$RUN_DIR/talon.env"
+  return 0
+}
 save_state() { # key value
   mkdir -p "$(dirname "$STATE")"
   { [[ -f "$STATE" ]] && grep -v "^export $1=" "$STATE"; printf 'export %s=%q\n' "$1" "$2"; } >"$STATE.tmp" || true
@@ -236,20 +241,19 @@ gateway:
 EOT
       chmod 0600 "$CONFIG"
     fi
-    # Our own Talon's keys (standalone mode): whichever of the three is not
-    # already in the environment is generated once and kept in talon.env.
-    [[ ! -f "$RUN_DIR/talon.env" ]] || source "$RUN_DIR/talon.env"
-    local kv
-    for kv in "TALON_SECRETS_KEY:$(openssl rand -hex 16)" "TALON_SIGNING_KEY:$(openssl rand -hex 24)" "TALON_ADMIN_KEY:admin-$(openssl rand -hex 8)"; do
-      local k="${kv%%:*}" v="${kv#*:}"
-      [[ -n "${!k:-}" ]] && continue
-      ( umask 077; printf 'export %s=%q\n' "$k" "$v" >>"$RUN_DIR/talon.env" )
-      export "$k=$v"
-    done
-    chmod 0600 "$RUN_DIR/talon.env" 2>/dev/null || true
+    # Our own Talon's keys (standalone mode) live in the run dir's talon.env
+    # and nowhere else: an ambient TALON_SECRETS_KEY from the operator's
+    # shell belongs to THEIR Talon, and two shells with different values
+    # would write a vault one process cannot read (cipher: message
+    # authentication failed). A data dir that predates talon.env is refused.
+    if [[ ! -f "$RUN_DIR/talon.env" ]]; then
+      [[ ! -e "$DATA_DIR/secrets.db" ]] || die "$DATA_DIR already holds a vault but $RUN_DIR has no talon.env (an earlier run used ambient keys); remove the run dir ($RUN_DIR) or point TALON_SHOWCASE_RUN_DIR elsewhere"
+      ( umask 077; printf 'export TALON_SECRETS_KEY=%q\nexport TALON_SIGNING_KEY=%q\nexport TALON_ADMIN_KEY=%q\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 24)" "admin-$(openssl rand -hex 8)" >"$RUN_DIR/talon.env" )
+    fi
+    source "$RUN_DIR/talon.env"
   fi
   [[ -n "${TALON_SECRETS_KEY:-}" ]] || die "TALON_SECRETS_KEY is required: the shared Talon key in embedded mode"
-  export TALON_SECRETS_KEY
+  export TALON_SECRETS_KEY TALON_SIGNING_KEY TALON_ADMIN_KEY
   HOST_IP="$(detect_host)"; save_state SHOWCASE_HOST_IP "$HOST_IP"
 
   # OpenShell gateway signing key + JWKS for Talon (the gateway's public key is
@@ -369,7 +373,6 @@ cmd_start() {
   resolve_helper mockprovider ./tests/openshell-live/mockprovider
   resolve_helper protectedservice ./tests/openshell-live/protectedservice
   resolve_helper describe ./tests/openshell-live/describe
-  [[ -z "${TALON_SECRETS_KEY:-}" && -f "$RUN_DIR/talon.env" ]] && source "$RUN_DIR/talon.env"
   HOST_IP="$SHOWCASE_HOST_IP"
   mkdir -p "$BIN"
   openshell_release_fetch "$OPENSHELL_VERSION" "$BIN" "${TALON_SHOWCASE_CACHE:-$HOME/.cache/talon-openshell}/$OPENSHELL_VERSION" || die "OpenShell $OPENSHELL_VERSION release artifacts"
@@ -551,7 +554,6 @@ cmd_status() {
     if [[ "$1" == 0 ]]; then printf '  [pass] %-28s %s\n' "$2" "$3"; else printf '  [FAIL] %-28s %s\n' "$2" "$3"; rc=1; fi
   }
   resolve_talon
-  [[ -z "${TALON_SECRETS_KEY:-}" && -f "$RUN_DIR/talon.env" ]] && source "$RUN_DIR/talon.env"
   echo "OpenShell showcase status ($( [[ "$EMBEDDED" == 1 ]] && echo embedded || echo standalone ), provider mode $PROVIDER_MODE)"
   check 0 "talon" "$("$TALON" version 2>/dev/null | head -n1) at $TALON (openshell prepare, audit --runtime-ref present)"
   local url="${TALON_URL:-${SHOWCASE_TALON_URL:-}}"
@@ -675,7 +677,6 @@ reviewer_target() {
 cmd_approval_status() {
   reviewer_target
   resolve_talon
-  [[ -z "${TALON_SECRETS_KEY:-}" && -f "$RUN_DIR/talon.env" ]] && source "$RUN_DIR/talon.env"
   # The host side holds no agent key, so the pending state is read from
   # Talon's own signed lifecycle (the decision goes through the reviewer API).
   echo "approval $APPROVAL_ID for operation $REFUND_OP (sandbox ${SHOWCASE_SANDBOX_ID:-?}):"
