@@ -52,6 +52,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/openshell-release.sh
 source "$SCRIPT_DIR/lib/openshell-release.sh"
+# shellcheck source=lib/run-verdict.sh
+source "$SCRIPT_DIR/lib/run-verdict.sh"
 [[ "${TALON_SHOWCASE_DEBUG:-0}" == "1" ]] && set -x
 
 COMMAND="${1:-}"
@@ -653,24 +655,20 @@ cmd_run() {
   local refund_op; refund_op="$(sed -n 's/^OPERATION_ID=//p' "$approval_file" 2>/dev/null | head -n1)"
   [[ -n "$refund_op" ]] || refund_op="$(grep -oE 'OPERATION='"$prefix"'-create_refund_request-[0-9a-f]+' "$agent_log" | head -n1 | cut -d= -f2)"
   echo "protected service deltas: tickets=$d_tickets refunds=$d_refunds customers(deletions)=$d_customers"
-  local status
-  case "$code" in
-    0) status="completed"
-       [[ "$d_customers" == 0 ]] || die "a forbidden deletion reached the protected service ($d_customers)"
-       [[ "$d_refunds" == 1 ]] || die "expected exactly one refund dispatch, observed $d_refunds"
-       grep -q 'APPROVAL=approved' "$agent_log" || die "completed without a reviewer approval in the transcript"
-       grep -q 'REPLAY=operation_already_succeeded' "$agent_log" || die "replay safety was not demonstrated"
-       grep -q 'ADVERSARIAL=denied' "$agent_log" || die "the adversarial forbidden-action probe was not denied" ;;
-    2) status="rejected"
-       [[ "$d_refunds" == 0 && "$d_customers" == 0 ]] || die "a rejected run produced downstream mutations (refunds=$d_refunds customers=$d_customers)" ;;
-    3) echo "RESULT: no reviewer decision within ${TALON_SHOWCASE_APPROVAL_WAIT_S:-600}s; the operation is still pending in Talon — rerun 'run' with the same session to resume (no receipt written)"; exit 3 ;;
-    5) status="unresolved"; warn "a downstream outcome is unknown; reconcile with the operator (no retry was attempted)" ;;
-    *) die "agent exited with $code (see $agent_log)" ;;
+  local verdict status resumed=false
+  verdict="$(run_verdict "$code" "$agent_log" "$d_refunds" "$d_customers" 2>&1)" || die "run: $verdict (see $agent_log)"
+  case "$verdict" in
+    completed) status="completed" ;;
+    resumed) status="completed"; resumed=true
+       log "resumed: the refund had already succeeded in an earlier run; nothing was dispatched again" ;;
+    rejected) status="rejected" ;;
+    pending) echo "RESULT: no reviewer decision within ${TALON_SHOWCASE_APPROVAL_WAIT_S:-600}s; the operation is still pending in Talon — rerun 'run' with the same session to resume (no receipt written)"; exit 3 ;;
+    unresolved) status="unresolved"; warn "a downstream outcome is unknown; reconcile with the operator (no retry was attempted)" ;;
   esac
   [[ -n "$refund_op" ]] || die "no refund operation id in the transcript"
   ( umask 077; jq -n --arg s "$session" --arg r "$SHOWCASE_SANDBOX_ID" --arg op "$refund_op" --arg st "$status" --arg img "$SHOWCASE_AGENT_IMAGE" --arg ver "${SHOWCASE_OPENSHELL_VERSION:-}" --arg pm "$PROVIDER_MODE" \
-      --argjson t "$d_tickets" --argjson rf "$d_refunds" --argjson c "$d_customers" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '{session_id:$s, runtime_ref:$r, refund_operation_id:$op, status:$st, provider_mode:$pm, openshell_version:$ver, agent_image:$img, observed_downstream:{tickets:$t, refunds:$rf, customer_deletions:$c}, concluded_at:$at,
+      --argjson t "$d_tickets" --argjson rf "$d_refunds" --argjson c "$d_customers" --argjson rs "$resumed" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{session_id:$s, runtime_ref:$r, refund_operation_id:$op, status:$st, resumed:$rs, provider_mode:$pm, openshell_version:$ver, agent_image:$img, observed_downstream:{tickets:$t, refunds:$rf, customer_deletions:$c}, concluded_at:$at,
         note:"locator written by the showcase runner; proof is Talon'"'"'s signed evidence (talon audit list --runtime-ref <runtime_ref> --report; talon audit verify --operation <refund_operation_id>)"}' >"$result" )
   pass "run $status: receipt $result (session $session, sandbox $SHOWCASE_SANDBOX_ID, refund operation $refund_op)"
   echo "reconstruct: TALON_DATA_DIR=$DATA_DIR $TALON audit list --runtime-ref $SHOWCASE_SANDBOX_ID --limit 200 --report"
@@ -737,7 +735,7 @@ cmd_validate() {
   # Resume after a restart: the same session and prefix find the operation
   # already succeeded; no second refund.
   "${envv[@]}" env TALON_SHOWCASE_SESSION="$session" TALON_SHOWCASE_OPERATION_PREFIX="openshell-refund-$session" bash "$self" run || die "validate: resumed run"
-  jq -e '.observed_downstream.refunds == 0' "$vdir/$session.result.json" >/dev/null || die "validate: the resumed run dispatched again"
+  jq -e '.status == "completed" and .resumed == true and .observed_downstream.refunds == 0 and .observed_downstream.customer_deletions == 0' "$vdir/$session.result.json" >/dev/null || die "validate: the resumed run dispatched again"
   # Rejected journey: zero mutations.
   local session2
   session2="openshell-validate-$(openssl rand -hex 3)"

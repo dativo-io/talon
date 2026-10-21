@@ -88,4 +88,38 @@ pass "status fails closed before start; stop is idempotent"
 # 5. Hygiene: no key material in the logs the runner writes.
 grep -rqE 'PRIVATE KEY-----|talon_appr_cred_' "$WORK/run/logs" 2>/dev/null && fail "key material in logs"
 pass "logs carry no key material"
+# 6. Run verdict (regression for the CI showcase lane): a restarted agent that
+#    finds the refund already succeeded is a "resumed" completion that must NOT
+#    have dispatched again; a fresh completion must have dispatched exactly once.
+# shellcheck source=lib/run-verdict.sh
+source "$HERE/lib/run-verdict.sh"
+OP="openshell-refund-x-create_refund_request-66af69cffd6f"
+printf 'APPROVAL_ID=apr_1 OPERATION=%s\nAPPROVAL=approved\nATTEMPT=succeeded TOOL=create_refund_request OPERATION=%s\nREPLAY=operation_already_succeeded\nFINAL=done\nADVERSARIAL=denied TOOL=delete_customer OPERATION=o CODE=DENY (deliberate probe, not a model decision)\nRESULT=succeeded\n' "$OP" "$OP" >"$WORK/fresh.log"
+printf 'RESUME=3 operation(s) in the journal for prefix openshell-refund-x\nRESUMED=create_refund_request OPERATION=%s STATUS=succeeded\nATTEMPT=already_succeeded TOOL=create_refund_request OPERATION=%s (no new effect)\nFINAL=done\nADVERSARIAL=denied TOOL=delete_customer OPERATION=o CODE=DENY (deliberate probe, not a model decision)\nRESULT=succeeded\n' "$OP" "$OP" >"$WORK/resumed.log"
+printf 'RESUMED=create_refund_request OPERATION=%s STATUS=authorized\nATTEMPT=succeeded TOOL=create_refund_request OPERATION=%s\nREPLAY=operation_already_succeeded\nADVERSARIAL=denied TOOL=delete_customer OPERATION=o CODE=DENY\nRESULT=succeeded\n' "$OP" "$OP" >"$WORK/authorized.log"
+sed '/ADVERSARIAL=denied/d' "$WORK/fresh.log" >"$WORK/noprobe.log"
+# verdict_is CODE LOG D_REFUNDS D_CUSTOMERS EXPECTED
+verdict_is() {
+  local got; got="$(run_verdict "$1" "$WORK/$2" "$3" "$4" 2>&1)" || fail "run_verdict $1 $2 refunds=$3 customers=$4 refused: $got"
+  [[ "$got" == "$5" ]] || fail "run_verdict $1 $2 refunds=$3 customers=$4: expected $5, got $got"
+}
+# verdict_refused CODE LOG D_REFUNDS D_CUSTOMERS PATTERN
+verdict_refused() {
+  set +e; local got; got="$(run_verdict "$1" "$WORK/$2" "$3" "$4" 2>&1)"; local rc=$?; set -e
+  refused "$rc" "$got" "$5" "run_verdict $1 $2 refunds=$3 customers=$4 must refuse"
+}
+verdict_is 0 fresh.log 1 0 completed
+verdict_is 0 resumed.log 0 0 resumed
+verdict_is 0 authorized.log 1 0 completed   # approved before the restart, dispatched after it
+verdict_is 2 fresh.log 0 0 rejected
+verdict_is 3 fresh.log 0 0 pending
+verdict_is 5 fresh.log 0 0 unresolved
+verdict_refused 0 fresh.log 0 0 'exactly one refund dispatch'
+verdict_refused 0 fresh.log 2 0 'exactly one refund dispatch'
+verdict_refused 0 resumed.log 1 0 'resumed run dispatched the refund again'
+verdict_refused 0 fresh.log 1 1 'forbidden deletion'
+verdict_refused 0 noprobe.log 1 0 'probe was not denied'
+verdict_refused 2 fresh.log 1 0 'rejected run produced downstream mutations'
+verdict_refused 1 fresh.log 0 0 'agent exited with 1'
+pass "run verdict: fresh completion dispatches once; a resumed completion dispatches nothing; mutations are refused"
 echo "ALL PASS showcase runner contract"

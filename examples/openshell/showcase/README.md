@@ -62,7 +62,8 @@ id), `refund_operation_id`, the status and the observed counts. The receipt is a
 locator, not proof: the proof is Talon's signed evidence, which the two `talon
 audit` commands above reconstruct and verify. Re-running `run` with the same
 session and operation prefix resumes the same business operation (stable
-operation ids); it never creates a second refund.
+operation ids); it never creates a second refund, and the runner then requires
+zero new refunds and marks the receipt `resumed: true`.
 
 ## Development path vs customer path
 
