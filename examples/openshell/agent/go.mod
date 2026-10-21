@@ -1,6 +1,6 @@
 module github.com/dativo-io/talon/examples/openshell/agent
 
-go 1.25.13
+go 1.26.10
 
 require github.com/openai/openai-go v1.12.0
 

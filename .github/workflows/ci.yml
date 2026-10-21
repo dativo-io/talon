@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.25.13']
+        go-version: ['1.26.10']
 
     steps:
       - uses: actions/checkout@v4
@@ -124,10 +124,10 @@ jobs:
           path: coverage-${{ matrix.go-version }}.out
 
       - name: Upload to Codecov
-        if: matrix.go-version == '1.25.13'
+        if: matrix.go-version == '1.26.10'
         uses: codecov/codecov-action@v4
         with:
-          file: ./coverage-1.25.13.out
+          file: ./coverage-1.26.10.out
           fail_ci_if_error: false
 
   proof-gates:
@@ -141,7 +141,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.10'
           cache: true
 
       - name: Install SQLite
@@ -161,7 +161,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.10'
           cache: true
 
       - name: Install SQLite
@@ -195,7 +195,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.10'
           cache: true
 
       - name: golangci-lint
@@ -244,7 +244,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.10'
           cache: true
 
       - name: Install cross-compilation tools

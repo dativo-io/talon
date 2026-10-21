@@ -17,7 +17,7 @@ Thanks for helping improve Talon.
 
 ## Development Setup
 
-1. Install Go 1.22+
+1. Install Go 1.26.10+ (`go.mod` pins the toolchain; `GOTOOLCHAIN=auto` fetches it on an older install)
 2. Install dependencies: `go mod download`
 3. Build: `make build`
 4. Test: `make test`

@@ -4,7 +4,7 @@
 # carries NO credential: Talon's hop, OpenShell's credential injection and
 # the host-side reviewer are what give it authority. busybox stays for the
 # sandbox entrypoint (sleep) and for OpenShell's proxy-mode baseline.
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
