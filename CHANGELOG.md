@@ -17,6 +17,10 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.15.1] - 2026-10-22
+
+Security patch release: the v1.15.0 binaries were built with Go 1.26.4 and carry twelve standard-library vulnerabilities reachable from Talon's HTTP paths and the compliance report renderer. No behaviour change; upgrade.
+
 ### Security
 
 - **govulncheck reports zero reachable vulnerabilities again (GO-2026-6809, GO-2026-6617, GO-2026-6613, GO-2026-6612, GO-2026-6611, GO-2026-6610, GO-2026-6608, GO-2026-6607, GO-2026-6605, GO-2026-6603, GO-2026-6600, GO-2026-6599).** Twelve standard-library findings were reachable from Talon code — HTTP/1 and HTTP/2 server and client issues in `net/http` and `golang.org/x/net/http2` (connection desynchronization after CONNECT, HPACK encoder race, flow-control refund, trailer memory exhaustion, malformed framing headers, initial-window CPU), the MIME header memory-limit bypass, crypto/tls ECH and intermediate-certificate handling, and two html/template context bugs on the compliance report — all fixed only in the Go 1.26 line. Fixes: Go toolchain **1.26.10** (go.mod directives of the main and SDK-agent modules, CI/security workflow pins, the `golang:1.26.10-alpine` builder, the agent image builder), release builds on goreleaser-cross **v1.26.10**, and `golang.org/x/net` v0.61.0 with the x/crypto, x/sys, x/term, x/text and x/sync patch bumps `go mod tidy` carries. Who cares: anyone running `talon serve` (every HTTP path is affected) or rendering compliance reports; v1.15.0 binaries were built with Go 1.26.4 and carry these — upgrade. Verify: `govulncheck ./...` (0 reachable), `talon version` on a release binary shows Go 1.26.10.
@@ -868,7 +872,8 @@ Fleet Operations v1 (#265 milestone): discover, inspect, stop, and safely reconf
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.15.0...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.15.1...HEAD
+[1.15.1]: https://github.com/dativo-io/talon/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/dativo-io/talon/compare/v1.10.0...v1.15.0
 [1.10.0]: https://github.com/dativo-io/talon/compare/v1.9.4...v1.10.0
 [1.9.4]: https://github.com/dativo-io/talon/compare/v1.9.3...v1.9.4
