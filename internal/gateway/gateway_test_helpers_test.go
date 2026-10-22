@@ -103,7 +103,7 @@ func setupGatewayWithClassifier(t *testing.T, piiAction string, upstreamHandler 
 		cls = classifier.MustNewScanner()
 	}
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 
 	return gw, upstream, evStore
@@ -146,4 +146,16 @@ func responsesAPIUpstream(capturedBody *[]byte, capturedPath *string) http.Handl
 // simulating what OpenAI returns when stream:true.
 func sseResponse(responseJSON string) string {
 	return "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":" + responseJSON + "}\n\ndata: [DONE]\n\n"
+}
+
+// testTableEstimator prices like the no-table default but reports the
+// pricing as table-known. The organization baseline always binds a daily/
+// monthly cap, and a capped request on an unpriced model is denied
+// pricing_unavailable (TestBudget_UnpricedModel_*) — fixtures that are not
+// about pricing must satisfy that precondition the way production does
+// (every model they send is in the shipped table).
+func testTableEstimator(provider, model string, usage Usage) CostResult {
+	r := defaultCostEstimator(provider, model, usage)
+	r.PricingKnown, r.PricingBasis = true, PricingBasisTable
+	return r
 }

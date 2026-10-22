@@ -209,6 +209,8 @@ func TestErrorContract_DocumentedCodes(t *testing.T) {
 		"model_required_for_policy_evaluation",
 		"rate_limited",
 		"scanner_unavailable",
+		"budget_unavailable",
+		"pricing_unavailable",
 	}
 	for _, code := range codes {
 		msg, errType := normalizeGatewayError(code + ": human-readable detail")
@@ -234,6 +236,7 @@ func TestErrorContract_CodesRegisteredInGovcode(t *testing.T) {
 		"budget_exceeded", "session_budget_exceeded", "egress_tier_destination_disallowed", "egress_destination_disallowed",
 		"pii_policy_violation", "model_required_for_policy_evaluation", "rate_limited", "scanner_unavailable",
 		"workload_identity_required", "workload_identity_unbound", "destination_not_governed",
+		"budget_unavailable", "pricing_unavailable",
 	} {
 		spec, ok := govcode.Lookup(code)
 		if !ok {

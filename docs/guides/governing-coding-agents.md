@@ -168,10 +168,12 @@ How the session cap (`session_limits.max_cost`) behaves — precisely:
 
 - A **new** request is denied once accrued session spend + the pre-request estimate exceeds the limit. The denial is HTTP 403 with a **provider-native error body** (`session_budget_exceeded: session spend 6.00 + estimate 1.00 exceeds limit 5.00`), so clients surface it like any provider error. One documented exception: errors emitted **before routing** (e.g. a request for an unknown provider prefix) use the OpenAI error shape, since no provider — and therefore no wire family — was resolved yet (#195).
 - Spend accumulates **per session, not per provider** — the same session is denied on the other provider's route too (`TestSessionBudget_CrossProviderDeny`).
-- It is a **soft cap**: one in-flight request whose real cost exceeds the estimate can overshoot, and N concurrent first requests are bounded only by N × per-request cost. Atomic reservation is #144 (`TestSessionBudget_SoftCapOvershoot`, `TestSessionBudget_ConcurrentBurstBound`).
+- Admission is **estimate-based**: each request reserves its pre-request estimate atomically in the session store before policy evaluation, so concurrent requests serialize against settled + in-flight spend (a 5-request burst against a 3-request cap admits exactly 3, `TestSessionBudget_ConcurrentReservationHardBound`). One in-flight request whose real cost exceeds its own estimate still overshoots by that difference — a long-context turn can cost tens of times the 500/500-token estimate — and the next request is denied (`TestSessionBudget_SingleRequestEstimateOvershoot`). The cap bounds what Talon *admits*, not the provider's invoice.
+- The **agent daily/monthly caps** (`cost_limits`) hold under the same concurrency: an in-flight ledger in the gateway counts every admitted request's estimate against the cap until its settled record committed, so parallel sessions of one agent cannot race past a shared cap (`TestBudget_ConcurrentSessions_AgentCapHardBound`).
 - Session denies carry a **structured evidence detail** (limit, spent, estimate) — populated only for session-budget denies, not other reasons (`TestSessionBudgetDetail_OnlyOnSessionDeny`).
 - A budget deny is **preventive**: the provider is never dispatched (`TestSessionBudget_ExceededDeny_ZeroDispatch` asserts zero upstream calls). There is no observe-and-forward posture (#442).
-- If the session store fails, the budget check **fails open** and the gap is annotated in signed evidence (`session_budget_unavailable`, `TestSessionBudget_FailOpenAnnotated`).
+- Budget state is a **precondition**: if the session store (session cap) or the evidence-store spend read (daily/monthly caps) fails while the cap binds, the request is denied **503 `budget_unavailable`** with nothing dispatched, and the signed deny carries `session_budget_unavailable` / `agent_budget_unavailable` so an outage is never mistaken for exhaustion (`TestSessionBudget_StoreFailure_FailClosed`, `TestBudget_AgentSpendUnreadable_FailClosed`). The code is retriable; the store, not the request, is the problem.
+- A model missing from `pricing/models.yaml` cannot be priced, and a cap enforced against a flat guess is not a cap: under a binding cap the request is denied **403 `pricing_unavailable`** naming the model to add (`TestBudget_UnpricedModel_DeniedUnderCap`). Keep the table current when a provider ships a new model — the error tells you which one.
 
 ### 5. Watch it: audit, costs, dashboard
 
@@ -219,7 +221,9 @@ The mock provider speaks both the Anthropic Messages wire and the OpenAI Respons
 | Hostile header value aimed at evidence or dashboards | Hygiene gate: token charset, ≤128 bytes, reject 400 (never truncate) | `TestGatewayOrchestration_HygieneRejectedAtGateway` |
 | Junk stage strings bloating session state | Fixed stage set (`generation`/`judge`/`commit`); others dropped at ingestion | `TestNormalizeStage` |
 | Subagent forges its identity | Attribution, not authentication: `provenance: client_asserted`; identity never a policy input; budgets bind to the Talon agent | `TestPolicyInputParity_WithAssertedSession`; [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
-| Session store outage | Budget check fails open; gap annotated in signed evidence (`session_budget_unavailable`) | `TestSessionBudget_FailOpenAnnotated` |
+| Session or evidence store outage while a cap binds | Fail-closed: 503 `budget_unavailable`, zero dispatch; gap annotated in the signed deny (`session_budget_unavailable` / `agent_budget_unavailable`) | `TestSessionBudget_StoreFailure_FailClosed`, `TestBudget_AgentSpendUnreadable_FailClosed` |
+| Parallel sessions of one agent race a shared daily cap | In-flight estimates count against the cap until settled; exactly the headroom is admitted | `TestBudget_ConcurrentSessions_AgentCapHardBound` |
+| New model not yet in the pricing table | Denied 403 `pricing_unavailable` under a cap instead of settled at a flat under-estimate | `TestBudget_UnpricedModel_DeniedUnderCap` |
 | Budget denials disrupting rollout | Start with a generous `session_limits.max_cost`, read `talon audit list --session`, then lower it; denials are always real and dispatch nothing | `session_limits.max_cost`; `TestSessionBudget_ExceededDeny_ZeroDispatch` |
 | Credentials pasted into prompts | High-precision recognizers (PEM, `AKIA...`, GitHub tokens, `sk-ant-`/`sk-proj-`) evidenced via `pii_action: warn` | pack `agent.talon.yaml` `custom_recognizers` |
 | Evidence tampering | HMAC verification over every record in the session | `talon audit verify --session <id>` |
@@ -233,7 +237,7 @@ The mock provider speaks both the Anthropic Messages wire and the OpenAI Respons
 - **Local tool execution is invisible** — file edits, shell commands, and local tool runs never transit the gateway; evidence shows the model's tool_use *intentions*, not local execution.
 - **Client-asserted identity is attribution, not authentication** — attestation is #149.
 - **Subscription/OAuth billing cannot be governed** — governed operation requires the agent-key + vault-injected-key model.
-- **Session budgets are soft caps** — atomic reservation is #144.
+- **Budgets bound what Talon admits, not the provider's invoice** — admission is decided on a pre-request estimate; a request whose real cost exceeds its estimate overshoots by that difference ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
 - **Response PII `warn` is observation after delivery, not prevention** — it cannot recall what the developer already saw; `redact`/`block` prevent, and therefore buffer whole streams.
 - **Cache pricing falls back to the input rate** when a pricing entry lacks cache rates.
 

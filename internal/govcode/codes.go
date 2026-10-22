@@ -114,6 +114,13 @@ const (
 	DestinationNotGoverned           = "destination_not_governed"
 	AgentDisabled                    = "agent_disabled"
 	ModelRequiredForPolicyEvaluation = "model_required_for_policy_evaluation"
+	// BudgetUnavailable: a spending cap binds the request and the budget
+	// state it is checked against could not be read; fail closed, nothing
+	// dispatched, retriable once the store recovers.
+	BudgetUnavailable = "budget_unavailable"
+	// PricingUnavailable: a spending cap binds the request and the pricing
+	// table has no entry for the model, so the request cannot be priced.
+	PricingUnavailable = "pricing_unavailable"
 
 	// ---- added by #372 -----------------------------------------------------
 	// PolicyEvaluationFailed: the policy engine could not produce a verdict;
@@ -193,6 +200,8 @@ var registry = []Spec{
 	{Code: DestinationNotGoverned, Class: ClassDenied, Explanation: "DESTINATION_NOT_GOVERNED", Producers: []string{ProducerGateway}, Summary: "No enabled provider matches the destination; fail closed."},
 	{Code: AgentDisabled, Class: ClassDenied, Explanation: "AGENT_DISABLED", Producers: []string{ProducerGateway}, Summary: "The AI use case is disabled."},
 	{Code: ModelRequiredForPolicyEvaluation, Class: ClassInvalid, Explanation: "POLICY_DENIED_ROUTING", Producers: []string{ProducerGateway}, Summary: "The request omits a model while a model policy is active."},
+	{Code: BudgetUnavailable, Class: ClassFailed, Retryable: true, Explanation: "EXECUTION_FAILED", Producers: []string{ProducerGateway}, Summary: "A spending cap binds the request and its budget state could not be read; fail closed, nothing dispatched."},
+	{Code: PricingUnavailable, Class: ClassDenied, Explanation: "POLICY_DENIED_COST", Producers: []string{ProducerGateway}, Summary: "A spending cap binds the request and the model has no pricing entry, so it cannot be priced."},
 
 	{Code: PolicyEvaluationFailed, Class: ClassFailed, Retryable: true, Explanation: "EXECUTION_FAILED", Producers: []string{ProducerMCP}, Summary: "The policy engine could not produce a verdict; fail closed, nothing dispatched."},
 	{Code: UpstreamAuthUnavailable, Class: ClassFailed, Retryable: true, Explanation: "EXECUTION_FAILED", Producers: []string{ProducerMCP}, Summary: "The upstream credential could not be obtained before dispatch; zero upstream call."},

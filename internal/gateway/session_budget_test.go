@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -368,19 +369,43 @@ func TestSessionBudget_ReservationReleasedOnDeny(t *testing.T) {
 	assert.Zero(t, sess.ReservedCost, "denied requests released their reservations")
 }
 
-// TestSessionBudget_FailOpenAnnotated: a session-store failure must not take
-// down traffic — the request proceeds and the gap is visible in signed
-// evidence via the session_budget_unavailable annotation.
-func TestSessionBudget_FailOpenAnnotated(t *testing.T) {
-	evStore, sessStore, h := newSessionBudgetGateway(t, 10)
+// TestSessionBudget_StoreFailure_FailClosed: a session cap binds and the
+// session store cannot be read or reserved against. The request is denied
+// 503 budget_unavailable BEFORE dispatch — forwarding on a false zero was
+// the documented fail-open of #198 and let the cap lapse exactly when the
+// store was unhealthy. The deny is signed (the evidence store is healthy)
+// and carries the session_budget_unavailable annotation, so a store outage
+// is never confused with a cap exhaustion.
+func TestSessionBudget_StoreFailure_FailClosed(t *testing.T) {
+	evStore, sessStore, h, calls := newSessionBudgetGatewayCounting(t, 10, sbEstimator)
 	require.NoError(t, sessStore.Close()) // break the store
 
 	rec := sbDo(t, h, "openai", sbTenantKeyA, "sess-broken")
-	require.Equal(t, http.StatusOK, rec.Code, "session budget check fails open")
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	assert.Equal(t, CodeBudgetUnavailable, providerErrorType(t, rec))
+	assert.Equal(t, int64(0), calls.openai.Load(), "a capped request with unknown session state never reaches the provider")
 
 	ev := lastGatewayEvidence(t, evStore, "tenant-a")
+	assertEnforcedDenial(t, ev)
 	assert.Contains(t, ev.GatewayAnnotations, "session_budget_unavailable")
+	assert.Nil(t, ev.SessionBudget, "no cap was exceeded; the deny carries no exhaustion detail")
+	assert.NotContains(t, strings.Join(ev.PolicyDecision.Reasons, " "), "session_budget_exceeded")
+}
+
+// TestSessionBudget_StoreFailure_NoCapProceeds: without a binding session
+// cap there is no session decision to protect — the request proceeds (the
+// agent caps still gate it) and the gap stays visible in signed evidence.
+func TestSessionBudget_StoreFailure_NoCapProceeds(t *testing.T) {
+	evStore, sessStore, h, calls := newSessionBudgetGatewayCounting(t, 0, sbEstimator)
+	require.NoError(t, sessStore.Close())
+
+	rec := sbDo(t, h, "openai", sbTenantKeyA, "sess-broken-nocap")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, int64(1), calls.openai.Load())
+
+	ev := lastGatewayEvidence(t, evStore, "tenant-a")
 	assert.True(t, ev.PolicyDecision.Allowed)
+	assert.Contains(t, ev.GatewayAnnotations, "session_budget_unavailable")
 }
 
 // TestSessionBudget_ExceededDeny_ZeroDispatch: a session-cap denial is

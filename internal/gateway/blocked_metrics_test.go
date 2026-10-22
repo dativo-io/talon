@@ -91,7 +91,7 @@ func setupGatewayWithSpy(t *testing.T, cfg *GatewayConfig, registry *IdentityReg
 	if policy == nil {
 		policy = testGatewayPolicy(t)
 	}
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policy, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policy, testTableEstimator)
 	require.NoError(t, err)
 
 	spy := &metricsRecorderSpy{}
@@ -251,7 +251,7 @@ func TestBlockedPath_SecretFailure_EmitsMetrics(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 
 	cls := classifier.MustNewScanner()
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 
 	spy := &metricsRecorderSpy{}
@@ -292,7 +292,7 @@ func TestBlockedPath_AuthFailure_EmitsErrorCounter(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 
 	metrics := collectGatewayMetrics(t, func(ctx context.Context) {

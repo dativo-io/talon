@@ -108,7 +108,7 @@ func setupEgressGateway(t *testing.T, egress *EgressPolicyConfig, providerRegion
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, testTableEstimator)
 	require.NoError(t, err)
 	return gw, &upstreamCalls, evStore
 }

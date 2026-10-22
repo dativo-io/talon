@@ -131,6 +131,12 @@ type Gateway struct {
 	settlements *settlementRepo
 	// settlementHooks are test-only fault-injection points (nil in production).
 	settlementHooks *settlementHooks
+	// agentInflight holds the estimates of admitted requests whose settled
+	// cost has not yet reached the evidence store (agent-cap admission).
+	agentInflight agentInflight
+	// budgetReadHook is a test-only fault-injection point for the agent
+	// spend read (nil in production).
+	budgetReadHook func(context.Context) error
 }
 
 type gatewayCacheConfig struct {
@@ -429,6 +435,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		SessionID: sessionID, SessionSource: sessionSource, IsCountTokens: isCountTokens, CorrelationID: correlationID,
 	})
 	ctx = outcome.Ctx
+	// The agent-cap claim ends when this handler returns: by then the
+	// request's record — settled cost or deny — has committed (or failed,
+	// in which case nothing will ever land and the claim must not linger).
+	defer g.agentInflight.release(outcome.AgentReservation)
 	if outcome.SessReservation != nil {
 		// The deferred release covers every non-settling exit (deny, tool
 		// block, upstream failure, panic); a successful settle in
@@ -447,6 +457,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	dailyCost, monthlyCost := dec.DailyCost, dec.MonthlyCost
 	sessionBudgetUnavailable, sessView, retryS := dec.SessionBudgetUnavailable, dec.SessView, dec.RetryS
 	sessReservation := outcome.SessReservation
+	capBinds := dec.DailyCap > 0 || dec.MonthlyCap > 0 || eff.BindingSessionCap() > 0
 
 	// Step 7b: Apply the provider's Responses API store mode. Default is
 	// "preserve" — an explicit client store:false is a data-retention decision
@@ -721,8 +732,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// recomputed cost estimate, and destination region — built by the
 		// same function as the primary's input (session context included).
 		{
-			candEstimate := g.costEstimate(candProvider, candModel, Usage{Input: estTokensIn, Output: estTokensOut}).Amount
-			candInput, _ := g.buildPolicyInputForRequest(cCtx, agent, candProvider, candModel, tier, candEstimate, dailyCost, monthlyCost, sessView)
+			candEstimate := g.costEstimate(candProvider, candModel, Usage{Input: estTokensIn, Output: estTokensOut})
+			if capBinds && !candEstimate.PricingKnown {
+				// Same precondition as the primary (decidePreDispatch): a
+				// capped agent never fails over onto a model Talon cannot price.
+				return failover.FilterResult{Filter: "gateway_policy", Reason: fmt.Sprintf("%s: no pricing entry for model %q on provider %q", CodePricingUnavailable, candModel, candProvider)}, nil
+			}
+			candInput, _ := g.buildPolicyInputForRequest(cCtx, agent, candProvider, candModel, tier, candEstimate.Amount, dailyCost, monthlyCost, sessView)
 			allowed, reasons, policyErr := g.policy.EvaluateGateway(cCtx, candInput)
 			switch {
 			case policyErr != nil:
@@ -947,14 +963,23 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.PricingKnown = pricingKnown
 		}
 	})
-	if recordErr != nil {
-		g.handleEvidenceWriteFailure(ctx, recordErr)
-		return
-	}
 	if !isCountTokens {
 		// count_tokens neither spends nor consumes: keep session cost/token
-		// accumulation and stage counts free of count-only traffic.
+		// accumulation and stage counts free of count-only traffic. The
+		// session is settled even when the record below failed to commit:
+		// the provider was reached and charged, and releasing the
+		// reservation instead would erase the charge from the session cap.
 		g.trackSessionUsage(ctx, sessReservation, sessionID, sessionSource, agent.TenantID, agent.Name, cost, tokenUsage.Input+tokenUsage.Output)
+	}
+	if recordErr != nil {
+		// Operational failure, not a policy outcome: the settled cost never
+		// reaches the agent's daily/monthly spend, and no receipt exists for
+		// this request. Said so explicitly, with the amount.
+		log.Error().Err(recordErr).Str("correlation_id", correlationID).Str("agent", agent.Name).
+			Float64("settled_cost", cost).Str("currency", g.pricingCurrency).
+			Msg("gateway_settled_cost_unrecorded")
+		g.handleEvidenceWriteFailure(ctx, recordErr)
+		return
 	}
 
 	// Emit OTel + dashboard metrics
@@ -1586,6 +1611,12 @@ func (g *Gateway) agentCostTotals(ctx context.Context, agent *ResolvedIdentity) 
 	now := time.Now().UTC()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	if g.budgetReadHook != nil {
+		if err := g.budgetReadHook(ctx); err != nil {
+			log.Warn().Err(err).Str("agent", agent.Name).Msg("gateway_agent_budget_read_failed")
+			return 0, 0, true
+		}
+	}
 	byAgent, err := g.evidenceStore.CostByAgent(ctx, agent.TenantID, todayStart, now)
 	if err != nil {
 		log.Warn().Err(err).Str("agent", agent.Name).Msg("gateway_agent_budget_read_failed")

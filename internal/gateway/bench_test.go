@@ -73,7 +73,7 @@ func BenchmarkGatewayPipelineOverhead(b *testing.B) {
 		AllowedModels: []string{"llama2"},
 		MaxDailyCost:  1000,
 	}))
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, testTableEstimator)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func BenchmarkGatewayPipelineOverheadLargePrompt(b *testing.B) {
 		AllowedModels: []string{"claude-sonnet-4-20250514"},
 		MaxDailyCost:  1000,
 	}))
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, testTableEstimator)
 	if err != nil {
 		b.Fatal(err)
 	}
