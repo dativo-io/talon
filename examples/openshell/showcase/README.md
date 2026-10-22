@@ -94,8 +94,11 @@ With `TALON_SHOWCASE_EMBEDDED=1` the Full Demo exports `TALON_SHOWCASE_CONFIG_DI
 `TALON_SHOWCASE_SESSION`, `TALON_SHOWCASE_OPERATION_PREFIX` and
 `TALON_SHOWCASE_RUN_START`. The runner then overlays the **same** generated
 `talon.config.yaml` and agents directory the other cases use (`talon openshell
-prepare`: it adds `gateway.openshell`, the mock provider entry and the
-`sandboxed-support` use case; it never touches other agents or settings), uses
+prepare`: it adds `gateway.openshell`, the mock provider entry — priced in the
+`pricing/models.yaml` beside the config as `inherit: openai`, the catalog entry
+whose models the mock serves, because an unpriced provider is denied under the
+use case's spending cap — and the `sandboxed-support` use case; it never
+touches other agents, providers or settings), uses
 the shared Talon, evidence store and keys, and stops only what it started.
 `prepare` changes `gateway.openshell`, which Talon reads at startup, so the
 shared Talon must be (re)started between `prepare` and `start` — the Full

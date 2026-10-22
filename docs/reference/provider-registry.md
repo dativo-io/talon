@@ -79,7 +79,16 @@ Cost estimates appear in the evidence trail (`pre_request_estimate` and `post_re
 
 To update pricing, edit `pricing/models.yaml` and restart Talon. Hot-reload is not currently supported.
 
-For providers with `models: {}` (ollama, generic-openai), operators can add custom model pricing as needed. Run `talon init` (wizard or `talon init --scaffold`) to generate a project that includes `pricing/models.yaml` and `llm.pricing_file` in the config.
+The table keys on the **gateway provider name**, and it distinguishes two explicit shapes from "unknown":
+
+| Shape | Meaning | Example |
+|---|---|---|
+| `models: {}` | every model on this provider is **explicitly zero-cost** (self-hosted) | `ollama`, the product demo's `local-llama` (`inherit: ollama`) |
+| `inherit: <catalog provider>` | an **aliased endpoint** priced as the catalog entry (an `openai-eu`, the OpenShell showcase's `openshell-mock`) | `my-endpoint: { inherit: openai }` |
+| a model priced at `0` | that model is explicitly free | — |
+| provider or model **absent** | **unknown**: the request cannot be priced | — |
+
+A gateway agent always has a daily/monthly cap (the organization baseline), so an unknown provider or model is denied `pricing_unavailable` before dispatch ([error contract](error-contract.md)) — never estimated at a flat guess. `models: {}` is a declaration, not a placeholder: a commercial OpenAI-compatible endpoint (a `generic-openai` provider) must be populated with its real rates or inherit a catalog entry; the shipped table does not list it as free. `talon openshell prepare --provider-pricing <catalog provider>` writes the alias for the provider a sandbox dials. Run `talon init` (wizard or `talon init --scaffold`) to generate a project that includes `pricing/models.yaml` and `llm.pricing_file` in the config.
 
 ---
 

@@ -355,3 +355,142 @@ func TestBudget_FailoverCandidateUnpriced_FailsClosed(t *testing.T) {
 	assert.Equal(t, "backup", final.Failover.SkippedCandidates[0].Provider)
 	assert.Contains(t, final.Failover.SkippedCandidates[0].Reason, CodePricingUnavailable)
 }
+
+// TestBudget_FailoverBurst_AgentCapHardBound: the agent-cap claim follows
+// the model that is actually dispatched. Daily cap 3; the primary prices at
+// 0.01 and always fails transiently; the fallback prices at 2. Five
+// concurrent requests on five sessions each claim 0.01 for the primary —
+// enough for all five — but every fallback candidate is re-admitted at ITS
+// estimate against settled spend + the other requests' fallback claims, so
+// exactly one request reaches the backup provider; the others fail closed
+// with no policy-valid candidate.
+func TestBudget_FailoverBurst_AgentCapHardBound(t *testing.T) {
+	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
+	backup := newFailoverUpstream(t, http.StatusOK)
+	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
+	gw.costEstimate = func(provider, _ string, _ Usage) CostResult {
+		if provider == "backup" {
+			return CostResult{Amount: 2, PricingKnown: true, PricingBasis: PricingBasisTable}
+		}
+		return CostResult{Amount: 0.01, PricingKnown: true, PricingBasis: PricingBasisTable}
+	}
+	agent := failoverAgent(gw)
+	if agent.Override == nil {
+		agent.Override = &PolicyOverride{}
+	}
+	agent.Override.MaxDailyCost = 3
+
+	const n = 5
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	bodies := make([]string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r := chi.NewRouter()
+			r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://test/v1/proxy/openai/v1/chat/completions", strings.NewReader(failoverTestBody))
+			req.Header.Set("Authorization", "Bearer "+failoverTestAgentKey)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Talon-Session-ID", "sess-fo-"+string(rune('a'+i)))
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			codes[i], bodies[i] = w.Code, w.Body.String()
+		}(i)
+	}
+	wg.Wait()
+
+	ok := 0
+	for i, c := range codes {
+		if c == http.StatusOK {
+			ok++
+			continue
+		}
+		assert.NotEqual(t, http.StatusOK, c, "request %d: %s", i, bodies[i])
+	}
+	assert.Equal(t, 1, ok, "cap 3 admits exactly one fallback at 2.0: codes=%v", codes)
+	assert.Equal(t, int64(n), primary.calls.Load(), "every request tried the primary (admitted at 0.01)")
+	assert.Equal(t, int64(1), backup.calls.Load(), "fallback candidates serialize against each other's fallback estimates")
+
+	recs, err := store.List(context.Background(), "test-tenant", "", time.Time{}, time.Time{}, 100)
+	require.NoError(t, err)
+	var settled float64
+	for i := range recs {
+		if recs[i].InvocationType == "gateway" && recs[i].PolicyDecision.Allowed && recs[i].Status != "failed" {
+			settled += recs[i].Execution.Cost
+		}
+	}
+	assert.InDelta(t, 2.0, settled, 1e-9, "one fallback charge settled")
+	assert.Zero(t, gw.agentInflight.pending(agentInflightKey(agent)), "every claim released, re-priced ones included")
+}
+
+// TestBudget_UnrecordedCharge_CountedUntilRestart: the provider answered,
+// the evidence record failed to commit. The charge cannot reach the store,
+// but this process remembers it: the agent's next admission reads spend
+// including the lost charge, so it is denied once the cap is reached rather
+// than admitted on a short total.
+func TestBudget_UnrecordedCharge_CountedUntilRestart(t *testing.T) {
+	gw, evStore, sessStore, h, up := newBudgetGateway(t, &PolicyOverride{PIIAction: "warn", MaxDailyCost: 6.5, MaxSessionCost: 50}, sbEstimator)
+	var failures atomic.Int64
+	gw.evidenceWriteHook = func(_ context.Context, p *RecordGatewayEvidenceParams) error {
+		if p.PolicyAllowed && failures.Add(1) == 1 {
+			return errors.New("injected: evidence store refused the record")
+		}
+		return nil
+	}
+
+	// 1. Dispatched and answered; the record is lost. The client got its
+	//    response (nothing can un-send it), the session is still settled.
+	rec := sbDo(t, h, "openai", sbTenantKeyA, "sess-lost")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, int64(1), up.calls.Load())
+	assert.Zero(t, agentSpendToday(t, evStore, "tenant-a", "coder-a"), "the lost record never reached the store")
+	sess, err := sessStore.GetByExternal(context.Background(), "tenant-a", "coder-a", "sess-lost")
+	require.NoError(t, err)
+	assert.InDelta(t, sbActual, sess.TotalCost, 1e-9, "the session is settled regardless")
+	assert.Zero(t, sess.ReservedCost)
+
+	// 2. The next admission counts the unrecorded 6.0: 6.0 + 1.0 estimate
+	//    > 6.5 → denied budget_exceeded, no dispatch. On the old code it read
+	//    zero spend and dispatched.
+	rec = sbDo(t, h, "openai", sbTenantKeyA, "sess-next")
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, "budget_exceeded", providerErrorType(t, rec))
+	assert.Equal(t, int64(1), up.calls.Load(), "the lost charge still gates the next request")
+	ev := lastGatewayEvidence(t, evStore, "tenant-a")
+	assertEnforcedDenial(t, ev)
+	require.NotNil(t, ev.CostBudget)
+	assert.InDelta(t, sbActual, ev.CostBudget.Spent, 1e-9, "the deny record shows the unrecorded charge as spend")
+}
+
+func TestAgentInflight_AdjustAndUnrecorded(t *testing.T) {
+	var a agentInflight
+	r1, _ := a.reserve("k", 0.01)
+	r2, _ := a.reserve("k", 0.01)
+	r1, others := a.adjust(r1, "k", 2)
+	assert.InDelta(t, 0.01, others, 1e-12, "the other claim is still at the primary price")
+	assert.InDelta(t, 2.01, a.pending("k"), 1e-12)
+	_, others = a.adjust(r2, "k", 2)
+	assert.InDelta(t, 2.0, others, 1e-12, "the re-priced claim is visible to the next candidate")
+	r1, _ = a.adjust(r1, "k", 0.01) // reverted
+	assert.InDelta(t, 2.01, a.pending("k"), 1e-12)
+	a.release(r1)
+	a.release(r2)
+	assert.Zero(t, a.pending("k"))
+	created, others := a.adjust(nil, "k", 3) // a claim that did not exist (zero primary estimate)
+	assert.Zero(t, others)
+	a.release(created)
+	assert.Empty(t, a.m)
+
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	day := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	month := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	a.noteUnrecorded("k", 1.5, now)
+	a.noteUnrecorded("k", 0.5, day.Add(-time.Hour)) // yesterday: monthly only
+	a.noteUnrecorded("k", 9, month.Add(-time.Hour)) // last month: pruned
+	a.noteUnrecorded("k", 0, now)                   // nothing to remember
+	assert.InDelta(t, 1.5, a.unrecordedSince("k", day, month), 1e-12)
+	assert.InDelta(t, 2.0, a.unrecordedSince("k", month, month), 1e-12)
+	assert.Len(t, a.unrecorded["k"], 2, "last month's charge was pruned")
+}

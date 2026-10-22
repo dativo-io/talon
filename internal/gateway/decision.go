@@ -261,7 +261,7 @@ func (g *Gateway) decidePreDispatch(ctx context.Context, in decisionInput) decis
 	if capBinds && !in.IsCountTokens && !estimate.PricingKnown {
 		return deny(&decisionDeny{
 			Status: http.StatusForbidden, ErrorCode: CodePricingUnavailable,
-			Message: fmt.Sprintf("%s: no pricing entry for model %q on provider %q; a spending cap binds this agent and the request cannot be priced (add the model to pricing/models.yaml)", CodePricingUnavailable, extracted.Model, in.Provider),
+			Message: fmt.Sprintf("%s: no pricing entry for model %q on provider %q; a spending cap binds this agent and the request cannot be priced (in pricing/models.yaml add the model under providers.%s, `inherit: <catalog provider>` for an aliased endpoint, or `models: {}` for a self-hosted zero-cost endpoint)", CodePricingUnavailable, extracted.Model, in.Provider, in.Provider),
 			Reasons: []string{"model pricing unavailable under a spending cap"}, MetricPIIAction: piiAction,
 			Model: extracted.Model, InputText: extracted.Text, Classification: classification, AttSummary: attSummary,
 			EstimatedCost: estimatedCost,

@@ -3,8 +3,11 @@
 # Prices are per 1,000,000 tokens, denominated in `currency` below.
 # Update this file when providers change pricing — no recompilation required.
 #
-# To disable cost estimation for a provider, omit it or set prices to 0.
-# Unknown models return cost 0.0 with a warning log.
+# A provider with `models: {}` is explicitly zero-cost (every model free);
+# a model priced at 0 is explicitly free. A provider or model ABSENT from
+# this table is unknown: under a spending cap (always on for gateway agents)
+# such a request is denied `pricing_unavailable`; without one it is
+# estimated at a flat default and recorded with pricing_known=false.
 
 version: "1"
 
@@ -208,6 +211,17 @@ providers:
     # Local models have no per-token cost. Operator may add compute amortisation.
     models: {}
 
-  generic-openai:
-    # Operator must populate manually — pricing depends on the target endpoint.
-    models: {}
+  # A provider named in gateway.providers but absent here is UNKNOWN: its
+  # requests cannot be priced, and because a daily/monthly cap always binds a
+  # gateway agent they are denied `pricing_unavailable` until an entry exists.
+  # Two explicit shapes:
+  #   my-endpoint: { inherit: openai }   # an aliased commercial endpoint: priced as the catalog entry
+  #   my-ollama:   { models: {} }        # a self-hosted endpoint: every model explicitly zero-cost
+  # `models: {}` is a declaration of zero cost, never a placeholder — a
+  # commercial OpenAI-compatible endpoint (e.g. a `generic-openai` provider)
+  # must be populated with its real rates or inherit a catalog provider.
+
+  # The first-party product demo's local Ollama provider
+  # (examples/product-demo/talon.config.yaml): explicitly zero-cost.
+  local-llama:
+    inherit: ollama

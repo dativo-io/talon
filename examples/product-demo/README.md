@@ -25,7 +25,8 @@ make product-demo
 **Real, paid provider calls** — approximately **$0.02–0.05 per run** of
 Talon-accounted cost on cheap models (`gpt-4o-mini`, `claude-sonnet-5`), computed
 from Talon's bundled standard pricing table (your actual provider invoice may
-differ, e.g. under introductory rates). The denials (tool boundary, budget stop)
+differ, e.g. under introductory rates; the local `local-llama` provider is
+declared zero-cost there, `inherit: ollama`). The denials (tool boundary, budget stop)
 cost `$0`; only the failover answer, the redacted answer, and a few real
 summaries cost anything. No Docker. State lives in a throwaway temp directory —
 your real `~/.talon` is never touched.

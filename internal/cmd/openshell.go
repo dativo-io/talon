@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,8 +16,10 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/agentcatalog"
+	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 // `talon openshell prepare` (#482 showcase): the idempotent configuration
@@ -45,7 +48,7 @@ type openshellPrepareOptions struct {
 	issuer, audience, jwksFile       string
 	selfHosts                        []string
 	providerName, providerBaseURL    string
-	providerSecret                   string
+	providerSecret, providerPricing  string
 	protectedBaseURL                 string
 	maxCaptureBytes                  int64
 	settlementTimeout                string
@@ -100,6 +103,7 @@ func init() {
 	f.StringVar(&openshellPrepareOpts.providerName, "provider-name", "openshell-mock", "provider entry the sandbox's model traffic maps to (by the host of --provider-base-url)")
 	f.StringVar(&openshellPrepareOpts.providerBaseURL, "provider-base-url", "", "the provider's base URL as the sandbox dials it (host selects the provider); empty keeps existing providers")
 	f.StringVar(&openshellPrepareOpts.providerSecret, "provider-secret-name", "openshell-mock-provider-key", "vault secret name of the provider entry (used only on /v1/proxy, never on the delegated path)")
+	f.StringVar(&openshellPrepareOpts.providerPricing, "provider-pricing", "openai", "pricing catalog entry the provider is priced as (`inherit` in pricing/models.yaml; the showcase mock serves OpenAI models): a provider absent from the table is denied pricing_unavailable under the agent's spending cap")
 	f.StringVar(&openshellPrepareOpts.protectedBaseURL, "protected-base-url", "", "base URL of the protected business service Talon dispatches actions to (Talon-side; the sandbox has no route to it)")
 	f.Int64Var(&openshellPrepareOpts.maxCaptureBytes, "max-capture-bytes", gateway.DefaultOpenShellMaxCaptureBytes, "response inspection bound (preventive policies block larger bodies)")
 	f.StringVar(&openshellPrepareOpts.settlementTimeout, "settlement-timeout", "60s", "response settlement timeout")
@@ -120,6 +124,9 @@ type openshellPrepareSummary struct {
 	Bindings        []string `json:"bindings"`
 	Provider        string   `json:"provider,omitempty"`
 	ProviderSecret  string   `json:"provider_secret_name,omitempty"`
+	ProviderPricing string   `json:"provider_pricing,omitempty"`
+	PricingFile     string   `json:"pricing_file,omitempty"`
+	PricingChanged  bool     `json:"pricing_changed,omitempty"`
 	AgentKeySecret  string   `json:"agent_key_secret_name"`
 	ApproverGroup   string   `json:"approver_group"`
 	Actions         []string `json:"actions"`
@@ -183,6 +190,7 @@ func prepareNotes(o openshellPrepareOptions, configChanged, agentChanged bool, a
 		fmt.Sprintf("a reviewer in group %s decides refunds: talon approver add --name <who> --tenant %s --groups %s", openshellApproverGroup, o.tenant, openshellApproverGroup))
 	if o.providerBaseURL != "" {
 		notes = append(notes, fmt.Sprintf("provider %s needs a vault entry for /v1/proxy only (any value; the delegated path never reads it): talon secrets set %s <value>", o.providerName, o.providerSecret))
+		notes = append(notes, fmt.Sprintf("provider %s is priced as %s (pricing/models.yaml `inherit`): the agent's spending cap applies to its requests at those rates", o.providerName, o.providerPricing))
 	}
 	return notes
 }
@@ -206,6 +214,14 @@ func runOpenshellPrepare(ctx context.Context, o openshellPrepareOptions) (*opens
 	summary.ConfigChanged, summary.RestartRequired = configChanged, configChanged
 	if o.providerBaseURL != "" {
 		summary.Provider, summary.ProviderSecret = o.providerName, o.providerSecret
+		// ---- pricing: the provider must be priceable or every capped request
+		// to it is denied pricing_unavailable (the table is read at startup).
+		pricingPath, pricingChanged, err := ensureProviderPricing(o)
+		if err != nil {
+			return nil, err
+		}
+		summary.ProviderPricing, summary.PricingFile, summary.PricingChanged = o.providerPricing, pricingPath, pricingChanged
+		summary.RestartRequired = summary.RestartRequired || pricingChanged
 	}
 
 	// ---- agent file
@@ -318,6 +334,115 @@ func overlayGatewayConfig(o openshellPrepareOptions) (bool, error) {
 		return false, fmt.Errorf("the prepared gateway config does not validate: %w", err)
 	}
 	return true, replaceFile(o.configPath, tmp)
+}
+
+// ensureProviderPricing makes the sandbox's provider priceable: the pricing
+// table `talon serve` will read (llm.pricing_file from the config, else
+// pricing/models.yaml beside it — serve runs from the config directory)
+// gains `<provider>: {inherit: <catalog>}` unless the operator already
+// priced the provider. A missing table is created from the embedded default
+// first, so the operator's catalog starts complete. Returns the path and
+// whether the file changed.
+func ensureProviderPricing(o openshellPrepareOptions) (path string, changed bool, err error) {
+	if o.providerPricing == "" {
+		return "", false, fmt.Errorf("--provider-pricing is required with --provider-base-url: a provider absent from pricing/models.yaml cannot be priced and is denied under the agent's spending cap")
+	}
+	path, err = pricingPathFromConfig(o.configPath)
+	if err != nil {
+		return "", false, err
+	}
+	raw, doc, created, err := loadPricingDoc(path)
+	if err != nil {
+		return "", false, err
+	}
+	providers := ensureMap(documentRoot(doc), "providers")
+	if mapValue(providers, o.providerPricing) == nil {
+		return "", false, fmt.Errorf("--provider-pricing %q is not a provider in %s", o.providerPricing, path)
+	}
+	if existing := mapValue(providers, o.providerName); existing != nil {
+		if !created {
+			return path, false, nil // the operator priced it; theirs wins
+		}
+	} else {
+		entry := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		setScalar(entry, "inherit", o.providerPricing, "!!str")
+		entry.HeadComment = fmt.Sprintf("written by `talon openshell prepare`: the sandbox's provider %s is priced as %s", o.providerName, o.providerPricing)
+		setNode(providers, o.providerName, entry)
+	}
+	out, err := marshalYAML(doc)
+	if err != nil {
+		return "", false, err
+	}
+	if !created && bytes.Equal(out, raw) {
+		return path, false, nil
+	}
+	changed, err = writePricingDoc(path, out, o.providerName)
+	return path, changed, err
+}
+
+// loadPricingDoc reads the pricing table as a YAML node tree (comments
+// preserved); a missing file starts from the embedded catalog.
+func loadPricingDoc(path string) (raw []byte, doc *yaml.Node, created bool, err error) {
+	raw, err = os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		raw, created = pricing.DefaultModelsYAML(), true
+	case err != nil:
+		return nil, nil, false, fmt.Errorf("reading %s: %w", path, err)
+	}
+	doc = &yaml.Node{}
+	if err := yaml.Unmarshal(raw, doc); err != nil {
+		return nil, nil, false, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return raw, doc, created, nil
+}
+
+// writePricingDoc validates the prepared table with the pricing loader —
+// and that it actually prices the provider — before replacing the file.
+func writePricingDoc(path string, out []byte, providerName string) (bool, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return false, err
+	}
+	tmp, err := writeTemp(path, out)
+	if err != nil {
+		return false, err
+	}
+	defer os.Remove(tmp)
+	table, err := pricing.Load(tmp)
+	if err != nil {
+		return false, fmt.Errorf("the prepared pricing table does not load: %w", err)
+	}
+	if _, known, _ := table.EstimateCached(providerName, "gpt-4o-mini", 1, 0, 0, 1); !known {
+		return false, fmt.Errorf("the prepared pricing table still cannot price provider %s", providerName)
+	}
+	return true, replaceFile(path, tmp)
+}
+
+// pricingPathFromConfig resolves the table `talon serve` reads: the config's
+// llm.pricing_file (relative to the config directory, which is serve's
+// working directory in the showcase and the Full Demo), else the default
+// pricing/models.yaml beside the config.
+func pricingPathFromConfig(configPath string) (string, error) {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", configPath, err)
+	}
+	var top struct {
+		LLM struct {
+			PricingFile string `yaml:"pricing_file"`
+		} `yaml:"llm"`
+	}
+	if err := yaml.Unmarshal(raw, &top); err != nil {
+		return "", fmt.Errorf("parsing %s: %w", configPath, err)
+	}
+	p := top.LLM.PricingFile
+	if p == "" {
+		p = config.DefaultPricingFile
+	}
+	if filepath.IsAbs(p) {
+		return p, nil
+	}
+	return filepath.Join(filepath.Dir(configPath), p), nil
 }
 
 // overlayAgentFile creates or updates the sandboxed use case: identity

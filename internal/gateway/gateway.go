@@ -134,9 +134,11 @@ type Gateway struct {
 	// agentInflight holds the estimates of admitted requests whose settled
 	// cost has not yet reached the evidence store (agent-cap admission).
 	agentInflight agentInflight
-	// budgetReadHook is a test-only fault-injection point for the agent
-	// spend read (nil in production).
-	budgetReadHook func(context.Context) error
+	// budgetReadHook and evidenceWriteHook are test-only fault-injection
+	// points for the agent spend read and the evidence record write (nil in
+	// production).
+	budgetReadHook    func(context.Context) error
+	evidenceWriteHook func(context.Context, *RecordGatewayEvidenceParams) error
 }
 
 type gatewayCacheConfig struct {
@@ -437,8 +439,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = outcome.Ctx
 	// The agent-cap claim ends when this handler returns: by then the
 	// request's record — settled cost or deny — has committed (or failed,
-	// in which case nothing will ever land and the claim must not linger).
-	defer g.agentInflight.release(outcome.AgentReservation)
+	// in which case the charge is remembered as unrecorded and the claim
+	// must not linger). Read at exit: a fallback candidate may have created
+	// or re-priced the claim after this point.
+	defer func() { g.agentInflight.release(outcome.AgentReservation) }()
 	if outcome.SessReservation != nil {
 		// The deferred release covers every non-settling exit (deny, tool
 		// block, upstream failure, panic); a successful settle in
@@ -738,12 +742,38 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// capped agent never fails over onto a model Talon cannot price.
 				return failover.FilterResult{Filter: "gateway_policy", Reason: fmt.Sprintf("%s: no pricing entry for model %q on provider %q", CodePricingUnavailable, candModel, candProvider)}, nil
 			}
-			candInput, _ := g.buildPolicyInputForRequest(cCtx, agent, candProvider, candModel, tier, candEstimate.Amount, dailyCost, monthlyCost, sessView)
+			// Agent-cap admission is re-done for the candidate's OWN estimate:
+			// the primary's claim is re-priced in the in-flight ledger and the
+			// settled spend re-read, so a burst failing over onto a dearer
+			// model serializes against each other's fallback estimates, not
+			// the stale primary ones (TestBudget_FailoverBurst_AgentCapHardBound).
+			// A refused candidate hands the claim back at the primary's price.
+			candDaily, candMonthly := dailyCost, monthlyCost
+			var prevEstimate float64
+			revert := func() {}
+			if (dec.DailyCap > 0 || dec.MonthlyCap > 0) && candEstimate.Amount > 0 {
+				prevEstimate = 0
+				if outcome.AgentReservation != nil {
+					prevEstimate = outcome.AgentReservation.estimate
+				}
+				var others float64
+				outcome.AgentReservation, others = g.agentInflight.adjust(outcome.AgentReservation, agentInflightKey(agent), candEstimate.Amount)
+				revert = func() { g.agentInflight.adjust(outcome.AgentReservation, agentInflightKey(agent), prevEstimate) }
+				settledDaily, settledMonthly, unavailable := g.agentCostTotals(cCtx, agent)
+				if unavailable {
+					revert()
+					return failover.FilterResult{Filter: "gateway_policy", Reason: CodeBudgetUnavailable + ": agent spend could not be read for the fallback candidate"}, nil
+				}
+				candDaily, candMonthly = settledDaily+others, settledMonthly+others
+			}
+			candInput, _ := g.buildPolicyInputForRequest(cCtx, agent, candProvider, candModel, tier, candEstimate.Amount, candDaily, candMonthly, sessView)
 			allowed, reasons, policyErr := g.policy.EvaluateGateway(cCtx, candInput)
 			switch {
 			case policyErr != nil:
+				revert()
 				return failover.FilterResult{Filter: "gateway_policy", Reason: "policy evaluation error: " + policyErr.Error()}, nil
 			case !allowed:
+				revert()
 				return failover.FilterResult{Filter: "gateway_policy", Reason: preferredDenyReason(reasons)}, nil
 			}
 		}
@@ -972,9 +1002,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.trackSessionUsage(ctx, sessReservation, sessionID, sessionSource, agent.TenantID, agent.Name, cost, tokenUsage.Input+tokenUsage.Output)
 	}
 	if recordErr != nil {
-		// Operational failure, not a policy outcome: the settled cost never
-		// reaches the agent's daily/monthly spend, and no receipt exists for
-		// this request. Said so explicitly, with the amount.
+		// Operational failure, not a policy outcome: no receipt exists for
+		// this request and the settled cost never reaches the evidence
+		// store. The charge is remembered in-process so the agent's next
+		// admissions still count it (agentCostTotals); a restart forgets it
+		// — said so explicitly, with the amount (LIMITATIONS §7).
+		g.agentInflight.noteUnrecorded(agentInflightKey(agent), cost, time.Now().UTC())
 		log.Error().Err(recordErr).Str("correlation_id", correlationID).Str("agent", agent.Name).
 			Float64("settled_cost", cost).Str("currency", g.pricingCurrency).
 			Msg("gateway_settled_cost_unrecorded")
@@ -992,6 +1025,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agent *ResolvedIdentity, provider, model string, start time.Time, inputText string, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, responsePII *ResponsePIIScanResult, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, cacheStored bool, ttftMS int64, tpotMS float64, estimatedCost float64, opts ...func(*RecordGatewayEvidenceParams)) (*evidence.Evidence, error) {
 	params := g.evidenceParams(ctx, correlationID, agent, provider, model, start, inputText, classification, usage, cost, durationMS, executionError, allowed, reasons, inputPIIRedacted, responsePII, attSummary, toolResult, cacheHit, cacheEntryID, cacheSimilarity, costSaved, cacheStored, ttftMS, tpotMS, estimatedCost, opts...)
+	if g.evidenceWriteHook != nil {
+		if err := g.evidenceWriteHook(ctx, &params); err != nil {
+			return nil, err
+		}
+	}
 	return RecordGatewayEvidence(ctx, g.evidenceStore, params)
 }
 
@@ -1641,6 +1679,11 @@ func (g *Gateway) agentCostTotals(ctx context.Context, agent *ResolvedIdentity) 
 		daily += pending
 		monthly += pending
 	}
+	// Charges whose record failed to commit after dispatch (this process
+	// only; see noteUnrecorded).
+	key := agentInflightKey(agent)
+	daily += g.agentInflight.unrecordedSince(key, todayStart, monthStart)
+	monthly += g.agentInflight.unrecordedSince(key, monthStart, monthStart)
 	return daily, monthly, false
 }
 
