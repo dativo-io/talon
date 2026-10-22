@@ -1,0 +1,125 @@
+name: TokenEconomizer x Talon offline integration
+
+on:
+  push:
+    branches: [experiment/tokeneconomizer-talon]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Isolate experiment
+        run: |
+          set -euo pipefail
+          echo "TALON_DATA_DIR=$RUNNER_TEMP/te-data" >> "$GITHUB_ENV"
+          echo "TALON_SECRETS_KEY=te-testing-vault-key" >> "$GITHUB_ENV"
+          echo "TALON_SIGNING_KEY=te-testing-signing-key" >> "$GITHUB_ENV"
+          echo "TALON_ADMIN_KEY=te-testing-admin-key" >> "$GITHUB_ENV"
+          echo "TALON_DEFAULT_POLICY=$RUNNER_TEMP/te-config/agent.talon.yaml" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/te-data" "$RUNNER_TEMP/te-config" "$RUNNER_TEMP/te-scenario"
+          sed 's/max_cost: 0.02/max_cost: 20.00/' examples/coding-agents-demo/agent.talon.yaml > "$RUNNER_TEMP/te-config/agent.talon.yaml"
+          sed 's@http://mock-provider:9090@http://127.0.0.1:19090@g' examples/coding-agents-demo/talon.config.yaml > "$RUNNER_TEMP/te-config/talon.config.yaml"
+          git -C "$RUNNER_TEMP/te-scenario" init -q
+          printf 'def answer():\n    return 42\n' > "$RUNNER_TEMP/te-scenario/example.py"
+      - name: Build and test Talon
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/talon" ./cmd/talon
+          go test -tags=integration ./tests/integration -run TestCodingAgentsDemo_EndToEnd -count=1 -v
+      - name: Start actual Talon gateway and no-key test provider
+        run: |
+          set -euo pipefail
+          go run ./examples/docker-compose/mock-provider -port 19090 > "$RUNNER_TEMP/mock.log" 2>&1 &
+          for i in $(seq 1 45); do curl -fsS http://127.0.0.1:19090/health >/dev/null 2>&1 && break || sleep 1; done
+          "$RUNNER_TEMP/talon" secrets set anthropic-api-key mock-key
+          "$RUNNER_TEMP/talon" secrets set openai-api-key mock-key
+          "$RUNNER_TEMP/talon" secrets set claude-code-talon-key talon-gw-demo-coding-0001
+          cd "$RUNNER_TEMP/te-config"
+          "$RUNNER_TEMP/talon" serve --gateway --gateway-config "$RUNNER_TEMP/te-config/talon.config.yaml" --port 18080 > "$RUNNER_TEMP/talon.log" 2>&1 &
+          for i in $(seq 1 45); do curl -fsS http://127.0.0.1:18080/health >/dev/null 2>&1 && exit 0 || sleep 1; done
+          cat "$RUNNER_TEMP/talon.log"
+          exit 1
+      - name: Install Claude Code
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+      - name: Baseline - 3 Claude CLI sessions using Talon
+        env:
+          ANTHROPIC_API_KEY: talon-gw-demo-coding-0001
+          ANTHROPIC_BASE_URL: http://127.0.0.1:18080/v1/proxy/anthropic
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+          DISABLE_TELEMETRY: '1'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/te-scenario"
+          for i in 1 2 3; do
+            timeout 90s claude -p "Explain Python functions briefly. Trial $i." --model claude-sonnet-5 > "$RUNNER_TEMP/baseline-$i.txt"
+          done
+          "$RUNNER_TEMP/talon" audit export --format json --limit 1000 > "$RUNNER_TEMP/baseline.json"
+          "$RUNNER_TEMP/talon" audit export --format signed-json --limit 1000 > "$RUNNER_TEMP/baseline-signed.json"
+          "$RUNNER_TEMP/talon" audit verify --file "$RUNNER_TEMP/baseline-signed.json"
+      - name: Install TokenEconomizer and run its tests
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/microsoft/TokenEconomizer.git "$RUNNER_TEMP/TokenEconomizer"
+          git -C "$RUNNER_TEMP/TokenEconomizer" rev-parse HEAD
+          python3 -m pip install pytest
+          (cd "$RUNNER_TEMP/TokenEconomizer" && python3 -m pytest tests -q)
+          claude plugin marketplace add "$RUNNER_TEMP/TokenEconomizer"
+          claude plugin install tokeneconomizer@tokeneconomizer
+          claude plugin list
+      - name: After - 3 Claude CLI sessions using Talon and TokenEconomizer
+        env:
+          ANTHROPIC_API_KEY: talon-gw-demo-coding-0001
+          ANTHROPIC_BASE_URL: http://127.0.0.1:18080/v1/proxy/anthropic
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+          DISABLE_TELEMETRY: '1'
+          TE_PAID: 'false'
+          TE_TOOLPRUNE: 'propose'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/te-scenario"
+          for i in 1 2 3; do
+            timeout 90s claude -p "Explain Python functions briefly. Trial $i." --model claude-sonnet-5 > "$RUNNER_TEMP/after-$i.txt"
+          done
+          "$RUNNER_TEMP/talon" audit export --format json --limit 1000 > "$RUNNER_TEMP/after.json"
+          "$RUNNER_TEMP/talon" audit export --format signed-json --limit 1000 > "$RUNNER_TEMP/after-signed.json"
+          "$RUNNER_TEMP/talon" audit verify --file "$RUNNER_TEMP/after-signed.json"
+          "$HOME/.tokeneconomizer/bin/te" --host claude status
+      - name: Compute and publish actual offline measurements
+        run: |
+          set -euo pipefail
+          python3 experiments/tokeneconomizer/analyze.py "$RUNNER_TEMP/baseline.json" "$RUNNER_TEMP/after.json" | tee "$RUNNER_TEMP/measurements.json"
+          cat "$RUNNER_TEMP/measurements.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Debug failures
+        if: failure()
+        run: |
+          tail -90 "$RUNNER_TEMP/talon.log" 2>/dev/null || true
+          tail -90 "$RUNNER_TEMP/mock.log" 2>/dev/null || true
+          tail -50 "$HOME/.tokeneconomizer/errors.log" 2>/dev/null || true
+      - name: Save measurements and exports
+        if: always()
+        run: |
+          mkdir -p experiments/tokeneconomizer/out
+          for f in baseline.json after.json measurements.json baseline-signed.json after-signed.json; do
+            if [ -f "$RUNNER_TEMP/$f" ]; then cp "$RUNNER_TEMP/$f" "experiments/tokeneconomizer/out/$f"; fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tokeneconomizer-talon-offline
+          path: experiments/tokeneconomizer/out/
+          if-no-files-found: ignore
