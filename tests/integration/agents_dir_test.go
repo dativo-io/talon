@@ -88,7 +88,7 @@ func TestAgentsDir_TwoAgentsRouteAndAttribute(t *testing.T) {
 	require.NoError(t, cfg.ApplyDefaults())
 	policyEngine, err := policy.NewGatewayEngine(ctx)
 	require.NoError(t, err)
-	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
+	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, realPricingEstimator())
 	require.NoError(t, err)
 
 	router := chi.NewRouter()

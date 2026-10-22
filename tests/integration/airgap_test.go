@@ -120,7 +120,7 @@ gateway:
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(gwCfg, gateway.NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
+	gw, err := gateway.NewGateway(gwCfg, gateway.NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, realPricingEstimator())
 	require.NoError(t, err)
 
 	r := chi.NewRouter()
