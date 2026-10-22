@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -81,7 +82,7 @@ func setupDelegatedGatewayOn(t *testing.T, piiAction string, override *PolicyOve
 	secStore, err := secrets.NewSecretStore(filepath.Join(dir, "s.db"), testutil.TestEncryptionKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = secStore.Close() })
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 	return gw
 }
@@ -184,10 +185,24 @@ func TestEvaluateDelegated_TalonDenyCodes(t *testing.T) {
 			"provider not allowed", "warn", &PolicyOverride{AllowedProviders: []string{"anthropic"}},
 			`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`, "provider_not_allowed", http.StatusForbidden, "provider not allowed",
 		},
+		{
+			"budget state unavailable (fail-closed)", "warn", &PolicyOverride{MaxDailyCost: 5},
+			`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`, CodeBudgetUnavailable, http.StatusServiceUnavailable, "budget state unavailable",
+		},
+		{
+			"unpriced model under a cap", "warn", &PolicyOverride{MaxDailyCost: 5},
+			`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`, CodePricingUnavailable, http.StatusForbidden, "pricing unavailable",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			gw, store := setupDelegatedGateway(t, tc.piiAction, tc.override)
+			switch tc.code {
+			case CodeBudgetUnavailable:
+				gw.budgetReadHook = func(context.Context) error { return errors.New("injected: spend read failed") }
+			case CodePricingUnavailable:
+				gw.costEstimate = defaultCostEstimator // no pricing table: pricing_known=false
+			}
 			dec := gw.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), tc.body))
 			require.False(t, dec.Allowed)
 			require.Equal(t, tc.code, dec.Code, "message: %s", dec.Message)

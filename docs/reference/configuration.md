@@ -78,8 +78,8 @@ The agent file is also the agent's **one** policy override on top of the gateway
 
 | Agent-file field | Effective-policy semantic |
 |---|---|
-| `policies.cost_limits.daily` / `.monthly` | Replaces the baseline cap (`organization_policy.defaults.daily_cost` / `.monthly_cost`) when > 0; the org ceilings `constraints.max_daily_cost` / `.max_monthly_cost` are enforced in addition and can never be raised (#287) |
-| `policies.session_limits.max_cost` | Replaces the per-session baseline (`organization_policy.defaults.session_cost`) when > 0; the org ceiling `constraints.max_session_cost` is enforced in addition (#283) |
+| `policies.cost_limits.daily` / `.monthly` | Replaces the baseline cap (`organization_policy.defaults.daily_cost` / `.monthly_cost`) when > 0; the org ceilings `constraints.max_daily_cost` / `.max_monthly_cost` are enforced in addition and can never be raised (#287). Enforced before dispatch on the pre-request estimate; in-flight estimates count against the cap until settled (concurrency-safe); when the cap's state cannot be read the request is denied `budget_unavailable` (fail-closed), and a model absent from `pricing/models.yaml` is denied `pricing_unavailable` — see [error contract](error-contract.md) |
+| `policies.session_limits.max_cost` | Replaces the per-session baseline (`organization_policy.defaults.session_cost`) when > 0; the org ceiling `constraints.max_session_cost` is enforced in addition (#283). Same fail-closed contract: a session-store failure while this cap binds denies `budget_unavailable` |
 | `policies.data_classification` input booleans | Input PII action: `block_on_pii` → block; `input_scan` + `redact_input` (or `redact_pii`) → redact; `input_scan` alone → scan only, no action override (the baseline applies) |
 | `policies.data_classification` output booleans | Response PII action: `output_scan` + `block_on_pii` → block; `output_scan` + `redact_output` (or `redact_pii`) → redact; `output_scan` alone → scan only, no action override (the baseline applies) |
 | `policies.data_classification.max_data_tier` | Caps the request's data classification tier when present |

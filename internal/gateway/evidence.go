@@ -298,10 +298,14 @@ func sanitizeGatewayAnnotations(in []string) []string {
 		// force_true reversed an explicit client store:false on a Responses
 		// API request (#213) — a retention decision that must be evidenced.
 		"responses_store_overridden": {},
-		// The session-store read failed and the session budget check failed
-		// open (#198) — the enforcement gap must be visible in evidence.
+		// The session-store read or reservation failed: a capped request was
+		// denied budget_unavailable (fail-closed), an uncapped one proceeded
+		// — either way the gap must be visible in evidence.
 		"session_budget_unavailable": {},
-		"delegated_dispatch":         {}, // #482: the provider was reached by an external runtime after a Talon delegated decision
+		// The agent spend read (evidence store) failed: same contract as
+		// above for the daily/monthly caps.
+		"agent_budget_unavailable": {},
+		"delegated_dispatch":       {}, // #482: the provider was reached by an external runtime after a Talon delegated decision
 		// #482 response side: settlement vocabulary (see delegated_response.go).
 		annotationSettlementPending: {}, // decision record: cost is carried by a later settlement
 		annotationResponseObserved:  {}, // settlement: the provider response was observed at the runtime's response hook

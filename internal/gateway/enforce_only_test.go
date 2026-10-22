@@ -126,7 +126,7 @@ func setupEnforceGateway(t *testing.T, opts enforceGatewayOpts) (*Gateway, *atom
 		pol = engine
 	}
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, pol, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, pol, testTableEstimator)
 	require.NoError(t, err)
 
 	return gw, calls, evStore

@@ -112,6 +112,17 @@ GWEOF
     fi
   fi
   assert_pass "Wrong gateway key → 401" test "$(smoke_gw_post_chat "$gateway_base_url" "Bearer wrong-key" "$SMOKE_BODY_EMPTY")" = "401"
+  # A model the pricing table does not know cannot be priced; the agent's
+  # daily cap (smoke_tighten_limits: 5.0) binds, so the request is denied
+  # before the provider is reached — live, against the real gateway config.
+  local gw_unpriced_body="/tmp/talon_gw_unpriced.json"
+  local code_unpriced
+  code_unpriced="$(smoke_gw_post_chat_to_file "$gateway_base_url" "Bearer $gw_key" \
+    '{"model":"gpt-unpriced-smoke-model","messages":[{"role":"user","content":"hello"}]}' "$gw_unpriced_body")"
+  assert_pass "Unpriced model under a spending cap → 403" test "$code_unpriced" = "403"
+  assert_pass "Unpriced-model denial carries pricing_unavailable" \
+    jq -e '.error.type == "pricing_unavailable"' "$gw_unpriced_body"
+  rm -f "$gw_unpriced_body" 2>/dev/null || true
   rm -f "$gw_headers" "$gw_body" /tmp/talon_gw_resp_join.json 2>/dev/null || true
   kill "$TALON_GATEWAY_PID" 2>/dev/null || true
   wait "$TALON_GATEWAY_PID" 2>/dev/null || true

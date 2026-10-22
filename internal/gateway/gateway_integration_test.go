@@ -43,7 +43,7 @@ func TestNewGateway(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 	require.NotNil(t, gw)
 }
@@ -85,7 +85,7 @@ func TestGateway_ServeHTTP_Integration(t *testing.T) {
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, testTableEstimator)
 	require.NoError(t, err)
 
 	// Mount like real server
@@ -127,7 +127,7 @@ func TestGateway_ServeHTTP_Unauthorized(t *testing.T) {
 	secStore, _ := secrets.NewSecretStore(filepath.Join(dir, "s.db"), "12345678901234567890123456789012")
 	defer secStore.Close()
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://test/v1/proxy/ollama/v1/chat/completions", bytes.NewReader([]byte(`{"model":"x","messages":[]}`)))
@@ -162,7 +162,7 @@ func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 
 	// Request body containing PII (email) so classifier detects it

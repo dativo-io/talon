@@ -174,14 +174,16 @@ deny contains msg if {
 	msg := sprintf("budget_exceeded: request would exceed organization monthly cost limit (%v)", [round(input.org_max_monthly_cost * 10000) / 10000])
 }
 
-# Per-agent session cost limit (#198): soft cap over one coding session.
-# session_cost_total is present only for client/vendor-asserted sessions
-# (agent-scoped tuple lookup), so this rule cannot fire for synthetic ids.
-# A session-store read failure also omits session_cost_total: the rule cannot
-# evaluate and the request FAILS OPEN, evidenced by the
-# session_budget_unavailable gateway annotation (same contract as
-# agentCostTotals). In-flight requests can overshoot the cap; atomic
-# reservation is #144.
+# Per-agent session cost limit (#198): cap over one coding session, admitted
+# on settled + reserved spend (#144 atomic reservation). session_cost_total
+# is present only for client/vendor-asserted sessions (agent-scoped tuple
+# lookup), so this rule cannot fire for synthetic ids. A session-store
+# failure also omits session_cost_total — the gateway then denies BEFORE
+# this policy runs (budget_unavailable, fail-closed) whenever a session cap
+# binds, and proceeds with the session_budget_unavailable annotation only
+# when none does; the omission never reaches this rule as an unchecked
+# allow. Agent daily/monthly caps follow the same contract (daily_cost /
+# monthly_cost are never a silent zero when the spend read failed).
 deny contains msg if {
 	input.agent_max_session_cost != null
 	input.agent_max_session_cost > 0
@@ -193,9 +195,9 @@ deny contains msg if {
 
 # Organization per-session budget ceiling (#283): constraints.max_session_cost
 # binds every agent alongside whatever session cap the agent resolved to —
-# same fail-open contract as the agent rule (session_cost_total present only
-# for client/vendor-asserted sessions; a store read failure omits it and the
-# request proceeds, evidenced by session_budget_unavailable). Org-attributed
+# same store-failure contract as the agent rule (session_cost_total present
+# only for client/vendor-asserted sessions; a store failure denies
+# budget_unavailable at the gateway before evaluation). Org-attributed
 # message, same layer contract as the org cost/tier rules.
 deny contains msg if {
 	input.org_max_session_cost != null

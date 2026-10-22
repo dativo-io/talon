@@ -100,14 +100,32 @@ type decisionAllow struct {
 
 // decisionOutcome is exactly one of Deny/Allow, plus the request context
 // enriched with the facts recordEvidence reads from it (scan duration,
-// budget-unavailable annotation) and the session reservation the caller
-// MUST release on every non-settling exit.
+// budget-unavailable annotation), the session reservation the caller MUST
+// release on every non-settling exit, and the agent-cap in-flight
+// reservation the caller MUST release once the request's record (settled
+// cost, or a deny) has committed — or failed to.
 type decisionOutcome struct {
-	Ctx             context.Context
-	Deny            *decisionDeny
-	Allow           *decisionAllow
-	SessReservation *sessionReservation
+	Ctx              context.Context
+	Deny             *decisionDeny
+	Allow            *decisionAllow
+	SessReservation  *sessionReservation
+	AgentReservation *agentReservation
 }
+
+// Budget-governance machine codes (docs/reference/error-contract.md).
+const (
+	// CodeBudgetUnavailable: a spending cap binds this request and the state
+	// it must be checked against (agent spend from the evidence store, or
+	// the session budget row) could not be read or reserved. Fail closed:
+	// nothing is dispatched; retriable once the store recovers.
+	CodeBudgetUnavailable = "budget_unavailable"
+	// CodePricingUnavailable: a spending cap binds this request and the
+	// pricing table has no entry for the (provider, model) pair, so the
+	// request cannot be priced — a cap enforced against a flat guess is not
+	// a cap. Operator action: add the model (or an `inherit`) to
+	// pricing/models.yaml.
+	CodePricingUnavailable = "pricing_unavailable"
+)
 
 //nolint:gocyclo // the ordered gate sequence is the contract; splitting it would hide the order
 func (g *Gateway) decidePreDispatch(ctx context.Context, in decisionInput) decisionOutcome {
@@ -116,6 +134,9 @@ func (g *Gateway) decidePreDispatch(ctx context.Context, in decisionInput) decis
 	deny := func(d *decisionDeny) decisionOutcome {
 		out.Ctx = ctx
 		out.Deny = d
+		// A deny record books no cost: the in-flight claim ends here.
+		g.agentInflight.release(out.AgentReservation)
+		out.AgentReservation = nil
 		return out
 	}
 
@@ -226,11 +247,38 @@ func (g *Gateway) decidePreDispatch(ctx context.Context, in decisionInput) decis
 
 	// Estimated cost for policy (default token estimate; real tokens are not known yet)
 	estTokensIn, estTokensOut := 500, 500
-	estimatedCost := g.costEstimate(in.Provider, extracted.Model, Usage{Input: estTokensIn, Output: estTokensOut}).Amount
+	estimate := g.costEstimate(in.Provider, extracted.Model, Usage{Input: estTokensIn, Output: estTokensOut})
+	estimatedCost := estimate.Amount
 	if in.IsCountTokens {
 		estimatedCost = 0 // free endpoint: a nonzero estimate would leak into budget input and deny evidence (#218)
 	}
+	dailyCap, monthlyCap := eff.BindingDailyCap(), eff.BindingMonthlyCap()
+	capBinds := dailyCap > 0 || monthlyCap > 0 || eff.BindingSessionCap() > 0
+	// A cap enforced against an unpriced model is not a cap: the flat
+	// fallback under-counts frontier models by an order of magnitude on
+	// both the estimate and the settled cost. Fail closed before any
+	// reservation is taken; the signed deny names the pair to add.
+	if capBinds && !in.IsCountTokens && !estimate.PricingKnown {
+		return deny(&decisionDeny{
+			Status: http.StatusForbidden, ErrorCode: CodePricingUnavailable,
+			Message: fmt.Sprintf("%s: no pricing entry for model %q on provider %q; a spending cap binds this agent and the request cannot be priced (add the model to pricing/models.yaml)", CodePricingUnavailable, extracted.Model, in.Provider),
+			Reasons: []string{"model pricing unavailable under a spending cap"}, MetricPIIAction: piiAction,
+			Model: extracted.Model, InputText: extracted.Text, Classification: classification, AttSummary: attSummary,
+			EstimatedCost: estimatedCost,
+		})
+	}
+	// Agent-cap admission: claim this request's estimate in the in-flight
+	// ledger BEFORE reading settled spend, so concurrent requests on any
+	// session serialize against each other instead of all reading the same
+	// pre-burst total (see agentInflight). Released by the caller once the
+	// request's record committed, or by deny() right here.
+	var inflightOthers float64
+	if (dailyCap > 0 || monthlyCap > 0) && estimatedCost > 0 {
+		out.AgentReservation, inflightOthers = g.agentInflight.reserve(agentInflightKey(agent), estimatedCost)
+	}
 	dailyCost, monthlyCost, budgetUnavailable := g.agentCostTotals(ctx, agent)
+	dailyCost += inflightOthers
+	monthlyCost += inflightOthers
 	if budgetUnavailable {
 		// Every evidence record for this request carries the governance-gap
 		// annotation (read via ctx by recordEvidence).
@@ -239,7 +287,6 @@ func (g *Gateway) decidePreDispatch(ctx context.Context, in decisionInput) decis
 	// Utilization is measured against the same effective caps enforcement
 	// uses (#216, #287); skipped when the spend read failed — a "0%" reading
 	// would be a lie.
-	dailyCap, monthlyCap := eff.BindingDailyCap(), eff.BindingMonthlyCap()
 	if dailyCap > 0 && !budgetUnavailable {
 		RecordBudgetUtilization(ctx, agent.TenantID, "daily", (dailyCost/dailyCap)*100)
 		g.noteBudgetThresholds(ctx, agent, in.Provider, in.CorrelationID, "daily", dailyCost, dailyCap)
@@ -260,6 +307,36 @@ func (g *Gateway) decidePreDispatch(ctx context.Context, in decisionInput) decis
 	sessView, sessReservation := g.reserveSessionBudget(ctx, agent, in.SessionID, in.SessionSource, estimatedCost)
 	out.SessReservation = sessReservation
 	policyInput, sessionBudgetUnavailable := g.buildPolicyInputForRequest(ctx, agent, in.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, sessView)
+	// Budget state is a precondition of a budget decision. When a cap binds
+	// and the state it is checked against could not be established, the
+	// request is NOT forwarded on a false zero: that was the documented
+	// fail-open of #198/#266, and it let a configured limit lapse exactly
+	// when the store was unhealthy. Agents without a binding cap proceed as
+	// before, the gap annotated in evidence. The code is retriable — the
+	// store, not the request, is the problem.
+	if !in.IsCountTokens {
+		var gap string
+		switch {
+		case budgetUnavailable && (dailyCap > 0 || monthlyCap > 0):
+			gap = "agent spend could not be read from the evidence store"
+		case sessionBudgetUnavailable && eff.BindingSessionCap() > 0:
+			gap = "session budget state could not be read or reserved"
+		}
+		if gap != "" {
+			return deny(&decisionDeny{
+				Status: http.StatusServiceUnavailable, ErrorCode: CodeBudgetUnavailable, MetricsError: true,
+				Message: CodeBudgetUnavailable + ": " + gap + "; a spending cap binds this agent, so the request is not forwarded (fail-closed)",
+				Reasons: []string{"budget state unavailable: " + gap}, MetricPIIAction: piiAction,
+				Model: extracted.Model, InputText: extracted.Text, Classification: classification, AttSummary: attSummary,
+				EstimatedCost: estimatedCost,
+				EvidenceOpts: []func(*RecordGatewayEvidenceParams){func(p *RecordGatewayEvidenceParams) {
+					if sessionBudgetUnavailable {
+						p.GatewayAnnotations = append(p.GatewayAnnotations, "session_budget_unavailable")
+					}
+				}},
+			})
+		}
+	}
 	{
 		allowed, reasons, policyErr := g.policy.EvaluateGateway(ctx, policyInput)
 		if policyErr != nil {

@@ -290,7 +290,7 @@ dump_diag_env() {
 # these skips the OPENAI_API_KEY prerequisite (TALON_SECRETS_KEY, talon and
 # the tools are still required). Everything else is unchanged; the full suite
 # still requires the key.
-readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance 38_openshell "
+readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance 38_openshell 39_budget "
 smoke_only_is_offline() {
   [[ -n "${SMOKE_ONLY:-}" ]] || return 1
   local s
@@ -729,7 +729,7 @@ for _section_file in \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
   33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh \
-  36_external_scanner.sh 37_mcp_governance.sh 38_openshell.sh; do
+  36_external_scanner.sh 37_mcp_governance.sh 38_openshell.sh 39_budget.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -824,6 +824,7 @@ main() {
   run_section "36_external_scanner" test_section_36_external_scanner
   run_section "37_mcp_governance" test_section_37_mcp_governance
   run_section "38_openshell" test_section_38_openshell
+  run_section "39_budget" test_section_39_budget
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency

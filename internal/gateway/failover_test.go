@@ -152,7 +152,7 @@ func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRe
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key", []byte("sk-primary-key-1234567890"), acl))
 	require.NoError(t, secStore.Set(context.Background(), "backup-api-key", []byte("sk-backup-key-1234567890"), acl))
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 	return gw, evStore
 }
@@ -536,7 +536,7 @@ func TestGatewayAlias_AnthropicFamilyGovernance(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-eu-key", []byte("sk-ant-alias-key-123456"),
 		secrets.ACL{Tenants: []string{"test-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 
 	anthropicBody := `{"model":"claude-sonnet-4-20250514","max_tokens":100,"messages":[{"role":"user","content":"Contact jan.kowalski@example.com about the invoice"}]}`

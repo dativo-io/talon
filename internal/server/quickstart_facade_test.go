@@ -170,7 +170,7 @@ func newFacadeForTest(t *testing.T, upstreamURL string) (http.Handler, *evidence
 	if err != nil {
 		t.Fatalf("gateway policy engine: %v", err)
 	}
-	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(nil), classifier.MustNewScanner(), evStore, secStore, gwPolicy, nil)
+	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(nil), classifier.MustNewScanner(), evStore, secStore, gwPolicy, serverTestEstimator)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}

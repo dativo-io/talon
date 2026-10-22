@@ -141,7 +141,7 @@ func newConformanceGateway(t *testing.T, upstreamURL string) (*Gateway, *evidenc
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-key", []byte("sk-ant-test-000-conformance"),
 		secrets.ACL{Tenants: []string{"conf-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })

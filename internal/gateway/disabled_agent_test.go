@@ -60,7 +60,7 @@ func setupDisabledAgentGateway(t *testing.T) (*Gateway, *atomic.Int64, *evidence
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key",
 		[]byte("sk-upstream"), secrets.ACL{Tenants: []string{"acme"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), testTableEstimator)
 	require.NoError(t, err)
 	return gw, &upstreamCalls, evStore
 }
