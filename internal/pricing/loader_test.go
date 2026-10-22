@@ -262,3 +262,42 @@ func TestFormatAmount(t *testing.T) {
 	assert.Equal(t, "CHF 1.23", FormatAmount("CHF", "1.23"))
 	assert.Equal(t, "€0.42", FormatAmount("eur", "0.42"), "case-insensitive")
 }
+
+// TestResolve_ZeroCostVersusUnknown pins the table's two explicit shapes
+// against "unknown": `models: {}` (and an `inherit` of it) is a declared
+// zero cost, a provider absent from the table is unknown — the gateway
+// denies the latter under a spending cap. `generic-openai` is deliberately
+// NOT a free provider any more: a commercial OpenAI-compatible endpoint must
+// be populated or inherit a catalog entry.
+func TestResolve_ZeroCostVersusUnknown(t *testing.T) {
+	for name, table := range map[string]*PricingTable{"repo": mustLoad(t, "../../pricing/models.yaml"), "embedded": mustLoadDefault(t)} {
+		t.Run(name, func(t *testing.T) {
+			cost, known, _ := table.EstimateCached("ollama", "llama3.2:1b", 500, 0, 0, 500)
+			assert.True(t, known)
+			assert.Zero(t, cost)
+			cost, known, _ = table.EstimateCached("local-llama", "llama3.2:1b", 500, 0, 0, 500)
+			assert.True(t, known, "the product demo's local provider inherits ollama's declared zero cost")
+			assert.Zero(t, cost)
+			_, known, _ = table.EstimateCached("generic-openai", "gpt-4o-mini", 500, 0, 0, 500)
+			assert.False(t, known, "a commercial endpoint is never free by default")
+			_, known, _ = table.EstimateCached("openshell-mock", "gpt-4o-mini", 500, 0, 0, 500)
+			assert.False(t, known, "a provider absent from the table is unknown (talon openshell prepare adds it)")
+			_, known, _ = table.EstimateCached("openai", "gpt-4o-mini", 500, 0, 0, 500)
+			assert.True(t, known)
+		})
+	}
+}
+
+func mustLoad(t *testing.T, path string) *PricingTable {
+	t.Helper()
+	table, err := Load(path)
+	require.NoError(t, err)
+	return table
+}
+
+func mustLoadDefault(t *testing.T) *PricingTable {
+	t.Helper()
+	table, err := loadFromData(DefaultModelsYAML())
+	require.NoError(t, err)
+	return table
+}

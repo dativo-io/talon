@@ -311,7 +311,7 @@ EOT
   # provider entries of the configuration map the real host.
   local provider_args=()
   if [[ "$PROVIDER_MODE" == mock ]]; then
-    provider_args=(--provider-name openshell-mock --provider-base-url "http://host.openshell.internal:$SHOWCASE_MOCK_PORT" --provider-secret-name openshell-mock-provider-key)
+    provider_args=(--provider-name openshell-mock --provider-base-url "http://host.openshell.internal:$SHOWCASE_MOCK_PORT" --provider-secret-name openshell-mock-provider-key --provider-pricing openai)
   fi
   local subject_args=()
   [[ -z "${SHOWCASE_SANDBOX_ID:-}" ]] || subject_args=(--sandbox-subject "spiffe://openshell/sandbox/$SHOWCASE_SANDBOX_ID")
@@ -544,7 +544,7 @@ EOT
   save_state SHOWCASE_SANDBOX_ID "$sid"
   # Bind the REAL sandbox identity to the use case (agent reload, no restart).
   local bind_provider=()
-  [[ "$PROVIDER_MODE" != mock ]] || bind_provider=(--provider-name openshell-mock --provider-base-url "http://host.openshell.internal:$SHOWCASE_MOCK_PORT" --provider-secret-name openshell-mock-provider-key)
+  [[ "$PROVIDER_MODE" != mock ]] || bind_provider=(--provider-name openshell-mock --provider-base-url "http://host.openshell.internal:$SHOWCASE_MOCK_PORT" --provider-secret-name openshell-mock-provider-key --provider-pricing openai)
   "$TALON" openshell prepare --config "$CONFIG" --agent "$AGENT" --tenant "$TENANT" \
     --listen "$HOST_IP:$SHOWCASE_TALON_GRPC_PORT" --tls-cert "$TLS_DIR/talon-cert.pem" --tls-key "$TLS_DIR/talon-key.pem" \
     --issuer "openshell-gateway:$SHOWCASE_GATEWAY_ID" --audience "$AUDIENCE" --jwks-file "$RUN_DIR/openshell-jwks.json" \

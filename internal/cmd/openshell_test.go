@@ -13,6 +13,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 // `talon openshell prepare` overlays the OpenShell surface onto EXISTING
@@ -74,7 +75,7 @@ compliance:
 		listen:   "10.0.0.5:9443", tlsCert: filepath.Join(dir, "talon-cert.pem"), tlsKey: filepath.Join(dir, "talon-key.pem"),
 		issuer: "openshell-gateway:gw-1", audience: "urn:openshell:extension:middleware:talon", jwksFile: filepath.Join(dir, "jwks.json"),
 		selfHosts: []string{"host.openshell.internal:8080"}, providerName: "openshell-mock", providerBaseURL: "http://host.openshell.internal:9000",
-		providerSecret: "openshell-mock-provider-key", protectedBaseURL: "http://127.0.0.1:9100", maxCaptureBytes: 65536, settlementTimeout: "60s", responseGovernance: true,
+		providerSecret: "openshell-mock-provider-key", providerPricing: "openai", protectedBaseURL: "http://127.0.0.1:9100", maxCaptureBytes: 65536, settlementTimeout: "60s", responseGovernance: true,
 	}
 	ctx := context.Background()
 	s1, err := runOpenshellPrepare(ctx, opts)
@@ -83,6 +84,23 @@ compliance:
 	assert.True(t, s1.RestartRequired)
 	assert.True(t, s1.AgentCreated)
 	assert.Equal(t, []string{"spiffe://openshell/sandbox/sb-1"}, s1.Bindings)
+
+	// The sandbox's provider is priceable: without a table beside the
+	// config, prepare creates one from the embedded catalog and adds the
+	// provider as an alias of the catalog entry it serves the models of —
+	// otherwise every capped request to it is denied pricing_unavailable
+	// (the OpenShell showcase saw exactly that as middleware_denied).
+	pricingPath := filepath.Join(dir, "pricing", "models.yaml")
+	assert.Equal(t, pricingPath, s1.PricingFile)
+	assert.True(t, s1.PricingChanged)
+	assert.Equal(t, "openai", s1.ProviderPricing)
+	table, err := pricing.Load(pricingPath)
+	require.NoError(t, err)
+	cost, known, _ := table.EstimateCached("openshell-mock", "gpt-4o-mini", 500, 0, 0, 500)
+	assert.True(t, known, "the sandbox's provider is priced")
+	openaiCost, _, _ := table.EstimateCached("openai", "gpt-4o-mini", 500, 0, 0, 500)
+	assert.InDelta(t, openaiCost, cost, 1e-12, "at the catalog entry's rates")
+	assert.Greater(t, table.ModelCount("anthropic"), 0, "the created table is the complete embedded catalog, not just the alias")
 
 	// The gateway config loads and validates; the other provider and the
 	// root keys survived.
@@ -98,6 +116,25 @@ compliance:
 	assert.Equal(t, int64(65536), cfg.OpenShell.ResponseGovernance.MaxCaptureBytes)
 	assert.Equal(t, "https://api.openai.com", cfg.Providers["openai"].BaseURL, "the existing provider is untouched")
 	assert.Equal(t, "http://host.openshell.internal:9000", cfg.Providers["openshell-mock"].BaseURL)
+	t.Run("operator-priced provider wins and an existing table keeps its comments", func(t *testing.T) {
+		d := t.TempDir()
+		cfgP := filepath.Join(d, "talon.config.yaml")
+		require.NoError(t, os.WriteFile(cfgP, []byte("agents_dir: agents\ngateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      secret_name: k\n      base_url: \"https://api.openai.com\"\n"), 0o600))
+		require.NoError(t, os.MkdirAll(filepath.Join(d, "pricing"), 0o750))
+		own := "# operator table\nversion: \"1\"\nproviders:\n  openai:\n    models:\n      gpt-4o-mini: {input_per_1m: 1, output_per_1m: 2}\n  openshell-mock:\n    # my own rates for the mock\n    models:\n      gpt-4o-mini: {input_per_1m: 0.5, output_per_1m: 0.5}\n"
+		require.NoError(t, os.WriteFile(filepath.Join(d, "pricing", "models.yaml"), []byte(own), 0o600))
+		o := opts
+		o.configPath, o.agentsDir = cfgP, filepath.Join(d, "agents")
+		require.NoError(t, os.MkdirAll(o.agentsDir, 0o750))
+		s, err := runOpenshellPrepare(ctx, o)
+		require.NoError(t, err)
+		assert.False(t, s.PricingChanged, "an operator-priced provider is never overwritten")
+		got, _ := os.ReadFile(filepath.Join(d, "pricing", "models.yaml"))
+		assert.Equal(t, own, string(got), "byte for byte")
+		o.providerPricing = "nope"
+		_, err = runOpenshellPrepare(ctx, o)
+		assert.Error(t, err, "an unknown catalog provider is refused")
+	})
 	raw, _ := os.ReadFile(cfgPath)
 	assert.Contains(t, string(raw), "# operator config", "comments survive")
 	assert.Contains(t, string(raw), "agents_dir: agents")

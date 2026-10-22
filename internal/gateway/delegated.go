@@ -144,7 +144,7 @@ func (g *Gateway) EvaluateDelegated(ctx context.Context, req DelegatedRequest) D
 	ctx = outcome.Ctx
 	// The agent-cap claim ends with the decision record: the settlement
 	// ledger carries a pending estimate durably from here (agentCostTotals).
-	defer g.agentInflight.release(outcome.AgentReservation)
+	defer func() { g.agentInflight.release(outcome.AgentReservation) }()
 	if outcome.Deny != nil {
 		if outcome.SessReservation != nil {
 			g.releaseSessionReservation(outcome.SessReservation)

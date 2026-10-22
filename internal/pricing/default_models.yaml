@@ -197,5 +197,17 @@ providers:
   ollama:
     models: {}
 
-  generic-openai:
-    models: {}
+  # A provider named in gateway.providers but absent here is UNKNOWN: its
+  # requests cannot be priced, and because a daily/monthly cap always binds a
+  # gateway agent they are denied `pricing_unavailable` until an entry exists.
+  # Two explicit shapes:
+  #   my-endpoint: { inherit: openai }   # an aliased commercial endpoint: priced as the catalog entry
+  #   my-ollama:   { models: {} }        # a self-hosted endpoint: every model explicitly zero-cost
+  # `models: {}` is a declaration of zero cost, never a placeholder — a
+  # commercial OpenAI-compatible endpoint (e.g. a `generic-openai` provider)
+  # must be populated with its real rates or inherit a catalog provider.
+
+  # The first-party product demo's local Ollama provider
+  # (examples/product-demo/talon.config.yaml): explicitly zero-cost.
+  local-llama:
+    inherit: ollama
