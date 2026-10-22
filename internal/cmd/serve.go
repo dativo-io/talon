@@ -1052,23 +1052,7 @@ func isLoopbackHost(host string) bool {
 // the estimate falls back to a flat default and pricing_known is false so the
 // signed evidence records that the cost is an estimate, not a table figure.
 func gatewayCostEstimator(pricingTable *pricing.PricingTable) gateway.CostEstimator {
-	return func(provider, model string, usage gateway.Usage) gateway.CostResult {
-		cost, known, cacheFallback := pricingTable.EstimateCached(
-			provider, model, usage.Input, usage.CacheRead, usage.CacheWrite, usage.Output)
-		if !known {
-			// Unknown provider/model: conservative flat estimate, marked unknown.
-			n := float64(usage.Input+usage.CacheRead+usage.CacheWrite+usage.Output) / 1000
-			if n < 0.01 {
-				n = 0.01
-			}
-			return gateway.CostResult{Amount: n * 0.002, PricingKnown: false, PricingBasis: gateway.PricingBasisDefault}
-		}
-		basis := gateway.PricingBasisTable
-		if cacheFallback {
-			basis = gateway.PricingBasisCacheFalling
-		}
-		return gateway.CostResult{Amount: cost, PricingKnown: true, PricingBasis: basis}
-	}
+	return gateway.PricingTableEstimator(pricingTable)
 }
 
 // validateServeModeFlags enforces mutual exclusivity between the quickstart

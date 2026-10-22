@@ -96,7 +96,7 @@ func TestFleetOps_Walkthrough(t *testing.T) {
 	require.NoError(t, cfg.ApplyDefaults())
 	policyEngine, err := policy.NewGatewayEngine(ctx)
 	require.NoError(t, err)
-	gw, err := gateway.NewGateway(cfg, holder.RegistrySource(), classifier.MustNewScanner(), evStore, vault, policyEngine, nil)
+	gw, err := gateway.NewGateway(cfg, holder.RegistrySource(), classifier.MustNewScanner(), evStore, vault, policyEngine, realPricingEstimator())
 	require.NoError(t, err)
 	router := chi.NewRouter()
 	router.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
