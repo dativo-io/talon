@@ -17,9 +17,17 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.15.2] - 2026-10-22
+
+Re-cut of v1.15.1. The `v1.15.1` tag exists but its release job failed in the `go test ./...` gate on a timing-dependent test, so no v1.15.1 binaries or images were ever published. v1.15.2 is the same Go 1.26.10 / x/net v0.61.0 rebuild described below plus the test fix. No behaviour change; upgrade from v1.15.0.
+
+### Fixed
+
+- **Release gate no longer trips on `TestEventsRecentIncludesReasonsAndPreservesTenantIsolation`.** The recent-events handler bounds its evidence query at its own `time.Now()`; the test stored a row at `now + 1ms` and lost it when the request landed inside that millisecond on a fast runner. The test now anchors its timestamps in the past. Test-only; the `/api/v1/events/recent` handler is unchanged.
+
 ## [1.15.1] - 2026-10-22
 
-Security patch release: the v1.15.0 binaries were built with Go 1.26.4 and carry twelve standard-library vulnerabilities reachable from Talon's HTTP paths and the compliance report renderer. No behaviour change; upgrade.
+Security patch release (tagged, never published — superseded by v1.15.2): the v1.15.0 binaries were built with Go 1.26.4 and carry twelve standard-library vulnerabilities reachable from Talon's HTTP paths and the compliance report renderer. No behaviour change; upgrade.
 
 ### Security
 
