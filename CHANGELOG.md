@@ -880,7 +880,8 @@ Fleet Operations v1 (#265 milestone): discover, inspect, stop, and safely reconf
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.15.1...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.15.2...HEAD
+[1.15.2]: https://github.com/dativo-io/talon/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/dativo-io/talon/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/dativo-io/talon/compare/v1.10.0...v1.15.0
 [1.10.0]: https://github.com/dativo-io/talon/compare/v1.9.4...v1.10.0
