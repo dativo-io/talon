@@ -749,16 +749,20 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// the stale primary ones (TestBudget_FailoverBurst_AgentCapHardBound).
 			// A refused candidate hands the claim back at the primary's price.
 			candDaily, candMonthly := dailyCost, monthlyCost
-			var prevEstimate float64
-			revert := func() {}
+			var reverts []func()
+			revert := func() {
+				for i := len(reverts) - 1; i >= 0; i-- {
+					reverts[i]()
+				}
+			}
 			if (dec.DailyCap > 0 || dec.MonthlyCap > 0) && candEstimate.Amount > 0 {
-				prevEstimate = 0
+				prevEstimate := 0.0
 				if outcome.AgentReservation != nil {
 					prevEstimate = outcome.AgentReservation.estimate
 				}
 				var others float64
 				outcome.AgentReservation, others = g.agentInflight.adjust(outcome.AgentReservation, agentInflightKey(agent), candEstimate.Amount)
-				revert = func() { g.agentInflight.adjust(outcome.AgentReservation, agentInflightKey(agent), prevEstimate) }
+				reverts = append(reverts, func() { g.agentInflight.adjust(outcome.AgentReservation, agentInflightKey(agent), prevEstimate) })
 				settledDaily, settledMonthly, unavailable := g.agentCostTotals(cCtx, agent)
 				if unavailable {
 					revert()
@@ -766,7 +770,39 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				candDaily, candMonthly = settledDaily+others, settledMonthly+others
 			}
-			candInput, _ := g.buildPolicyInputForRequest(cCtx, agent, candProvider, candModel, tier, candEstimate.Amount, candDaily, candMonthly, sessView)
+			// The session reservation follows a DEARER candidate the same way:
+			// the difference is reserved atomically in the session store and
+			// the candidate's session view is rebuilt from the returned spend,
+			// so two requests on one session failing over together serialize
+			// against each other's fallback estimates
+			// (TestBudget_FailoverBurst_SessionCapHardBound). A cheaper
+			// candidate keeps the larger reservation (conservative; settle
+			// releases exactly what is held). Refusal hands the difference back.
+			candSessView := sessView
+			if sessReservation != nil && !sessReservation.done && eff.BindingSessionCap() > 0 && candEstimate.Amount > sessReservation.estimate {
+				prevSess := sessReservation.estimate
+				delta := candEstimate.Amount - prevSess
+				view, err := g.sessionStore.ReserveSessionCost(cCtx, sessReservation.rowID, delta, 0)
+				if err != nil {
+					revert()
+					log.Warn().Err(err).Str("session_id", sessReservation.rowID).Msg("gateway_session_reserve_failed")
+					return failover.FilterResult{Filter: "gateway_policy", Reason: CodeBudgetUnavailable + ": session budget could not be reserved for the fallback candidate"}, nil
+				}
+				sessReservation.estimate = candEstimate.Amount
+				reverts = append(reverts, func() {
+					if rErr := g.sessionStore.ReleaseSessionReservation(cCtx, sessReservation.rowID, delta); rErr != nil {
+						log.Warn().Err(rErr).Str("session_id", sessReservation.rowID).Msg("gateway_session_release_failed")
+					}
+					sessReservation.estimate = prevSess
+				})
+				// view = settled + every reservation including this request's
+				// previous one; the policy rule adds the candidate estimate back.
+				candSessView = &sessionView{ok: true, costTotal: view - prevSess}
+				if sessView != nil {
+					candSessView.stageCounts = sessView.stageCounts
+				}
+			}
+			candInput, _ := g.buildPolicyInputForRequest(cCtx, agent, candProvider, candModel, tier, candEstimate.Amount, candDaily, candMonthly, candSessView)
 			allowed, reasons, policyErr := g.policy.EvaluateGateway(cCtx, candInput)
 			switch {
 			case policyErr != nil:
