@@ -112,7 +112,10 @@ func TestEventsRecentTenantIsolation(t *testing.T) {
 
 func TestEventsRecentIncludesReasonsAndPreservesTenantIsolation(t *testing.T) {
 	srv, store := newEventsTestServer(t, map[string]string{"k-acme": "acme", "k-other": "other"})
-	now := time.Now().UTC()
+	// Anchor in the past: the handler bounds its evidence query at its own
+	// time.Now(), so a row stamped now+1ms is invisible if the request lands
+	// within that millisecond (observed on the v1.15.1 release runner).
+	now := time.Now().UTC().Add(-time.Second)
 
 	denied := evidence.Evidence{
 		ID:              "ev-reasons-denied",
