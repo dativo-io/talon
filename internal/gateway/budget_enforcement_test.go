@@ -494,3 +494,73 @@ func TestAgentInflight_AdjustAndUnrecorded(t *testing.T) {
 	assert.InDelta(t, 2.0, a.unrecordedSince("k", month, month), 1e-12)
 	assert.Len(t, a.unrecorded["k"], 2, "last month's charge was pruned")
 }
+
+// TestBudget_FailoverBurst_SessionCapHardBound is the session-cap twin of
+// the agent-cap burst: session cap 3, agent cap 100, primary 0.01 (always
+// failing transiently), fallback 2, five concurrent requests on ONE
+// session. Each reserved 0.01 against the session for the primary; a
+// dearer fallback re-reserves the difference atomically in the session
+// store and is admitted against settled + every other request's fallback
+// reservation — exactly one reaches the backup, the session settles 2.0
+// and holds no reservation afterwards.
+func TestBudget_FailoverBurst_SessionCapHardBound(t *testing.T) {
+	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
+	backup := newFailoverUpstream(t, http.StatusOK)
+	gw, _ := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
+	sessStore, err := session.NewStore(filepath.Join(t.TempDir(), "sess.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sessStore.Close() })
+	gw.SetSessionStore(sessStore)
+	gw.costEstimate = func(provider, _ string, _ Usage) CostResult {
+		if provider == "backup" {
+			return CostResult{Amount: 2, PricingKnown: true, PricingBasis: PricingBasisTable}
+		}
+		return CostResult{Amount: 0.01, PricingKnown: true, PricingBasis: PricingBasisTable}
+	}
+	agent := failoverAgent(gw)
+	if agent.Override == nil {
+		agent.Override = &PolicyOverride{}
+	}
+	agent.Override.MaxDailyCost = 100
+	agent.Override.MaxSessionCost = 3
+
+	const n = 5
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	bodies := make([]string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r := chi.NewRouter()
+			r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://test/v1/proxy/openai/v1/chat/completions", strings.NewReader(failoverTestBody))
+			req.Header.Set("Authorization", "Bearer "+failoverTestAgentKey)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Talon-Session-ID", "sess-fo-shared")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			codes[i], bodies[i] = w.Code, w.Body.String()
+		}(i)
+	}
+	wg.Wait()
+
+	ok := 0
+	for _, c := range codes {
+		if c == http.StatusOK {
+			ok++
+		}
+	}
+	assert.Equal(t, 1, ok, "session cap 3 admits exactly one fallback at 2.0: codes=%v", codes)
+	assert.Equal(t, int64(n), primary.calls.Load(), "every request tried the primary (admitted at 0.01 against the session)")
+	assert.Equal(t, int64(1), backup.calls.Load(), "fallback candidates serialize against each other's session reservations")
+
+	sess, err := sessStore.GetByExternal(context.Background(), agent.TenantID, agent.Name, "sess-fo-shared")
+	require.NoError(t, err)
+	// 2.0 for the one fallback plus 0.01 for each of the four fail-closed
+	// requests, which book their primary estimate (no usage was observed —
+	// pre-existing settle semantics, unchanged here).
+	assert.InDelta(t, 2.0+4*0.01, sess.TotalCost, 1e-9, "the one fallback settled at its actual cost")
+	assert.InDelta(t, 0, sess.ReservedCost, 1e-9, "every reservation — re-priced or reverted — was released")
+	assert.Zero(t, gw.agentInflight.pending(agentInflightKey(agent)))
+}
