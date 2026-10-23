@@ -410,7 +410,14 @@ func TestBudget_FailoverBurst_AgentCapHardBound(t *testing.T) {
 		assert.NotEqual(t, http.StatusOK, c, "request %d: %s", i, bodies[i])
 	}
 	assert.Equal(t, 1, ok, "cap 3 admits exactly one fallback at 2.0: codes=%v", codes)
-	assert.Equal(t, int64(n), primary.calls.Load(), "every request tried the primary (admitted at 0.01)")
+	// The hard bound is the backup count. How many requests reached the
+	// primary depends on scheduling: a request admitted after the winner
+	// settled 2.0 while another still holds its 2.0 fallback claim sees the
+	// cap exceeded and is denied before the primary — conservative, never
+	// an over-admission — so the primary count is bounded, not fixed.
+	primaryCalls := primary.calls.Load()
+	assert.GreaterOrEqual(t, primaryCalls, int64(1), "the winner tried the primary first")
+	assert.LessOrEqual(t, primaryCalls, int64(n), "no request tried the primary twice")
 	assert.Equal(t, int64(1), backup.calls.Load(), "fallback candidates serialize against each other's fallback estimates")
 
 	recs, err := store.List(context.Background(), "test-tenant", "", time.Time{}, time.Time{}, 100)
@@ -552,15 +559,25 @@ func TestBudget_FailoverBurst_SessionCapHardBound(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, ok, "session cap 3 admits exactly one fallback at 2.0: codes=%v", codes)
-	assert.Equal(t, int64(n), primary.calls.Load(), "every request tried the primary (admitted at 0.01 against the session)")
+	// The hard bound is the backup count. How many requests reached the
+	// primary depends on scheduling: a request admitted after the winner
+	// settled 2.0 while another still holds its re-priced 2.0 session
+	// reservation sees settled + reserved + 0.01 > 3 and is denied before
+	// the primary — conservative, never an over-admission — so the primary
+	// count is bounded, not fixed, and the settled total follows it.
+	primaryCalls := primary.calls.Load()
+	assert.GreaterOrEqual(t, primaryCalls, int64(1), "the winner tried the primary first")
+	assert.LessOrEqual(t, primaryCalls, int64(n), "no request tried the primary twice")
 	assert.Equal(t, int64(1), backup.calls.Load(), "fallback candidates serialize against each other's session reservations")
 
 	sess, err := sessStore.GetByExternal(context.Background(), agent.TenantID, agent.Name, "sess-fo-shared")
 	require.NoError(t, err)
-	// 2.0 for the one fallback plus 0.01 for each of the four fail-closed
-	// requests, which book their primary estimate (no usage was observed —
-	// pre-existing settle semantics, unchanged here).
-	assert.InDelta(t, 2.0+4*0.01, sess.TotalCost, 1e-9, "the one fallback settled at its actual cost")
+	// 2.0 for the one fallback plus 0.01 for each request that tried the
+	// primary and then failed closed: those book their primary estimate (no
+	// usage was observed — pre-existing settle semantics, unchanged here).
+	// A request denied before the primary books nothing.
+	failedClosed := float64(primaryCalls - 1)
+	assert.InDelta(t, 2.0+failedClosed*0.01, sess.TotalCost, 1e-9, "the one fallback settled at its actual cost; fail-closed attempts at their estimate")
 	assert.InDelta(t, 0, sess.ReservedCost, 1e-9, "every reservation — re-priced or reverted — was released")
 	assert.Zero(t, gw.agentInflight.pending(agentInflightKey(agent)))
 }
