@@ -47,8 +47,13 @@ func proxyTestServer(t *testing.T, upstreamBody string) (baseURL string, talonAP
 	gwCfg := &gateway.GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
+		// Both routes hit the same mock upstream. The catalog prices them
+		// differently: ollama is an explicit zero-cost provider (models: {}),
+		// openai is metered — tests that assert spend > 0 route via openai so
+		// the recorded cost is a real catalog price, not a faked estimate.
 		Providers: map[string]gateway.ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: mockUpstream.URL},
+			"openai": {Enabled: true, BaseURL: mockUpstream.URL},
 		},
 		Timeouts: gateway.TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -98,8 +103,8 @@ func TestProxyBlackBox_AgentKeyWorksAcrossSurfaces(t *testing.T) {
 	upstreamBody := `{"id":"gen-2","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":2,"completion_tokens":2}}`
 	baseURL, _, agentKey := proxyTestServer(t, upstreamBody)
 
-	body := []byte(`{"model":"llama2","messages":[{"role":"user","content":"Hi"}]}`)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/v1/proxy/ollama/v1/chat/completions", bytes.NewReader(body))
+	body := []byte(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hi"}]}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/v1/proxy/openai/v1/chat/completions", bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+agentKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -129,8 +134,8 @@ func TestProxyBlackBox_Success(t *testing.T) {
 	baseURL, talonKey, gatewayKey := proxyTestServer(t, upstreamBody)
 
 	// 1) Call proxy (as a client would)
-	body := []byte(`{"model":"llama2","messages":[{"role":"user","content":"Hi"}]}`)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/v1/proxy/ollama/v1/chat/completions", bytes.NewReader(body))
+	body := []byte(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hi"}]}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/v1/proxy/openai/v1/chat/completions", bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+gatewayKey)
 	req.Header.Set("Content-Type", "application/json")
