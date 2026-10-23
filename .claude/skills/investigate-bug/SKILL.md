@@ -7,7 +7,7 @@ disable-model-invocation: true
 Investigate $ARGUMENTS.
 
 1. Establish the expected contract from current code/tests/docs/issues.
-2. Reproduce the reported behavior with the smallest reliable command or test.
+2. Reproduce the reported behavior with the smallest reliable command or test. For a CI failure, first establish which commit CI ran and run that step's exact command locally (`/verify-change` has the job-to-command map).
 3. Minimize the reproducer and identify the first incorrect boundary/state transition.
 4. Trace data/identity/state from entry point to the failing effect.
 5. Check whether the bug is:

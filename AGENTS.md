@@ -151,6 +151,8 @@ Without explicit user instruction, do not:
 
 Local inspection and reversible edits are allowed. Do not commit unless the task permits commits.
 
+Standing exception for Claude Code in this repository (`.claude/rules/github-workflow.md`): new work starts on its own feature branch, and verified checkpoints are committed and pushed to that branch autonomously. Pull requests, merges, tags, releases and issue/PR mutations remain gated on explicit instruction.
+
 ## Documentation and claims
 
 Distinguish shipped behavior from target behavior.
