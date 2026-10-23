@@ -33,16 +33,18 @@ Do not treat historical comments, old docs, or agent memory as newer than the cu
 
 ## Verify
 
-Run, in order as appropriate:
+Run the `/verify-change` ladder, in order as appropriate:
 
-1. focused/changed-package tests;
+1. focused/changed-package tests (race detector on for anything concurrent);
 2. relevant integration tests;
 3. relevant E2E/smoke proof;
-4. broader repository checks when required.
+4. broader repository checks when required (`make check`, `go test ./tests` when docs changed).
+
+When a contract surface changed (machine code, evidence annotation, config field, pricing entry, smoke section), complete the registration set in `.claude/rules/contract-surfaces.md`.
 
 Inspect the final diff and compare it against every acceptance criterion.
 
-Do not commit, push, mutate the issue, or create a PR unless the user's task explicitly authorizes it.
+Do not commit, push, mutate the issue, or create a PR unless the user's task explicitly authorizes it. When it does, follow `/prepare-pr`.
 
 ## Handoff
 
