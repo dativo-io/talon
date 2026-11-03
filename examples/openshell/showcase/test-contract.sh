@@ -122,4 +122,23 @@ verdict_refused 0 noprobe.log 1 0 'probe was not denied'
 verdict_refused 2 fresh.log 1 0 'rejected run produced downstream mutations'
 verdict_refused 1 fresh.log 0 0 'agent exited with 1'
 pass "run verdict: fresh completion dispatches once; a resumed completion dispatches nothing; mutations are refused"
+# 7. Release-manifest gate (#507): with TALON_SHOWCASE_RELEASE_MANIFEST set,
+#    the runner accepts the talon it is given only when the manifest lists the
+#    binary's exact sha256 under artifacts.talon — and refuses a manifest
+#    without that entry (the shape every manifest published before v1.15.4
+#    had) as well as a binary whose digest differs. Standalone prepare is the
+#    first command that resolves talon, so it is the probe.
+mf_ok="$WORK/manifest-ok.json"; mf_missing="$WORK/manifest-missing.json"
+printf '{"talon_version":"test","artifacts":{"talon":{"path":"talon_test_linux_amd64.tar.gz","sha256":"%s"}}}\n' "$(sha256sum "$TALON" | cut -d' ' -f1)" >"$mf_ok"
+printf '{"talon_version":"test","artifacts":{"mockprovider":{"path":"bin/mockprovider","sha256":"0"}}}\n' >"$mf_missing"
+TALON_SHOWCASE_RUN_DIR="$WORK/mf-ok" TALON_SHOWCASE_RELEASE_MANIFEST="$mf_ok" bash "$RUNNER" prepare >"$WORK/mf-ok.out" 2>&1 || { cat "$WORK/mf-ok.out"; fail "prepare with a manifest that lists this talon"; }
+grep -q '^PASS prepare' "$WORK/mf-ok.out" || fail "manifest-gated prepare did not report success: $(cat "$WORK/mf-ok.out")"
+set +e; out="$(TALON_SHOWCASE_RUN_DIR="$WORK/mf-missing" TALON_SHOWCASE_RELEASE_MANIFEST="$mf_missing" bash "$RUNNER" prepare 2>&1)"; rc=$?; set -e
+refused "$rc" "$out" 'has no entry for talon' "a manifest without artifacts.talon must refuse the binary"
+cp "$TALON" "$WORK/talon-tampered"; printf '\n' >>"$WORK/talon-tampered"; chmod +x "$WORK/talon-tampered"
+set +e; out="$(TALON_SHOWCASE_RUN_DIR="$WORK/mf-tampered" TALON_SHOWCASE_RELEASE_MANIFEST="$mf_ok" TALON_SHOWCASE_TALON_BIN="$WORK/talon-tampered" bash "$RUNNER" prepare 2>&1)"; rc=$?; set -e
+refused "$rc" "$out" 'does not match the release manifest' "a talon whose digest differs from the manifest must be refused"
+set +e; out="$(TALON_SHOWCASE_RUN_DIR="$WORK/mf-absent" TALON_SHOWCASE_RELEASE_MANIFEST="$WORK/does-not-exist.json" bash "$RUNNER" prepare 2>&1)"; rc=$?; set -e
+refused "$rc" "$out" 'is missing or empty' "a manifest path that does not exist must refuse"
+pass "release-manifest gate: this talon passes when listed; a manifest without artifacts.talon, a tampered binary and a missing manifest are refused"
 echo "ALL PASS showcase runner contract"

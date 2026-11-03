@@ -83,13 +83,30 @@ When your PR changes user-facing behavior, include a release-note friendly summa
 
 ## Release Artifact Verification (maintainers)
 
-After tagging a release:
+The release workflow (`.github/workflows/release.yml`, #507) is build → verify → publish:
+GoReleaser creates the release as a **draft** (invisible to `releases/latest`, `install.sh`
+and anonymous downloads), the showcase bundle and the darwin archives are added to the
+draft, and `release-verify` downloads every asset from the draft, checks every digest,
+confirms the manifest's `artifacts.talon.sha256` is the digest of the released binary, runs
+the showcase **customer path** from the published artifacts (no checkout, real OpenShell
+sandbox) and only then publishes the release and moves the Docker `latest` and
+`<major>.<minor>` tags. A failed verification leaves a draft: fix forward and cut the next
+version. A published release is never modified (`scripts/release-guard.sh` refuses to build
+or upload against one; enable **immutable releases** in the repository settings so GitHub
+enforces the same and attaches attestations).
+
+After the workflow has published the release:
 
 ```bash
 LATEST=$(gh release view --json tagName -q .tagName)
-gh release view "$LATEST" --json assets -q '.assets[].name'
+gh release view "$LATEST" --json isDraft,assets -q '"draft=\(.isDraft)", .assets[].name'
 gh api "/repos/dativo-io/talon/actions/workflows/release.yml/runs?per_page=1" -q '.workflow_runs[0].conclusion'
+# the manifest lists the released talon binary (the customer path depends on it)
+V=${LATEST#v}; gh release download "$LATEST" -p "talon_${V}_linux_amd64.tar.gz" -p "talon-openshell-showcase_${V}_linux_amd64.manifest.json" -D /tmp/rel
+tar -C /tmp/rel -xzf "/tmp/rel/talon_${V}_linux_amd64.tar.gz" talon && [ "$(jq -r .artifacts.talon.sha256 /tmp/rel/*.manifest.json)" = "$(sha256sum /tmp/rel/talon | cut -d' ' -f1)" ] && echo manifest-ok
 docker pull ghcr.io/dativo-io/talon:latest
+# re-run the verification against any published release (audit mode, changes nothing)
+gh workflow run release.yml -f tag="$LATEST"
 ```
 
 Check that release notes link at least one share artifact (screenshot, GIF, or migration snippet). To refresh Mission Control screenshots, see [docs/contributor/mission-control-screenshots.md](docs/contributor/mission-control-screenshots.md).

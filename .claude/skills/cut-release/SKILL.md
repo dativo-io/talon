@@ -34,18 +34,19 @@ Every step marked **[human]** mutates GitHub, tags or registries and runs only o
    git switch main && git pull --ff-only
    git tag -a vX.Y.Z -m "vX.Y.Z — <theme>" && git push origin vX.Y.Z
    ```
-3. The tag push runs `.github/workflows/release.yml`: GoReleaser (linux archives, `ghcr.io/dativo-io/talon:<X.Y.Z>` and `:latest`, the sandbox agent image `ghcr.io/dativo-io/talon-openshell-agent:<X.Y.Z>`), the OpenShell showcase bundle uploaded next to the archives, and native darwin binaries.
+3. The tag push runs `.github/workflows/release.yml` (build → verify → publish, #507): GoReleaser creates a **draft** release (linux archive, `checksums.txt`, the version-tagged images `ghcr.io/dativo-io/talon:<X.Y.Z>` and `ghcr.io/dativo-io/talon-openshell-agent:<X.Y.Z>`); the showcase bundle job reads `talon` back from that archive and writes its digest into the manifest; the darwin job adds its archives; `release-verify` checks every digest and runs the showcase customer path from the draft's assets, then publishes the release and moves `:latest` / `:<X.Y>`. A failed verification leaves a draft — fix forward, next patch version; never upload to or edit a published release (`scripts/release-guard.sh` refuses).
 
 ## Verify (CONTRIBUTING "Release Artifact Verification")
 
 ```
 LATEST=$(gh release view --json tagName -q .tagName)
-gh release view "$LATEST" --json assets -q '.assets[].name'
+gh release view "$LATEST" --json isDraft,assets -q '"draft=\(.isDraft)", .assets[].name'
 gh api "/repos/dativo-io/talon/actions/workflows/release.yml/runs?per_page=1" -q '.workflow_runs[0].conclusion'
 docker pull ghcr.io/dativo-io/talon:latest
+gh workflow run release.yml -f tag="$LATEST"   # audit mode: re-verifies the published assets, changes nothing
 ```
 
-Also check: the showcase bundle and its `.sha256` are among the assets; the agent image package on GHCR is public (the customer path pulls it without credentials); the release notes link at least one share artifact; a clean host can run the showcase from the published bundle per `examples/openshell/showcase/README.md`.
+Also check: `draft=false`; the showcase bundle, its `.sha256` and its `.manifest.json` are among the assets and the manifest's `artifacts.talon.sha256` equals the sha256 of the `talon` inside `talon_<X.Y.Z>_linux_amd64.tar.gz`; the agent image package on GHCR is public (the customer path pulls it without credentials); the release notes link at least one share artifact.
 
 ## When the release job fails after tagging
 

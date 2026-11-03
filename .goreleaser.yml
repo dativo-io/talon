@@ -117,10 +117,13 @@ dockers:
       - "--label=org.opencontainers.image.version={{.Version}}"
       - "--label=org.opencontainers.image.source=https://github.com/dativo-io/talon"
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
+  # Only the immutable version tag is pushed here (#507): goreleaser runs
+  # BEFORE the release is verified, and a version tag nobody has been told
+  # about is not a promotion. The movable tags (`:latest`, `:<major>.<minor>`)
+  # are applied by the release workflow's verify job after the draft release
+  # is published, so a failed customer-path verification never moves them.
   - image_templates:
       - "ghcr.io/dativo-io/talon:{{ .Version }}"
-      - "ghcr.io/dativo-io/talon:{{ .Major }}.{{ .Minor }}"
-      - "ghcr.io/dativo-io/talon:latest"
     dockerfile: Dockerfile.goreleaser
     build_flag_templates:
       - "--build-arg=VERSION={{.Version}}"
@@ -137,12 +140,18 @@ release:
   github:
     owner: dativo-io
     name: talon
-  # The showcase bundle (runner + helpers + manifest) is built by the release
-  # workflow after goreleaser (scripts/build-showcase-bundle.sh) and uploaded
-  # next to the archives; see .github/workflows/release.yml.
-  draft: false
+  # The release is created as a DRAFT (#507): invisible to `releases/latest`,
+  # the installer and anonymous downloads. The release workflow then adds the
+  # showcase bundle (scripts/build-showcase-bundle.sh, with the digest of the
+  # talon binary from the archive goreleaser built) and the darwin archives,
+  # verifies every asset and the customer path from the draft, and only then
+  # publishes it (`gh release edit --draft=false`). A failed verification
+  # leaves a draft, never a public broken release. With GitHub's immutable
+  # releases enabled on the repository, publication also locks the assets.
+  draft: true
   prerelease: auto
-  # Re-run safe: if assets already exist on this tag's release, delete and retry upload.
+  # Re-run safe while the release is still a draft: assets already on the
+  # draft are replaced. The workflow refuses to run against a published tag.
   replace_existing_artifacts: true
   # Keep release notes aligned with the latest run output.
   mode: replace

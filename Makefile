@@ -65,8 +65,9 @@ test-openshell-smoke: ## OpenShell composition smoke (#482): fixture supervisor 
 test-openshell-live: ## REAL OpenShell live smoke (#482/#457): pinned released gateway + CLI + sandbox (docker driver; OPENSHELL_VERSION=v0.1.3 default, v0.1.4 pinned) with Talon as supervisor middleware, a mock provider and a protected action target; model cases A–F, response cases O–R and Action Gateway cases G–N; needs Docker >= 28 on Linux, no keys
 	@bash scripts/openshell-live.sh
 
-test-openshell-showcase-contract: build ## Offline contract test of the canonical OpenShell showcase runner (vocabulary, embedded contract, standalone prepare validated by doctor; no Docker)
+test-openshell-showcase-contract: build ## Offline contract test of the canonical OpenShell showcase runner (vocabulary, embedded contract, standalone prepare validated by doctor, release-manifest gate) and of the bundle + customer path (#507); no Docker
 	@TALON_SHOWCASE_TALON_BIN="$(CURDIR)/bin/talon" bash ./examples/openshell/showcase/test-contract.sh
+	@TALON_SHOWCASE_TALON_BIN="$(CURDIR)/bin/talon" bash ./scripts/test-showcase-bundle.sh
 
 openshell-showcase-validate: ## Canonical OpenShell showcase against the REAL released runtime (SDK agent inside the sandbox, host-side approval and rejection, resume, evidence); needs Docker >= 28 on Linux, no keys
 	@bash ./examples/openshell/showcase/demo.sh validate
@@ -74,8 +75,8 @@ openshell-showcase-validate: ## Canonical OpenShell showcase against the REAL re
 openshell-agent-image: ## Build the sandbox agent image locally (talon-openshell-agent:local-<commit>)
 	@docker build -t "talon-openshell-agent:local-$$(git rev-parse --short HEAD)" --build-arg VERSION=local --build-arg COMMIT="$$(git rev-parse --short HEAD)" examples/openshell/agent
 
-showcase-bundle: ## Build the versioned OpenShell showcase bundle + manifest into ./dist (customer path: published artifacts, no source checkout)
-	@bash ./scripts/build-showcase-bundle.sh "$(VERSION)" "$(CURDIR)/dist"
+showcase-bundle: build ## Build the versioned OpenShell showcase bundle + manifest into ./dist around ./bin/talon (customer path: published artifacts, no source checkout)
+	@bash ./scripts/build-showcase-bundle.sh "$(VERSION)" "$(CURDIR)/dist" "ghcr.io/dativo-io/talon-openshell-agent:$(VERSION)" "$(CURDIR)/bin/talon"
 
 openshell-proto: ## Regenerate Go types from the pinned OpenShell v0.1.3 protos (buf via go run; generated code is checked in)
 	@bash scripts/openshell-proto-gen.sh

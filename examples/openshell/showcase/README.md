@@ -70,21 +70,30 @@ zero new refunds and marks the receipt `resumed: true`.
 - **Development (this checkout):** the runner builds `talon`, the helper
   binaries and the sandbox agent image (`talon-openshell-agent:local-<commit>`)
   from source. Needs Go and Docker.
-- **Customer (published artifacts):** install the Talon release, download the
-  versioned showcase bundle (`talon-openshell-showcase_<version>_linux_<arch>.tar.gz`
-  with its `.sha256` and `showcase-manifest.json`), set
-  `TALON_SHOWCASE_BUNDLE_DIR` to the extracted directory and
-  `TALON_SHOWCASE_RELEASE_MANIFEST` to the manifest. The runner refuses any
-  binary whose sha256 is not in the manifest and uses the agent image the
-  manifest names (`ghcr.io/dativo-io/talon-openshell-agent:<version>`; pin it by
-  digest in your own instructions). OpenShell's binaries are fetched from the
-  official NVIDIA release and verified against the pinned checksums. No source
-  checkout, no Go toolchain, no paid API key.
+- **Customer (published artifacts):** install the Talon release
+  (`talon_<version>_linux_amd64.tar.gz`; the showcase runs Linux sandboxes),
+  download the versioned showcase bundle
+  (`talon-openshell-showcase_<version>_linux_amd64.tar.gz` with its `.sha256`
+  and `talon-openshell-showcase_<version>_linux_amd64.manifest.json`), set
+  `TALON_SHOWCASE_TALON_BIN` to the extracted `talon`, `TALON_SHOWCASE_BUNDLE_DIR`
+  to the extracted bundle directory and `TALON_SHOWCASE_RELEASE_MANIFEST` to
+  the manifest. The runner refuses any binary whose sha256 is not in the
+  manifest — the released `talon` included (`artifacts.talon.sha256` is the
+  digest of the executable inside the release archive, #507) — and uses the
+  agent image the manifest names (`ghcr.io/dativo-io/talon-openshell-agent:<version>`;
+  pin it by digest in your own instructions). OpenShell's binaries are fetched
+  from the official NVIDIA release and verified against the pinned checksums.
+  No source checkout, no Go toolchain, no paid API key.
 
 The bundle and the agent image are produced by Talon's release pipeline
-(`scripts/build-showcase-bundle.sh`, `.goreleaser.yml`). Until a release that
-contains them is published, the customer path is **not available** — see the
-project's release notes for the first version that ships them.
+(`scripts/build-showcase-bundle.sh`, `.goreleaser.yml`,
+`.github/workflows/release.yml`), which runs this customer path from the
+published artifacts before the release is published. The customer path needs
+**v1.15.4 or later**: the manifests of v1.15.0–v1.15.3 have no `artifacts.talon`
+entry, so their runner refuses the release's own binary ("release manifest …
+has no entry for talon"). Do not work around that by inserting a digest you
+computed from a downloaded binary — a digest derived from the artifact it is
+meant to check verifies nothing; use a release whose manifest carries the entry.
 
 ## Embedded mode (talon-full-demo)
 
