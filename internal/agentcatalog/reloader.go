@@ -80,6 +80,12 @@ type ReloadConfig struct {
 	// empty registry that would deny everything by accident. Native-only
 	// serve leaves this false (a keyless generation is legitimate).
 	RequireNonEmpty bool
+	// ValidateScan runs serve's startup-only definition rules against a
+	// valid scan before anything is built (#479: trigger definitions that
+	// startup refuses). A non-nil error REJECTS the generation with that
+	// cause, so an edit serve would refuse to boot with never activates
+	// silently as a reload. Optional.
+	ValidateScan func(scan *ScanResult) error
 	// Clock is the reloader's time source (tests); nil = time.Now UTC.
 	Clock func() time.Time
 }
@@ -302,13 +308,11 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	}
 	sourceOnly := scan.Digest == r.lastScan
 
-	// Rejection paths: invalid scan, empty set under RequireNonEmpty, or a
-	// build failure below. Last-known-good keeps serving in every case.
-	if scanErr != nil {
-		return r.reject(ctx, scan, causesFrom(scan, scanErr), false)
-	}
-	if r.cfg.RequireNonEmpty && len(scan.Agents) == 0 {
-		return r.reject(ctx, scan, []string{fmt.Sprintf("%s: scan found zero agents — an empty set never activates in gateway mode", scan.Source)}, false)
+	// Rejection paths: invalid scan, empty set under RequireNonEmpty, a
+	// definition the serve rules refuse, or a build failure below.
+	// Last-known-good keeps serving in every case.
+	if causes, srcOnly := r.scanRejection(scan, scanErr, sourceOnly); causes != nil {
+		return r.reject(ctx, scan, causes, srcOnly)
 	}
 
 	bundles, err := BuildRuntimeAgents(ctx, scan, r.cfg.Deps)
@@ -366,6 +370,25 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	r.recorded = make(map[string]struct{})
 	log.Info().Int("agents", len(scan.Agents)).Str("generation", shortDigest(next.Generation)).Str("source", scan.Source).Bool("action_sources_refreshed", sourceOnly).Msg("agent_config_reload_activated")
 	return ReloadActivated
+}
+
+// scanRejection returns the causes that reject a freshly scanned set before
+// anything is built — an invalid scan, an empty set under RequireNonEmpty,
+// or a definition the serve rules refuse (ValidateScan, #479) — and whether
+// the rejection is source-only (config bytes unchanged). nil causes = build.
+func (r *Reloader) scanRejection(scan *ScanResult, scanErr error, sourceOnly bool) ([]string, bool) {
+	if scanErr != nil {
+		return causesFrom(scan, scanErr), false
+	}
+	if r.cfg.RequireNonEmpty && len(scan.Agents) == 0 {
+		return []string{fmt.Sprintf("%s: scan found zero agents — an empty set never activates in gateway mode", scan.Source)}, false
+	}
+	if r.cfg.ValidateScan != nil {
+		if err := r.cfg.ValidateScan(scan); err != nil {
+			return []string{err.Error()}, sourceOnly
+		}
+	}
+	return nil, false
 }
 
 // recover ends a broken incident without a swap: the observed state is the

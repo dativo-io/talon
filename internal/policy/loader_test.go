@@ -52,6 +52,7 @@ triggers:
   webhooks:
     - name: sales-update
       source: generic
+      secret_name: sales-update-webhook
       prompt_template: "Analyze {{.payload}}"
       require_approval: false
 secrets:

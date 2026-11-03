@@ -232,10 +232,20 @@ type ScheduleTrigger struct {
 
 // WebhookTrigger is an HTTP-webhook-based agent trigger.
 type WebhookTrigger struct {
-	Name            string `yaml:"name" json:"name"`
-	Source          string `yaml:"source" json:"source"`
-	PromptTemplate  string `yaml:"prompt_template" json:"prompt_template"`
-	RequireApproval bool   `yaml:"require_approval,omitempty" json:"require_approval,omitempty"`
+	Name   string `yaml:"name" json:"name"`
+	Source string `yaml:"source" json:"source"`
+	// SecretName is the vault secret whose value the sender presents as
+	// `Authorization: Bearer <value>` on POST /v1/triggers/{name} (#479).
+	// Like agent.key.secret_name it is a NAME, never the value, so the file
+	// stays safe to commit. Required: an unauthenticated webhook is remote
+	// execution for anyone who can reach the port.
+	SecretName     string `yaml:"secret_name" json:"secret_name"`
+	PromptTemplate string `yaml:"prompt_template" json:"prompt_template"`
+	// RequireApproval is refused at load (trigger.ValidatePolicyTriggers):
+	// Talon has no queue for held trigger events. The field stays so an
+	// explicit `false` keeps loading and a `true` gets a precise error
+	// instead of a schema message.
+	RequireApproval bool `yaml:"require_approval,omitempty" json:"require_approval,omitempty"`
 }
 
 // SecretsConfig defines which vault entries the agent can access.

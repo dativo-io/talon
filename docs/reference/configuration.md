@@ -41,7 +41,7 @@ Key top-level sections:
 | `capabilities` | Allowed tools, forbidden tools, `tool_policy_action`, data sources, forbidden patterns |
 | `policies` | Cost limits, session limits, rate limits, model routing (runner-side), gateway model lists (`models.allowed` / `models.blocked`), `allowed_providers`, `egress`, data classification (`redact_input`, `redact_output`, `block_on_pii`, `max_data_tier`), time restrictions, resource limits (`require_approval` for tool approval gates) |
 | `memory` | Governed self-improvement (categories, retention, dedup) |
-| `triggers` | Cron schedules and webhook definitions |
+| `triggers` | Cron schedules and webhook definitions; every webhook names a vault-bound `secret_name` its sender presents as a bearer token (#479). Native-only: refused when a gateway is served |
 | `secrets` | Allowed/forbidden secret names for this agent |
 | `attachment_handling` | Prompt injection scanning, sandboxing mode. When the section is omitted, the runtime default is `mode: permissive` with content wrapping enabled; production templates set `strict`. |
 | `audit` | Log level, retention, prompt/response inclusion, data minimization |
@@ -71,6 +71,26 @@ talon secrets set support-triage-talon-key "$(openssl rand -hex 24)"
 ```
 
 **Rotation:** write a new value to the same secret name (`talon secrets set support-triage-talon-key <new>`) and restart `talon serve` (a secret-only change is not digest-detected, so rotation still needs a restart or a file-touch even with periodic reload running). There is never a window with two concurrently-active keys — one agent, one key.
+
+### Triggers (cron and webhooks)
+
+```yaml
+triggers:
+  schedule:
+    - cron: "0 9 * * 1-5"
+      prompt: "Summarize yesterday's open tickets"
+  webhooks:
+    - name: support-incoming             # POST /v1/triggers/support-incoming
+      source: zendesk                    # descriptive metadata only
+      secret_name: support-incoming-webhook   # vault reference — never the value
+      prompt_template: "Summarize this ticket and suggest a reply: {{.payload.description}}"
+```
+
+- **Webhooks are authenticated by their own secret (#479).** `secret_name` is required; it names a vault entry (`talon secrets set support-incoming-webhook "$(openssl rand -hex 24)"`), and the sender presents that value as `Authorization: Bearer <value>`. No other credential opens a webhook: agent keys and the admin key get `401 unauthorized`, and there is no dev-open rule. A denied request is never parsed, never runs, and writes no evidence. Payloads are bounded at 512 KiB. Zendesk ("Bearer token" webhook authentication) and Freshdesk (custom `Authorization` header on the trigger-webhook action) can send this directly; senders that only sign the body (GitHub, Slack) are not supported — see the [authentication matrix](authentication-and-key-scopes.md).
+- **Triggers are native-only execution.** A trigger run goes through the native runner under the agent's own policy, without `gateway.organization_policy`, provider constraints or the effective policy. `talon serve --gateway` (and `--proxy-quickstart`) therefore refuse to start while any discovered agent declares a schedule or webhook, and a reload that introduces one is rejected (last-known-good keeps serving). Run trigger-driven agents in a native-only serve; applying the organization baseline to trigger runs is a follow-up to #479.
+- **`require_approval` is refused.** Talon has no queue for held trigger events; earlier versions acknowledged such a webhook with `202 pending_approval` and dropped the event. Gate the agent's side effects with the Action Gateway approval policy instead.
+- **Where the rules run.** `talon serve` applies them at startup (and resolves every webhook secret from the vault — a missing secret is a startup error naming the `talon secrets set` command) and on every reload. `talon validate` applies the definition rules always and the gateway rule when it finds an enabled gateway config (`TALON_GATEWAY_CONFIG`, default `talon.config.yaml`); without one it cannot know whether serve will run with `--gateway`. `talon doctor` reports `triggers_serveable` for the fleet under `agents_dir` (or the default file), applying the gateway rule exactly when it is checking a gateway config. Neither offline command reads the vault; whether each secret exists is established by serve.
+- **Rotation is a restart.** The secret is resolved once at registration, like every trigger definition (#297): `talon secrets set <name> <new value>` followed by a restart.
 
 ### Gateway policy overrides (one agent, one override)
 
@@ -391,7 +411,7 @@ Key sections:
 
 **Removed-agent data lifecycle (`orphan_retention_days`, #269).** Memory and session rows whose agent has left the catalog (removed by a reload) age out under this fixed org-level floor (default `90`), independent of any live agent policy — so orphaned data can never persist indefinitely. Rows for agents still in the catalog follow that agent's own `audit.retention_days` / `memory.retention_days`.
 
-**Hot vs restart-required.** Hot-reloadable: agent file contents (`enabled`, identity metadata, key binding *name*, policy overrides) and `agents_dir` membership. Restart-required: trigger/webhook **definitions** (#297 — dispatch still re-resolves the current generation, so `enabled` and policy edits govern the next firing), `gateway:` block (organization policy, providers, mode), listeners/ports, scanner infrastructure, pricing and sovereignty. **Key rotation** via `talon secrets set` alone is not detected (the file digest is unchanged) — rotate = set the secret + restart, or touch the agent file. **Secret deletion/revocation of an *enabled* agent is likewise NOT a hot revocation:** the reload cannot build a valid registry for that agent, so the whole generation is rejected and last-known-good keeps the old key serving. To revoke access, **disable** the agent — that IS hot: the disabled generation activates with the prior key carried forward as a *denial-only* identity (the gateway returns an attributed 403; the tenant-API surface rejects it), so the old credential authorizes nothing — or restart.
+**Hot vs restart-required.** Hot-reloadable: agent file contents (`enabled`, identity metadata, key binding *name*, policy overrides) and `agents_dir` membership. Restart-required: trigger/webhook **definitions** and webhook secret values (#297, #479 — dispatch still re-resolves the current generation, so `enabled` and policy edits govern the next firing), `gateway:` block (organization policy, providers, mode), listeners/ports, scanner infrastructure, pricing and sovereignty. **Key rotation** via `talon secrets set` alone is not detected (the file digest is unchanged) — rotate = set the secret + restart, or touch the agent file. **Secret deletion/revocation of an *enabled* agent is likewise NOT a hot revocation:** the reload cannot build a valid registry for that agent, so the whole generation is rejected and last-known-good keeps the old key serving. To revoke access, **disable** the agent — that IS hot: the disabled generation activates with the prior key carried forward as a *denial-only* identity (the gateway returns an attributed 403; the tenant-API surface rejects it), so the old credential authorizes nothing — or restart.
 
 **`talon agents enable|disable <name>` (#268).** The config-backed kill switch: `enabled: false` denies NEW work for that agent (gateway requests → attributed 403 `agent_disabled`; native runs and trigger dispatch → refused before any lifecycle state) while in-flight work finishes. The command is **host-local by design** (it edits the YAML on this machine; remote administration is out of scope), rewrites the file atomically via a structural YAML edit that preserves comments, and records **intent + completion** as signed evidence in the agent's tenant — a failed completion record rolls the file back so recorded and actual state never diverge. A running `talon serve` applies the change within the reload interval.
 

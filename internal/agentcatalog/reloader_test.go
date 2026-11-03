@@ -724,3 +724,50 @@ func TestReloader_KeyReuseNeverBypassesTenantACLorReEnable(t *testing.T) {
 		assert.True(t, newResolves, "the fresh vault value is picked up on the rebuild")
 	})
 }
+
+// TestReloader_ValidateScanRejects (#479): serve's startup-only definition
+// rules run on every reload through ValidateScan. An edit that startup would
+// refuse (here: a webhook without secret_name, or any trigger in gateway
+// mode) REJECTS the generation with that cause; last-known-good keeps
+// serving, and a clean edit still activates.
+func TestReloader_ValidateScanRejects(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, false)
+	genA := f.holder.Current()
+
+	var refuse bool
+	f.reloader = NewReloader(ReloadConfig{
+		Source: Source{Dir: f.agentsDir}, Deps: BundleDeps{},
+		Vault: f.vault, Holder: f.holder, Evidence: f.evStore,
+		ValidateScan: func(scan *ScanResult) error {
+			for i := range scan.Agents {
+				pol := scan.Agents[i].Policy
+				if refuse && pol.Triggers != nil && len(pol.Triggers.Webhooks) > 0 {
+					return fmt.Errorf("webhook %q on agent %q has no secret_name", pol.Triggers.Webhooks[0].Name, pol.Agent.Name)
+				}
+			}
+			return nil
+		},
+	})
+
+	// The operator adds a webhook the serve rules refuse.
+	refuse = true
+	d := filepath.Join(f.agentsDir, "support")
+	y := "agent:\n  name: support\n  version: \"1.0.0\"\n  key:\n    secret_name: support-key\n" +
+		"triggers:\n  webhooks:\n    - name: incoming\n      source: generic\n      secret_name: incoming-webhook\n      prompt_template: \"{{.payload}}\"\n" +
+		"policies:\n  cost_limits:\n    daily: 10\n"
+	require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte(y), 0o600))
+	assert.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	assert.Same(t, genA, f.holder.Current(), "a generation the serve rules refuse never activates")
+	st := f.reloader.State()
+	require.True(t, st.Rejected)
+	assert.Contains(t, st.RejectedCauses[0], `webhook "incoming" on agent "support" has no secret_name`)
+	assert.Equal(t, ReloadRejectedDuplicate, f.reloader.ReloadOnce(ctx), "same broken state: no second record")
+
+	// The same files under rules that accept them activate normally.
+	refuse = false
+	f.writeAgentVersion(t, "support", "support-key", true, "2.0.0")
+	assert.Equal(t, ReloadActivated, f.reloader.ReloadOnce(ctx))
+	assert.NotSame(t, genA, f.holder.Current())
+	assert.False(t, f.reloader.State().Rejected)
+}

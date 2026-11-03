@@ -107,10 +107,11 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["name", "source", "prompt_template"],
+            "required": ["name", "source", "secret_name", "prompt_template"],
             "properties": {
               "name": {"type": "string", "pattern": "^[a-z0-9-]+$"},
-              "source": {"type": "string", "enum": ["generic", "github", "jira", "slack"]},
+              "source": {"type": "string", "enum": ["generic", "github", "jira", "slack", "zendesk", "freshdesk"]},
+              "secret_name": {"type": "string", "minLength": 1},
               "prompt_template": {"type": "string"},
               "require_approval": {"type": "boolean"}
             }
