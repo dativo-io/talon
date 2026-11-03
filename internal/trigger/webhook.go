@@ -3,9 +3,13 @@ package trigger
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"text/template"
 	"time"
 
@@ -13,44 +17,83 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/secrets"
 )
+
+// maxWebhookBody bounds an inbound webhook payload before it is parsed. The
+// body is untrusted input from a remote sender; the bound mirrors the Action
+// Gateway request bound (internal/server maxActionBody) so one number governs
+// every externally fed JSON surface.
+const maxWebhookBody = 512 * 1024
+
+// SecretResolver reads one vault secret under the declaring agent's scope.
+// *secrets.SecretStore satisfies it; tests inject a map.
+type SecretResolver interface {
+	Get(ctx context.Context, name, tenantID, agentID string) (*secrets.Secret, error)
+}
 
 // webhookRoute binds one webhook trigger to the agent whose policy declared
 // it — dispatch always names THAT agent, resolved from the current catalog
-// generation at fire time (#267).
+// generation at fire time (#267) — and to the sha256 of the bearer secret
+// senders must present (#479). The secret is resolved once at registration;
+// rotating it is restart-required, like every trigger definition (#297).
 type webhookRoute struct {
-	trigger policy.WebhookTrigger
-	agent   string
+	trigger    policy.WebhookTrigger
+	agent      string
+	secretHash [sha256.Size]byte
 }
 
 // WebhookHandler handles incoming webhook triggers for the whole fleet:
 // webhook names are one shared route namespace, registered per agent policy.
 type WebhookHandler struct {
 	runner   AgentRunner
+	secrets  SecretResolver
 	webhooks map[string]webhookRoute
 }
 
 // NewWebhookHandler creates an empty handler; register each discovered
-// agent's policy with Register.
-func NewWebhookHandler(runner AgentRunner) *WebhookHandler {
+// agent's policy with Register. secrets resolves each webhook's
+// `secret_name`; a nil resolver makes every registration of a webhook fail.
+func NewWebhookHandler(runner AgentRunner, secrets SecretResolver) *WebhookHandler {
 	return &WebhookHandler{
 		runner:   runner,
+		secrets:  secrets,
 		webhooks: make(map[string]webhookRoute),
 	}
 }
 
-// Register adds one agent policy's webhook triggers. Webhook names are
-// unique across the fleet — two agents claiming the same name fail closed
-// (the route would silently dispatch to whichever registered last).
-func (wh *WebhookHandler) Register(pol *policy.Policy) error {
+// Register adds one agent policy's webhook triggers. It fails closed on
+// every definition serve must not expose: a name claimed by two agents (the
+// route would silently dispatch to whichever registered last), a webhook
+// without `secret_name`, `require_approval: true`, and a secret that the
+// vault cannot provide for the declaring agent (#479).
+func (wh *WebhookHandler) Register(ctx context.Context, pol *policy.Policy) error {
 	if pol.Triggers == nil {
 		return nil
+	}
+	if err := ValidatePolicyTriggers(pol, ServeRules{}); err != nil {
+		return err
+	}
+	tenantID := pol.Agent.TenantID
+	if tenantID == "" {
+		tenantID = "default"
 	}
 	for _, w := range pol.Triggers.Webhooks {
 		if prev, dup := wh.webhooks[w.Name]; dup {
 			return fmt.Errorf("webhook %q declared by both agent %q and agent %q — webhook names are unique per installation", w.Name, prev.agent, pol.Agent.Name)
 		}
-		wh.webhooks[w.Name] = webhookRoute{trigger: w, agent: pol.Agent.Name}
+		if wh.secrets == nil {
+			return fmt.Errorf("webhook %q on agent %q: no secret store is available to resolve secret_name %q", w.Name, pol.Agent.Name, w.SecretName)
+		}
+		secret, err := wh.secrets.Get(ctx, w.SecretName, tenantID, pol.Agent.Name)
+		if err != nil {
+			return fmt.Errorf("webhook %q on agent %q: resolving secret_name %q from the vault: %w — mint it with `talon secrets set %s <value>` (the sender presents the value as `Authorization: Bearer`)", w.Name, pol.Agent.Name, w.SecretName, err, w.SecretName)
+		}
+		value := bytes.TrimSpace(secret.Value)
+		if len(value) == 0 {
+			return fmt.Errorf("webhook %q on agent %q: vault secret %q is empty", w.Name, pol.Agent.Name, w.SecretName)
+		}
+		wh.webhooks[w.Name] = webhookRoute{trigger: w, agent: pol.Agent.Name, secretHash: sha256.Sum256(value)}
 	}
 	return nil
 }
@@ -62,22 +105,64 @@ type webhookResponse struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// HandleWebhook processes an incoming webhook trigger.
+func writeWebhookJSON(w http.ResponseWriter, status int, resp webhookResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// authorized reports whether the request presents the route's secret as a
+// bearer token. Both sides are compared as sha256 digests so the comparison
+// is constant-time regardless of the presented length.
+func (route webhookRoute) authorized(r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
+	}
+	presented := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	if presented == "" {
+		return false
+	}
+	got := sha256.Sum256([]byte(presented))
+	return subtle.ConstantTimeCompare(got[:], route.secretHash[:]) == 1
+}
+
+// HandleWebhook processes an incoming webhook trigger. Order matters: the
+// route is resolved, the sender is authenticated, and only then is the
+// (bounded) body read and parsed — an unauthenticated sender never costs a
+// parse, a template render, or a run.
 func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	route, ok := wh.webhooks[name]
 	if !ok {
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: fmt.Sprintf("trigger %q not found", name)})
+		writeWebhookJSON(w, http.StatusNotFound, webhookResponse{Status: "error", Error: fmt.Sprintf("trigger %q not found", name)})
+		return
+	}
+	if !route.authorized(r) {
+		log.Warn().
+			Str("agent_id", route.agent).
+			Str("trigger", name).
+			Str("remote_addr", r.RemoteAddr).
+			Msg("webhook_unauthorized")
+		writeWebhookJSON(w, http.StatusUnauthorized, webhookResponse{
+			Status:  "error",
+			Error:   "unauthorized",
+			Message: fmt.Sprintf("webhook %q requires its secret as `Authorization: Bearer <secret>` (agent file: triggers.webhooks[].secret_name)", name),
+		})
 		return
 	}
 	trigger := route.trigger
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBody)
 	var payload interface{}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: "invalid JSON body"})
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeWebhookJSON(w, http.StatusRequestEntityTooLarge, webhookResponse{Status: "error", Error: "payload_too_large", Message: fmt.Sprintf("webhook payloads are limited to %d bytes", maxWebhookBody)})
+			return
+		}
+		writeWebhookJSON(w, http.StatusBadRequest, webhookResponse{Status: "error", Error: "invalid JSON body"})
 		return
 	}
 
@@ -85,25 +170,7 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 	prompt, err := renderTemplate(trigger.PromptTemplate, map[string]interface{}{"payload": safePayload})
 	if err != nil {
 		log.Warn().Err(err).Str("trigger", name).Msg("webhook_template_failed")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: "invalid webhook template"})
-		return
-	}
-
-	// Human oversight gate (EU AI Act Art. 14): when require_approval is true,
-	// do not execute the agent. Return 202 so the caller knows the webhook was
-	// received but no run was started until an operator approves.
-	if trigger.RequireApproval {
-		log.Info().
-			Str("agent_id", route.agent).
-			Str("trigger", name).
-			Msg("webhook_received_pending_approval")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(webhookResponse{
-			Status:  "pending_approval",
-			Message: "Webhook received; execution requires human approval (EU AI Act Art. 14). No run was started.",
-		})
+		writeWebhookJSON(w, http.StatusInternalServerError, webhookResponse{Status: "error", Error: "invalid webhook template"})
 		return
 	}
 
@@ -122,13 +189,11 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 			Str("agent_id", route.agent).
 			Str("trigger", name).
 			Msg("webhook_trigger_failed")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: "trigger execution failed"})
+		writeWebhookJSON(w, http.StatusInternalServerError, webhookResponse{Status: "error", Error: "trigger execution failed"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(webhookResponse{Status: "ok", Message: "trigger executed"})
+	writeWebhookJSON(w, http.StatusOK, webhookResponse{Status: "ok", Message: "trigger executed"})
 }
 
 // sanitizePayload recursively restricts the payload to JSON-like types only

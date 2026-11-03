@@ -22,6 +22,7 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/sovereignty"
+	"github.com/dativo-io/talon/internal/trigger"
 )
 
 // CheckResult is a single doctor check outcome.
@@ -58,6 +59,7 @@ func Run(ctx context.Context, opts Options) *Report {
 	report := &Report{}
 
 	report.Checks = append(report.Checks, checkConfig()...)
+	report.Checks = append(report.Checks, checkTriggers(ctx, opts.GatewayConfigPath != ""))
 	if opts.GatewayConfigPath != "" {
 		report.Checks = append(report.Checks, checkGateway(ctx, opts)...)
 	}
@@ -106,6 +108,67 @@ func checkConfig() []CheckResult {
 	results = append(results, checkSovereignty(cfg, nil))
 	results = append(results, checkAirGap(cfg, nil))
 	return results
+}
+
+// checkTriggers applies the trigger definition rules serve enforces at
+// startup (#479) to the agents doctor can see: the fleet under agents_dir, or
+// the default policy file. The gateway rule (no triggers at all) is applied
+// exactly when doctor is checking a gateway config — the one case where it
+// knows a gateway will be served; otherwise only the definition rules
+// (secret_name present, require_approval unset) are checked. Whether the
+// vault actually holds each secret is resolved by serve at startup, not here.
+func checkTriggers(ctx context.Context, gatewayChecked bool) CheckResult {
+	const name = "triggers_serveable"
+	cfg, err := config.Load()
+	if err != nil {
+		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("not checked: %v", err)}
+	}
+	var policies []*policy.Policy
+	var scope string
+	switch {
+	case cfg.AgentsDir != "":
+		scan, scanErr := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
+		if scanErr != nil {
+			return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("not checked: agents_dir %s does not scan cleanly (%v)", cfg.AgentsDir, scanErr), Fix: "Run 'talon validate' for the per-file causes"}
+		}
+		for i := range scan.Agents {
+			policies = append(policies, scan.Agents[i].Policy)
+		}
+		scope = fmt.Sprintf("%d agent(s) under %s", len(policies), cfg.AgentsDir)
+	default:
+		if _, statErr := os.Stat(cfg.DefaultPolicy); statErr != nil {
+			return CheckResult{Name: name, Category: "config", Status: "pass", Message: "no agent policy to check (see policy_valid)"}
+		}
+		pol, loadErr := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
+		if loadErr != nil {
+			return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("not checked: %s does not load (see policy_valid)", cfg.DefaultPolicy)}
+		}
+		policies = []*policy.Policy{pol}
+		scope = cfg.DefaultPolicy
+	}
+	schedules, webhooks := 0, 0
+	for _, pol := range policies {
+		if pol.Triggers != nil {
+			schedules += len(pol.Triggers.Schedule)
+			webhooks += len(pol.Triggers.Webhooks)
+		}
+	}
+	rules := trigger.ServeRules{GatewayServed: gatewayChecked}
+	if err := trigger.ValidateFleetTriggers(policies, rules); err != nil {
+		fix := "Add triggers.webhooks[].secret_name (a vault secret name; mint it with 'talon secrets set') and remove require_approval"
+		if gatewayChecked {
+			fix = "Remove the triggers from agents a gateway serves, or run that agent in a native-only serve (#479)"
+		}
+		return CheckResult{Name: name, Category: "config", Status: "fail", Message: err.Error(), Fix: fix}
+	}
+	if schedules == 0 && webhooks == 0 {
+		return CheckResult{Name: name, Category: "config", Status: "pass", Message: fmt.Sprintf("no triggers declared (%s)", scope)}
+	}
+	mode := "native-only rules (no gateway config checked)"
+	if gatewayChecked {
+		mode = "gateway rules"
+	}
+	return CheckResult{Name: name, Category: "config", Status: "pass", Message: fmt.Sprintf("%d schedule(s), %d webhook(s) across %s satisfy the %s; webhook secrets resolve from the vault at serve startup", schedules, webhooks, scope, mode)}
 }
 
 // deadKeyHints names the real surface for known dead keys (#342 class).

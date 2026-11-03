@@ -31,16 +31,24 @@ Optional: enable plan review for high-risk suggestions (`compliance.human_oversi
 
 ### 2. Trigger
 
-**Webhook:** Expose `POST /v1/triggers/support-incoming` and point your ticketing system at it. In `.talon.yaml`:
+**Webhook:** declare the webhook with the vault secret its sender must present (#479). In `.talon.yaml`:
 
 ```yaml
 triggers:
   webhooks:
     - name: support-incoming
       source: zendesk
+      secret_name: support-incoming-webhook
       prompt_template: "Summarize this ticket and suggest a reply: {{.payload.description}}"
-      require_approval: false
 ```
+
+Mint the secret, then configure the ticketing system to POST to `/v1/triggers/support-incoming` with that value as a bearer token — in Zendesk, a webhook with "Bearer token" authentication; in Freshdesk, a trigger-webhook action with a custom `Authorization: Bearer <value>` header:
+
+```bash
+talon secrets set support-incoming-webhook "$(openssl rand -hex 24)"
+```
+
+Requests without the secret (including ones carrying an agent key or the admin key) are answered `401 unauthorized` and start no run. Webhooks are native-only execution: run this agent with `talon serve` (no `--gateway`); a gateway serve refuses to start while an agent declares triggers, because trigger runs bypass `gateway.organization_policy`.
 
 **Cron:** Run on a schedule, e.g. poll a queue and run `talon run "Process next support ticket..."` from a script.
 

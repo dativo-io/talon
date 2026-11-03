@@ -342,7 +342,11 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/v1/health", s.handleHealth)
 	r.Head("/v1/health", s.handleHealth)
 
-	// Webhooks (no auth; signature validation can be added later)
+	// Webhook triggers (#479): the handler authenticates the sender itself —
+	// the webhook's vault-bound secret as `Authorization: Bearer` — because
+	// no Talon key family fits: an admin key never acts as an agent, and an
+	// agent key is the workload's identity, refused on native execution in
+	// gateway mode (where triggers are not served at all). No dev-open rule.
 	r.Post("/v1/triggers/{name}", s.webhookHandler.HandleWebhook)
 
 	// Action Gateway (#429/#458): runtime operations under the agent key;

@@ -254,9 +254,12 @@ encrypted vault only. See the dedicated guides:
 ### What About Webhooks?
 
 Talon ships **webhook triggers**, not a webhook forwarding proxy: a
-`triggers.webhooks` entry on an agent (`name`, `source`, `prompt_template`,
-`require_approval`) dispatches a **governed agent run** when the webhook
-fires — the payload becomes a policy-checked, audited Talon execution.
+`triggers.webhooks` entry on an agent (`name`, `source`, `secret_name`,
+`prompt_template`) dispatches a **governed agent run** when the webhook
+fires — the payload becomes a policy-checked, audited Talon execution. The
+sender authenticates with the webhook's own vault-bound secret as a bearer
+token (#479); the run applies the agent's policy natively, so trigger-driven
+agents run in a native-only serve, not next to the gateway.
 
 What Talon does **not** do today: sit between a SaaS webhook and a vendor
 endpoint to log/redact/forward the payload transparently, or passively poll a

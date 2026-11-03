@@ -115,6 +115,22 @@ Trust-boundary crossings (each is a point where data changes trust domain):
 - Admin/control-plane and dashboard/metrics endpoints are gated by `TALON_ADMIN_KEY`
   (`X-Talon-Admin-Key`). If unset, those endpoints are unrestricted — set it in production.
 
+### 3.6 Webhook sender ↔ Server (`POST /v1/triggers/{name}`)
+
+- The sender (a ticketing system, an automation platform, or anyone who can reach the
+  port) is untrusted. Each webhook declares a vault-bound `secret_name`; the sender must
+  present that value as `Authorization: Bearer`, compared in constant time (#479). Agent
+  keys and the admin key are refused — an agent key is the workload's identity and would
+  re-open native execution the gateway mode deliberately closes — and there is no dev-open
+  rule. The body is bounded (512 KiB) and parsed only after authentication; the payload
+  is reduced to JSON primitives before it reaches the prompt template.
+- Trigger runs execute through the native runner under the agent's own policy, outside
+  `gateway.organization_policy`. A gateway serve therefore refuses to start with any trigger
+  declared; trigger-driven agents belong in a native-only serve.
+- Not provided: provider body signatures (GitHub, Slack), replay protection, per-webhook
+  rate limiting. A leaked webhook secret authorizes runs of that one agent until the secret
+  is rotated (`talon secrets set` + restart).
+
 ## 4. STRIDE threats and mitigations
 
 | Threat | Example | Mitigation | Residual risk / out of scope |
@@ -183,6 +199,8 @@ non-repudiation.
 - Custody, rotation, and backup of signing/encryption/admin keys.
 - Filesystem access control on the SQLite vault and evidence databases.
 - Trust decisions about upstream providers and external tools.
+- Custody and rotation of webhook secrets, and the network exposure of `POST /v1/triggers/*`
+  (TLS termination, allow-listing the sender).
 - The legal/compliance determination itself (Talon supplies supporting controls and
   evidence only).
 

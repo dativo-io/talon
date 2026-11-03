@@ -84,6 +84,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err := validateServeModeFlags(serveProxyQuickstart, serveGateway, gatewayConfigExplicit); err != nil {
 		return err
 	}
+	// Trigger definitions are validated against the serve mode at startup,
+	// on every reload and offline (validate/doctor) with ONE rule set (#479):
+	// gateway and quickstart modes refuse triggers, because trigger runs go
+	// through the native runner and bypass gateway.organization_policy.
+	triggerRules := trigger.ServeRules{GatewayServed: serveGateway || serveProxyQuickstart}
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -292,9 +297,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return gateway.BuildIdentityRegistryWith(bctx, scan.LoadedAgents(), secretsStore, adminKey,
 				gateway.BuildOptions{AllowUnkeyed: allowUnkeyed, PriorKeys: prior})
 		}
+		// A reload that introduces a trigger definition startup would refuse
+		// is rejected (last-known-good keeps serving) instead of activating
+		// silently; definitions themselves stay restart-required (#297).
+		validateScan := func(scan *agentcatalog.ScanResult) error {
+			policies := make([]*policy.Policy, 0, len(scan.Agents))
+			for i := range scan.Agents {
+				policies = append(policies, scan.Agents[i].Policy)
+			}
+			return trigger.ValidateFleetTriggers(policies, triggerRules)
+		}
 		reloader = agentcatalog.NewReloader(agentcatalog.ReloadConfig{
 			Source: src, Deps: deps, BuildRegistry: buildRegistry,
 			Holder: runtimeHolder, Evidence: evidenceStore, RequireNonEmpty: serveGateway,
+			ValidateScan: validateScan,
 		})
 		go reloader.Run(ctx, reloadInterval)
 		log.Info().Dur("interval", reloadInterval).Str("source", src.String()).Msg("agent_config_reload_enabled")
@@ -543,14 +559,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// agent (#267); dispatch re-resolves the agent from the CURRENT
 	// generation, so a reload's policy edits and enabled state govern the
 	// next firing. Trigger DEFINITION changes stay restart-required (#297).
+	// Registration fails closed (#479): no triggers at all in gateway mode,
+	// and every webhook resolves its vault-bound bearer secret here.
 	scheduler := trigger.NewScheduler(runner)
-	webhookHandler := trigger.NewWebhookHandler(runner)
+	webhookHandler := trigger.NewWebhookHandler(runner, secretsStore)
 	for _, ra := range runtimeHolder.Current().List() {
+		if err := trigger.ValidatePolicyTriggers(ra.Policy, triggerRules); err != nil {
+			return fmt.Errorf("triggers: %w", err)
+		}
 		if err := scheduler.RegisterSchedules(ra.Policy); err != nil {
 			return fmt.Errorf("registering schedules for agent %q: %w", ra.Name, err)
 		}
-		if err := webhookHandler.Register(ra.Policy); err != nil {
-			return fmt.Errorf("registering webhooks for agent %q: %w", ra.Name, err)
+		if err := webhookHandler.Register(ctx, ra.Policy); err != nil {
+			return fmt.Errorf("registering webhooks: %w", err)
 		}
 	}
 	scheduler.Start()
