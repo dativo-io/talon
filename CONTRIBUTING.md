@@ -93,8 +93,11 @@ sandbox) and only then publishes the release and moves the Docker `latest` and
 `<major>.<minor>` tags. A failed verification leaves a draft: fix forward and cut the next
 version. A published release is never modified (`scripts/release-guard.sh` refuses to build
 or upload against one; enable **immutable releases** in the repository settings so GitHub
-enforces the same and attaches attestations). Runs for the same tag are serialized by a
-concurrency group, so a re-run or an audit never races the active run.
+enforces the same and attaches attestations). All release runs share one concurrency group,
+so two versions, or an audit and a release, never race over `releases/latest` and the movable
+Docker tags; GitHub keeps one pending run per group and cancels an older pending one, so a run
+queued behind two others must simply be re-run. Before publication the verify job also pulls
+and runs `ghcr.io/dativo-io/talon:<version>` — the image `latest` will point at.
 
 **If the run fails after "Publish the release"** (alias promotion or the anonymous
 re-download), the release is public and correct; nothing needs rewriting. Re-run the
