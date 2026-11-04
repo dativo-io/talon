@@ -99,8 +99,11 @@ or upload against one; enable **immutable releases** in the repository settings 
 enforces the same and attaches attestations). All release runs share one concurrency group,
 so two versions, or an audit and a release, never race over `releases/latest` and the movable
 Docker tags; GitHub keeps one pending run per group and cancels an older pending one, so a run
-queued behind two others must simply be re-run. Before publication the verify job also pulls
-and runs `ghcr.io/dativo-io/talon:<version>` — the image `latest` will point at.
+queued behind two others must simply be re-run. Before publication the verify job also proves
+both GHCR packages (`talon`, `talon-openshell-agent`) are pullable **without credentials**
+(`scripts/check-image-public.sh`; a workflow-created package is private until its visibility is
+set to Public once in the package settings — customers and OpenShell have no GHCR login), then
+pulls and runs `ghcr.io/dativo-io/talon:<version>` — the image `latest` will point at.
 
 **If the run fails after "Publish the release"** (alias promotion or the anonymous
 re-download), the release is public and correct; nothing needs rewriting. Re-run the
