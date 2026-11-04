@@ -55,7 +55,7 @@ func (s staticSecrets) Get(_ context.Context, name, _, _ string) (*secrets.Secre
 // the admin key (as header or bearer), or dev mode with no keys configured
 // anywhere. The runner count is the proof that nothing was dispatched.
 func TestWebhookRoute_RequiresWebhookSecret(t *testing.T) {
-	const webhookSecret = "whsec-0123456789abcdef"
+	const webhookSecret = "whsec-0123456789abcdef0123456789abcdef"
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)

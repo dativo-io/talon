@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"text/template"
@@ -25,6 +26,14 @@ import (
 // Gateway request bound (internal/server maxActionBody) so one number governs
 // every externally fed JSON surface.
 const maxWebhookBody = 512 * 1024
+
+// minWebhookSecretBytes is the shortest bearer secret a webhook may bind
+// (#479). The route has no per-webhook rate limit, so the secret's length is
+// what makes online guessing infeasible: 32 bytes of the documented mint
+// (`openssl rand -hex 24` yields 48) is at least 128 bits even when the
+// value is hex. Length is the only strength property Talon can verify;
+// entropy is the operator's, which is why the docs prescribe the mint.
+const minWebhookSecretBytes = 32
 
 // SecretResolver reads one vault secret under the declaring agent's scope.
 // *secrets.SecretStore satisfies it; tests inject a map.
@@ -90,8 +99,8 @@ func (wh *WebhookHandler) Register(ctx context.Context, pol *policy.Policy) erro
 			return fmt.Errorf("webhook %q on agent %q: resolving secret_name %q from the vault: %w — mint it with `talon secrets set %s <value>` (the sender presents the value as `Authorization: Bearer`)", w.Name, pol.Agent.Name, w.SecretName, err, w.SecretName)
 		}
 		value := bytes.TrimSpace(secret.Value)
-		if len(value) == 0 {
-			return fmt.Errorf("webhook %q on agent %q: vault secret %q is empty", w.Name, pol.Agent.Name, w.SecretName)
+		if len(value) < minWebhookSecretBytes {
+			return fmt.Errorf("webhook %q on agent %q: vault secret %q is %d bytes; a webhook secret needs at least %d — mint it with `talon secrets set %s \"$(openssl rand -hex 24)\"`", w.Name, pol.Agent.Name, w.SecretName, len(value), minWebhookSecretBytes, w.SecretName)
 		}
 		wh.webhooks[w.Name] = webhookRoute{trigger: w, agent: pol.Agent.Name, secretHash: sha256.Sum256(value)}
 	}
@@ -154,14 +163,21 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 	}
 	trigger := route.trigger
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBody)
-	var payload interface{}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	// The whole body is read up to the bound and must be exactly one JSON
+	// value: a streaming Decode would stop at the first value, accept trailing
+	// data and never see an oversized tail (#521 review).
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBody))
+	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			writeWebhookJSON(w, http.StatusRequestEntityTooLarge, webhookResponse{Status: "error", Error: "payload_too_large", Message: fmt.Sprintf("webhook payloads are limited to %d bytes", maxWebhookBody)})
 			return
 		}
+		writeWebhookJSON(w, http.StatusBadRequest, webhookResponse{Status: "error", Error: "unreadable body"})
+		return
+	}
+	var payload interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		writeWebhookJSON(w, http.StatusBadRequest, webhookResponse{Status: "error", Error: "invalid JSON body"})
 		return
 	}
