@@ -17,6 +17,21 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.15.4] - 2026-11-04
+
+Trust-boundary release: webhook triggers now authenticate with their own vault-bound secret, and a release is verified from its published artifacts before anyone can download it. Both close P0 findings from the G1 review (#479, #507). **Breaking for webhook operators:** every webhook declares `secret_name` and the sender presents that secret as a bearer token — the migration is one vault entry per webhook:
+
+```yaml
+triggers:
+  webhooks:
+    - name: support-incoming             # POST /v1/triggers/support-incoming
+      source: zendesk
+      secret_name: support-incoming-webhook   # talon secrets set support-incoming-webhook "$(openssl rand -hex 24)"
+      prompt_template: "Summarize this ticket and suggest a reply: {{.payload.description}}"
+```
+
+The sender then sends `Authorization: Bearer <that value>`. `talon validate` and `talon doctor` (`triggers_serveable`) name every webhook that still needs this before `talon serve` refuses to start. This is also the first release cut by the rebuilt pipeline: `v1.15.4-rc.1` is its rehearsal pre-release (same commit, not for use), and the release notes of v1.15.0–v1.15.3 point here because their showcase manifests cannot drive the customer path.
+
 ### Fixed
 
 - **The OpenShell showcase customer path works from the published artifacts, and a release is verified before it is published (#507).** The release manifest (`talon-openshell-showcase_<version>_linux_amd64.manifest.json`) listed the four helper binaries but never `talon`, while the runner — with `TALON_SHOWCASE_RELEASE_MANIFEST` set, as the documented customer path requires — refuses any binary the manifest does not list. Every published manifest (v1.15.0–v1.15.3) therefore made the customer path refuse the release's own binary ("release manifest … has no entry for talon"), and nothing in CI exercised that path. The bundle job now reads the `talon` binary back from the archive GoReleaser uploaded, checks that it reports the release version, and writes its sha256 as `artifacts.talon.sha256` (release mode refuses to build a manifest without it). GoReleaser now creates the release as a **draft**; a new `release-verify` job downloads every asset from the draft, checks every digest, confirms the manifest entry against the released binary, runs the showcase customer path end to end from the published artifacts (no checkout, no Go, real OpenShell sandbox) and only then publishes the release and moves the Docker `latest`/`<major>.<minor>` image tags, then re-downloads the public assets without a token and compares them. A published release is never built, uploaded to or edited again (`scripts/release-guard.sh`); all release runs are serialized in one concurrency group so the movable image tags cannot be raced; the verify job also runs the released `talon:<version>` image before publication; a defective release is corrected by a new version. A run that fails after publication (alias promotion, anonymous re-download) is recovered by re-running the workflow in audit mode (`gh workflow run release.yml -f tag=<tag>`), which re-verifies the public assets and re-applies the movable image tags to the repository's latest release without touching any asset. Pipeline changes are rehearsed with a `-rc.1` pre-release tag before the production tag. **Who should care:** anyone running the showcase from a release rather than a checkout; maintainers cutting releases. **Verify:** `make test-openshell-showcase-contract` (manifest gate: listed binary passes, a manifest without `artifacts.talon` and a tampered binary are refused; the bundle builder and the customer path from an extracted bundle outside the checkout), `gh workflow run release.yml -f tag=<tag>` (re-verifies a published release in audit mode). **Upgrade impact:** the customer path requires v1.15.4 or later; the v1.15.0–v1.15.3 assets are left as published and their release notes point here. Local bundles: `make showcase-bundle` now builds `bin/talon` and lists it; `scripts/build-showcase-bundle.sh` takes the talon binary as its 4th argument. Residuals: the version-tagged Docker images are pushed by GoReleaser before verification (only the movable tags are gated; the manifest pins the agent image by version tag, not digest); the manifest itself is checksummed but not signed (#464); enabling GitHub immutable releases on the repository is a settings change, not a workflow change.
@@ -901,6 +916,7 @@ Fleet Operations v1 (#265 milestone): discover, inspect, stop, and safely reconf
 - Data residency: tier-based EU model routing.
 
 [Unreleased]: https://github.com/dativo-io/talon/compare/v1.15.2...HEAD
+[1.15.4]: https://github.com/dativo-io/talon/compare/v1.15.3...v1.15.4
 [1.15.3]: https://github.com/dativo-io/talon/compare/v1.15.2...v1.15.3
 [1.15.2]: https://github.com/dativo-io/talon/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/dativo-io/talon/compare/v1.15.0...v1.15.1
