@@ -115,7 +115,9 @@ gh workflow run release.yml -f tag=vX.Y.Z
 `.goreleaser.yml` or the bundle script is exercised first by tagging `vX.Y.Z-rc.1`: the
 same draft → verify → publish path runs for real, GoReleaser marks it a pre-release,
 `releases/latest`, `install.sh` and the movable Docker tags ignore it, and a failure leaves
-a draft. Only then tag `vX.Y.Z`.
+a draft. Only then tag `vX.Y.Z` on the same commit: GoReleaser is told the tag it builds and
+the tag the release notes start after (the latest published release) explicitly, so the rc and
+the final release both carry the full notes instead of the empty `rc.1..vX.Y.Z` range.
 
 After the workflow has published the release:
 
