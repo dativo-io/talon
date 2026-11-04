@@ -33,12 +33,16 @@ permissions:
   contents: write
   packages: write
 
-# One run per tag at a time (#522 review): a re-run or an audit dispatch for
-# the same tag queues behind the active run instead of racing it over the
-# draft's assets or the publish step. Never cancel — a run that is past
-# "Publish the release" must finish its promotion.
+# One release run at a time, across ALL tags (#522 review): the movable
+# Docker tags follow `releases/latest`, a check-then-act that two runs for
+# different versions (or an audit of an old tag during a new release) could
+# interleave. One group serializes publication and promotion entirely. Never
+# cancel — a run that is past "Publish the release" must finish. GitHub keeps
+# at most one pending run per group and cancels an older pending one, so a
+# run that was queued behind two others must be re-run (it is safe: nothing
+# it would have done has happened).
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release
   cancel-in-progress: false
 
 env:
@@ -287,6 +291,15 @@ jobs:
           set -euo pipefail
           test -f "$RUNNER_TEMP/showcase-validate.log"
           grep -q '^PASS validate:' "$RUNNER_TEMP/showcase-validate.log"
+      # The image customers pull is the artifact, not the Dockerfile: the
+      # version-tagged image goreleaser pushed must run and report this
+      # version before `latest` may ever point at it.
+      - name: Run the released Docker image
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          docker pull "ghcr.io/dativo-io/talon:${VERSION}"
+          [ "$(docker run --rm "ghcr.io/dativo-io/talon:${VERSION}" version | head -n1)" = "Talon $VERSION" ]
       # Publication is the point of no return: everything that can be verified
       # has been. The two steps after it (alias promotion, anonymous
       # re-download) never touch release assets, are idempotent, and are
@@ -351,6 +364,7 @@ jobs:
           done
           echo "public assets match the verified draft assets"
       - name: Collect sanitized logs
+        id: collect
         if: always()
         run: |
           set -euo pipefail
@@ -370,8 +384,11 @@ jobs:
             echo "artifact hygiene violation: secret-shaped material in collected logs; nothing uploaded" >&2
             exit 1
           fi
+      # Uploads only what the collect step finished checking: a collect step
+      # that failed for ANY reason (hygiene violation, or an error before the
+      # check ran) leaves nothing uploaded.
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: ${{ always() && steps.collect.outcome == 'success' }}
         with:
           name: release-verify-${{ env.RELEASE_TAG }}
           path: artifacts
