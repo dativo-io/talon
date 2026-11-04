@@ -315,10 +315,17 @@ jobs:
           bash scripts/release-guard.sh "$RELEASE_TAG"
           gh release edit "$RELEASE_TAG" --draft=false
           gh release view "$RELEASE_TAG" --json isDraft,url -q '"published: \(.url) draft=\(.isDraft)"'
-      # The movable tags follow the repository's LATEST release only: a patch
-      # for an older series, a pre-release, or an audit of an old tag never
-      # moves them. `imagetools create` re-points tags at the already pushed
-      # version image; nothing is rebuilt or re-pushed.
+      # The movable tags follow the repository's LATEST release. Publishing the
+      # draft marks it GitHub's latest (`make_latest` defaults to true), so on
+      # Talon's single ascending release line the newest published version
+      # owns `latest` and its `<major>.<minor>` — exactly what GoReleaser's
+      # unconditional tag push did before #507. The gate matters for what is
+      # never latest: a pre-release, or an audit of an older tag, which must
+      # not move `latest` back. A patch for an OLDER series is not a supported
+      # release path (fix forward, no maintenance branches): GitHub would mark
+      # it latest as well, and `releases/latest`, install.sh and these tags
+      # would all follow it. `imagetools create` re-points tags at the already
+      # pushed version image; nothing is rebuilt or re-pushed.
       - name: Move the Docker latest and major.minor tags to the latest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -338,7 +345,7 @@ jobs:
             sleep 10
           done
           if [ "$LATEST" != "$RELEASE_TAG" ]; then
-            echo "::warning::$RELEASE_TAG is not the repository's latest release ($LATEST); latest and major.minor tags stay where they are. If this is unexpected, re-run: gh workflow run release.yml -f tag=$RELEASE_TAG"
+            echo "::warning::$RELEASE_TAG is not the repository's latest release ($LATEST); latest and major.minor tags stay where they are (expected for an audit of an older tag). For a release that was just published, re-run: gh workflow run release.yml -f tag=$RELEASE_TAG"
             exit 0
           fi
           MAJOR_MINOR="${VERSION%.*}"
