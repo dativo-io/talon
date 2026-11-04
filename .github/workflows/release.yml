@@ -106,14 +106,30 @@ jobs:
       # (mattn/go-sqlite3) cross-compilation via osxcross has been unreliable
       # (#326) — they come from the native macOS job below (#359). The movable
       # image tags are applied by release-verify after publication.
+      #
+      # goreleaser is told which tag it builds and which tag the release notes
+      # start after, instead of inferring both from git: a rehearsal tag
+      # (vX.Y.Z-rc.1) and the production tag share one commit, and inferred,
+      # the production notes would cover only rc.1..vX.Y.Z — nothing. The
+      # previous tag is the latest PUBLISHED release (`releases/latest`
+      # excludes drafts and pre-releases), so the rc and the final release
+      # both list every change since the last production release.
       - name: Run GoReleaser (linux + docker, draft release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
+          PREVIOUS_TAG="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          echo "current tag: $RELEASE_TAG; release notes since: ${PREVIOUS_TAG:-<none: first release>}"
           docker run --rm --privileged \
             -v "$PWD:/work" -w /work \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$HOME/.docker:/root/.docker" \
             -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
             -e CGO_ENABLED=1 \
+            -e GORELEASER_CURRENT_TAG="$RELEASE_TAG" \
+            -e GORELEASER_PREVIOUS_TAG="$PREVIOUS_TAG" \
             ghcr.io/goreleaser/goreleaser-cross:v1.26.10 \
             release --clean
 
