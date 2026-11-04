@@ -93,7 +93,23 @@ sandbox) and only then publishes the release and moves the Docker `latest` and
 `<major>.<minor>` tags. A failed verification leaves a draft: fix forward and cut the next
 version. A published release is never modified (`scripts/release-guard.sh` refuses to build
 or upload against one; enable **immutable releases** in the repository settings so GitHub
-enforces the same and attaches attestations).
+enforces the same and attaches attestations). Runs for the same tag are serialized by a
+concurrency group, so a re-run or an audit never races the active run.
+
+**If the run fails after "Publish the release"** (alias promotion or the anonymous
+re-download), the release is public and correct; nothing needs rewriting. Re-run the
+verification in audit mode — it re-checks every published asset and re-applies the Docker
+`latest` / `<major>.<minor>` tags when the tag is the repository's latest release:
+
+```bash
+gh workflow run release.yml -f tag=vX.Y.Z
+```
+
+**Rehearse pipeline changes with a pre-release.** Any change to `release.yml`,
+`.goreleaser.yml` or the bundle script is exercised first by tagging `vX.Y.Z-rc.1`: the
+same draft → verify → publish path runs for real, GoReleaser marks it a pre-release,
+`releases/latest`, `install.sh` and the movable Docker tags ignore it, and a failure leaves
+a draft. Only then tag `vX.Y.Z`.
 
 After the workflow has published the release:
 

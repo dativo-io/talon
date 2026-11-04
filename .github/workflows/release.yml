@@ -12,9 +12,12 @@ name: Release
 # immutable releases enabled on the repository, publication also locks the
 # assets and attaches provenance attestations.
 #
-# workflow_dispatch with `tag` re-runs ONLY the verification against an
-# already published release (audit mode: nothing is uploaded, published or
-# retagged) — the same checks a customer can run, from the public assets.
+# workflow_dispatch with `tag` re-runs the verification against an already
+# published release (audit mode): nothing is uploaded or published; the only
+# write it may perform is re-applying the movable Docker tags to that release
+# when it is the repository's latest — the recovery for a run that failed
+# AFTER publication (alias promotion or the anonymous re-download). Published
+# assets are never rewritten on any path.
 
 on:
   push:
@@ -29,6 +32,14 @@ on:
 permissions:
   contents: write
   packages: write
+
+# One run per tag at a time (#522 review): a re-run or an audit dispatch for
+# the same tag queues behind the active run instead of racing it over the
+# draft's assets or the publish step. Never cancel — a run that is past
+# "Publish the release" must finish its promotion.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -67,6 +78,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # A re-run of a failed run finds the previous attempt's DRAFT. GitHub's
+      # "release by tag" lookup does not return drafts, so rather than rely on
+      # goreleaser finding and reusing it, start from exactly zero drafts for
+      # this tag: deleting an unpublished draft rewrites nothing anyone could
+      # have downloaded, and the guard above refuses if the tag is published.
+      - name: Remove a stale draft of this tag (re-run only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-guard.sh "$RELEASE_TAG"
+          ids="$(gh api "repos/$GH_REPO/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and .draft == true) | .id")"
+          for id in $ids; do
+            echo "deleting stale draft release $id for $RELEASE_TAG"
+            gh api -X DELETE "repos/$GH_REPO/releases/$id"
+          done
+
       # goreleaser (via goreleaser-cross image) builds the linux/amd64 archive,
       # pushes the VERSION-tagged Docker images and creates the DRAFT release
       # with release notes. Darwin archives are NOT built here — CGO
@@ -76,9 +105,9 @@ jobs:
       - name: Run GoReleaser (linux + docker, draft release)
         run: |
           docker run --rm --privileged \
-            -v $PWD:/work -w /work \
+            -v "$PWD:/work" -w /work \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v $HOME/.docker:/root/.docker \
+            -v "$HOME/.docker:/root/.docker" \
             -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
             -e CGO_ENABLED=1 \
             ghcr.io/goreleaser/goreleaser-cross:v1.26.10 \
@@ -188,7 +217,8 @@ jobs:
   # entry, and the showcase customer path end to end (bundle + manifest +
   # released talon, no checkout, real OpenShell sandbox) — before the release
   # is published. In audit mode (workflow_dispatch) the same checks run
-  # against a published release and nothing is changed.
+  # against a published release; nothing is uploaded or published, and the
+  # only write is re-pointing the movable image tags at the latest release.
   release-verify:
     name: Verify from the release, then publish
     needs: [release-showcase-bundle, release-darwin]
@@ -257,6 +287,11 @@ jobs:
           set -euo pipefail
           test -f "$RUNNER_TEMP/showcase-validate.log"
           grep -q '^PASS validate:' "$RUNNER_TEMP/showcase-validate.log"
+      # Publication is the point of no return: everything that can be verified
+      # has been. The two steps after it (alias promotion, anonymous
+      # re-download) never touch release assets, are idempotent, and are
+      # re-runnable in audit mode (`gh workflow run release.yml -f tag=<tag>`),
+      # which is the recovery when either fails after a successful publish.
       - name: Publish the release
         if: github.event_name == 'push'
         env:
@@ -267,20 +302,41 @@ jobs:
           bash scripts/release-guard.sh "$RELEASE_TAG"
           gh release edit "$RELEASE_TAG" --draft=false
           gh release view "$RELEASE_TAG" --json isDraft,url -q '"published: \(.url) draft=\(.isDraft)"'
-      - name: Move the Docker latest and major.minor tags
-        if: github.event_name == 'push'
+      # The movable tags follow the repository's LATEST release only: a patch
+      # for an older series, a pre-release, or an audit of an old tag never
+      # moves them. `imagetools create` re-points tags at the already pushed
+      # version image; nothing is rebuilt or re-pushed.
+      - name: Move the Docker latest and major.minor tags to the latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
           case "$VERSION" in
             *-*) echo "pre-release $VERSION: latest and major.minor tags are not moved"; exit 0 ;;
           esac
+          # `releases/latest` excludes drafts and pre-releases; give the API a
+          # moment to reflect the publication that just happened.
+          LATEST=""
+          for _ in 1 2 3 4 5 6; do
+            LATEST="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name || true)"
+            [ "$LATEST" = "$RELEASE_TAG" ] && break
+            sleep 10
+          done
+          if [ "$LATEST" != "$RELEASE_TAG" ]; then
+            echo "::warning::$RELEASE_TAG is not the repository's latest release ($LATEST); latest and major.minor tags stay where they are. If this is unexpected, re-run: gh workflow run release.yml -f tag=$RELEASE_TAG"
+            exit 0
+          fi
           MAJOR_MINOR="${VERSION%.*}"
           docker buildx imagetools create \
             -t "ghcr.io/dativo-io/talon:latest" \
             -t "ghcr.io/dativo-io/talon:${MAJOR_MINOR}" \
             "ghcr.io/dativo-io/talon:${VERSION}"
           docker buildx imagetools inspect "ghcr.io/dativo-io/talon:latest" | head -n 5
+      # Detection, not repair: a mismatch between the public bytes and the
+      # bytes verified above is an incident (GitHub served something else),
+      # and with immutable releases it cannot be fixed by re-uploading.
       - name: Re-verify what the public downloads (no token)
         run: |
           set -euo pipefail
@@ -290,7 +346,7 @@ jobs:
           for f in checksums.txt "talon_${VERSION}_linux_amd64.tar.gz" \
                    "talon-openshell-showcase_${VERSION}_linux_amd64.tar.gz" \
                    "talon-openshell-showcase_${VERSION}_linux_amd64.manifest.json"; do
-            curl -fsSL --retry 5 --retry-delay 5 -o "$f" "$BASE/$f"
+            curl -fsSL --retry 10 --retry-all-errors --retry-delay 6 -o "$f" "$BASE/$f"
             cmp "$f" "$RUNNER_TEMP/assets/$f"
           done
           echo "public assets match the verified draft assets"
@@ -306,8 +362,12 @@ jobs:
             mkdir -p "$dest"
             find "$d/logs" -maxdepth 1 -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.txt' \) -exec cp {} "$dest/" \;
           done
+          # Quarantine before the upload step runs (it runs `if: always()`):
+          # a directory that failed the hygiene check must not exist to be
+          # uploaded (#522 review).
           if grep -rqE 'PRIVATE KEY-----|Bearer ey|sk-openshell-injected-|talon_appr_cred_' artifacts; then
-            echo "artifact hygiene violation: secret-shaped material in collected logs" >&2
+            rm -rf artifacts
+            echo "artifact hygiene violation: secret-shaped material in collected logs; nothing uploaded" >&2
             exit 1
           fi
       - uses: actions/upload-artifact@v4
