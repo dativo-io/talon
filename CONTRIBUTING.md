@@ -90,8 +90,11 @@ draft, and `release-verify` downloads every asset from the draft, checks every d
 confirms the manifest's `artifacts.talon.sha256` is the digest of the released binary, runs
 the showcase **customer path** from the published artifacts (no checkout, real OpenShell
 sandbox) and only then publishes the release and moves the Docker `latest` and
-`<major>.<minor>` tags. A failed verification leaves a draft: fix forward and cut the next
-version. A published release is never modified (`scripts/release-guard.sh` refuses to build
+`<major>.<minor>` tags. Talon releases form one ascending line (fix forward, no maintenance
+branches): publishing marks the release GitHub's latest, so `releases/latest`, `install.sh`
+and both movable tags always follow the newest published version. Tagging a version lower
+than the current latest is not a supported path — it would become latest everywhere. A
+failed verification leaves a draft: fix forward and cut the next version. A published release is never modified (`scripts/release-guard.sh` refuses to build
 or upload against one; enable **immutable releases** in the repository settings so GitHub
 enforces the same and attaches attestations). All release runs share one concurrency group,
 so two versions, or an audit and a release, never race over `releases/latest` and the movable
