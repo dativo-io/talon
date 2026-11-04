@@ -127,9 +127,12 @@ Trust-boundary crossings (each is a point where data changes trust domain):
 - Trigger runs execute through the native runner under the agent's own policy, outside
   `gateway.organization_policy`. A gateway serve therefore refuses to start with any trigger
   declared; trigger-driven agents belong in a native-only serve.
+- Secrets shorter than 32 bytes are refused at startup; Talon cannot measure entropy, so
+  the documented mint (`openssl rand -hex 24`) is the control against guessable secrets.
+  Failed attempts are logged (`webhook_unauthorized`, with the remote address) for alerting.
 - Not provided: provider body signatures (GitHub, Slack), replay protection, per-webhook
-  rate limiting. A leaked webhook secret authorizes runs of that one agent until the secret
-  is rotated (`talon secrets set` + restart).
+  rate limiting or lockout. A leaked webhook secret authorizes runs of that one agent until
+  the secret is rotated (`talon secrets set` + restart).
 
 ## 4. STRIDE threats and mitigations
 

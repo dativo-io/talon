@@ -53,7 +53,7 @@ const (
 	whAgent      = "support-triage"
 	whName       = "support-incoming"
 	whSecretName = "support-incoming-webhook"
-	whSecret     = "whsec-e2e-4f3b2a1c9d8e7f60"
+	whSecret     = "whsec-e2e-4f3b2a1c9d8e7f60-1a2b3c4d5e6f7a8b"
 	whAdminKey   = "admin-e2e-webhook-key"
 )
 
@@ -198,15 +198,27 @@ func TestE2E_WebhookTrigger_RequiresSecret(t *testing.T) {
 	}
 	assertNothingDispatched(t, "denied webhooks", provider, dbPath, base)
 
-	// Oversized payload from an authorized sender: refused before parsing, no run.
-	big := []byte(`{"description":"` + strings.Repeat("x", 600*1024) + `"}`)
-	status, body := webhookPost(t, base, big, func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+whSecret) })
-	if status != http.StatusRequestEntityTooLarge {
-		t.Fatalf("oversized payload: want 413, got %d %s", status, body)
+	// Oversized payloads from an authorized sender: refused before parsing,
+	// no run — whether the size is inside the JSON value or in a tail after a
+	// small valid value (#521 review). Trailing data after a valid value is
+	// 400 for the same reason: the body is one JSON value, whole.
+	authed := func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+whSecret) }
+	for name, big := range map[string][]byte{
+		"oversized value": []byte(`{"description":"` + strings.Repeat("x", 600*1024) + `"}`),
+		"oversized tail":  append([]byte(`{"description":"ok"}`), bytes.Repeat([]byte(" "), 600*1024)...),
+	} {
+		status, body := webhookPost(t, base, big, authed)
+		if status != http.StatusRequestEntityTooLarge {
+			t.Fatalf("%s: want 413, got %d %s", name, status, body)
+		}
 	}
-	assertNothingDispatched(t, "oversized payload", provider, dbPath, base)
+	status, body := webhookPost(t, base, []byte(`{"description":"ok"} {"description":"again"}`), authed)
+	if status != http.StatusBadRequest {
+		t.Fatalf("trailing JSON value: want 400, got %d %s", status, body)
+	}
+	assertNothingDispatched(t, "malformed authorized payloads", provider, dbPath, base)
 
-	status, body = webhookPost(t, base, ticketPayload, func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+whSecret) })
+	status, body = webhookPost(t, base, ticketPayload, authed)
 	if status != http.StatusOK {
 		logs, _ := os.ReadFile(filepath.Join(dir, "serve.log"))
 		t.Fatalf("authorized webhook: want 200, got %d %s\nserve log:\n%s", status, body, logs)

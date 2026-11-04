@@ -35,7 +35,7 @@ func (m *mapSecrets) Get(_ context.Context, name, tenantID, agentID string) (*se
 	return &secrets.Secret{Name: name, Value: []byte(v)}, nil
 }
 
-const testWebhookSecret = "whsec-5f1c0e3d-test"
+const testWebhookSecret = "whsec-5f1c0e3d-test-7a9b2c4d6e8f0a1b3c5d"
 
 func testSecrets() *mapSecrets {
 	return &mapSecrets{values: map[string]string{"deploy-webhook": testWebhookSecret, "ticket-webhook": "other-" + testWebhookSecret}}
@@ -227,11 +227,16 @@ func TestWebhookHandler_RegisterFailsClosed(t *testing.T) {
 		assert.Contains(t, err.Error(), "talon secrets set unminted")
 	})
 
-	t.Run("empty vault value", func(t *testing.T) {
-		handler := NewWebhookHandler(&mockRunner{}, &mapSecrets{values: map[string]string{"blank": "  \n"}})
-		err := handler.Register(ctx, webhookPolicy("bot", policy.WebhookTrigger{Name: "deploy", Source: "generic", SecretName: "blank", PromptTemplate: "x"}))
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "is empty")
+	t.Run("empty or short vault value", func(t *testing.T) {
+		for name, v := range map[string]string{"blank": "  \n", "short": "hunter2", "thirty-one": strings.Repeat("a", 31)} {
+			handler := NewWebhookHandler(&mockRunner{}, &mapSecrets{values: map[string]string{name: v}})
+			err := handler.Register(ctx, webhookPolicy("bot", policy.WebhookTrigger{Name: "deploy", Source: "generic", SecretName: name, PromptTemplate: "x"}))
+			require.Error(t, err, name)
+			assert.Contains(t, err.Error(), "needs at least 32")
+			assert.Contains(t, err.Error(), "openssl rand -hex 24")
+		}
+		handler := NewWebhookHandler(&mockRunner{}, &mapSecrets{values: map[string]string{"exact": strings.Repeat("a", 32)}})
+		require.NoError(t, handler.Register(ctx, webhookPolicy("bot", policy.WebhookTrigger{Name: "deploy", Source: "generic", SecretName: "exact", PromptTemplate: "x"})), "32 bytes is the floor")
 	})
 
 	t.Run("no secret store", func(t *testing.T) {
@@ -326,3 +331,29 @@ func TestSanitizePayload_OnlyAllowsJSONLikeTypes(t *testing.T) {
 
 // mockRunner is defined in scheduler_test.go; AgentRunner is satisfied there.
 var _ AgentRunner = (*mockRunner)(nil)
+
+// TestHandleWebhook_WholeBodyIsTheMessage (#521 review): the body is ONE
+// JSON value and nothing else. A valid value followed by trailing data is
+// 400, and — because the whole body is read up to the bound before parsing —
+// a small valid prefix followed by an oversized tail is 413 rather than a
+// run. Both are authenticated requests; neither reaches the runner.
+func TestHandleWebhook_WholeBodyIsTheMessage(t *testing.T) {
+	runner := &mockRunner{}
+	handler := NewWebhookHandler(runner, testSecrets())
+	require.NoError(t, handler.Register(context.Background(), webhookPolicy("deploy-bot",
+		policy.WebhookTrigger{Name: "deploy", Source: "github", SecretName: "deploy-webhook", PromptTemplate: "{{.payload.k}}"})))
+	router := webhookRouter(handler)
+
+	t.Run("trailing data after the JSON value", func(t *testing.T) {
+		w := postWebhook(router, "deploy", testWebhookSecret, []byte(`{"k":"v"} {"k":"second"}`))
+		assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+		w = postWebhook(router, "deploy", testWebhookSecret, []byte(`{"k":"v"}garbage`))
+		assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	})
+	t.Run("small valid prefix, oversized tail", func(t *testing.T) {
+		body := append([]byte(`{"k":"v"}`), bytes.Repeat([]byte(" "), maxWebhookBody)...)
+		w := postWebhook(router, "deploy", testWebhookSecret, body)
+		assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code, w.Body.String())
+	})
+	assert.Empty(t, runner.calls, "neither malformed body may start a run")
+}
