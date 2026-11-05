@@ -101,6 +101,7 @@ func (s *Service) lifecycleRecord(op *Operation, ev *evidence.ActionLifecycle, a
 	ev.DefinitionDigest, ev.ProjectionDigest = op.DefinitionDigest, op.ProjectionDigest
 	ev.BindingProfile, ev.ExecutionProfile, ev.DestinationID = op.BindingProfile, op.ExecutionProfile, op.DestinationID
 	ev.IdentitySource, ev.Verdict, ev.MatchedRuleID, ev.OperationStatus = op.IdentitySource, op.Verdict, op.RuleID, op.Status
+	ev.MatchedRuleSource = RuleSource(op.RuleID)
 	decision := explanation.DecisionAllow
 	if !allowed {
 		decision = explanation.DecisionDeny
@@ -466,6 +467,14 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (*Projection, e
 		}
 		if ap.Status == ApprovalPending && !s.definitionCurrent(op) {
 			return s.closeApproval(ctx, tx, w, op, ap, ApprovalInvalidated, CodeApprovalBindingStale, "the trusted action definition (schema/projection/destination/success contract) changed since the subject was bound; the pending approval is invalidated — establish a new operation", "ACTION_APPROVAL_INVALIDATED", now)
+		}
+		// The approval-relevant policy is revalidated exactly as the trusted
+		// definition is (#425/#426): a reviewer decision under a materially
+		// different policy (company or use case — groups, forbidden actions,
+		// lifetime) is never reinterpreted under the new rule; the obsolete
+		// pending authorization is invalidated and a new cycle is required.
+		if ap.Status == ApprovalPending && s.Policy.Digest != op.PolicyDigest {
+			return s.closeApproval(ctx, tx, w, op, ap, ApprovalInvalidated, CodeApprovalBindingStale, "the approval-relevant policy changed since the subject was bound (current policy "+shortDigest(s.Policy.Digest)+", bound "+shortDigest(op.PolicyDigest)+"); the pending approval is invalidated — establish a new operation under the current policy", "ACTION_APPROVAL_INVALIDATED", now)
 		}
 		if ap.Status != ApprovalPending {
 			proj, _ := s.project(ctx, tx, op)
@@ -904,7 +913,7 @@ func (s *Service) claimBlocker(op *Operation) (code, msg string) {
 		case CodeApprovalExpired:
 			return CodeApprovalExpired, "approval expired"
 		case CodeApprovalBindingStale:
-			return CodeApprovalBindingStale, "the pending approval was invalidated by a trusted-definition change"
+			return CodeApprovalBindingStale, "the pending approval was invalidated by a trusted-definition or policy change"
 		}
 		return CodeApprovalRejected, "the reviewer rejected this operation"
 	}
@@ -954,6 +963,14 @@ func (s *Service) RecoverInterrupted(ctx context.Context) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// shortDigest abbreviates a digest for messages (never for identity).
+func shortDigest(d string) string {
+	if len(d) > 12 {
+		return d[:12]
+	}
+	return d
 }
 
 func approvalStatus(ap *Approval) string {

@@ -236,10 +236,17 @@ func TestE2E_ActionGateway_ACME_CompanyPolicy(t *testing.T) {
 
 	// 11. Independent verification of every operation's evidence.
 	stop()
-	for _, opID := range []string{"op-del-support", "op-del-billing", "op-refund-1", "op-refund-2", "op-refund-3", "op-inv-1", "op-notify-1"} {
+	// Closed operations verify VALID; the still-open ones (op-inv-1 and
+	// op-refund-3 await a decision, op-notify-1 was never claimed) are
+	// consistent but not terminal: INCOMPLETE.
+	for opID, want := range map[string]string{
+		"op-del-support": "Lifecycle: VALID", "op-del-billing": "Lifecycle: VALID", "op-refund-1": "Lifecycle: VALID",
+		"op-refund-2": "Lifecycle: VALID", "op-notify-1": "Lifecycle: INCOMPLETE", // ALLOW, never claimed
+		"op-inv-1": "Lifecycle: INCOMPLETE", "op-refund-3": "Lifecycle: INCOMPLETE",
+	} {
 		out, stderr, code := RunTalon(t, dir, nil, "audit", "verify", "--operation", opID)
-		if code != 0 || !strings.Contains(out, "Lifecycle: VALID") {
-			t.Fatalf("verify %s: code=%d\n%s\n%s", opID, code, out, stderr)
+		if code != 0 || !strings.Contains(out, want) {
+			t.Fatalf("verify %s: code=%d want %q\n%s\n%s", opID, code, want, out, stderr)
 		}
 	}
 	out, _, _ = RunTalon(t, dir, nil, "audit", "verify", "--operation", "op-refund-1")
