@@ -17,6 +17,22 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+### Added
+
+- **One company action policy governs the actions of every AI use case, and obsolete approvals can no longer be committed (#425, #426, #428, #429).** The operator-owned `gateway.organization_policy.constraints` block now carries the company action policy — `forbidden_tools` is a company DENY for catalogued actions and the new `action_approvals.rules` are company approval requirements (`actions` + `approver_groups`, the vocabulary of `policies.approvals.rules`) — and ONE compiler (`action.CompileEffectiveActionPolicy`) composes it with each use case's own rules into one immutable effective policy: `DENY > REQUIRE_APPROVAL > ALLOW`, a use case may add restrictions but never weaken a company one, overlapping approval rules with different approver groups are a configuration error (never a silent pick by rule-id order), every rule and verdict carries its provenance (`company:<rule>` ids, `matched_rule_source` in projections and signed evidence, `source` / `verdict_source` in `talon actions`), and the policy digest covers both layers (byte-identical to before when no company policy is configured). The company policy is authoritative for direct Action Gateway traffic on both serving modes (`serve --gateway` from its gateway config; native-only `serve` from `TALON_GATEWAY_CONFIG` / `talon.config.yaml` when present — a present but invalid file is a startup error, never "no policy"), is loaded once and frozen into every runtime generation (the generation id folds in its digest; agent-file reloads keep the snapshot; a restart activates a change). A reviewer decision now revalidates the approval-relevant policy exactly as it revalidates the trusted definition: a pending approval whose policy changed since establishment is refused (`409 approval_binding_stale`) and moved to `invalidated` with signed evidence instead of being committed under the new rule. The Action Gateway body decoder bounds the whole request (`413` over 512 KiB), accepts exactly one JSON value and refuses trailing material (a stray `}` after a valid document was accepted before). **Who should care:** operators who must apply one corporate approval rule to several AI use cases; anyone with pending approvals across a policy change. **Verify:** `scripts/action-smoke.sh` (runs `TestE2E_ActionGateway_ACME_CompanyPolicy` against the built binary: two use cases, company DENY and approval, reviewer matrix, one dispatch, restart under a changed company rule, `talon audit verify`), `go test ./internal/action ./internal/agentcatalog ./internal/server -run TestACME`. **Upgrade impact:** additive; a deployment whose organization policy already lists `forbidden_tools` now denies those names as catalogued actions too and its approval-relevant policy digest changes (pending approvals are invalidated once, as documented); an agent file whose approval rules overlap with different groups is now refused at validate/startup. Snippet:
+
+  ```yaml
+  gateway:
+    organization_policy:
+      constraints:
+        forbidden_tools: [delete_customer]
+        action_approvals:
+          rules:
+            refund_authorization:
+              actions: [create_refund_request]
+              approver_groups: [finance_leads]
+  ```
+
 ## [1.15.4] - 2026-11-04
 
 Trust-boundary release: webhook triggers now authenticate with their own vault-bound secret, and a release is verified from its published artifacts before anyone can download it. Both close P0 findings from the G1 review (#479, #507). **Breaking for webhook operators:** every webhook declares `secret_name` and the sender presents that secret as a bearer token — the migration is one vault entry per webhook:
