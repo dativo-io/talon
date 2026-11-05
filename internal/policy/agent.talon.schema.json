@@ -84,7 +84,7 @@
         "allowed_data_sources": {"type": "array", "items": {"type": "string"}},
         "forbidden_patterns": {"type": "array", "items": {"type": "string"}},
         "destructive_patterns": {"type": "array", "items": {"type": "string"}},
-        "forbidden_tools": {"type": "array", "items": {"type": "string"}, "description": "Tool NAMES denied for this agent's gateway traffic (unioned with the organization baseline and provider restrictions)."},
+        "forbidden_tools": {"type": "array", "items": {"type": "string"}, "description": "Tool names denied for this agent's gateway traffic (unioned with the organization baseline and provider restrictions) and the use case's DENY for its catalogued actions (#425). Glob patterns (*, delete_*; case-insensitive); a malformed glob is a load error."},
         "tool_policy_action": {"type": "string", "enum": ["filter", "block"], "description": "Gateway enforcement when a request declares disallowed tools: filter strips them, block rejects the request."}
       }
     },

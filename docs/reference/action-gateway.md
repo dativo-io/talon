@@ -22,7 +22,7 @@ Every action needs a **closed** object schema (`additionalProperties: false`) so
 
 ```yaml
 capabilities:
-  forbidden_tools: [delete_customer]        # DENY source for actions and gateway tools
+  forbidden_tools: [delete_customer]        # DENY source for actions and gateway tools; glob vocabulary ("*", "delete_*", case-insensitive)
 
 actions:
   definitions:
@@ -75,7 +75,7 @@ gateway:
             approver_groups: [finance_leads]       # tenant-scoped approver principals' groups
 ```
 
-**Composition** (`action.CompileEffectiveActionPolicy`, the one compiler every surface uses — serve on both serving modes, `talon validate`, `talon actions`): the company's `forbidden_tools` and `action_approvals.rules` are compiled first, then the use case's `capabilities.forbidden_tools` and `policies.approvals.rules`. The effective verdict is `DENY > REQUIRE_APPROVAL > ALLOW`. A use case **may add** a DENY or an approval requirement the company does not have; it **can never weaken** a company restriction: a company DENY stands whatever the agent file says, and a use-case rule that matches an action a company rule matches must name the **same** approver groups — different groups are an ambiguous authorization requirement and the configuration is refused at load (`talon validate`, `talon serve` startup), never resolved by rule-id order. The same refusal applies to two overlapping rules of one layer. A catalogued action no rule matches stays `ALLOW`; nothing is invented.
+**Composition** (`action.CompileEffectiveActionPolicy`, the one compiler every surface uses — serve on both serving modes, `talon validate`, `talon actions`): the company's `forbidden_tools` and `action_approvals.rules` are compiled first, then the use case's `capabilities.forbidden_tools` and `policies.approvals.rules`. The effective verdict is `DENY > REQUIRE_APPROVAL > ALLOW`. A use case **may add** a DENY or an approval requirement the company does not have; it **can never weaken** a company restriction: a company DENY stands whatever the agent file says, and a use-case rule that matches an action a company rule matches must name the **same** approver groups — different groups are an ambiguous authorization requirement and the configuration is refused at load (`talon validate`, `talon serve` startup), never resolved by rule-id order. The same refusal applies to two overlapping rules of one layer. A catalogued action no rule matches stays `ALLOW`; nothing is invented. The company policy declares no approval lifetime: the use case's `policies.approvals.expires_after` (default 1h, at most 30d) bounds every approval the effective policy requires, company rules included, and is part of the policy digest.
 
 **Provenance.** Every compiled rule and every verdict names its layer: company rules carry the id `company:<rule>`, a DENY carries the typed id `company:forbidden_tools` or `use_case:forbidden_tools`, and operator-chosen rule ids follow `[a-z0-9][a-z0-9_-]{0,63}` in both layers so neither namespace can be claimed by a rule — the provenance derived from a persisted rule id is authoritative (`matched_rule_id` in projections and `matched_rule_id` / `matched_rule_source: company | use_case` in every lifecycle record); `talon actions list/show` print each rule's `source` and the `verdict_source`. The approval-relevant policy digest (`policy_digest`) covers the material rules of **both** layers; without a company policy it is byte-identical to the pre-#425 digest.
 
