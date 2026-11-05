@@ -27,6 +27,12 @@ type BundleDeps struct {
 	// catalogs compile with or without it; an agent that configures MCP
 	// sources fails closed when it is nil.
 	Sources SourceDiscoverer
+	// CompanyPolicy is the operator-owned company action policy (#425)
+	// loaded ONCE at process start from the gateway config; every bundle's
+	// effective action policy is compiled over it, and reloads keep this
+	// frozen snapshot — a changed company policy activates at restart. nil =
+	// no company action policy configured.
+	CompanyPolicy *action.CompanyActionPolicy
 }
 
 // SourceDiscoverer produces the credential-free snapshots of every trusted
@@ -111,9 +117,9 @@ func buildActionCatalog(ctx context.Context, ca CatalogAgent, deps BundleDeps, r
 	if err != nil {
 		return fmt.Errorf("agent %q (%s): action catalog: %w", ca.Name, ca.Path, err)
 	}
-	ap, err := action.CompileApprovalPolicy(ca.Policy)
+	ap, err := action.CompileEffectiveActionPolicy(ca.Policy, deps.CompanyPolicy)
 	if err != nil {
-		return fmt.Errorf("agent %q (%s): action approval policy: %w", ca.Name, ca.Path, err)
+		return fmt.Errorf("agent %q (%s): effective action policy: %w", ca.Name, ca.Path, err)
 	}
 	ra.Actions, ra.Approvals = cat, ap
 	return nil

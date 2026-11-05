@@ -412,8 +412,11 @@ func TestCompileCatalog_DeterministicAcrossOrder(t *testing.T) {
 func TestCatalogView_SafeFieldsOnly(t *testing.T) {
 	cat := compileDiscovered(t, discoveredCfg())
 	ap, err := CompileApprovalPolicy(&policy.Policy{Policies: policy.PoliciesConfig{Approvals: &policy.ApprovalsConfig{Rules: map[string]policy.ApprovalRuleConfig{
+		// Two rules may match one action only with the SAME approver groups
+		// (#425): different groups would be an ambiguous requirement and are
+		// refused at compile.
 		"refund-request": {Actions: []string{"create_*"}, ApproverGroups: []string{"support-leads"}},
-		"all-refunds":    {Actions: []string{"create_refund_request"}, ApproverGroups: []string{"finance"}},
+		"all-refunds":    {Actions: []string{"create_refund_request"}, ApproverGroups: []string{"support-leads"}},
 	}}}})
 	require.NoError(t, err)
 	view := cat.View(ap)
@@ -424,7 +427,7 @@ func TestCatalogView_SafeFieldsOnly(t *testing.T) {
 	require.Len(t, view.Actions, 1)
 	a := view.Actions[0]
 	assert.Equal(t, VerdictRequireApproval, a.Verdict)
-	assert.Equal(t, []ApprovalRuleView{{ID: "all-refunds", ApproverGroups: []string{"finance"}}, {ID: "refund-request", ApproverGroups: []string{"support-leads"}}}, a.ApprovalRules)
+	assert.Equal(t, []ApprovalRuleView{{ID: "all-refunds", Source: PolicySourceUseCase, ApproverGroups: []string{"support-leads"}}, {ID: "refund-request", Source: PolicySourceUseCase, ApproverGroups: []string{"support-leads"}}}, a.ApprovalRules)
 	assert.Equal(t, "refund.create", a.UpstreamName)
 	assert.Equal(t, SourceRef{Type: SourceTypeMCP, ID: "refunds", ConfigDigest: SourceConfigDigest("refunds", sourceCfg()), Generation: cat.Sources()[0].Generation}, a.Source)
 	assert.Equal(t, []string{"amount", "currency", "region", "ticket_id"}, a.Review.Fields)

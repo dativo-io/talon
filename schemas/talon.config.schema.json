@@ -687,6 +687,37 @@
                   },
                   "description": "Union with provider and agent forbidden lists — an agent can only add entries, never remove them. Glob patterns supported (e.g. delete_*)."
                 },
+                "action_approvals": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["rules"],
+                  "description": "Company-wide approval requirements for catalogued actions (#425): applied to EVERY use case; a use case may add rules but can never weaken these. Same vocabulary as agent policies.approvals.rules. Restart-required.",
+                  "properties": {
+                    "rules": {
+                      "type": "object",
+                      "minProperties": 1,
+                      "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["actions", "approver_groups"],
+                        "properties": {
+                          "actions": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"type": "string"},
+                            "description": "Exact catalog action names or trailing-* prefixes."
+                          },
+                          "approver_groups": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"type": "string"},
+                            "description": "Approver groups of tenant-scoped approver principals (talon approver add --groups)."
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
                 "max_daily_cost": {
                   "type": "number",
                   "minimum": 0,

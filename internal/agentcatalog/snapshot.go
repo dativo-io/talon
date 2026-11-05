@@ -102,22 +102,28 @@ func NewRuntimeSnapshot(scan *ScanResult, agents []*RuntimeAgent, registry *gate
 	return s
 }
 
-// generationID folds the discovered action catalogs into the generation
-// identity. Without any discovered source the generation IS the scan
-// digest (explicit catalogs are a function of the scanned bytes), so
-// existing consumers keep their invariant.
+// generationID folds the discovered action catalogs and the company action
+// policy (#425) into the generation identity. Without any discovered source
+// and without a company policy the generation IS the scan digest (explicit
+// catalogs are a function of the scanned bytes), so existing consumers keep
+// their invariant. With a company policy, the same files under a changed
+// company rule are a different effective generation: an approval
+// established under the old one is stale by construction.
 func generationID(scanDigest string, agents []*RuntimeAgent) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "scan\x00%s\n", scanDigest)
-	discovered := false
+	folded := false
 	for _, ra := range agents {
-		if ra.Actions == nil || len(ra.Actions.Sources()) == 0 {
-			continue
+		if ra.Actions != nil && len(ra.Actions.Sources()) > 0 {
+			folded = true
+			fmt.Fprintf(h, "actions\x00%s\x00%s\n", ra.Name, ra.Actions.Digest)
 		}
-		discovered = true
-		fmt.Fprintf(h, "actions\x00%s\x00%s\n", ra.Name, ra.Actions.Digest)
+		if ra.Approvals != nil && ra.Approvals.CompanyDigest != "" {
+			folded = true
+			fmt.Fprintf(h, "company\x00%s\x00%s\n", ra.Name, ra.Approvals.CompanyDigest)
+		}
 	}
-	if !discovered {
+	if !folded {
 		return scanDigest
 	}
 	return hex.EncodeToString(h.Sum(nil))

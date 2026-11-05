@@ -155,6 +155,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	sovereignty.ApplySovereigntyGate(cfg, preloadedGatewayCfg)
+	// The company action policy (#425) is loaded ONCE here and frozen into
+	// every generation this process builds (startup and reloads); a changed
+	// company policy activates at the next restart.
+	companyPolicy, err := serveCompanyActionPolicy(serveGateway, serveProxyQuickstart, serveGatewayConfig, preloadedGatewayCfg)
+	if err != nil {
+		return err
+	}
+	if companyPolicy != nil {
+		log.Info().Str("source", companyPolicy.Source).Str("digest", shortGeneration(companyPolicy.Digest())).Int("forbidden", len(companyPolicy.ForbiddenActions)).Int("approval_rules", len(companyPolicy.Rules)).Msg("company_action_policy_active")
+	}
 
 	providers := buildProviders(cfg)
 	// Pricing is SHARED process infrastructure (#267 review round 2): the
@@ -225,7 +235,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// generation and never a separately mutable object.
 	sourceDiscoverer := mcpsource.New(secretsStore)
 	sourceDiscoverer.Version = resolvedVersion()
-	deps := agentcatalog.BundleDeps{Config: cfg, Providers: providers, Sources: sourceDiscoverer}
+	deps := agentcatalog.BundleDeps{Config: cfg, Providers: providers, Sources: sourceDiscoverer, CompanyPolicy: companyPolicy}
 	var runtimeSnapshot *agentcatalog.RuntimeSnapshot
 	switch {
 	case fleetScan != nil:

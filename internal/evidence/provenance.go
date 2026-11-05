@@ -183,13 +183,16 @@ type ActionLifecycle struct {
 	DestinationID    string `json:"destination_id"`
 	IdentitySource   string `json:"identity_source,omitempty"` // caller_provided | adapter_generated
 	// Verdict and states (separate axes, never one boolean).
-	Verdict         string   `json:"verdict,omitempty"` // ALLOW | DENY | REQUIRE_APPROVAL
-	MatchedRuleID   string   `json:"matched_rule_id,omitempty"`
-	OperationStatus string   `json:"operation_status"`
-	ApprovalID      string   `json:"approval_id,omitempty"`
-	ApprovalStatus  string   `json:"approval_status,omitempty"`
-	ApproverGroups  []string `json:"approver_groups,omitempty"`
-	ApprovalExpires string   `json:"approval_expires_at,omitempty"`
+	Verdict       string `json:"verdict,omitempty"` // ALLOW | DENY | REQUIRE_APPROVAL
+	MatchedRuleID string `json:"matched_rule_id,omitempty"`
+	// MatchedRuleSource is the layer that declared the matched rule (#425):
+	// company (gateway.organization_policy) or use_case (agent file).
+	MatchedRuleSource string   `json:"matched_rule_source,omitempty"`
+	OperationStatus   string   `json:"operation_status"`
+	ApprovalID        string   `json:"approval_id,omitempty"`
+	ApprovalStatus    string   `json:"approval_status,omitempty"`
+	ApproverGroups    []string `json:"approver_groups,omitempty"`
+	ApprovalExpires   string   `json:"approval_expires_at,omitempty"`
 	// Reviewer identity is the authenticated approver principal, never a
 	// display name from the request body.
 	ReviewerPrincipal         string `json:"reviewer_principal,omitempty"`
