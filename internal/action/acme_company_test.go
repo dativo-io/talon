@@ -3,7 +3,9 @@ package action
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -409,4 +411,122 @@ func TestACME_A1_C04_CompanyDenyProvenance_ProjectionAndEvidence(t *testing.T) {
 		require.Equal(t, res.Operation.MatchedRuleID, r.ActionLifecycle.MatchedRuleID)
 	}
 	require.Equal(t, int64(0), h.down.calls.Load())
+}
+
+// A1-U16 (PR #526 review round 2): the company-policy digest encodes its
+// lists unambiguously. Joining elements with commas let two materially
+// different policies hash identically — one literal pattern
+// "delete_customer,notify_customer" (matches neither action) versus two
+// patterns (denies both); one approver group "finance,ops" versus two
+// groups — so a changed company restriction could keep the digest of the
+// old one and an old approval would stay usable. The encoder is exercised
+// directly with the reviewer's shapes so the property holds for the encoding
+// itself, independently of what the grammar validation (U17) refuses.
+func TestACME_A1_U16_CompanyDigestEncodingIsUnambiguous(t *testing.T) {
+	rule := func(groups ...string) []ApprovalRule {
+		return []ApprovalRule{{ID: acmeCompanyRuleID, Source: PolicySourceCompany, Actions: []string{acme.RefundAction}, ApproverGroups: groups}}
+	}
+	cases := map[string][2][]byte{
+		"one literal pattern vs two patterns": {
+			companyCanonical([]string{"delete_customer,notify_customer"}, rule(acme.FinanceLeads)),
+			companyCanonical([]string{"delete_customer", "notify_customer"}, rule(acme.FinanceLeads)),
+		},
+		"one group vs two groups": {
+			companyCanonical([]string{acme.DeleteAction}, rule("finance,ops")),
+			companyCanonical([]string{acme.DeleteAction}, rule("finance", "ops")),
+		},
+		"pattern that looks like a rule line vs a rule": {
+			companyCanonical([]string{"x\ncompany rule company:r actions=a groups=g"}, nil),
+			companyCanonical([]string{"x"}, []ApprovalRule{{ID: "company:r", Source: PolicySourceCompany, Actions: []string{"a"}, ApproverGroups: []string{"g"}}}),
+		},
+		"no forbidden list vs one empty-looking pattern": {
+			companyCanonical(nil, rule(acme.FinanceLeads)),
+			companyCanonical([]string{""}, rule(acme.FinanceLeads)),
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			require.NotEqual(t, string(c[0]), string(c[1]), "encodings must differ")
+			require.NotEqual(t, Digest(c[0]), Digest(c[1]))
+		})
+	}
+	// Determinism: the same normalized input always yields the same bytes.
+	require.Equal(t, companyCanonical([]string{acme.DeleteAction}, rule(acme.FinanceLeads)), companyCanonical([]string{acme.DeleteAction}, rule(acme.FinanceLeads)))
+}
+
+// A1-U17 (review round 2): approver_groups follow the grammar of the local
+// approver store in BOTH layers — a group no principal can ever hold
+// ("finance,ops", "Finance Leads") is a configuration error, never an
+// unsatisfiable requirement; and a forbidden pattern never contains a comma
+// (no tool or action name does), so the legacy use-case digest line stays
+// unambiguous without changing a single byte for any valid configuration.
+func TestACME_A1_U17_GroupGrammarAndPatternAlphabetEnforcedInBothLayers(t *testing.T) {
+	badGroups := []string{"finance,ops", "Finance", "finance leads", "", "-x", strings.Repeat("g", 65)}
+	for i, g := range badGroups {
+		t.Run(fmt.Sprintf("company group %d %q", i, g), func(t *testing.T) {
+			company := &CompanyActionPolicy{Rules: map[string]CompanyApprovalRule{"r": {Actions: []string{acme.RefundAction}, ApproverGroups: []string{g}}}}
+			_, err := CompileEffectiveActionPolicy(acme.UseCasePolicy(acme.Support, "http://127.0.0.1:1"), company)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "approver group")
+		})
+		t.Run(fmt.Sprintf("use case group %d %q", i, g), func(t *testing.T) {
+			pol := acme.UseCasePolicy(acme.Billing, "http://127.0.0.1:1")
+			pol.Policies.Approvals.Rules[acme.UseCaseRuleID] = policy.ApprovalRuleConfig{Actions: []string{acme.BillingOnly}, ApproverGroups: []string{g}}
+			_, err := CompileEffectiveActionPolicy(pol, nil)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "approver group")
+		})
+	}
+	t.Run("company forbidden pattern with a comma", func(t *testing.T) {
+		_, err := CompileEffectiveActionPolicy(acme.UseCasePolicy(acme.Support, "http://127.0.0.1:1"), &CompanyActionPolicy{ForbiddenActions: []string{"delete_customer,notify_customer"}})
+		require.Error(t, err)
+	})
+	t.Run("use case forbidden pattern with a comma", func(t *testing.T) {
+		pol := acme.UseCasePolicy(acme.Support, "http://127.0.0.1:1")
+		pol.Capabilities = &policy.CapabilitiesConfig{ForbiddenTools: []string{"delete_customer,notify_customer"}}
+		_, err := CompileEffectiveActionPolicy(pol, nil)
+		require.Error(t, err)
+	})
+	// The grammar is the approver store's: a group it accepts compiles.
+	for _, g := range []string{acme.FinanceLeads, "support-leads", "g1", "0ps"} {
+		company := &CompanyActionPolicy{Rules: map[string]CompanyApprovalRule{"r": {Actions: []string{acme.RefundAction}, ApproverGroups: []string{g}}}}
+		_, err := CompileEffectiveActionPolicy(acme.UseCasePolicy(acme.Support, "http://127.0.0.1:1"), company)
+		require.NoError(t, err, g)
+	}
+}
+
+// A1-C05 (review round 2): an operation approved under company policy v1
+// cannot dispatch once a restart activates v2 — the same rule id, a
+// different reviewer population. The claim is refused approval_binding_stale
+// with zero downstream calls, and the decided approval cannot be re-decided
+// by the new population either; the changed requirement needs a new
+// operation.
+func TestACME_A1_C05_ApprovedUnderOldCompanyGroups_CannotDispatchAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	h := acmeCompanyHarness(t, acme.Support, 1)
+	res := h.establish(t, "op-r5", acme.RefundAction, acme.RefundArgs)
+	require.Equal(t, []string{acme.FinanceLeads}, res.Operation.Approval.Groups)
+	h.approve(t, res, acmeReviewer("alice", acme.FinanceLeads))
+	require.Equal(t, int64(0), h.down.calls.Load(), "approval alone never dispatches")
+
+	// "Restart": same store and operations, the effective policy rebuilt
+	// from company policy v2 (finance_directors instead of finance_leads).
+	ap2, err := CompileEffectiveActionPolicy(acme.UseCasePolicy(acme.Support, h.down.srv.URL), acmeCompany(2))
+	require.NoError(t, err)
+	require.NotEqual(t, h.svc.Policy.Digest, ap2.Digest, "a changed reviewer population is a different effective policy")
+	h.svc.Policy = ap2
+
+	_, err = h.svc.Execute(ctx, "op-r5")
+	require.Equal(t, CodeApprovalBindingStale, CodeOf(err))
+	require.Equal(t, int64(0), h.down.calls.Load(), "stale authorization never dispatches")
+	// The new population cannot take the old approval over: the approval
+	// stays bound to the groups it was established with (finance_leads), so
+	// a finance_directors reviewer is not authorized for it — and it is
+	// already decided. Either way nothing becomes dispatchable.
+	_, err = h.svc.Decide(ctx, DecideRequest{ApprovalID: res.Operation.Approval.ID, Approve: true, Reason: "again", Reviewer: acmeReviewer("dora", acme.FinanceDirectors)})
+	require.Equal(t, CodeApprovalNotAuthorized, CodeOf(err))
+	_, err = h.svc.Execute(ctx, "op-r5")
+	require.Equal(t, CodeApprovalBindingStale, CodeOf(err))
+	require.Equal(t, int64(0), h.down.calls.Load())
+	require.Equal(t, LifecycleIncomplete, h.verify(t, "op-r5").Verdict, "refused at claim: consistent, not closed")
 }
