@@ -159,3 +159,27 @@ func TestACME_A1_I06_ReloadUsesFrozenCompanySnapshot(t *testing.T) {
 	require.Equal(t, []string{acme.FinanceLeads}, v.ApproverGroups, "the reload must use the frozen company snapshot (v1), not the edited file (v2)")
 	require.Equal(t, v1.Digest(), support.Approvals.CompanyDigest)
 }
+
+// A1-I07 (PR #526 review P1): an existing, legitimate company configuration
+// — forbidden_tools with the gateway's glob vocabulary, "*" included — must
+// load and build every runtime generation; the company DENY then covers
+// every catalogued action of every use case with company provenance.
+func TestACME_A1_I07_CompanyDenyAllGlob_LoadsAndBuilds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "talon.config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("gateway:\n  enabled: false\n  organization_policy:\n    constraints:\n      forbidden_tools: [\"*\", \"admin_*\"]\n"), 0o600))
+	cfg, err := gateway.LoadGatewayConfig(path)
+	require.NoError(t, err, "a gateway-wide deny-all pattern is a valid company configuration")
+	company := cfg.OrganizationPolicy.CompanyActionPolicy(path)
+	require.NotNil(t, company)
+	snap := acmeSnapshot(t, acmeScan(t, dir), company)
+	for _, name := range []string{acme.SupportAgent, acme.BillingAgent} {
+		ra, ok := snap.Get(name)
+		require.True(t, ok, name)
+		for _, a := range []string{acme.RefundAction, acme.DeleteAction, acme.NotifyAction} {
+			v := ra.Approvals.Evaluate(a)
+			require.Equal(t, action.VerdictDeny, v.Outcome, "%s/%s", name, a)
+			require.Equal(t, action.PolicySourceCompany, v.Source, "%s/%s", name, a)
+		}
+	}
+}

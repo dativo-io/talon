@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/testutil/acme"
 )
 
@@ -76,6 +78,16 @@ func TestE2E_ActionGateway_ACME_CompanyPolicy(t *testing.T) {
 	if _, stderr, code := RunTalon(t, dir, nil, "validate"); code != 0 {
 		t.Fatalf("talon validate rejected the ACME fleet:\n%s", stderr)
 	}
+	// 1b. A present but invalid company policy is refused by the offline
+	// validator exactly as by serve (PR #526 review P2): never "validated
+	// without" the company rules production would refuse to load.
+	bad := filepath.Join(dir, "talon.config.malformed.yaml")
+	if err := os.WriteFile(bad, []byte(acme.TalonConfigYAMLMalformed(filepath.Join(dir, "agents"))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := RunTalon(t, dir, map[string]string{"TALON_GATEWAY_CONFIG": bad}, "validate"); code == 0 || !strings.Contains(stderr, "present but invalid") {
+		t.Fatalf("talon validate must fail on a present but invalid company policy: exit %d\n%s", code, stderr)
+	}
 	// 2. Credentials through supported commands: two agent keys, the reviewer cast.
 	for _, kv := range [][2]string{{acme.SupportKeySecret, acme.SupportKey}, {acme.BillingKeySecret, acme.BillingKey}} {
 		if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", kv[0], kv[1]); code != 0 {
@@ -111,6 +123,9 @@ func TestE2E_ActionGateway_ACME_CompanyPolicy(t *testing.T) {
 		st, res := c.do("POST", ops, k.key, `{"operation_id":"`+k.op+`","action":"`+acme.DeleteAction+`","arguments":{"customer_id":"c-9"}}`)
 		if st != 403 || dig(res, "operation", "verdict") != "DENY" || dig(res, "operation", "operation_status") != "denied" {
 			t.Fatalf("company DENY of %s for %s: %d %v", acme.DeleteAction, k.op, st, res)
+		}
+		if dig(res, "operation", "matched_rule_source") != action.PolicySourceCompany {
+			t.Fatalf("company DENY must carry structured company provenance: %v", res)
 		}
 		if st, res = c.do("POST", ops+"/"+k.op+"/attempts", k.key, ""); st != 403 || errCode(res) != "policy_denied" {
 			t.Fatalf("claim on company-denied operation: %d %v", st, res)
@@ -265,16 +280,92 @@ func TestE2E_ActionGateway_ACME_CompanyPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	var id, js string
-	if err := db.QueryRow(`SELECT id, evidence_json FROM evidence WHERE invocation_type='action_lifecycle' AND evidence_json LIKE '%"event":"approval_decided"%' AND evidence_json LIKE '%"reviewer_principal":"apr_%' LIMIT 1`).Scan(&id, &js); err != nil {
+	if err := db.QueryRowContext(context.Background(), `SELECT id, evidence_json FROM evidence WHERE invocation_type='action_lifecycle' AND evidence_json LIKE '%"event":"approval_decided"%' AND evidence_json LIKE '%"reviewer_principal":"apr_%' LIMIT 1`).Scan(&id, &js); err != nil {
 		t.Fatalf("find decision record: %v", err)
 	}
 	js = regexp.MustCompile(`"reviewer_principal":"apr_[a-f0-9]+"`).ReplaceAllString(js, `"reviewer_principal":"apr_mallory"`)
-	if _, err := db.Exec(`UPDATE evidence SET evidence_json = ? WHERE id = ?`, js, id); err != nil {
+	if _, err := db.ExecContext(context.Background(), `UPDATE evidence SET evidence_json = ? WHERE id = ?`, js, id); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()
 	out, _, code = RunTalon(t, dir, nil, "audit", "verify", "--operation", "op-refund-1")
 	if code == 0 || !strings.Contains(out, "Lifecycle: INVALID") {
 		t.Fatalf("tampered lifecycle must fail verification: code=%d\n%s", code, out)
+	}
+}
+
+// A3-E02 (PR #526 review): the SAME company authority on the second serving
+// path, `talon serve --gateway --gateway-config talon.config.yaml`, against
+// the real binary: company DENY for both use cases with zero downstream
+// calls, company approval in the use case without a rule of its own, the
+// reviewer matrix, exactly one dispatch after the company group approves.
+func TestE2E_ActionGateway_ACME_CompanyPolicy_GatewayMode(t *testing.T) {
+	down := acme.StartDownstream(t)
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	acmeWriteFleet(t, dir, down.URL(), 1)
+	cfgPath := filepath.Join(dir, "talon.config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(acme.GatewayModeConfigYAML(agentsDir, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := RunTalon(t, dir, nil, "validate"); code != 0 {
+		t.Fatalf("talon validate rejected the gateway-mode ACME fleet:\n%s", stderr)
+	}
+	for _, kv := range [][2]string{{acme.SupportKeySecret, acme.SupportKey}, {acme.BillingKeySecret, acme.BillingKey}, {acme.ProviderVaultEntry, "sk-never-dialled-by-the-action-path"}} {
+		if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", kv[0], kv[1]); code != 0 {
+			t.Fatalf("secrets set %s: %d\n%s", kv[0], code, stderr)
+		}
+	}
+	alice := acmeAddReviewer(t, dir, "alice", acme.Tenant, acme.FinanceLeads)
+	bob := acmeAddReviewer(t, dir, "bob", acme.Tenant, acme.SupportLeads)
+
+	port := freePort(t)
+	stop := startServeWithEnv(t, dir, port, map[string]string{"TALON_ADMIN_KEY": agAdminKey}, "--gateway", "--gateway-config", cfgPath)
+	defer stop()
+	if logs, _ := os.ReadFile(filepath.Join(dir, "serve.log")); !strings.Contains(string(logs), "company_action_policy_active") {
+		t.Fatalf("gateway-mode serve did not report the company action policy active:\n%s", logs)
+	}
+	c := &agClient{t: t, base: fmt.Sprintf("http://127.0.0.1:%d", port)}
+	ops := "/v1/action-operations"
+
+	for _, k := range []struct{ key, op string }{{acme.SupportKey, "gw-del-support"}, {acme.BillingKey, "gw-del-billing"}} {
+		st, res := c.do("POST", ops, k.key, `{"operation_id":"`+k.op+`","action":"`+acme.DeleteAction+`","arguments":{"customer_id":"c-9"}}`)
+		if st != 403 || dig(res, "operation", "verdict") != "DENY" || dig(res, "operation", "matched_rule_source") != action.PolicySourceCompany {
+			t.Fatalf("company DENY on the gateway path for %s: %d %v", k.op, st, res)
+		}
+		if st, res = c.do("POST", ops+"/"+k.op+"/attempts", k.key, ""); st != 403 || errCode(res) != "policy_denied" {
+			t.Fatalf("claim on company-denied operation: %d %v", st, res)
+		}
+	}
+	st, res := c.do("POST", ops, acme.SupportKey, `{"operation_id":"gw-refund-1","action":"`+acme.RefundAction+`","arguments":`+acme.RefundArgs+`}`)
+	if st != 202 || dig(res, "operation", "verdict") != "REQUIRE_APPROVAL" || fmt.Sprint(dig(res, "operation", "approval", "approver_groups")) != "["+acme.FinanceLeads+"]" {
+		t.Fatalf("company approval on the gateway path: %d %v", st, res)
+	}
+	if dig(res, "operation", "matched_rule_id") != action.PolicySourceCompany+":"+acme.CompanyRuleID || dig(res, "operation", "matched_rule_source") != action.PolicySourceCompany {
+		t.Fatalf("company rule provenance on the gateway path: %v", res)
+	}
+	approvalID, _ := dig(res, "operation", "approval", "id").(string)
+	decision := `{"decision":"approve","reason":"ok"}`
+	if st, res = c.do("POST", "/v1/approvals/"+approvalID+"/decisions", bob.token, decision); st != 401 {
+		t.Fatalf("bob (support_leads) must not approve a company rule: %d %v", st, res)
+	}
+	if st, res = c.adminDo("POST", "/v1/approvals/"+approvalID+"/decisions", decision); st != 401 {
+		t.Fatalf("admin key must not approve: %d %v", st, res)
+	}
+	if st, res = c.do("POST", ops+"/gw-refund-1/attempts", acme.SupportKey, ""); st != 409 || errCode(res) != "approval_pending" {
+		t.Fatalf("claim before approval: %d %v", st, res)
+	}
+	if down.Calls.Load() != 0 {
+		t.Fatalf("dispatch before approval on the gateway path: %d", down.Calls.Load())
+	}
+	if st, res = c.do("POST", "/v1/approvals/"+approvalID+"/decisions", alice.token, decision); st != 200 || dig(res, "approval", "status") != "approved" {
+		t.Fatalf("alice approve: %d %v", st, res)
+	}
+	if st, res = c.do("POST", ops+"/gw-refund-1/attempts", acme.SupportKey, ""); st != 200 || dig(res, "attempt", "status") != "succeeded" {
+		t.Fatalf("claim after approval: %d %v", st, res)
+	}
+	bodies, _, _ := down.Snapshot()
+	if down.Calls.Load() != 1 || len(bodies) != 1 || bodies[0] != acme.RefundArgsCanonical {
+		t.Fatalf("exactly one exact dispatch expected: calls=%d bodies=%v", down.Calls.Load(), bodies)
 	}
 }

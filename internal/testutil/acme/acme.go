@@ -90,10 +90,14 @@ func CompanyGroups(version int) []string {
 // gateway itself stays disabled: the company policy is about actions, not
 // about serving a model gateway.
 func CompanyPolicyYAML(version int) string {
-	return fmt.Sprintf(`gateway:
-  enabled: false
-  organization_policy:
-    constraints:
+	return "gateway:\n  enabled: false\n  organization_policy:\n" + companyConstraintsYAML(version)
+}
+
+// companyConstraintsYAML is the company action policy block itself, indented
+// for `gateway.organization_policy`; every operator config variant embeds the
+// SAME block so no scenario can see a different company policy.
+func companyConstraintsYAML(version int) string {
+	return fmt.Sprintf(`    constraints:
       forbidden_tools: [%s]
       action_approvals:
         rules:
@@ -101,6 +105,40 @@ func CompanyPolicyYAML(version int) string {
             actions: [%s]
             approver_groups: [%s]
 `, DeleteAction, CompanyRuleID, RefundAction, strings.Join(CompanyGroups(version), ", "))
+}
+
+// GatewayModeConfigYAML renders the operator config for `talon serve
+// --gateway --gateway-config talon.config.yaml`: the fleet directory, an
+// enabled LLM gateway with one provider (never dialled by the action path;
+// its vault secret must exist) and the SAME company action policy block as
+// TalonConfigYAML — the second serving path must apply identical company
+// authority (PR #526 review).
+func GatewayModeConfigYAML(agentsDir string, companyVersion int) string {
+	return "agents_dir: " + agentsDir + `
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  providers:
+    openai:
+      enabled: true
+      secret_name: "` + ProviderVaultEntry + `"
+      base_url: "http://127.0.0.1:1"
+  organization_policy:
+    defaults:
+      pii_action: "warn"
+      daily_cost: 100.00
+` + companyConstraintsYAML(companyVersion)
+}
+
+// ProviderVaultEntry is the vault entry name of the gateway-mode provider credential
+// (a dummy value; the ACME scenario sends no LLM traffic).
+const ProviderVaultEntry = "openai-api-key"
+
+// TalonConfigYAMLMalformed is a complete operator config whose company
+// action policy is malformed: `talon validate` and `talon actions` must
+// refuse it exactly as `talon serve` does — never validate "without" it.
+func TalonConfigYAMLMalformed(agentsDir string) string {
+	return "agents_dir: " + agentsDir + "\n" + CompanyPolicyYAMLMalformed
 }
 
 // CompanyPolicyYAMLMalformed is the version-1 policy with a misspelled key
