@@ -59,6 +59,9 @@ test-mcp-governance-smoke: ## MCP governance-contract smoke (#372): extension + 
 test-action-catalog-smoke: ## Trusted action catalog smoke (#427): CLI inspection, catalog in the runtime generation, mcp-sourced action not executable, source refresh/last-known-good against the built binary (no keys)
 	@bash scripts/action-catalog-smoke.sh
 
+test-action-smoke: ## Exact governed-action smoke (#458) + one company action policy (#425/#426/#428): DENY = 0 dispatch, approval = 0 until a reviewer decides, one dispatch, replay/conflict/unknown, company rule over two use cases, stale approval invalidated across a restart, audit verify — against the built binary (no keys); also smoke section 41 and a PR CI step
+	@bash scripts/action-smoke.sh
+
 test-openshell-smoke: ## OpenShell composition smoke (#482): fixture supervisor replays the pinned v0.1.3 middleware contract against the built binary (no OpenShell install, no keys)
 	@bash scripts/openshell-smoke.sh
 

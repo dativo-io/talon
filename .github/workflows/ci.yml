@@ -77,6 +77,14 @@ jobs:
         # provider key and is not an ordinary-PR gate; this target is.
         run: make test-mcp-governance-smoke
 
+      - name: Action Gateway smoke (#458/#425, offline, no keys)
+        # Named PR gate for the exact governed-action spine and the company
+        # action policy: DENY = 0 dispatch, approval = 0 until a reviewer
+        # decides, exactly one dispatch, one company rule over two use cases,
+        # stale approval invalidated across a restart, lifecycle verified —
+        # against the built binary with a counting mock downstream.
+        run: make test-action-smoke
+
       - name: OpenShell composition smoke (#482/#457, fixture supervisor, no keys, no Docker)
         # Named PR gate for the Talon ↔ OpenShell composition: the fixture
         # supervisor replays the pinned middleware contract against the built

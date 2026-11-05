@@ -7,10 +7,10 @@
 From the Talon repository root, with Go and the dependencies needed to build the binary:
 
 ~~~bash
-bash scripts/action-smoke.sh
+make test-action-smoke     # or: bash scripts/action-smoke.sh
 ~~~
 
-The script runs the built-binary end-to-end test `TestE2E_ActionGateway` using `go test -tags=e2e` and prints the assertions. It requires neither a provider key nor an external action service. The same proof is part of the [Action Gateway reference](../reference/action-gateway.md).
+The script runs the built-binary end-to-end tests `TestE2E_ActionGateway_*` (the exact-action proof and the ACME company-policy scenario) using `go test -tags=e2e` and prints the assertions. The same run is smoke section 41 of `make test-smoke` and a named step in PR CI. It requires neither a provider key nor an external action service. The same proof is part of the [Action Gateway reference](../reference/action-gateway.md).
 
 ## What is checked
 

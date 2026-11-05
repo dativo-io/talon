@@ -49,7 +49,11 @@
 #   `make test-mcp-governance-smoke`, no provider key; mandatory, counted) |
 #   38 openshell (#457/#482 composition smoke: the same scenarios as
 #   `make test-openshell-smoke` — fixture supervisor, action hop, response
-#   governance, SDK agent; no provider key, no Docker; mandatory, counted).
+#   governance, SDK agent; no provider key, no Docker; mandatory, counted) |
+#   39 budget | 40 webhook-triggers (#479, offline) |
+#   41 action-gateway (#458/#425 exact governed action + one company action
+#   policy: the same assertions as `make test-action-smoke`; no provider key;
+#   mandatory, counted).
 #
 # QA notes (from brief):
 # - Section 10/18 (Tamper test): Evidence DB is TALON_DATA_DIR/evidence.db; corrupt
@@ -290,7 +294,7 @@ dump_diag_env() {
 # these skips the OPENAI_API_KEY prerequisite (TALON_SECRETS_KEY, talon and
 # the tools are still required). Everything else is unchanged; the full suite
 # still requires the key.
-readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance 38_openshell 39_budget 40_webhook_triggers "
+readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance 38_openshell 39_budget 40_webhook_triggers 41_action_gateway "
 smoke_only_is_offline() {
   [[ -n "${SMOKE_ONLY:-}" ]] || return 1
   local s
@@ -730,7 +734,7 @@ for _section_file in \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
   33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh \
   36_external_scanner.sh 37_mcp_governance.sh 38_openshell.sh 39_budget.sh \
-  40_webhook_triggers.sh; do
+  40_webhook_triggers.sh 41_action_gateway.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -827,6 +831,7 @@ main() {
   run_section "38_openshell" test_section_38_openshell
   run_section "39_budget" test_section_39_budget
   run_section "40_webhook_triggers" test_section_40_webhook_triggers
+  run_section "41_action_gateway" test_section_41_action_gateway
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency
