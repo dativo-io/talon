@@ -459,7 +459,7 @@ Per-field contract (mirrors `internal/gateway/effective.go`; the code and this t
 | `constraints.allowed_providers` | agent list narrows within the organization hard constraint; empty = unrestricted at that level; a provider must pass **both** lists |
 | `constraints.max_data_tier` | organization cap is a ceiling; the agent override applies only when **lower** (tighter) |
 | `allowed_tools` | most-specific non-empty list wins; `constraints.allowed_tools` is a **hard** org allowlist checked in addition — a tool must pass both (#282) |
-| `constraints.forbidden_tools` | union of org ∪ provider ∪ override; for **catalogued actions** the organization entries are the company DENY no use case can lift (#425) |
+| `constraints.forbidden_tools` | union of org ∪ provider ∪ override, glob patterns (`*`, `delete_*`; a malformed glob is a load error); for **catalogued actions** the organization entries are the company DENY no use case can lift (#425) |
 | `constraints.action_approvals` | company approval requirements for catalogued actions (`rules.<id>.actions` + `approver_groups`), compiled with each use case's `policies.approvals.rules` into one effective action policy; a use case may add rules but a rule matching a company-governed action must name the same approver groups (#425). Not a gateway-traffic control: it governs the Action Gateway on both serving modes |
 | `defaults.tool_policy_action` | operator layers merge most-specific (provider > org default); the agent layer is monotonic — an agent can tighten `filter` → `block` but never loosen `block` → `filter` (#287) |
 | `defaults.attachment_policy` | baseline only (#266) |
