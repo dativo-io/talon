@@ -61,33 +61,38 @@ type DestinationView struct {
 
 // ApprovalRuleView is one approval rule that matches a definition.
 type ApprovalRuleView struct {
-	ID             string   `json:"id"`
+	ID string `json:"id"`
+	// Source is the layer that declared the rule: company | use_case (#425).
+	Source         string   `json:"source"`
 	ApproverGroups []string `json:"approver_groups"`
 }
 
 // DefinitionView is the safe projection of one definition.
 type DefinitionView struct {
-	Name             string             `json:"name"`
-	Description      string             `json:"description,omitempty"`
-	Source           SourceRef          `json:"source"`
-	UpstreamName     string             `json:"upstream_name,omitempty"`
-	SchemaDigest     string             `json:"schema_digest"`
-	Schema           json.RawMessage    `json:"schema"`
-	Properties       []string           `json:"properties"`
-	Review           ReviewView         `json:"review"`
-	ProjectionDigest string             `json:"projection_digest"`
-	MirroredParams   []MirroredParam    `json:"mirrored_params,omitempty"`
-	Title            string             `json:"title,omitempty"`
-	Hints            *ToolHints         `json:"hints,omitempty"`
-	OutputSchema     json.RawMessage    `json:"output_schema,omitempty"`
-	BindingProfile   string             `json:"binding_profile"`
-	ExecutionProfile string             `json:"execution_profile"`
-	Destination      DestinationView    `json:"destination"`
-	DestinationID    string             `json:"destination_id"`
-	DefinitionDigest string             `json:"definition_digest"`
-	MetadataDigest   string             `json:"metadata_digest"`
-	Verdict          string             `json:"verdict,omitempty"`
-	ApprovalRules    []ApprovalRuleView `json:"approval_rules,omitempty"`
+	Name             string          `json:"name"`
+	Description      string          `json:"description,omitempty"`
+	Source           SourceRef       `json:"source"`
+	UpstreamName     string          `json:"upstream_name,omitempty"`
+	SchemaDigest     string          `json:"schema_digest"`
+	Schema           json.RawMessage `json:"schema"`
+	Properties       []string        `json:"properties"`
+	Review           ReviewView      `json:"review"`
+	ProjectionDigest string          `json:"projection_digest"`
+	MirroredParams   []MirroredParam `json:"mirrored_params,omitempty"`
+	Title            string          `json:"title,omitempty"`
+	Hints            *ToolHints      `json:"hints,omitempty"`
+	OutputSchema     json.RawMessage `json:"output_schema,omitempty"`
+	BindingProfile   string          `json:"binding_profile"`
+	ExecutionProfile string          `json:"execution_profile"`
+	Destination      DestinationView `json:"destination"`
+	DestinationID    string          `json:"destination_id"`
+	DefinitionDigest string          `json:"definition_digest"`
+	MetadataDigest   string          `json:"metadata_digest"`
+	Verdict          string          `json:"verdict,omitempty"`
+	// VerdictSource names the layer whose rule produced a DENY or
+	// REQUIRE_APPROVAL verdict (company | use_case); absent for ALLOW.
+	VerdictSource string             `json:"verdict_source,omitempty"`
+	ApprovalRules []ApprovalRuleView `json:"approval_rules,omitempty"`
 }
 
 // View projects the whole catalog. ap may be nil (no approval policy
@@ -141,9 +146,10 @@ func (c *Catalog) DefinitionView(name string, ap *ApprovalPolicy) (DefinitionVie
 		MetadataDigest:   d.MetadataDigest,
 	}
 	if ap != nil {
-		dv.Verdict = ap.Evaluate(d.Name).Outcome
+		v := ap.Evaluate(d.Name)
+		dv.Verdict, dv.VerdictSource = v.Outcome, v.Source
 		for _, r := range ap.MatchingRules(d.Name) {
-			dv.ApprovalRules = append(dv.ApprovalRules, ApprovalRuleView{ID: r.ID, ApproverGroups: append([]string(nil), r.ApproverGroups...)})
+			dv.ApprovalRules = append(dv.ApprovalRules, ApprovalRuleView{ID: r.ID, Source: r.Source, ApproverGroups: append([]string(nil), r.ApproverGroups...)})
 		}
 	}
 	return dv, true

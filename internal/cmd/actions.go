@@ -137,9 +137,13 @@ var actionsShowCmd = &cobra.Command{
 				fmt.Fprintf(w, "  Mcp-Param-%s <- %s (%s)\n", m.Header, strings.Join(m.Path, "."), orDash(m.Type))
 			}
 		}
-		fmt.Fprintf(w, "Verdict:            %s\n", dv.Verdict)
+		if dv.VerdictSource != "" {
+			fmt.Fprintf(w, "Verdict:            %s (%s policy)\n", dv.Verdict, dv.VerdictSource)
+		} else {
+			fmt.Fprintf(w, "Verdict:            %s\n", dv.Verdict)
+		}
 		for _, r := range dv.ApprovalRules {
-			fmt.Fprintf(w, "Approval rule:      %s (groups: %s)\n", r.ID, strings.Join(r.ApproverGroups, ", "))
+			fmt.Fprintf(w, "Approval rule:      %s (%s; groups: %s)\n", r.ID, r.Source, strings.Join(r.ApproverGroups, ", "))
 		}
 		fmt.Fprintf(w, "Schema:             %s\n", string(dv.Schema))
 		return nil
@@ -285,9 +289,11 @@ func cliActionCatalog(ctx context.Context, agentName, policyPath string) (*cliCa
 	if err != nil {
 		return nil, fmt.Errorf("action catalog: %w", err)
 	}
-	ap, err := action.CompileApprovalPolicy(ca.Policy)
+	// The same company policy serve applies (#425), so the inspected
+	// verdicts and rules are the ones the gateway would enforce.
+	ap, err := action.CompileEffectiveActionPolicy(ca.Policy, offlineServeContextFromGateway().Company)
 	if err != nil {
-		return nil, fmt.Errorf("action approval policy: %w", err)
+		return nil, fmt.Errorf("effective action policy: %w", err)
 	}
 	return &cliCatalog{agent: ca, catalog: cat, approvals: ap, at: time.Now().UTC()}, nil
 }

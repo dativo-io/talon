@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
@@ -14,7 +13,6 @@ import (
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
-	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/trigger"
 )
@@ -41,7 +39,7 @@ var validateCmd = &cobra.Command{
 		// from talon.config.yaml → the default single file. A config-load
 		// failure only degrades to single-file mode; it never blocks
 		// validating an explicit target.
-		rules := offlineTriggerRules()
+		osc := offlineServeContextFromGateway()
 		file := validateFile
 		if file == "" {
 			dir := validateDir
@@ -53,7 +51,7 @@ var validateCmd = &cobra.Command{
 				}
 			}
 			if dir != "" {
-				return runValidateDir(ctx, dir, rules)
+				return runValidateDir(ctx, dir, osc)
 			}
 			file = "agent.talon.yaml"
 		}
@@ -73,7 +71,7 @@ var validateCmd = &cobra.Command{
 			return fmt.Errorf("validation failed: %w", err)
 		}
 
-		if err := deepValidatePolicy(ctx, pol, rules); err != nil {
+		if err := deepValidatePolicy(ctx, pol, osc); err != nil {
 			fmt.Fprintf(os.Stderr, "✗ %s: %s\n", file, err)
 			return err
 		}
@@ -95,39 +93,16 @@ var validateCmd = &cobra.Command{
 	},
 }
 
-// offlineTriggerRules derives the trigger serve rules `talon validate` can
-// determine without running serve (#479). A gateway config that exists and
-// is enabled (TALON_GATEWAY_CONFIG, default talon.config.yaml) means the
-// deployment serves a gateway, so trigger definitions are refused exactly as
-// `talon serve --gateway` refuses them. Without a gateway config validate
-// cannot know whether serve will be started with --gateway and applies the
-// definition rules only (secret_name present, require_approval unset); a
-// present but invalid gateway config is doctor's finding, not validate's.
-func offlineTriggerRules() trigger.ServeRules {
-	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
-	if path == "" {
-		path = "talon.config.yaml"
-	}
-	gwCfg, err := gateway.LoadGatewayConfig(path)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			log.Warn().Err(err).Str("path", path).Msg("gateway config present but invalid; trigger definitions validated with native-only rules (run 'talon doctor')")
-		}
-		return trigger.ServeRules{}
-	}
-	return trigger.ServeRules{GatewayServed: gwCfg.Enabled}
-}
-
 // deepValidatePolicy runs the compilation-level checks beyond schema load:
 // the Rego engine (compiles all policies), the PII scanner built from
 // data_classification and the trigger definition rules serve applies at
 // startup (#479). Shared by single-file and directory validation so the two
 // modes cannot drift.
-func deepValidatePolicy(ctx context.Context, pol *policy.Policy, rules trigger.ServeRules) error {
+func deepValidatePolicy(ctx context.Context, pol *policy.Policy, osc offlineServeContext) error {
 	if _, err := policy.NewEngine(ctx, pol); err != nil {
 		return fmt.Errorf("policy engine initialization failed: %w", err)
 	}
-	if err := trigger.ValidatePolicyTriggers(pol, rules); err != nil {
+	if err := trigger.ValidatePolicyTriggers(pol, osc.Triggers); err != nil {
 		return fmt.Errorf("triggers: %w", err)
 	}
 	if _, err := policy.NewPIIScannerForPolicy(pol, ""); err != nil {
@@ -148,8 +123,11 @@ func deepValidatePolicy(ctx context.Context, pol *policy.Policy, rules trigger.S
 			}
 			log.Info().Strs("sources", undiscovered.IDs).Msg("action_sources_not_discovered_offline")
 		}
-		if _, err := action.CompileApprovalPolicy(pol); err != nil {
-			return fmt.Errorf("action approval policy: %w", err)
+		// The effective action policy composes the company policy (#425)
+		// with this use case's rules exactly as serve does, so a company /
+		// use-case conflict serve would refuse is refused here first.
+		if _, err := action.CompileEffectiveActionPolicy(pol, osc.Company); err != nil {
+			return fmt.Errorf("effective action policy: %w", err)
 		}
 	}
 	return nil
@@ -159,7 +137,7 @@ func deepValidatePolicy(ctx context.Context, pol *policy.Policy, rules trigger.S
 // recursive scan and strict per-file pipeline serve startup runs, plus the
 // deep checks single-file validate applies. One ✓/✗ line per file; any
 // failure (or an empty directory) exits non-zero.
-func runValidateDir(ctx context.Context, dir string, rules trigger.ServeRules) error {
+func runValidateDir(ctx context.Context, dir string, osc offlineServeContext) error {
 	scan, scanErr := agentcatalog.DiscoverAgents(ctx, dir)
 	if scanErr != nil && len(scan.Files) == 0 {
 		fmt.Fprintf(os.Stderr, "✗ %s\n", scanErr)
@@ -187,7 +165,7 @@ func runValidateDir(ctx context.Context, dir string, rules trigger.ServeRules) e
 				continue
 			}
 		}
-		if err := deepValidatePolicy(ctx, pol, rules); err != nil {
+		if err := deepValidatePolicy(ctx, pol, osc); err != nil {
 			failures++
 			fmt.Fprintf(os.Stderr, "✗ %s: %s\n", f.Path, err)
 			continue

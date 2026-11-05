@@ -16,6 +16,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/policy"
 )
 
@@ -311,6 +312,42 @@ type OrgConstraints struct {
 	// may egress to. When nil, egress is not evaluated. An agent egress is a
 	// second boundary intersected with this one, never a replacement.
 	Egress *EgressPolicyConfig `yaml:"egress,omitempty" json:"egress,omitempty"`
+	// ActionApprovals are the company-wide approval requirements for
+	// catalogued actions (#425): which actions need a human decision and
+	// which approver groups may give it, for EVERY use case. Together with
+	// forbidden_tools (a company DENY for catalogued actions as well as
+	// gateway tools) this is the company action policy: a use case can add
+	// restrictions of its own but never weaken these. Compiled into every
+	// runtime generation at startup; a change requires a restart.
+	ActionApprovals *ActionApprovalsConstraint `yaml:"action_approvals,omitempty" json:"action_approvals,omitempty"`
+}
+
+// ActionApprovalsConstraint is the company-wide approval requirement block
+// (#425). Rules use the same vocabulary as policies.approvals.rules in an
+// agent file: exact catalog names or trailing-* prefixes, and approver groups
+// of tenant-scoped approver principals.
+type ActionApprovalsConstraint struct {
+	Rules map[string]policy.ApprovalRuleConfig `yaml:"rules" json:"rules"`
+}
+
+// CompanyActionPolicy projects the organization policy's action-relevant
+// constraints into the ONE input the effective action-policy compiler
+// consumes (#425). nil when the organization policy carries neither
+// forbidden_tools nor action_approvals: then no company action policy is
+// configured and per-use-case behaviour stays exactly as before. source is
+// the descriptive origin recorded for provenance (the config path).
+func (o *OrganizationPolicy) CompanyActionPolicy(source string) *action.CompanyActionPolicy {
+	if o == nil || (len(o.Constraints.ForbiddenTools) == 0 && o.Constraints.ActionApprovals == nil) {
+		return nil
+	}
+	c := &action.CompanyActionPolicy{Source: source, ForbiddenActions: append([]string(nil), o.Constraints.ForbiddenTools...)}
+	if o.Constraints.ActionApprovals != nil {
+		c.Rules = make(map[string]action.CompanyApprovalRule, len(o.Constraints.ActionApprovals.Rules))
+		for id, r := range o.Constraints.ActionApprovals.Rules {
+			c.Rules[id] = action.CompanyApprovalRule{Actions: append([]string(nil), r.Actions...), ApproverGroups: append([]string(nil), r.ApproverGroups...)}
+		}
+	}
+	return c
 }
 
 // ScanToolContent modes.
@@ -761,6 +798,17 @@ func (c *GatewayConfig) Validate() error {
 	// EvaluateToolPolicy — same "*" footgun as the model lists (#291 review).
 	if err := validateLiteralAllowList("organization_policy.constraints.allowed_tools", "tools", c.OrganizationPolicy.Constraints.AllowedTools); err != nil {
 		return err
+	}
+	// The company action policy (#425) compiles into every use case: a rule
+	// without actions or groups, an illegal pattern, or two company rules
+	// that match one action with different groups is a load error.
+	if c.OrganizationPolicy.Constraints.ActionApprovals != nil {
+		if len(c.OrganizationPolicy.Constraints.ActionApprovals.Rules) == 0 {
+			return fmt.Errorf("gateway organization_policy.constraints.action_approvals: rules are required (remove the block to configure no company approval rule)")
+		}
+		if err := c.OrganizationPolicy.CompanyActionPolicy("").Validate(); err != nil {
+			return fmt.Errorf("gateway organization_policy.constraints: %w", err)
+		}
 	}
 	// Same literal-membership footgun as model lists (#266 review round 5):
 	// "*" in the provider allow list would deny every provider. And entries

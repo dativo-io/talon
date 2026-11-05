@@ -166,7 +166,7 @@ func TestActionsCLI_ListShowValidate(t *testing.T) {
 
 	out, err = runActions(t, "show", "create_refund_request", "--policy", agentPath)
 	require.NoError(t, err, out)
-	for _, want := range []string{"Upstream action:    refund.create", "Review fields:      amount, ticket_id", "Non-material:       region", "Destination:        mcp  " + up.srv.URL, "Mcp-Param-Region <- region (string)", "Approval rule:      refund-request (groups: support-leads)", "talon/whole-payload/v1", "talon_forwarded"} {
+	for _, want := range []string{"Upstream action:    refund.create", "Review fields:      amount, ticket_id", "Non-material:       region", "Destination:        mcp  " + up.srv.URL, "Mcp-Param-Region <- region (string)", "Approval rule:      refund-request (use_case; groups: support-leads)", "talon/whole-payload/v1", "talon_forwarded"} {
 		assert.Contains(t, out, want)
 	}
 	_, err = runActions(t, "show", "refund.create", "--policy", agentPath)

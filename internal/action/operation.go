@@ -150,6 +150,7 @@ type Projection struct {
 	Status            string                     `json:"operation_status"`
 	Verdict           string                     `json:"verdict"`
 	MatchedRuleID     string                     `json:"matched_rule_id,omitempty"`
+	MatchedRuleSource string                     `json:"matched_rule_source,omitempty"` // company | use_case (#425)
 	Digest            string                     `json:"digest"`
 	DefinitionDigest  string                     `json:"definition_digest"`
 	ExecutionProfile  string                     `json:"execution_profile"`
@@ -205,7 +206,7 @@ type AttemptProjection struct {
 func projectionOf(op *Operation, ap *Approval, at *Attempt, payload PayloadState) *Projection {
 	p := &Projection{
 		OperationID: op.OperationID, OperationRef: op.Ref, Action: op.Action, Status: op.Status, Verdict: op.Verdict,
-		MatchedRuleID: op.RuleID, Digest: op.Digest, DefinitionDigest: op.DefinitionDigest, ExecutionProfile: op.ExecutionProfile, DestinationID: op.DestinationID,
+		MatchedRuleID: op.RuleID, MatchedRuleSource: RuleSource(op.RuleID), Digest: op.Digest, DefinitionDigest: op.DefinitionDigest, ExecutionProfile: op.ExecutionProfile, DestinationID: op.DestinationID,
 		Version: op.Version, AttemptCount: op.AttemptCount, OutcomeCode: op.OutcomeCode, OutcomeProvenance: op.OutcomeProvenance,
 		Payload: payload, CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt,
 	}

@@ -138,7 +138,9 @@ func TestACME_A1_I06_ReloadUsesFrozenCompanySnapshot(t *testing.T) {
 	v1 := acmeLoadCompany(t, dir, 1)
 	holder := NewRuntimeHolder(acmeSnapshot(t, scan, v1))
 	agentsDir := filepath.Join(dir, "agents")
-	nativeBuilder := func(context.Context, *ScanResult) (*gateway.IdentityRegistry, error) { return nil, nil }
+	nativeBuilder := func(context.Context, *ScanResult, *RuntimeSnapshot) (*gateway.IdentityRegistry, error) {
+		return nil, nil
+	}
 	reloader := NewReloader(ReloadConfig{
 		Source: Source{Dir: agentsDir}, Deps: BundleDeps{CompanyPolicy: v1}, BuildRegistry: nativeBuilder,
 		Holder: holder, RequireNonEmpty: false,
