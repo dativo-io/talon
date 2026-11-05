@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/dativo-io/talon/internal/approver"
 	"github.com/dativo-io/talon/internal/policy"
@@ -512,6 +513,13 @@ func validateForbiddenPatterns(where string, patterns []string) error {
 		// unambiguous without changing any existing digest.
 		if strings.Contains(f, ",") {
 			return fmt.Errorf("%s: pattern %q contains a comma; write one pattern per list entry", where, f)
+		}
+		// The legacy use-case digest lines are newline-delimited and
+		// path.Match accepts a literal control character, so a pattern
+		// spelling "x\nrule …" would serialize like a real approval rule
+		// (PR #526 review round 3). No tool or action name contains one.
+		if i := strings.IndexFunc(f, unicode.IsControl); i >= 0 {
+			return fmt.Errorf("%s: pattern %q contains a control character (%U)", where, f, []rune(f[i:])[0])
 		}
 		if _, err := path.Match(f, ""); err != nil {
 			return fmt.Errorf("%s: invalid glob pattern %q: %w", where, f, err)
