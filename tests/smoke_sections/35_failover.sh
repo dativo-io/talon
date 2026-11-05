@@ -29,6 +29,16 @@ test_section_35_failover() {
     return 0
   fi
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  # The failover backup is the same OpenAI endpoint under a second provider
+  # name. Since budget enforcement refuses unpriced models (CHANGELOG 1.15.4:
+  # a failover candidate whose provider is absent from pricing/models.yaml is
+  # skipped `pricing_unavailable` under the organization's daily cap), the
+  # scaffolded table must price it — as the catalog entry it aliases.
+  cat >> "$dir/pricing/models.yaml" <<'PRICEOF'
+  # Smoke section 35: the failover backup provider is OpenAI under another name.
+  backup:
+    inherit: openai
+PRICEOF
   smoke_bind_agent_key "$dir" "talon-gw-failover-001"
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"

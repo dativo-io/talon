@@ -46,7 +46,7 @@ docker pull ghcr.io/dativo-io/talon:latest
 gh workflow run release.yml -f tag="$LATEST"   # audit mode: re-verifies the published assets, changes nothing
 ```
 
-Also check: `draft=false`; the showcase bundle, its `.sha256` and its `.manifest.json` are among the assets and the manifest's `artifacts.talon.sha256` equals the sha256 of the `talon` inside `talon_<X.Y.Z>_linux_amd64.tar.gz`; the agent image package on GHCR is public (the customer path pulls it without credentials); the release notes link at least one share artifact.
+Also check: `draft=false`; the showcase bundle, its `.sha256` and its `.manifest.json` are among the assets and the manifest's `artifacts.talon.sha256` equals the sha256 of the `talon` inside `talon_<X.Y.Z>_linux_amd64.tar.gz`; both GHCR packages are public — `scripts/check-image-public.sh ghcr.io/dativo-io/talon:<X.Y.Z> ghcr.io/dativo-io/talon-openshell-agent:<X.Y.Z>` (the verify job runs the same check; a private package fails the rehearsal, as v1.15.4-rc.1 did); the release notes link at least one share artifact.
 
 ## When the release job fails after tagging
 

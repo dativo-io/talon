@@ -46,7 +46,7 @@ triggers:
       prompt_template: "Summarize this ticket and suggest a reply: {{.payload.description}}"
 ```
 
-The sender then sends `Authorization: Bearer <that value>`. `talon validate` and `talon doctor` (`triggers_serveable`) name every webhook that still needs this before `talon serve` refuses to start. This is also the first release cut by the rebuilt pipeline: `v1.15.4-rc.1` is its rehearsal pre-release (same commit, not for use), and the release notes of v1.15.0–v1.15.3 point here because their showcase manifests cannot drive the customer path.
+The sender then sends `Authorization: Bearer <that value>`. `talon validate` and `talon doctor` (`triggers_serveable`) name every webhook that still needs this before `talon serve` refuses to start. This is also the first release cut by the rebuilt pipeline, rehearsed with `v1.15.4-rc.N` pre-release tags (not for use): the gate refused `v1.15.4-rc.1` because the GHCR packages were private, so no customer could have pulled the published images — the verify job now checks that anonymously — and the release notes of v1.15.0–v1.15.3 point here because their showcase manifests cannot drive the customer path.
 
 ### Fixed
 

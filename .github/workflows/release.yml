@@ -283,6 +283,16 @@ jobs:
             echo "TALON_SHOWCASE_BUNDLE_DIR=$RUNNER_TEMP/customer/talon-openshell-showcase_${VERSION}_linux_amd64"
             echo "TALON_SHOWCASE_RELEASE_MANIFEST=$MANIFEST"
           } >> "$GITHUB_ENV"
+      # Customers have no GHCR login: the README's `docker pull` and the
+      # manifest's agent image (pulled by OpenShell, not by this runner's
+      # docker client) both need PUBLIC packages. A workflow-created package is
+      # private until its visibility is changed once; checked anonymously here
+      # because the login below would mask it (v1.15.4-rc.1 failed on this).
+      - name: Released images are pullable without credentials
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          bash scripts/check-image-public.sh "ghcr.io/dativo-io/talon:${VERSION}" "ghcr.io/dativo-io/talon-openshell-agent:${VERSION}"
       - name: Log in to GHCR (the manifest's agent image, sandbox and supervisor images)
         run: |
           set -euo pipefail
