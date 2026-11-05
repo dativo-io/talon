@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -175,15 +177,32 @@ type establishBody struct {
 	Arguments   json.RawMessage `json:"arguments"`
 }
 
+// decodeActionBody reads the WHOLE body under the size bound and accepts
+// exactly one complete JSON value with no unknown fields and no trailing
+// material (#429). The body is bounded as a whole — a small document followed
+// by an oversized tail is refused, not accepted with the tail unread — and
+// trailing bytes of any kind (a second value, a stray bracket, text) are a
+// refusal; a decoder's More() would read a closing bracket as "no more".
+// Every refusal happens before any domain call: nothing is mutated.
 func decodeActionBody(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(io.LimitReader(r.Body, maxActionBody))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxActionBody))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeActionError(w, http.StatusRequestEntityTooLarge, action.CodeInvalidRequest, fmt.Sprintf("request body exceeds %d bytes", maxActionBody), nil)
+			return false
+		}
+		writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, "unreadable request body", nil)
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, "malformed request body: "+err.Error(), nil)
 		return false
 	}
-	if dec.More() {
-		writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, "trailing data after JSON body", nil)
+	if rest := bytes.TrimSpace(body[dec.InputOffset():]); len(rest) != 0 {
+		writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, "trailing data after JSON body: exactly one JSON value is accepted", nil)
 		return false
 	}
 	return true

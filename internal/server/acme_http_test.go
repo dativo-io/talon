@@ -116,7 +116,7 @@ func newACMEHTTPHarness(t *testing.T) *acmeHTTPHarness {
 }
 
 // do sends one request with a bearer token (agent key or approver credential).
-func (h *acmeHTTPHarness) do(method, path, bearer, body string) (int, map[string]any, string) {
+func (h *acmeHTTPHarness) do(method, path, bearer, body string) (status int, decoded map[string]any, raw string) {
 	h.t.Helper()
 	req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
 	if bearer != "" {
@@ -130,7 +130,7 @@ func (h *acmeHTTPHarness) do(method, path, bearer, body string) (int, map[string
 	return rec.Code, out, rec.Body.String()
 }
 
-func (h *acmeHTTPHarness) doAdmin(method, path, body string) (int, map[string]any) {
+func (h *acmeHTTPHarness) doAdmin(method, path, body string) (status int, decoded map[string]any) {
 	h.t.Helper()
 	req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
 	req.Header.Set("X-Talon-Admin-Key", acme.AdminKey)
@@ -156,7 +156,7 @@ func (h *acmeHTTPHarness) counts() (ops, approvals, attempts, lifecycle int) {
 		{`SELECT COUNT(*) FROM action_attempts`, &attempts},
 		{`SELECT COUNT(*) FROM evidence WHERE invocation_type = 'action_lifecycle'`, &lifecycle},
 	} {
-		require.NoError(h.t, db.QueryRow(q.sql).Scan(q.dst))
+		require.NoError(h.t, db.QueryRowContext(context.Background(), q.sql).Scan(q.dst))
 	}
 	return
 }
@@ -344,8 +344,14 @@ func TestACME_A2_H07_StaleAuthorization_OverHTTP(t *testing.T) {
 	st, res, _ = h.do("GET", "/v1/action-operations/op-stale-pending", acme.BillingKey, "")
 	require.Equal(t, http.StatusOK, st)
 	require.Equal(t, "invalidated", acmeDig(res, "operation", "approval", "status"))
+	// alice (the v2 group) is refused too: she is not in the group the
+	// ORIGINAL approval named (authorization is checked first, so an
+	// unauthorized reviewer learns nothing), and the subject is invalidated.
 	st, res, _ = h.do("POST", "/v1/approvals/"+pendingID+"/decisions", h.reviewer.Alice.Token, `{"decision":"approve","reason":"ok"}`)
-	require.Equal(t, http.StatusConflict, st, "%v", res)
+	require.Equal(t, http.StatusUnauthorized, st, "%v", res)
+	st, res, _ = h.do("GET", "/v1/action-operations/op-stale-pending", acme.BillingKey, "")
+	require.Equal(t, http.StatusOK, st)
+	require.Equal(t, "invalidated", acmeDig(res, "operation", "approval", "status"))
 
 	// The v1-approved operation cannot be claimed under v2.
 	st, res, _ = h.do("POST", "/v1/action-operations/op-stale-approved/attempts", acme.BillingKey, "")
