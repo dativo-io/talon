@@ -530,3 +530,54 @@ func TestACME_A1_C05_ApprovedUnderOldCompanyGroups_CannotDispatchAfterRestart(t 
 	require.Equal(t, int64(0), h.down.calls.Load())
 	require.Equal(t, LifecycleIncomplete, h.verify(t, "op-r5").Verdict, "refused at claim: consistent, not closed")
 }
+
+// A1-U18 (PR #526 review round 3): the legacy use-case digest lines are
+// newline-delimited, and path.Match accepts a literal newline in a pattern,
+// so a forbidden pattern "x\nrule refund actions=… groups=…" (Policy A, no
+// approval) serialized exactly like forbidden_tools: [x] plus a real refund
+// approval rule (Policy B): different authorization semantics, one digest,
+// and an approval established under B would not read as stale under A.
+// Control characters are therefore refused in forbidden patterns of both
+// layers; the reviewer's exact pair is pinned through the public compiler.
+func TestACME_A1_U18_ForbiddenPatternControlCharactersRejected(t *testing.T) {
+	base := func() *policy.Policy { return acme.UseCasePolicy(acme.Support, "http://127.0.0.1:1") }
+
+	// Policy B: forbidden_tools [x] and a real refund approval rule.
+	polB := base()
+	polB.Capabilities = &policy.CapabilitiesConfig{ForbiddenTools: []string{"x"}}
+	polB.Policies.Approvals = &policy.ApprovalsConfig{Rules: map[string]policy.ApprovalRuleConfig{
+		"refund": {Actions: []string{acme.RefundAction}, ApproverGroups: []string{acme.FinanceLeads}},
+	}}
+	apB, err := CompileEffectiveActionPolicy(polB, nil)
+	require.NoError(t, err)
+	require.Equal(t, VerdictRequireApproval, apB.Evaluate(acme.RefundAction).Outcome)
+
+	// Policy A: one forbidden pattern that spells B's rule line; no approval.
+	polA := base()
+	polA.Capabilities = &policy.CapabilitiesConfig{ForbiddenTools: []string{"x\nrule refund actions=" + acme.RefundAction + " groups=" + acme.FinanceLeads}}
+	polA.Policies.Approvals = nil
+	apA, err := CompileEffectiveActionPolicy(polA, nil)
+	require.Error(t, err, "a pattern containing a line break must be refused at compile")
+	require.Nil(t, apA)
+
+	// Every control character is refused, in both layers.
+	for _, bad := range []string{"x\ny", "x\ry", "x\ty", "x\x00y", "\u0085x", "x\u007f"} {
+		t.Run(fmt.Sprintf("use case %q", bad), func(t *testing.T) {
+			p := base()
+			p.Capabilities = &policy.CapabilitiesConfig{ForbiddenTools: []string{bad}}
+			_, err := CompileEffectiveActionPolicy(p, nil)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "control character")
+		})
+		t.Run(fmt.Sprintf("company %q", bad), func(t *testing.T) {
+			_, err := CompileEffectiveActionPolicy(base(), &CompanyActionPolicy{ForbiddenActions: []string{bad}})
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "control character")
+		})
+	}
+	// The gateway glob vocabulary itself is untouched.
+	for _, ok := range []string{"*", "delete_*", "*_customer", "create_refund_?equest", "x[ab]", "DELETE_CUSTOMER"} {
+		_, err := CompileEffectiveActionPolicy(base(), &CompanyActionPolicy{ForbiddenActions: []string{ok}})
+		require.NoError(t, err, ok)
+	}
+}
