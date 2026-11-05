@@ -107,7 +107,7 @@ The agent file is also the agent's **one** policy override on top of the gateway
 | `policies.allowed_providers` | Restricts which gateway providers this agent may reach (empty = all) |
 | `policies.egress` | A second egress boundary evaluated alongside the organization's — a destination must pass **both** (logical intersection); the agent narrows within the org boundary, never widens or replaces it |
 | `capabilities.allowed_tools` | Most-specific non-empty list wins; a tool must additionally pass the org hard allowlist `constraints.allowed_tools` when one is set (#282) |
-| `capabilities.forbidden_tools` | Unioned with the org and provider lists |
+| `capabilities.forbidden_tools` | Unioned with the org and provider lists for gateway tools; also the use case's DENY for its **catalogued actions** (#425). Glob patterns with the gateway vocabulary (`*`, `delete_*`, case-insensitive); a malformed glob is a load error |
 | `capabilities.tool_policy_action` | `filter` or `block`; monotonic at the agent layer — an agent can tighten `filter` → `block` but never loosen `block` → `filter` (#287) |
 | `metadata.team` | Attributes spend and evidence to a team (`talon costs --by-team`) |
 | `metadata.tags` | Telemetry classification (e.g. `copaw` drives OTel/dashboard views) |
@@ -194,6 +194,7 @@ All `TALON_*` environment variables map to fields in `talon.config.yaml`. Enviro
 | `TALON_SECRETS_KEY` | AES-256 key: 32 raw bytes or 64 hex chars (256 bits). | Auto-derived per machine |
 | `TALON_SIGNING_KEY` | HMAC key: >=32 raw bytes or 64+ hex chars (>=256 bits). | Auto-derived per machine |
 | `TALON_DEFAULT_POLICY` | Filename of the agent policy file. | `agent.talon.yaml` |
+| `TALON_GATEWAY_CONFIG` | Gateway config file read by native-only `talon serve` and the offline commands (`talon validate`, `talon actions`, `talon agents`, `talon costs`) for the organization baseline and the company action policy (#425). An absent file means no company policy; a present but invalid file is an error for every one of them. | `talon.config.yaml` |
 | `TALON_MAX_ATTACHMENT_MB` | Max attachment size in MB. | `10` |
 | `TALON_OLLAMA_BASE_URL` | Ollama endpoint. | `http://localhost:11434` |
 | `TALON_ADMIN_KEY` | Admin key for control-plane and dashboard (serve only). | — |

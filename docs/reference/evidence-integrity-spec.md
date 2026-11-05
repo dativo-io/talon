@@ -253,7 +253,9 @@ nested fields are:
   (`operation_id`, `operation_ref`, `action`, `digest`, `schema_digest`,
   `policy_digest`, `binding_profile`, `execution_profile`,
   `destination_id`, `identity_source`), the separate state axes (`verdict`,
-  `matched_rule_id`, `operation_status`, `approval_id`, `approval_status`,
+  `matched_rule_id`, `matched_rule_source` (`company` | `use_case`, the
+  layer whose rule produced the verdict, derived from the persisted rule
+  id — #425), `operation_status`, `approval_id`, `approval_status`,
   `approver_groups`, `approval_expires_at`), the authenticated reviewer
   (`reviewer_principal`, `reviewer_group`, `decision_reason` — never a
   display name from a request), and attempt facts (`attempt_id`,
