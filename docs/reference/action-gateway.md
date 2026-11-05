@@ -55,9 +55,33 @@ policies:
         approver_groups: [support-leads]
 ```
 
-Rules: `DENY > REQUIRE_APPROVAL > ALLOW`. An action absent from the catalog is `action_not_found` (never executed). Plaintext `http` destinations are accepted for loopback only. Credentials never appear in a definition; the destination identity (`method + URL`) is bound into the digest.
+Rules: `DENY > REQUIRE_APPROVAL > ALLOW`, over the **effective** action policy — the company policy below composed with this file's rules. An action absent from the catalog is `action_not_found` (never executed). Plaintext `http` destinations are accepted for loopback only. Credentials never appear in a definition; the destination identity (`method + URL`) is bound into the digest.
 
 **Schemas** are JSON Schema **2020-12** compiled **offline** (santhosh-tekuri/jsonschema v6). The dialect is pinned: an absent `$schema` compiles as 2020-12, the canonical `https://json-schema.org/draft/2020-12/schema` URI is accepted, and any other dialect (`draft-07`, `2019-09`, a custom URI) is refused at catalog compile. Any `$ref` outside the document (`http`, `https`, `file`, URNs) and any `$id` are rejected at catalog compile; nothing is ever fetched or read during compilation or validation. Supported subset covered by conformance tests: `type`, `properties`, `required`, `additionalProperties`, `enum`, `const`, `minimum`/`maximum`, `minLength`/`maxLength`, `pattern`, `items`/`maxItems`, nested objects, in-document `$ref`/`$defs`.
+
+## Company action policy (`talon.config.yaml`, #425)
+
+One operator-owned policy governs the catalogued actions of **every** AI use case. It lives in the gateway block of `talon.config.yaml` and reuses the organization constraints vocabulary:
+
+```yaml
+gateway:
+  organization_policy:
+    constraints:
+      forbidden_tools: [delete_customer]          # company DENY: catalogued actions AND gateway tools
+      action_approvals:                            # company approval requirements
+        rules:
+          refund_authorization:
+            actions: [create_refund_request]       # exact names or trailing-* prefixes
+            approver_groups: [finance_leads]       # tenant-scoped approver principals' groups
+```
+
+**Composition** (`action.CompileEffectiveActionPolicy`, the one compiler every surface uses — serve on both serving modes, `talon validate`, `talon actions`): the company's `forbidden_tools` and `action_approvals.rules` are compiled first, then the use case's `capabilities.forbidden_tools` and `policies.approvals.rules`. The effective verdict is `DENY > REQUIRE_APPROVAL > ALLOW`. A use case **may add** a DENY or an approval requirement the company does not have; it **can never weaken** a company restriction: a company DENY stands whatever the agent file says, and a use-case rule that matches an action a company rule matches must name the **same** approver groups — different groups are an ambiguous authorization requirement and the configuration is refused at load (`talon validate`, `talon serve` startup), never resolved by rule-id order. The same refusal applies to two overlapping rules of one layer. A catalogued action no rule matches stays `ALLOW`; nothing is invented.
+
+**Provenance.** Every compiled rule and every verdict names its layer: company rules carry the id `company:<rule>` (`matched_rule_id` in projections and `matched_rule_id` / `matched_rule_source: company | use_case` in every lifecycle record); `talon actions list/show` print each rule's `source` and the `verdict_source`. The approval-relevant policy digest (`policy_digest`) covers the material rules of **both** layers; without a company policy it is byte-identical to the pre-#425 digest.
+
+**Where it applies.** `talon serve --gateway` reads it from the gateway config it already loads. Native-only `talon serve` reads `TALON_GATEWAY_CONFIG` (default `talon.config.yaml`) when the file exists, so the company policy is authoritative for direct Action Gateway traffic on that path too; a present but invalid file is a startup error — a company policy that fails to load is never treated as absent. `--proxy-quickstart` serves no company policy (it accepts no gateway config). Without a `gateway:` block, or with neither `forbidden_tools` nor `action_approvals`, no company action policy is configured and per-use-case behaviour is unchanged.
+
+**Activation is a restart boundary.** The company policy is loaded once at process start and frozen into every runtime generation the process builds; agent-file hot reloads keep that snapshot. A changed company policy activates at the next restart as a new effective generation (the generation id folds in the company digest): a pending approval established before it is invalidated at its next decision (`409 approval_binding_stale`, approval `invalidated`), an approved-but-unclaimed operation is refused at claim with the same code, historical evidence stays valid under the policy digest it was signed with, and the changed requirement needs a new operation.
 
 ## Trusted MCP sources (`actions.sources`)
 
@@ -128,7 +152,7 @@ Runtime routes take the AI use case's **agent key** (`Authorization: Bearer <age
 
 | Route | Result |
 |---|---|
-| `POST /v1/action-operations` `{operation_id, action, arguments}` | `201` allowed (`operation_status: authorized`), `202` approval pending, `403` denied (persisted, replay-stable), `200` exact replay, `409 operation_conflict`, `404 action_not_found`, `422 action_schema_invalid` / `operation_id_required`, `501 execution_unsupported` (MCP-sourced definition: catalogued, no executor on this adapter until #431; nothing bound or persisted) |
+| `POST /v1/action-operations` `{operation_id, action, arguments}` | body: at most 512 KiB as a whole, exactly one JSON value, no unknown fields, no trailing material (`400 invalid_request`; `413 invalid_request` when over the bound) — refused before any domain call; `201` allowed (`operation_status: authorized`), `202` approval pending, `403` denied (persisted, replay-stable), `200` exact replay, `409 operation_conflict`, `404 action_not_found`, `422 action_schema_invalid` / `operation_id_required`, `501 execution_unsupported` (MCP-sourced definition: catalogued, no executor on this adapter until #431; nothing bound or persisted) |
 | `GET /v1/action-operations/{operation_id}` | safe projection (verdict, statuses, approval, latest attempt, reviewer projection — never raw arguments) |
 | `POST /v1/action-operations/{operation_id}/attempts` | claim + arm + dispatch; `200` with `attempt.status` `succeeded` / `failed` / `unknown` and the observation facts `dispatch_armed`, `request_written`, `response_observed`, `http_status`; `409 approval_pending` (with `Retry-After`), `409 operation_already_succeeded`, `409 operation_outcome_unknown`, `409 attempt_already_in_progress`, `409 approval_binding_stale`, `409 approval_expired`, `403 policy_denied` / `approval_required` / `approval_rejected`, `409 payload_unavailable` |
 | `GET /v1/approvals/{approval_id}` | approval + operation projection (owner agent key) |
@@ -160,7 +184,8 @@ Redirects are never followed: the approved destination is the only destination a
 - **REQUIRE_APPROVAL** → zero calls while pending; a claim returns `approval_pending`.
 - **Decision ≠ execution.** An approved decision changes approval state only; dispatch count stays 0 until a runtime claim. Reject/expire/invalidate close the operation (`cancelled`) and purge the payload.
 - **Tenant-scoped approval, opaque ids.** A `support-leads` credential of tenant A presenting a tenant-B approval id gets the same `404 not_found` as for a nonexistent id; tenant B's operation version, lifecycle sequence, evidence count and approval status are unchanged and dispatch count stays 0 (owner resolution is scoped by the principal's trusted tenant before any operation is loaded; `Decide` re-checks the tenant as defense in depth).
-- **Revalidation at claim and at decision.** Current definition digest and approval-relevant policy digest must match; a current DENY blocks even an approved operation; first-attempt claim checks approval expiry; the sealed payload must open.
+- **Revalidation at claim and at decision.** Current definition digest and approval-relevant policy digest must match at **both** points: a reviewer decision on a pending approval whose policy (company or use case: groups, forbidden actions, lifetime) changed since establishment is refused and the approval is invalidated with signed evidence, never reinterpreted under the new rule; a current DENY blocks even an approved operation; first-attempt claim checks approval expiry; the sealed payload must open.
+- **Company policy reaches every use case and cannot be weakened.** The shared ACME scenario (`internal/testutil/acme`, test ids `A1-*`/`A2-*`/`A3-*`) proves it at every level: the pure compiler, the service, runtime generation (company digest in the generation id, frozen across reloads, malformed policy never activates), the real router, and the built binary across a restart with a changed company rule (`scripts/action-smoke.sh`).
 - **At most one effect.** Concurrent claims yield exactly one attempt; a succeeded operation is permanently closed; the dispatcher never replays at the transport level.
 - **Crash recovery.** Interrupted after claim but before arm → retryable `failed/not_dispatched`; after arm (before the call, after the write, or after the response) → `unknown`, payload purged, no retry.
 - **Evidence.** Every transition is a signed `action_lifecycle` record (spec 1.12) whose generic `status` is explicit (`queued`, `running`, `completed`, `failed`, `denied`, `cancelled`, `unknown`) — an ambiguous outcome is `unknown` at both the lifecycle and the generic level, never the empty-means-completed default; `talon audit verify --operation <id>` verifies signatures and lifecycle consistency (arm before completion, observed write + response for success, no attempt after close, reviewer tenant = operation tenant); tampered fields and impossible orders fail.
