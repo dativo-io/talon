@@ -49,8 +49,19 @@ var (
 	ErrLegacyCredential = errors.New("legacy approver credential (no tenant scope): re-issue with `talon approver add --tenant <id> --groups <g>`")
 
 	tenantRe = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
-	groupRe  = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+	groupRe  = regexp.MustCompile(GroupPattern)
 )
+
+// GroupPattern is the grammar of an approver group name. It is the ONE
+// grammar for groups: the local approver store accepts it for principals,
+// and the action-policy compiler requires it of every approver_groups entry
+// in the company and use-case layers (#425), so a policy can never name a
+// group no principal can hold and the policy digest's comma-separated group
+// lists stay unambiguous.
+const GroupPattern = `^[a-z0-9][a-z0-9_-]{0,63}$`
+
+// ValidGroup reports whether g is a legal approver group name.
+func ValidGroup(g string) bool { return groupRe.MatchString(g) }
 
 // Principal is the normalized authenticated human approver.
 type Principal struct {

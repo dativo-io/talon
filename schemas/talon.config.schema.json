@@ -711,8 +711,8 @@
                           "approver_groups": {
                             "type": "array",
                             "minItems": 1,
-                            "items": {"type": "string"},
-                            "description": "Approver groups of tenant-scoped approver principals (talon approver add --groups)."
+                            "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
+                            "description": "Approver groups of tenant-scoped approver principals (talon approver add --groups); same grammar as the approver store, so a rule can only name a group a reviewer can hold."
                           }
                         }
                       }

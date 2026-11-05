@@ -1,6 +1,7 @@
 package action
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"regexp"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dativo-io/talon/internal/approver"
 	"github.com/dativo-io/talon/internal/policy"
 )
 
@@ -107,9 +109,7 @@ func (c *CompanyActionPolicy) Digest() string {
 	if err != nil {
 		return ""
 	}
-	var b strings.Builder
-	writeCompanyLines(&b, c, rules)
-	return Digest([]byte(b.String()))
+	return Digest(companyCanonical(sortedUnique(c.ForbiddenActions), rules))
 }
 
 func (c *CompanyActionPolicy) compiledRules() ([]ApprovalRule, error) {
@@ -136,11 +136,50 @@ func sortedUnique(in []string) []string {
 	return out
 }
 
-func writeCompanyLines(b *strings.Builder, c *CompanyActionPolicy, rules []ApprovalRule) {
-	fmt.Fprintf(b, "company forbidden=%s\n", strings.Join(sortedUnique(c.ForbiddenActions), ","))
+// companyEncoding is the canonical, typed encoding of the material company
+// rules (PR #526 review round 2). Lists are JSON arrays, never joined
+// strings: joining with commas let ["a,b"] and ["a","b"] — one literal glob
+// that matches nothing versus two patterns, or one impossible group versus
+// two groups — hash identically, so a materially changed company policy
+// could keep the digest an old approval was bound to. The encoding is
+// versioned so a future change is a new digest, never a silent collision.
+type companyEncoding struct {
+	Version   int                   `json:"v"`
+	Forbidden []string              `json:"forbidden"`
+	Rules     []companyRuleEncoding `json:"rules"`
+}
+
+type companyRuleEncoding struct {
+	ID      string   `json:"id"`
+	Actions []string `json:"actions"`
+	Groups  []string `json:"groups"`
+}
+
+// companyCanonical encodes already-normalized company rules (sorted unique
+// forbidden patterns; rules sorted by id with sorted actions and groups) as
+// deterministic JSON. encoding/json writes struct fields in declaration
+// order and escapes every string, so the bytes are a function of the
+// values alone and no value can imitate a delimiter. Empty lists encode as
+// [] (never null) so "no patterns" has exactly one spelling.
+func companyCanonical(forbidden []string, rules []ApprovalRule) []byte {
+	enc := companyEncoding{Version: 1, Forbidden: nonNil(forbidden), Rules: make([]companyRuleEncoding, 0, len(rules))}
 	for _, r := range rules {
-		fmt.Fprintf(b, "company rule %s actions=%s groups=%s\n", r.ID, strings.Join(r.Actions, ","), strings.Join(r.ApproverGroups, ","))
+		enc.Rules = append(enc.Rules, companyRuleEncoding{ID: r.ID, Actions: nonNil(r.Actions), Groups: nonNil(r.ApproverGroups)})
 	}
+	out, err := json.Marshal(enc)
+	if err != nil {
+		// Only invalid UTF-8 can fail here; such a string never passes
+		// validation, and a digest of "" would still differ from any policy.
+		panic("company policy encoding: " + err.Error())
+	}
+	return out
+}
+
+func nonNil(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
 }
 
 // ApprovalRule is one compiled approval requirement.
@@ -240,10 +279,11 @@ func CompileEffectiveActionPolicy(pol *policy.Policy, company *CompanyActionPoli
 		fmt.Fprintf(&b, "rule %s actions=%s groups=%s\n", r.ID, strings.Join(r.Actions, ","), strings.Join(r.ApproverGroups, ","))
 	}
 	if company != nil {
-		var cb strings.Builder
-		writeCompanyLines(&cb, company, companyRules)
-		b.WriteString(cb.String())
-		ap.CompanyDigest = Digest([]byte(cb.String()))
+		cb := companyCanonical(sortedUnique(company.ForbiddenActions), companyRules)
+		b.WriteString("company=")
+		b.Write(cb)
+		b.WriteByte('\n')
+		ap.CompanyDigest = Digest(cb)
 	}
 	ap.Digest = Digest([]byte(b.String()))
 	return ap, nil
@@ -301,6 +341,11 @@ func compileRule(id, source, where string, actions, groups []string) (ApprovalRu
 	}
 	if len(actions) == 0 || len(groups) == 0 {
 		return ApprovalRule{}, fmt.Errorf("%s: actions and approver_groups are required", where)
+	}
+	for _, g := range groups {
+		if !approver.ValidGroup(g) {
+			return ApprovalRule{}, fmt.Errorf("%s: invalid approver group %q (allowed: %s — the grammar of local approver principals' groups, so a rule can only name a group a reviewer can hold)", where, g, approver.GroupPattern)
+		}
 	}
 	if source == PolicySourceCompany {
 		id = companyRulePrefix + id
@@ -460,6 +505,13 @@ func validateForbiddenPatterns(where string, patterns []string) error {
 	for _, f := range patterns {
 		if strings.TrimSpace(f) == "" {
 			return fmt.Errorf("%s: empty pattern", where)
+		}
+		// No tool or action name contains a comma, so a comma in a pattern
+		// is always a mistake (one literal pattern written as a list) — and
+		// it keeps the use case's legacy comma-separated digest line
+		// unambiguous without changing any existing digest.
+		if strings.Contains(f, ",") {
+			return fmt.Errorf("%s: pattern %q contains a comma; write one pattern per list entry", where, f)
 		}
 		if _, err := path.Match(f, ""); err != nil {
 			return fmt.Errorf("%s: invalid glob pattern %q: %w", where, f, err)
