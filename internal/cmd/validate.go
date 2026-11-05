@@ -36,10 +36,15 @@ var validateCmd = &cobra.Command{
 		defer span.End()
 
 		// Resolution order: explicit -f wins → explicit --dir → agents_dir
-		// from talon.config.yaml → the default single file. A config-load
-		// failure only degrades to single-file mode; it never blocks
-		// validating an explicit target.
-		osc := offlineServeContextFromGateway()
+		// from talon.config.yaml → the default single file. An operator
+		// config-load failure only degrades to single-file mode; a gateway
+		// config that is present but invalid fails the validation (its
+		// company action policy would be missing from the result).
+		osc, err := offlineServeContextFromGateway()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ %s\n", err)
+			return err
+		}
 		file := validateFile
 		if file == "" {
 			dir := validateDir

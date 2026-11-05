@@ -6,8 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/rs/zerolog/log"
-
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/trigger"
@@ -64,24 +62,26 @@ func serveCompanyActionPolicy(gatewayMode, quickstart bool, path string, preload
 // offlineServeContext is what the offline commands learn from the gateway
 // config about how serve would run: the trigger definition rules (#479) and
 // the company action policy (#425). An absent file means native-only rules
-// and no company policy; a present but invalid file is doctor's finding —
-// the offline command warns and proceeds without it.
+// and no company policy. A PRESENT but invalid file is an error, exactly as
+// for serve: validating or inspecting "without" the company policy
+// production would refuse to load is a misleading result, never a success
+// (PR #526 review P2).
 type offlineServeContext struct {
 	Triggers trigger.ServeRules
 	Company  *action.CompanyActionPolicy
 }
 
-func offlineServeContextFromGateway() offlineServeContext {
+func offlineServeContextFromGateway() (offlineServeContext, error) {
 	path := gatewayConfigPath("")
 	gwCfg, err := gateway.LoadGatewayConfig(path)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			log.Warn().Err(err).Str("path", path).Msg("gateway config present but invalid; validating with native-only trigger rules and WITHOUT the company action policy (run 'talon doctor'; serve refuses to start on this file)")
+		if errors.Is(err, os.ErrNotExist) {
+			return offlineServeContext{}, nil
 		}
-		return offlineServeContext{}
+		return offlineServeContext{}, fmt.Errorf("gateway config %s is present but invalid: %w — fix it (serve refuses to start on this file); a company action policy that fails to load is never ignored", path, err)
 	}
 	return offlineServeContext{
 		Triggers: trigger.ServeRules{GatewayServed: gwCfg.Enabled},
 		Company:  gwCfg.OrganizationPolicy.CompanyActionPolicy(path + ":gateway.organization_policy"),
-	}
+	}, nil
 }

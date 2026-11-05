@@ -291,7 +291,11 @@ func cliActionCatalog(ctx context.Context, agentName, policyPath string) (*cliCa
 	}
 	// The same company policy serve applies (#425), so the inspected
 	// verdicts and rules are the ones the gateway would enforce.
-	ap, err := action.CompileEffectiveActionPolicy(ca.Policy, offlineServeContextFromGateway().Company)
+	osc, err := offlineServeContextFromGateway()
+	if err != nil {
+		return nil, err
+	}
+	ap, err := action.CompileEffectiveActionPolicy(ca.Policy, osc.Company)
 	if err != nil {
 		return nil, fmt.Errorf("effective action policy: %w", err)
 	}

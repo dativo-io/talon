@@ -2,6 +2,8 @@ package action
 
 import (
 	"fmt"
+	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -27,7 +29,24 @@ const (
 // companyRulePrefix namespaces company rule ids inside the effective policy
 // so a company rule and a use-case rule can never collide and the rule id
 // alone (in projections, approvals and evidence) carries its provenance.
+// Operator-chosen ids follow ruleIDRe and therefore never contain ":", so
+// the provenance namespaces (company:, use_case:) cannot be claimed by a
+// rule of either layer — provenance derived from a persisted rule id is
+// authoritative, not a hint.
 const companyRulePrefix = PolicySourceCompany + ":"
+
+// Typed rule ids of a DENY: a forbidden-action verdict carries the layer that
+// declared the pattern as its rule id, so a persisted operation, its
+// projection and its signed evidence keep the structured provenance of the
+// denial — not only the textual reason.
+const (
+	CompanyDenyRuleID = companyRulePrefix + "forbidden_tools"
+	UseCaseDenyRuleID = PolicySourceUseCase + ":forbidden_tools"
+)
+
+// ruleIDRe is the grammar of an operator-chosen approval rule id in either
+// layer (the agent-file schema's rule-id pattern): no ":" is possible.
+var ruleIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // DefaultApprovalLifetime applies when policies.approvals.expires_after is unset.
 const DefaultApprovalLifetime = time.Hour
@@ -42,8 +61,11 @@ type CompanyActionPolicy struct {
 	// Source is the stable identifier of where the policy was loaded from
 	// (descriptive provenance; never material to any digest).
 	Source string
-	// ForbiddenActions are company-wide DENY patterns (exact names or
-	// trailing-* prefixes) no use case can lift.
+	// ForbiddenActions are company-wide DENY patterns no use case can lift.
+	// They are gateway.organization_policy.constraints.forbidden_tools — the
+	// list that also governs LLM-gateway tools — and keep that list's
+	// established glob semantics (path.Match, case-insensitive): "*",
+	// "delete_*", "*_customer", exact names.
 	ForbiddenActions []string
 	// Rules are the company-wide approval requirements by operator-chosen id.
 	Rules map[string]CompanyApprovalRule
@@ -57,16 +79,15 @@ type CompanyApprovalRule struct {
 }
 
 // Validate fails closed on a malformed company policy: a rule needs actions
-// and approver groups, every pattern must be a legal action pattern, and two
-// company rules that can match one action must name the same groups.
+// and approver groups, every forbidden pattern must be a legal glob, every
+// approval pattern a legal action pattern, and two company rules that can
+// match one action must name the same groups.
 func (c *CompanyActionPolicy) Validate() error {
 	if c == nil {
 		return nil
 	}
-	for _, f := range c.ForbiddenActions {
-		if !actionNameRe.MatchString(strings.TrimSuffix(f, "*")) {
-			return fmt.Errorf("forbidden_tools: invalid action pattern %q", f)
-		}
+	if err := validateForbiddenPatterns("forbidden_tools", c.ForbiddenActions); err != nil {
+		return err
 	}
 	rules, err := c.compiledRules()
 	if err != nil {
@@ -100,7 +121,7 @@ func (c *CompanyActionPolicy) compiledRules() ([]ApprovalRule, error) {
 	out := make([]ApprovalRule, 0, len(ids))
 	for _, id := range ids {
 		r := c.Rules[id]
-		rule, err := compileRule(companyRulePrefix+id, PolicySourceCompany, "organization_policy.constraints.action_approvals.rules."+id, r.Actions, r.ApproverGroups)
+		rule, err := compileRule(id, PolicySourceCompany, "organization_policy.constraints.action_approvals.rules."+id, r.Actions, r.ApproverGroups)
 		if err != nil {
 			return nil, err
 		}
@@ -237,6 +258,9 @@ func compileUseCaseLayer(ap *ApprovalPolicy, pol *policy.Policy) ([]string, erro
 	}
 	var useCaseForbidden []string
 	if pol.Capabilities != nil {
+		if err := validateForbiddenPatterns("capabilities.forbidden_tools", pol.Capabilities.ForbiddenTools); err != nil {
+			return nil, err
+		}
 		useCaseForbidden = sortedUnique(pol.Capabilities.ForbiddenTools)
 		for _, f := range useCaseForbidden {
 			ap.forbidden = append(ap.forbidden, forbiddenPattern{Pattern: f, Source: PolicySourceUseCase})
@@ -270,9 +294,16 @@ func compileUseCaseLayer(ap *ApprovalPolicy, pol *policy.Policy) ([]string, erro
 }
 
 // compileRule validates and normalizes one approval rule of either layer.
+// id is the operator-chosen id; a company rule is namespaced here.
 func compileRule(id, source, where string, actions, groups []string) (ApprovalRule, error) {
+	if !ruleIDRe.MatchString(id) {
+		return ApprovalRule{}, fmt.Errorf("%s: invalid rule id %q (allowed: %s; the %q and %q prefixes are reserved provenance namespaces)", where, id, ruleIDRe.String(), companyRulePrefix, PolicySourceUseCase+":")
+	}
 	if len(actions) == 0 || len(groups) == 0 {
 		return ApprovalRule{}, fmt.Errorf("%s: actions and approver_groups are required", where)
+	}
+	if source == PolicySourceCompany {
+		id = companyRulePrefix + id
 	}
 	rule := ApprovalRule{ID: id, Source: source, Actions: sortedUnique(actions), ApproverGroups: sortedUnique(groups)}
 	for _, a := range rule.Actions {
@@ -356,8 +387,8 @@ type Verdict struct {
 // both layers declare is attributed to the company.
 func (ap *ApprovalPolicy) Evaluate(action string) Verdict {
 	for _, f := range ap.forbidden {
-		if matchAction(f.Pattern, action) {
-			return Verdict{Outcome: VerdictDeny, Source: f.Source, Reason: "action forbidden by " + f.Source + " policy (forbidden_tools: " + f.Pattern + ")"}
+		if matchForbidden(f.Pattern, action) {
+			return Verdict{Outcome: VerdictDeny, Source: f.Source, RuleID: denyRuleID(f.Source), Reason: "action forbidden by " + f.Source + " policy (forbidden_tools: " + f.Pattern + ")"}
 		}
 	}
 	for _, r := range ap.Rules {
@@ -389,8 +420,10 @@ func (ap *ApprovalPolicy) MatchingRules(action string) []ApprovalRule {
 }
 
 // RuleSource reports the provenance a compiled rule id carries
-// (PolicySourceCompany for company rules, PolicySourceUseCase otherwise, ""
-// for no rule).
+// (PolicySourceCompany for company rules and company denials,
+// PolicySourceUseCase otherwise, "" for no rule). Authoritative because no
+// operator-chosen id can contain ":" (ruleIDRe), so only the compiler
+// produces namespaced ids.
 func RuleSource(ruleID string) string {
 	switch {
 	case ruleID == "":
@@ -402,9 +435,42 @@ func RuleSource(ruleID string) string {
 	}
 }
 
+// matchAction matches an approval-rule pattern (exact name or trailing-*
+// prefix; the vocabulary patternsOverlap reasons about).
 func matchAction(pattern, name string) bool {
 	if strings.HasSuffix(pattern, "*") {
 		return strings.HasPrefix(name, strings.TrimSuffix(pattern, "*"))
 	}
 	return pattern == name
+}
+
+// matchForbidden matches a forbidden_tools pattern with the gateway tool
+// filter's semantics (path.Match, case-insensitive): the same list denies
+// gateway tools and catalogued actions, so it must mean the same thing on
+// both. Patterns are validated at compile; a malformed one never reaches
+// here.
+func matchForbidden(pattern, name string) bool {
+	ok, err := path.Match(strings.ToLower(pattern), strings.ToLower(name))
+	return err == nil && ok
+}
+
+// validateForbiddenPatterns fails closed on a malformed glob: a pattern that
+// could never match would silently lift a denial.
+func validateForbiddenPatterns(where string, patterns []string) error {
+	for _, f := range patterns {
+		if strings.TrimSpace(f) == "" {
+			return fmt.Errorf("%s: empty pattern", where)
+		}
+		if _, err := path.Match(f, ""); err != nil {
+			return fmt.Errorf("%s: invalid glob pattern %q: %w", where, f, err)
+		}
+	}
+	return nil
+}
+
+func denyRuleID(source string) string {
+	if source == PolicySourceCompany {
+		return CompanyDenyRuleID
+	}
+	return UseCaseDenyRuleID
 }

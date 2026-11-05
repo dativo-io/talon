@@ -298,3 +298,115 @@ func TestACME_A1_U12_ActionNotInCatalog_NeverExecutable(t *testing.T) {
 	require.Equal(t, CodeActionNotFound, CodeOf(err))
 	require.Equal(t, int64(0), h.down.calls.Load())
 }
+
+// ---- PR #526 review round 1 -------------------------------------------------
+
+// A1-U13 (review P1): company forbidden_tools keep the gateway's established
+// glob semantics (path.Match, case-insensitive) — the SAME list governs
+// gateway tools and catalogued actions, so "*", "delete_*" and "*_customer"
+// are legal company patterns and deny what the gateway denies.
+func TestACME_A1_U13_CompanyForbiddenToolsKeepGatewayGlobSemantics(t *testing.T) {
+	cases := []struct {
+		pattern string
+		denied  []string
+		allowed []string
+	}{
+		{"*", []string{acme.RefundAction, acme.DeleteAction, acme.NotifyAction}, nil},
+		{"delete_*", []string{acme.DeleteAction}, []string{acme.RefundAction, acme.NotifyAction}},
+		{"*_customer", []string{acme.DeleteAction, acme.NotifyAction}, []string{acme.RefundAction}},
+		{acme.DeleteAction, []string{acme.DeleteAction}, []string{acme.RefundAction, acme.NotifyAction}},
+		{"DELETE_CUSTOMER", []string{acme.DeleteAction}, []string{acme.RefundAction, acme.NotifyAction}},
+		{"create_refund_?equest", []string{acme.RefundAction}, []string{acme.DeleteAction, acme.NotifyAction}},
+	}
+	for _, tc := range cases {
+		t.Run("company/"+tc.pattern, func(t *testing.T) {
+			company := &CompanyActionPolicy{Source: "cfg", ForbiddenActions: []string{tc.pattern}}
+			require.NoError(t, company.Validate(), "a legal gateway glob must be a legal company pattern")
+			ap, err := CompileEffectiveActionPolicy(acme.UseCasePolicy(acme.Support, "http://127.0.0.1:1"), company)
+			require.NoError(t, err)
+			for _, a := range tc.denied {
+				v := ap.Evaluate(a)
+				require.Equal(t, VerdictDeny, v.Outcome, a)
+				require.Equal(t, PolicySourceCompany, v.Source, a)
+			}
+			for _, a := range tc.allowed {
+				require.NotEqual(t, VerdictDeny, ap.Evaluate(a).Outcome, a)
+			}
+		})
+		t.Run("use_case/"+tc.pattern, func(t *testing.T) {
+			ap := compileACME(t, acme.Support, nil, func(p *policy.Policy) {
+				p.Capabilities = &policy.CapabilitiesConfig{ForbiddenTools: []string{tc.pattern}}
+			})
+			for _, a := range tc.denied {
+				v := ap.Evaluate(a)
+				require.Equal(t, VerdictDeny, v.Outcome, a)
+				require.Equal(t, PolicySourceUseCase, v.Source, a)
+			}
+			for _, a := range tc.allowed {
+				require.NotEqual(t, VerdictDeny, ap.Evaluate(a).Outcome, a)
+			}
+		})
+	}
+}
+
+// A1-U14 (review P1): a malformed glob never silently matches nothing — it
+// is refused at compile in either layer (fail closed on a malformed policy).
+func TestACME_A1_U14_ForbiddenToolsBadGlobFailsClosed(t *testing.T) {
+	company := &CompanyActionPolicy{Source: "cfg", ForbiddenActions: []string{"delete_["}}
+	err := company.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forbidden_tools")
+	_, err = CompileEffectiveActionPolicy(acme.UseCasePolicy(acme.Support, "http://127.0.0.1:1"), company)
+	require.Error(t, err)
+	pol := acme.UseCasePolicy(acme.Support, "http://127.0.0.1:1")
+	pol.Capabilities = &policy.CapabilitiesConfig{ForbiddenTools: []string{"delete_["}}
+	_, err = CompileEffectiveActionPolicy(pol, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forbidden_tools")
+}
+
+// A1-U15 (review P1): rule-id provenance cannot be spoofed. A use-case rule
+// may not name itself into the company namespace, and a DENY carries a
+// typed rule id whose provenance RuleSource reports.
+func TestACME_A1_U15_RuleIDProvenanceCannotBeSpoofed(t *testing.T) {
+	pol := acme.UseCasePolicy(acme.Support, "http://127.0.0.1:1")
+	pol.Policies.Approvals = &policy.ApprovalsConfig{Rules: map[string]policy.ApprovalRuleConfig{
+		"company:" + acme.CompanyRuleID: {Actions: []string{acme.RefundAction}, ApproverGroups: []string{acme.SupportLeads}},
+	}}
+	_, err := CompileEffectiveActionPolicy(pol, nil)
+	require.Error(t, err, "a use-case rule must not be able to claim company provenance")
+	require.Contains(t, err.Error(), "company:"+acme.CompanyRuleID)
+
+	ap := compileACME(t, acme.Support, acmeCompany(1), nil)
+	deny := ap.Evaluate(acme.DeleteAction)
+	require.Equal(t, VerdictDeny, deny.Outcome)
+	require.NotEmpty(t, deny.RuleID, "a DENY must carry a typed rule id so persisted operations keep their provenance")
+	require.Equal(t, PolicySourceCompany, RuleSource(deny.RuleID))
+	ap = compileACME(t, acme.Support, nil, func(p *policy.Policy) {
+		p.Capabilities = &policy.CapabilitiesConfig{ForbiddenTools: []string{acme.NotifyAction}}
+	})
+	deny = ap.Evaluate(acme.NotifyAction)
+	require.Equal(t, VerdictDeny, deny.Outcome)
+	require.Equal(t, PolicySourceUseCase, RuleSource(deny.RuleID))
+	require.Equal(t, PolicySourceCompany, RuleSource(acmeCompanyRuleID))
+	require.Equal(t, PolicySourceUseCase, RuleSource(acme.UseCaseRuleID))
+	require.Equal(t, "", RuleSource(""))
+}
+
+// A1-C04 (review P1): a company DENY keeps its structured provenance in the
+// persisted operation, its projection and every signed lifecycle record —
+// not only in the textual reason.
+func TestACME_A1_C04_CompanyDenyProvenance_ProjectionAndEvidence(t *testing.T) {
+	h := acmeCompanyHarness(t, acme.Support, 1)
+	res := h.establish(t, "op-d2", acme.DeleteAction, `{"customer_id":"c-9"}`)
+	require.Equal(t, VerdictDeny, res.Operation.Verdict)
+	require.Equal(t, PolicySourceCompany, res.Operation.MatchedRuleSource, "projection must attribute the DENY to the company")
+	require.Equal(t, PolicySourceCompany, RuleSource(res.Operation.MatchedRuleID))
+	recs := h.lifecycle(t, "op-d2")
+	require.NotEmpty(t, recs)
+	for _, r := range recs {
+		require.Equal(t, PolicySourceCompany, r.ActionLifecycle.MatchedRuleSource, "signed evidence must attribute the DENY to the company")
+		require.Equal(t, res.Operation.MatchedRuleID, r.ActionLifecycle.MatchedRuleID)
+	}
+	require.Equal(t, int64(0), h.down.calls.Load())
+}
