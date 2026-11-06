@@ -215,7 +215,7 @@ jq 'del(.artifacts.talon)' "$m" >"$m.tmp" && mv "$m.tmp" "$m"
 publish "$WORK/n4" "$TAG"
 verify "$TAG" --skip-images
 expect_fail "$OUT" "$RC" "has no artifacts.talon entry" "N4 manifest without talon entry must fail"
-pass "N4 a manifest without artifacts.talon (the pre-v1.15.4 shape) fails"
+pass "N4 a manifest without artifacts.talon (the pre-v1.16.0 shape) fails"
 
 # ---------------------------------------------------------------- N5 the archive's talon reports another version than the tag
 tamper_dir n5

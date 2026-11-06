@@ -1,7 +1,20 @@
-FROM alpine:3.19
+# Release image for ghcr.io/dativo-io/talon (built by goreleaser, .goreleaser.yml
+# `dockers`): goreleaser supplies the prebuilt `talon` binary in the context.
+#
+# That binary comes from goreleaser-cross with CGO_ENABLED=1 (mattn/go-sqlite3)
+# and is dynamically linked against glibc (NEEDED libc.so.6, symbols up to
+# GLIBC_2.34). The runtime base must therefore carry glibc: on alpine (musl)
+# the image pulls fine and then fails with `exec /usr/local/bin/talon: no such
+# file or directory`, which is how v1.16.0-rc.1 failed its release gate
+# ("Run the released Docker image"). debian:bookworm-slim ships glibc 2.36.
+# The development image (./Dockerfile) builds in golang:alpine against musl
+# and keeps its alpine runtime; the two are intentionally different.
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache ca-certificates sqlite-libs tzdata wget && \
-    adduser -D -u 1000 talon
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates tzdata wget && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --uid 1000 --create-home --home-dir /home/talon --shell /usr/sbin/nologin talon
 
 COPY talon /usr/local/bin/talon
 
