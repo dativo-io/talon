@@ -95,11 +95,23 @@ OpenShell sandbox) and only then publishes the release and moves the Docker `lat
 `<major>.<minor>` tags. After publication it runs the verifier again from the customer's
 side: public downloads, no token, anonymous image pulls, `install.sh` under `sh` into a
 scratch directory, the installed binary byte-identical to the verified one, the public
-bytes identical to the draft's. **The gated installer path is linux/amd64** (#359 MVP): the
-darwin archives are verified when present, but a darwin job that fails or never acquires a
-macOS runner (v1.15.4-rc.2 waited 15 minutes and was cancelled, three times) no longer blocks
-the Linux verification or the publication — the release is published with a warning in the
-job summary and macOS stays a best-effort, source-install platform for that version. Talon releases form one ascending line (fix forward, no maintenance
+bytes identical to the draft's.
+
+**Supported-platform guarantee (#359 MVP).** The gated installer path is **linux/amd64**: its
+archive is required, verified before publication and installed by `install.sh`. The darwin
+archives (arm64, amd64) are **best effort**: present when the macOS job built them, absent
+otherwise, and the release never claims otherwise — `scripts/release-platform-report.sh`
+classifies the darwin outcome from the run's jobs and its "Platform assets" table is appended
+to the release notes and the job summary before publication. The classification matters: a
+macOS runner that was never acquired (v1.15.4-rc.2: queued 15 minutes, `cancelled`, three
+times) is a **warning** and does not block a Linux release; a **failed macOS build** is
+reported as exactly that (`::error` annotation, "build FAILED at step …" on the release page),
+is never described as an unavailable runner, and is fixed forward in the next version; a
+darwin job that succeeded without leaving an archive **stops** the publication. This neither
+promises darwin archives nor removes them: the README has listed linux/amd64 as the prebuilt
+platform since the first releases, and each release page now states which archives it ships.
+Changing the guarantee (for example making darwin required, or shipping linux/arm64) is a
+documented decision in README, this section and `release.yml`, not a side effect of a job. Talon releases form one ascending line (fix forward, no maintenance
 branches): publishing marks the release GitHub's latest, so `releases/latest`, `install.sh`
 and both movable tags always follow the newest published version. Tagging a version lower
 than the current latest is not a supported path — it would become latest everywhere. A
@@ -159,10 +171,10 @@ a draft and an unknown version pin must each fail closed, for the verifier and f
 
 **Minimal release checklist (one supported path: linux/amd64).**
 
-1. `main` green, including `make test-release-verify` and `make test-openshell-showcase-contract`.
+1. `main` green, including `make test-release-verify` (verifier, installer and platform-report failure injection) and `make test-openshell-showcase-contract`.
 2. `## [Unreleased]` complete; an unpublished earlier section (a tag that published nothing) is folded into the new one and named there.
 3. Pipeline change since the last release (`release.yml`, `.goreleaser.yml`, `scripts/build-showcase-bundle.sh`, `scripts/verify-release.sh`, `scripts/install.sh`)? Tag `vX.Y.Z-rc.N` first and let it publish as a pre-release.
-4. Tag the merged commit on `main`; `release.yml` must reach "Publish the release" and finish green (draft verification, image visibility, customer path, released image, publication, alias promotion, public re-verification).
+4. Tag the merged commit on `main`; `release.yml` must reach "Publish the release" and finish green (draft verification, platform assets report, image visibility, customer path, released image, publication, alias promotion, public re-verification). Read the "Platform assets" table in the job summary: an absent darwin archive must say why; a "build FAILED" is an issue to file and fix forward.
 5. From a machine that is not the runner: `scripts/verify-release.sh --tag vX.Y.Z --install <dir>` → `PASS verify-release: vX.Y.Z`; then `gh workflow run install-smoke.yml -f tag=vX.Y.Z` → green.
 6. Record the printed digests (archive, executable, bundle, manifest, both images) wherever the release is consumed (for example a demo's proof manifest). A FAIL anywhere is fixed forward in the next version, never by editing published assets.
 

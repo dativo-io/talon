@@ -48,7 +48,7 @@ docker pull ghcr.io/dativo-io/talon:latest
 gh workflow run release.yml -f tag="$LATEST"   # audit mode: re-verifies the published assets, changes nothing
 ```
 
-The gated installer path is linux/amd64 (#359): a darwin job that fails or never acquires a macOS runner no longer blocks publication; the job summary names the absent darwin archives. Record the digests `verify-release.sh` prints (archive, executable, bundle, manifest, both images) in the handoff.
+The gated installer path is linux/amd64 (#359): a darwin job that never acquires a macOS runner no longer blocks publication, and a failed macOS build is reported as a build failure (error annotation, "Platform assets" on the release page) — file it and fix forward, never re-run the same tag. Read the "Platform assets" table in the job summary and the release notes. Record the digests `verify-release.sh` prints (archive, executable, bundle, manifest, both images) in the handoff.
 
 Also check: `draft=false`; the showcase bundle, its `.sha256` and its `.manifest.json` are among the assets and the manifest's `artifacts.talon.sha256` equals the sha256 of the `talon` inside `talon_<X.Y.Z>_linux_amd64.tar.gz`; both GHCR packages are public — `scripts/check-image-public.sh ghcr.io/dativo-io/talon:<X.Y.Z> ghcr.io/dativo-io/talon-openshell-agent:<X.Y.Z>` (the verify job runs the same check; a private package fails the rehearsal, as v1.15.4-rc.1 did); the release notes link at least one share artifact.
 
