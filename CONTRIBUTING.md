@@ -83,14 +83,23 @@ When your PR changes user-facing behavior, include a release-note friendly summa
 
 ## Release Artifact Verification (maintainers)
 
-The release workflow (`.github/workflows/release.yml`, #507) is build → verify → publish:
+The release workflow (`.github/workflows/release.yml`, #507, #359) is build → verify → publish:
 GoReleaser creates the release as a **draft** (invisible to `releases/latest`, `install.sh`
 and anonymous downloads), the showcase bundle and the darwin archives are added to the
-draft, and `release-verify` downloads every asset from the draft, checks every digest,
-confirms the manifest's `artifacts.talon.sha256` is the digest of the released binary, runs
-the showcase **customer path** from the published artifacts (no checkout, real OpenShell
-sandbox) and only then publishes the release and moves the Docker `latest` and
-`<major>.<minor>` tags. Talon releases form one ascending line (fix forward, no maintenance
+draft, and `release-verify` downloads every asset from the draft and runs
+`scripts/verify-release.sh` on it — the same verifier a customer runs: every digest, the
+executable reports exactly `Talon <version>` and the commit the tag points at, the manifest's
+`artifacts.talon.sha256` is the digest of the released executable, the bundle is consistent —
+then runs the showcase **customer path** from the published artifacts (no checkout, real
+OpenShell sandbox) and only then publishes the release and moves the Docker `latest` and
+`<major>.<minor>` tags. After publication it runs the verifier again from the customer's
+side: public downloads, no token, anonymous image pulls, `install.sh` under `sh` into a
+scratch directory, the installed binary byte-identical to the verified one, the public
+bytes identical to the draft's. **The gated installer path is linux/amd64** (#359 MVP): the
+darwin archives are verified when present, but a darwin job that fails or never acquires a
+macOS runner (v1.15.4-rc.2 waited 15 minutes and was cancelled, three times) no longer blocks
+the Linux verification or the publication — the release is published with a warning in the
+job summary and macOS stays a best-effort, source-install platform for that version. Talon releases form one ascending line (fix forward, no maintenance
 branches): publishing marks the release GitHub's latest, so `releases/latest`, `install.sh`
 and both movable tags always follow the newest published version. Tagging a version lower
 than the current latest is not a supported path — it would become latest everywhere. A
@@ -128,13 +137,34 @@ After the workflow has published the release:
 LATEST=$(gh release view --json tagName -q .tagName)
 gh release view "$LATEST" --json isDraft,assets -q '"draft=\(.isDraft)", .assets[].name'
 gh api "/repos/dativo-io/talon/actions/workflows/release.yml/runs?per_page=1" -q '.workflow_runs[0].conclusion'
-# the manifest lists the released talon binary (the customer path depends on it)
-V=${LATEST#v}; gh release download "$LATEST" -p "talon_${V}_linux_amd64.tar.gz" -p "talon-openshell-showcase_${V}_linux_amd64.manifest.json" -D /tmp/rel
-tar -C /tmp/rel -xzf "/tmp/rel/talon_${V}_linux_amd64.tar.gz" talon && [ "$(jq -r .artifacts.talon.sha256 /tmp/rel/*.manifest.json)" = "$(sha256sum /tmp/rel/talon | cut -d' ' -f1)" ] && echo manifest-ok
+# the customer's verification, from the public artifacts only (no token, no Go):
+# checksums, executable version + commit against the tag, manifest artifacts.talon.sha256,
+# bundle, anonymous image pulls, install.sh into a scratch directory. Prints the digests
+# to record (release tag, archive, executable, bundle, manifest, both image digests).
+scripts/verify-release.sh --tag "$LATEST" --install /tmp/talon-verify-install --all-archives --summary-json /tmp/talon-verify.json
+# the same, on a clean GitHub runner; artifacts carry the verdict and the summary json
+gh workflow run install-smoke.yml -f tag="$LATEST"
 docker pull ghcr.io/dativo-io/talon:latest
-# re-run the verification against any published release (audit mode, changes nothing)
+# re-run the full verification against any published release (audit mode, changes nothing)
 gh workflow run release.yml -f tag="$LATEST"
 ```
+
+The offline failure-injection test behind these scripts is `make test-release-verify`
+(`scripts/test-verify-release.sh`, a PR CI step): a fake release built like the real one is
+served from 127.0.0.1 and an altered binary (with and without regenerated checksums), a
+modified or missing `artifacts.talon.sha256`, a version or commit mismatch, a private image,
+a draft and an unknown version pin must each fail closed, for the verifier and for
+`install.sh` run under `sh`. That test is source-only; the published artifact is proven by
+`release-verify` and by `install-smoke.yml` against the real release.
+
+**Minimal release checklist (one supported path: linux/amd64).**
+
+1. `main` green, including `make test-release-verify` and `make test-openshell-showcase-contract`.
+2. `## [Unreleased]` complete; an unpublished earlier section (a tag that published nothing) is folded into the new one and named there.
+3. Pipeline change since the last release (`release.yml`, `.goreleaser.yml`, `scripts/build-showcase-bundle.sh`, `scripts/verify-release.sh`, `scripts/install.sh`)? Tag `vX.Y.Z-rc.N` first and let it publish as a pre-release.
+4. Tag the merged commit on `main`; `release.yml` must reach "Publish the release" and finish green (draft verification, image visibility, customer path, released image, publication, alias promotion, public re-verification).
+5. From a machine that is not the runner: `scripts/verify-release.sh --tag vX.Y.Z --install <dir>` → `PASS verify-release: vX.Y.Z`; then `gh workflow run install-smoke.yml -f tag=vX.Y.Z` → green.
+6. Record the printed digests (archive, executable, bundle, manifest, both images) wherever the release is consumed (for example a demo's proof manifest). A FAIL anywhere is fixed forward in the next version, never by editing published assets.
 
 Check that release notes link at least one share artifact (screenshot, GIF, or migration snippet). To refresh Mission Control screenshots, see [docs/contributor/mission-control-screenshots.md](docs/contributor/mission-control-screenshots.md).
 

@@ -239,10 +239,18 @@ jobs:
   # is published. In audit mode (workflow_dispatch) the same checks run
   # against a published release; nothing is uploaded or published, and the
   # only write is re-pointing the movable image tags at the latest release.
+  # The gated installer path is linux/amd64 (#359 MVP): the verification
+  # runs as soon as the linux archive and the showcase bundle are on the
+  # draft, whatever the darwin matrix did. `needs` still lists release-darwin
+  # so its uploads are finished (or abandoned) before anything is verified
+  # or published; its result is reported, not required — v1.15.4-rc.2 never
+  # reached this job because a macOS runner was not acquired for 15 minutes
+  # and the queued darwin/amd64 job ended `cancelled`. A release without
+  # darwin archives is published with a warning; macOS stays best effort.
   release-verify:
     name: Verify from the release, then publish
     needs: [release-showcase-bundle, release-darwin]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (needs.release-showcase-bundle.result == 'success' && needs.release-darwin.result == 'success')) }}
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release-showcase-bundle.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     defaults:
@@ -260,29 +268,35 @@ jobs:
           mkdir -p "$RUNNER_TEMP/assets"
           gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/assets"
           ls -l "$RUNNER_TEMP/assets"
+      # The same verifier a customer runs (scripts/verify-release.sh): every
+      # digest, the executable's version and commit against the tag, the
+      # manifest's talon entry, the bundle's consistency. Image checks come
+      # next (anonymously); the darwin archives are checked when present and
+      # their absence is a warning, not a failure (#359: linux/amd64 first).
       - name: Verify every digest and the talon binary
+        env:
+          # Metadata reads only (release state, the tag's commit): anonymous
+          # api.github.com calls from shared runner IPs are rate-limited. The
+          # assets were downloaded from the draft in the step above.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
-          cd "$RUNNER_TEMP/assets"
-          sha256sum -c checksums.txt
-          for f in *.sha256; do sha256sum -c "$f"; done
-          for required in "talon_${VERSION}_linux_amd64.tar.gz" "talon_${VERSION}_darwin_arm64.tar.gz" "talon_${VERSION}_darwin_amd64.tar.gz" \
-                          "talon-openshell-showcase_${VERSION}_linux_amd64.tar.gz" "talon-openshell-showcase_${VERSION}_linux_amd64.manifest.json"; do
-            [ -s "$required" ] || { echo "missing release asset: $required" >&2; exit 1; }
+          bash scripts/verify-release.sh --tag "$RELEASE_TAG" --assets-dir "$RUNNER_TEMP/assets" --work-dir "$RUNNER_TEMP/verify" \
+            --skip-images --summary-json "$RUNNER_TEMP/verify-draft.json" | tee "$RUNNER_TEMP/verify-draft.log"
+          for arch in arm64 amd64; do
+            if [ ! -s "$RUNNER_TEMP/assets/talon_${VERSION}_darwin_${arch}.tar.gz" ]; then
+              echo "::warning::talon_${VERSION}_darwin_${arch}.tar.gz is not on the release (darwin job: ${{ needs.release-darwin.result }}); macOS stays a best-effort, source-install platform for this version"
+              echo "- darwin/${arch} archive **absent** (darwin job result: ${{ needs.release-darwin.result }})" >> "$GITHUB_STEP_SUMMARY"
+            fi
           done
-          mkdir -p "$RUNNER_TEMP/talon" && tar -C "$RUNNER_TEMP/talon" -xzf "talon_${VERSION}_linux_amd64.tar.gz" talon
-          [ "$("$RUNNER_TEMP/talon/talon" version | head -n1)" = "Talon $VERSION" ]
           MANIFEST="$RUNNER_TEMP/assets/talon-openshell-showcase_${VERSION}_linux_amd64.manifest.json"
-          [ "$(jq -r '.artifacts.talon.sha256' "$MANIFEST")" = "$(sha256sum "$RUNNER_TEMP/talon/talon" | cut -d' ' -f1)" ] || { echo "manifest artifacts.talon.sha256 does not match the released binary" >&2; exit 1; }
-          [ "$(jq -r '.agent_image' "$MANIFEST")" = "ghcr.io/dativo-io/talon-openshell-agent:${VERSION}" ]
-          mkdir -p "$RUNNER_TEMP/customer" && tar -C "$RUNNER_TEMP/customer" -xzf "talon-openshell-showcase_${VERSION}_linux_amd64.tar.gz"
-          cmp "$RUNNER_TEMP/customer/talon-openshell-showcase_${VERSION}_linux_amd64/showcase-manifest.json" "$MANIFEST"
           {
-            echo "TALON_SHOWCASE_TALON_BIN=$RUNNER_TEMP/talon/talon"
-            echo "TALON_SHOWCASE_BUNDLE_DIR=$RUNNER_TEMP/customer/talon-openshell-showcase_${VERSION}_linux_amd64"
+            echo "TALON_SHOWCASE_TALON_BIN=$RUNNER_TEMP/verify/talon/talon"
+            echo "TALON_SHOWCASE_BUNDLE_DIR=$RUNNER_TEMP/verify/bundle/talon-openshell-showcase_${VERSION}_linux_amd64"
             echo "TALON_SHOWCASE_RELEASE_MANIFEST=$MANIFEST"
           } >> "$GITHUB_ENV"
+          { echo '### Draft verification'; echo '```'; sed -n '/^verify-release summary/,$p' "$RUNNER_TEMP/verify-draft.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # Customers have no GHCR login: the README's `docker pull` and the
       # manifest's agent image (pulled by OpenShell, not by this runner's
       # docker client) both need PUBLIC packages. A workflow-created package is
@@ -383,19 +397,35 @@ jobs:
       # Detection, not repair: a mismatch between the public bytes and the
       # bytes verified above is an incident (GitHub served something else),
       # and with immutable releases it cannot be fixed by re-uploading.
-      - name: Re-verify what the public downloads (no token)
+      # The customer's view, with no token and no checkout past this script:
+      # verify-release.sh downloads the public assets, re-runs every check
+      # (images anonymously, install.sh under `sh` into a scratch directory,
+      # the installed binary byte-identical to the verified one) and then the
+      # downloaded bytes are compared with the draft assets verified above.
+      - name: Re-verify what the public downloads (no token for the assets)
+        env:
+          # Used by the scripts for api.github.com metadata reads only (rate
+          # limits on shared runner IPs); the asset downloads, the registry
+          # pulls and the installer's download are anonymous, as a customer's.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
-          BASE="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}"
-          mkdir -p "$RUNNER_TEMP/public" && cd "$RUNNER_TEMP/public"
+          mkdir -p "$RUNNER_TEMP/public"
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsSL -o /dev/null "https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/checksums.txt"; then break; fi
+            sleep 6
+          done
+          env -u GOROOT PATH="/usr/local/bin:/usr/bin:/bin" bash scripts/verify-release.sh --tag "$RELEASE_TAG" --work-dir "$RUNNER_TEMP/public" \
+            --install "$RUNNER_TEMP/public/install" --summary-json "$RUNNER_TEMP/public/verify-public.json" | tee "$RUNNER_TEMP/verify-public.log"
           for f in checksums.txt "talon_${VERSION}_linux_amd64.tar.gz" \
                    "talon-openshell-showcase_${VERSION}_linux_amd64.tar.gz" \
+                   "talon-openshell-showcase_${VERSION}_linux_amd64.tar.gz.sha256" \
                    "talon-openshell-showcase_${VERSION}_linux_amd64.manifest.json"; do
-            curl -fsSL --retry 10 --retry-all-errors --retry-delay 6 -o "$f" "$BASE/$f"
-            cmp "$f" "$RUNNER_TEMP/assets/$f"
+            cmp "$RUNNER_TEMP/public/assets/$f" "$RUNNER_TEMP/assets/$f"
           done
           echo "public assets match the verified draft assets"
+          { echo '### Public verification (what customers download)'; echo '```'; sed -n '/^verify-release summary/,$p' "$RUNNER_TEMP/verify-public.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Collect sanitized logs
         id: collect
         if: always()
@@ -403,6 +433,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           cp "$RUNNER_TEMP/showcase-validate.log" artifacts/ 2>/dev/null || true
+          cp "$RUNNER_TEMP/verify-draft.log" "$RUNNER_TEMP/verify-draft.json" "$RUNNER_TEMP/verify-public.log" "$RUNNER_TEMP/public/verify-public.json" artifacts/ 2>/dev/null || true
           for d in /tmp/talon-openshell-showcase.*; do
             [ -d "$d/logs" ] || continue
             dest="artifacts/$(basename "$d")"

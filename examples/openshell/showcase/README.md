@@ -83,7 +83,12 @@ zero new refunds and marks the receipt `resumed: true`.
   agent image the manifest names (`ghcr.io/dativo-io/talon-openshell-agent:<version>`;
   pin it by digest in your own instructions). OpenShell's binaries are fetched
   from the official NVIDIA release and verified against the pinned checksums.
-  No source checkout, no Go toolchain, no paid API key.
+  No source checkout, no Go toolchain, no paid API key. Before you start,
+  `scripts/verify-release.sh --tag <version>` (curl, jq, tar, sha256sum) checks
+  all of the above from the public assets — checksums, the executable's version
+  and commit against the tag, `artifacts.talon.sha256`, the bundle, and that
+  the agent image is pullable without credentials — and prints the digests to
+  record in your own proof manifest.
 
 The bundle and the agent image are produced by Talon's release pipeline
 (`scripts/build-showcase-bundle.sh`, `.goreleaser.yml`,

@@ -102,6 +102,15 @@ jobs:
         # workflow's showcase job.
         run: make test-openshell-showcase-contract
 
+      - name: Published-artifact path, failure injection (#359, offline, no Docker)
+        # scripts/verify-release.sh and scripts/install.sh against a fake
+        # release served from 127.0.0.1 and built like the real one: an
+        # altered binary, a modified or missing manifest digest, a version or
+        # commit mismatch, a private image and a draft must all fail closed.
+        # The real published release is verified by `release.yml` before
+        # publication and by the manual `Install Smoke` workflow afterwards.
+        run: make test-release-verify
+
       - name: Check coverage
         run: |
           COVERAGE=$(go tool cover -func=coverage-${{ matrix.go-version }}.out | grep total | awk '{print $3}' | sed 's/%//')
