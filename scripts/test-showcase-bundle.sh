@@ -3,7 +3,7 @@
 # feeds (#507): build a bundle from this checkout around a built talon, then
 # run the bundle's own runner from OUTSIDE the checkout — no Go, no source —
 # with the published-manifest gate on. The regression this pins: every
-# manifest published before v1.15.4 had no `artifacts.talon` entry, so the
+# manifest published before v1.16.0 had no `artifacts.talon` entry, so the
 # documented customer path refused the release's own binary 100% of the time.
 #
 #   TALON_SHOWCASE_TALON_BIN=bin/talon scripts/test-showcase-bundle.sh
@@ -53,7 +53,7 @@ pass "bundle: artifacts.talon carries the released binary's sha256; helpers and 
 
 # 4. The customer path, from the extracted bundle, outside the checkout, with
 #    the published-manifest gate on: prepare passes with the release binary,
-#    refuses a manifest without the talon entry (the pre-v1.15.4 shape) and
+#    refuses a manifest without the talon entry (the pre-v1.16.0 shape) and
 #    refuses a tampered binary. No Go toolchain is involved past this point.
 grep -q 'module github.com/dativo-io/talon' "$BUNDLE/../../../go.mod" 2>/dev/null && fail "the extracted bundle must not sit inside a checkout"
 customer_prepare() { # run-dir manifest talon-bin -> output (rc in $?)
@@ -66,8 +66,8 @@ if [[ "$rc" != 0 ]] || ! grep -q '^PASS prepare' <<<"$out"; then fail "customer 
 jq -e '.agent_created == true' "$WORK/run-ok/prepare.json" >/dev/null || fail "customer prepare summary: $(cat "$WORK/run-ok/prepare.json")"
 pass "customer path: prepare passes the manifest gate with the released talon"
 
-jq 'del(.artifacts.talon)' "$BUNDLE/showcase-manifest.json" >"$WORK/manifest-pre-v1.15.4.json"
-set +e; out="$(customer_prepare "$WORK/run-missing" "$WORK/manifest-pre-v1.15.4.json" "$TALON")"; rc=$?; set -e
+jq 'del(.artifacts.talon)' "$BUNDLE/showcase-manifest.json" >"$WORK/manifest-pre-v1.16.0.json"
+set +e; out="$(customer_prepare "$WORK/run-missing" "$WORK/manifest-pre-v1.16.0.json" "$TALON")"; rc=$?; set -e
 refused "$rc" "$out" 'has no entry for talon' "a manifest without artifacts.talon must refuse the binary (the v1.15.0–v1.15.3 defect)"
 pass "customer path: a manifest without artifacts.talon is refused (regression #507)"
 

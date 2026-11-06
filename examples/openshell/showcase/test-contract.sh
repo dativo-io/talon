@@ -125,7 +125,7 @@ pass "run verdict: fresh completion dispatches once; a resumed completion dispat
 # 7. Release-manifest gate (#507): with TALON_SHOWCASE_RELEASE_MANIFEST set,
 #    the runner accepts the talon it is given only when the manifest lists the
 #    binary's exact sha256 under artifacts.talon — and refuses a manifest
-#    without that entry (the shape every manifest published before v1.15.4
+#    without that entry (the shape every manifest published before v1.16.0
 #    had) as well as a binary whose digest differs. Standalone prepare is the
 #    first command that resolves talon, so it is the probe.
 mf_ok="$WORK/manifest-ok.json"; mf_missing="$WORK/manifest-missing.json"

@@ -293,7 +293,7 @@ Operating AI is the job; proving it is often the trigger. Talon is a single self
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | sh
 # a specific release, into a directory you own
-curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.15.4 INSTALL_DIR="$HOME/.local/bin" sh
+curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.16.0 INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 Verify any published release yourself, from the public artifacts only (checksums, executable version and commit against the tag, OpenShell showcase manifest and bundle, anonymous image pulls): `scripts/verify-release.sh --tag vX.Y.Z` (`make verify-release TAG=vX.Y.Z`; needs curl, jq, tar, sha256sum — no Go, no token). It prints `PASS verify-release: vX.Y.Z` or names the asset and the reason.

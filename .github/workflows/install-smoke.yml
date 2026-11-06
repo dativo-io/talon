@@ -8,7 +8,7 @@ name: Install Smoke
 # scripts/install.sh under `sh` (the documented `curl … | sh`), installed into
 # a scratch directory and compared byte for byte with the verified executable.
 #
-# Manual: `gh workflow run install-smoke.yml -f tag=v1.15.4` (default:
+# Manual: `gh workflow run install-smoke.yml -f tag=v1.16.0` (default:
 # `releases/latest`). It changes nothing anywhere; a FAIL is the honest state
 # of that release (v1.15.0–v1.15.3 fail on the manifest's missing talon
 # entry, #507). The release workflow runs the same verifier before and after

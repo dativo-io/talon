@@ -4,7 +4,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | sh
 #   curl -fsSL https://install.gettalon.dev | sh
-#   TALON_VERSION=v1.15.4 INSTALL_DIR="$HOME/.local/bin" sh install.sh
+#   TALON_VERSION=v1.16.0 INSTALL_DIR="$HOME/.local/bin" sh install.sh
 #
 # POSIX sh (dash, busybox, bash): the documented `| sh` must work on Debian
 # and Ubuntu, whose /bin/sh is dash.
@@ -61,7 +61,7 @@ echo "Platform: ${OS}/${ARCH}"
 if [ "$REQUESTED" = "latest" ]; then
   RELEASE_URL="${API_BASE}/repos/${REPO}/releases/latest"
 else
-  case "$REQUESTED" in v*) ;; *) die "TALON_VERSION must be a tag like v1.15.4 (got '$REQUESTED')" ;; esac
+  case "$REQUESTED" in v*) ;; *) die "TALON_VERSION must be a tag like v1.16.0 (got '$REQUESTED')" ;; esac
   RELEASE_URL="${API_BASE}/repos/${REPO}/releases/tags/${REQUESTED}"
 fi
 echo "Fetching release metadata (${REQUESTED})..."

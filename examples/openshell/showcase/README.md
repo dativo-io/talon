@@ -94,7 +94,7 @@ The bundle and the agent image are produced by Talon's release pipeline
 (`scripts/build-showcase-bundle.sh`, `.goreleaser.yml`,
 `.github/workflows/release.yml`), which runs this customer path from the
 published artifacts before the release is published. The customer path needs
-**v1.15.4 or later**: the manifests of v1.15.0–v1.15.3 have no `artifacts.talon`
+**v1.16.0 or later**: the manifests of v1.15.0–v1.15.3 have no `artifacts.talon`
 entry, so their runner refuses the release's own binary ("release manifest …
 has no entry for talon"). Do not work around that by inserting a digest you
 computed from a downloaded binary — a digest derived from the artifact it is

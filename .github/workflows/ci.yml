@@ -310,3 +310,24 @@ jobs:
         run: |
           docker run --rm talon:ci version
           docker run --rm talon:ci --help
+
+      # The RELEASE image is a different Dockerfile: goreleaser-cross links
+      # talon against glibc (CGO, go-sqlite3) and Dockerfile.goreleaser copies
+      # that prebuilt binary onto its base. v1.16.0-rc.1 put it on alpine and
+      # the released image could not exec it ("Run the released Docker image"
+      # failed after every other gate had passed). Build the binary with a
+      # glibc toolchain of the same Debian line and prove the release image
+      # runs it, before a tag finds out.
+      - name: Release image (Dockerfile.goreleaser) runs a glibc-linked talon
+        run: |
+          set -euo pipefail
+          CTX="$RUNNER_TEMP/release-image"
+          mkdir -p "$CTX"
+          docker run --rm -v "$PWD:/src:ro" -v "$CTX:/out" -w /src \
+            -e CGO_ENABLED=1 -e GOFLAGS=-buildvcs=false -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod \
+            golang:1.26.10-bookworm \
+            go build -trimpath -ldflags "-s -w -X github.com/dativo-io/talon/internal/cmd.Version=0.0.0-ci" -o /out/talon ./cmd/talon/
+          file "$CTX/talon" | grep -q 'dynamically linked' || { echo "expected a glibc-linked binary like goreleaser's" >&2; exit 1; }
+          cp Dockerfile.goreleaser "$CTX/"
+          docker build -f "$CTX/Dockerfile.goreleaser" -t talon:release-ci "$CTX"
+          [ "$(docker run --rm talon:release-ci version | head -n1)" = "Talon 0.0.0-ci" ]

@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Published release tag to re-verify (audit only; e.g. v1.15.4)"
+        description: "Published release tag to re-verify (audit only; e.g. v1.16.0)"
         required: true
         type: string
 
