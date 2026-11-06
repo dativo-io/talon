@@ -244,6 +244,36 @@ In the lane, `<provider host>` and `<talon host>` are both `host.openshell.inter
 
 The provider credential stays an OpenShell provider (profile endpoint bound to `<provider host>`), attached with `--provider`; Talon never holds it. Registration is static: changing the `[[openshell.supervisor.middleware]]` entry requires a gateway restart; restarting Talon itself does not (case F).
 
+## Real Claude Code lane (#528 — delegated Anthropic path, C01–C03 producer conformance)
+
+The lanes above drive the composition with `curl` and with the OpenAI-SDK agent. The ratified Full Demo contract ([talon-full-demo `CLAUDE_POSTGRES_INCIDENT_CONTRACT.md`](https://github.com/dativo-io/talon-full-demo/blob/main/docs/CLAUDE_POSTGRES_INCIDENT_CONTRACT.md)) needs something the earlier lanes never established: the **real Claude Code executable**, at an exact version, inside the **real OpenShell v0.1.3 sandbox**, speaking the **Anthropic Messages API** (`POST /v1/messages?beta=true`, `x-api-key`, `stream: true`) through the same `HTTP_REQUEST / PRE_CREDENTIALS` hook, with OpenShell — not Talon, not the sandbox — owning the provider credential. That is the `claude-code` lane of the same harness:
+
+```bash
+make test-openshell-live-claude-code      # == TALON_OPENSHELL_LANE=claude-code scripts/openshell-live.sh
+```
+
+It is the "Claude Code … inside OpenShell …" job of the `OpenShell Live` workflow (v0.1.3, required, not experimental); **that job's latest run, not this text, states whether the lane currently passes.** The shared setup is the live lane's (verified release artifacts, Talon's TLS identity, the gateway with Talon registered, response governance on). What differs:
+
+- **Workload.** `tests/openshell-live/claude-code/Dockerfile` installs Claude Code **2.1.319** from Anthropic's release bucket at that exact version and refuses the build unless the binary's sha256 equals the `linux-x64` entry of that version's release manifest (`dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed`). The harness builds it locally, so the fixture is pinned by the content it must carry, not by a registry digest; case CC0 re-checks `claude --version` and the binary's sha256 **inside the real sandbox**. Nothing in the image is a credential. `TALON_CLAUDE_CODE_VERSION`/`TALON_CLAUDE_CODE_SHA256` (together) move the pin; a new version is a new conformance run, never a drop-in.
+- **Provider.** Talon's one provider on `host.openshell.internal` is `anthropic` (Talon maps a delegated request to a provider by destination **hostname**, so a hostname carries one provider per lane); the mock provider (`tests/openshell-live/mockprovider`) answers `/v1/messages` as JSON or as the full SSE sequence (`message_start` with input usage … `message_delta` with output usage … `message_stop`), `/v1/messages/count_tokens`, and records path, query, `x-api-key`, `anthropic-version`/`anthropic-beta`, user agent and body. The OpenShell provider profile mirrors OpenShell's own `providers/claude-code.yaml` example (`ANTHROPIC_API_KEY` sent as `x-api-key`, only from `/usr/local/bin/claude`) with the endpoint replaced by the mock. `ANTHROPIC_BASE_URL` inside the sandbox names the **provider** endpoint the policy admits with the `talon` middleware bound; it is never Talon's `/v1/proxy`, and the sandbox holds no agent key (`ANTHROPIC_API_KEY` is OpenShell's placeholder).
+- **Client.** Each case runs `claude -p <prompt> --output-format json --model <model> --bare --no-session-persistence --max-turns 1 --strict-mcp-config` inside the sandbox (hooks and MCP off: C04/C05 are the Full Demo's harness; `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`).
+
+| Case | What the real runtime shows |
+|---|---|
+| CC0 fixture | `claude` at the policy's path, version and sha256 equal to the pin, HOME writable |
+| CC1 allowed (C01) | exactly one provider call: `POST /v1/messages` (query `beta=true`), `stream: true`, user agent `claude-cli/2.1.319`, `x-api-key` = the OpenShell-injected secret, no `Authorization`; claude printed the mock's streamed answer; Talon's record is `delegated_expected`, identity verified for the real gateway and sandbox |
+| CC2 PII | the prompt's e-mail address never reaches the provider; the forwarded Anthropic body is Talon's transformed one |
+| CC3 denied model (C02) | `claude-opus-4-8` is in the company `blocked_models`: Talon DENY at PRE_CREDENTIALS, claude exits non-zero with an API error, provider count unchanged across whatever the client retried (a 403 is not retried by this client) |
+| CC4 unbound sandbox (C02) | a second real sandbox running the same real client, bound to no use case: denied, provider count unchanged, no Talon record |
+| CC5 Talon unavailable | OpenShell fails closed; claude fails; count unchanged — OpenShell's enforcement, not Talon's |
+| CC6 bypass | `curl` (not an admitted binary) to the provider, and `claude` to a provider port the policy does not admit, are both refused by OpenShell network policy; the shadow provider's count stays 0 — OpenShell containment, recorded as such |
+| CC7 credential isolation (C03) | the sandbox environment holds the placeholder, never the secret, no Talon key, reviewer credential or vault value; the provider saw the injected secret; Talon's state, logs and export hold neither |
+| CC8 count_tokens | observed absence: `claude-cli/2.1.319` in print mode emits no `/v1/messages/count_tokens`; Talon's delegated `count_tokens` handling stays covered by the fixture/unit lanes, not by this client |
+| CC9 truncated stream | the provider closes mid-stream: claude reports an error, never the full answer; no settlement claims the stream's full output usage |
+| evidence | ≥4 `delegated_expected` decisions for the real sandbox (`provider: anthropic`, the pinned model, one DENY for the blocked model), ≥2 `gateway_response` settlements carrying the SSE's actual usage (12/3) under their decision's correlation id, offline `talon audit verify`, `talon audit list --runtime-ref <sandbox> --report`, no secret or prompt PII anywhere in Talon |
+
+What this lane does **not** establish: C04/C05 (hook containment, direct protected-service access — Full Demo #42 owns them), the Full Demo's action path (C06–C12), traffic to the real `api.anthropic.com` (the deterministic lane has no provider key by design; a real-provider run is a separate, explicitly opted-in step with the credential supplied only through an OpenShell provider), and `count_tokens` or multi-turn/tool-use shapes this client did not emit in a one-turn print run. Every assertion is against independent observations — the mock's counters and records, the client's exit status and JSON result, OpenShell's refusals, Talon's signed records — never against a Talon decision alone; the model-path provenance stays `delegated_expected`.
+
 ## Operator runbook
 
 **Supported versions.** OpenShell v0.1.3 (validated baseline, live lane required entry) and v0.1.4 (pinned, experimental matrix entry until green). Talon pins the middleware proto under `internal/openshell/proto/v0.1.3/`; v0.1.4's proto is identical but for a comment. A release that changes the proto needs a new pin, regenerated types (`make openshell-proto`), a live run and a documentation update — never an assumption.
