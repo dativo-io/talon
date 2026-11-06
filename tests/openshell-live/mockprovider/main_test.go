@@ -268,3 +268,125 @@ func TestMockProvider_ToolCallingScript(t *testing.T) {
 		t.Fatalf("state: %+v", st)
 	}
 }
+
+// The Anthropic Messages API the real Claude Code executable speaks (#528):
+// /v1/messages answers JSON, or the complete SSE event sequence (message_start
+// with input usage … message_delta with output usage … message_stop) when the
+// request streams; /v1/messages/count_tokens answers a count and is recorded
+// as its own call; the x-api-key credential, the query string and the user
+// agent are recorded so the live lane can assert which binary called and
+// with whose credential. Usage is 12/3 on both wires.
+func TestMockProvider_AnthropicMessages(t *testing.T) {
+	srv := httptest.NewServer(newHandler(&state{}, "", 1<<20))
+	t.Cleanup(srv.Close)
+	c := newProviderClient(t, srv.URL)
+	call := func(path, body string) (int, string, []byte) {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", "sk-ant-injected-by-openshell")
+		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("User-Agent", "claude-cli/2.1.319 (external, sdk-cli)")
+		resp, err := c.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, resp.Header.Get("Content-Type"), b
+	}
+	// Non-streaming.
+	code, ct, b := call("/v1/messages", `{"model":"claude-sonnet-4-5","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || ct != "application/json" {
+		t.Fatalf("messages json: %d %s %s", code, ct, b)
+	}
+	var msg struct {
+		ID         string `json:"id"`
+		Type       string `json:"type"`
+		Model      string `json:"model"`
+		StopReason string `json:"stop_reason"`
+		Content    []struct {
+			Type, Text string
+		} `json:"content"`
+		Usage struct{ InputTokens, OutputTokens int }
+	}
+	if err := json.Unmarshal(b, &msg); err != nil || msg.ID != "msg_mock_1" || msg.Type != "message" || msg.Model != "claude-sonnet-4-5" || msg.StopReason != "end_turn" || len(msg.Content) != 1 || msg.Content[0].Text != "mock anthropic completion 1" {
+		t.Fatalf("messages json shape: %v %s", err, b)
+	}
+	if !strings.Contains(string(b), `"usage":{"input_tokens":12,"output_tokens":3}`) {
+		t.Fatalf("messages json usage: %s", b)
+	}
+	// Streaming: the event order a client needs to terminate, usage split
+	// between message_start (input) and message_delta (output).
+	code, ct, b = call("/v1/messages?beta=true", `{"model":"claude-sonnet-4-5","max_tokens":32,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || ct != "text/event-stream" {
+		t.Fatalf("messages sse: %d %s %s", code, ct, b)
+	}
+	events := []string{}
+	for _, block := range strings.Split(strings.TrimSpace(string(b)), "\n\n") {
+		lines := strings.SplitN(block, "\n", 2)
+		if len(lines) != 2 || !strings.HasPrefix(lines[0], "event: ") || !strings.HasPrefix(lines[1], "data: ") || !json.Valid([]byte(strings.TrimPrefix(lines[1], "data: "))) {
+			t.Fatalf("malformed SSE block %q", block)
+		}
+		events = append(events, strings.TrimPrefix(lines[0], "event: "))
+	}
+	if strings.Join(events, ",") != "message_start,content_block_start,content_block_delta,content_block_stop,message_delta,message_stop" {
+		t.Fatalf("sse event order: %v", events)
+	}
+	if !strings.Contains(string(b), `"usage":{"input_tokens":12,"output_tokens":1}`) || !strings.Contains(string(b), `"usage":{"output_tokens":3}`) || !strings.Contains(string(b), `"text":"mock anthropic completion 2"`) {
+		t.Fatalf("sse usage/text: %s", b)
+	}
+	// count_tokens is its own recorded call and never a completion.
+	code, _, b = call("/v1/messages/count_tokens", `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || string(b) != `{"input_tokens":42}` {
+		t.Fatalf("count_tokens: %d %s", code, b)
+	}
+	// Error scenario keeps the Anthropic error envelope.
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"m","messages":[]}`))
+	req.Header.Set("X-Mock-Scenario", scenarioErrorPII)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eb, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(eb), `"type":"error"`) || !strings.Contains(string(eb), mockPII) {
+		t.Fatalf("error-pii anthropic: %d %s", resp.StatusCode, eb)
+	}
+	// Truncated stream: the head and the first events arrive, then the
+	// connection closes before message_delta/message_stop.
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"m","stream":true,"messages":[]}`))
+	req.Header.Set("X-Mock-Scenario", scenarioTruncatedStream)
+	resp, err = c.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("truncated-stream head: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if !strings.Contains(string(tb), "event: message_start") || strings.Contains(string(tb), "message_stop") || strings.Contains(string(tb), "message_delta") {
+		t.Fatalf("truncated-stream body must start and never terminate: err=%v body=%q", readErr, tb)
+	}
+	st := c.state()
+	if st.Calls != 5 || len(st.Records) != 5 {
+		t.Fatalf("calls: %+v", st)
+	}
+	r0, r1, r2 := st.Records[0], st.Records[1], st.Records[2]
+	if r0.Path != "/v1/messages" || r0.XAPIKey != "sk-ant-injected-by-openshell" || r0.Authorization != "" || r0.Stream || !strings.Contains(r0.UserAgent, "claude-cli/2.1.319") || r0.AnthropicVersion != "2023-06-01" {
+		t.Fatalf("record 0: %+v", r0)
+	}
+	if r1.Path != "/v1/messages" || r1.Query != "beta=true" || !r1.Stream {
+		t.Fatalf("record 1 (streamed, with query): %+v", r1)
+	}
+	if r2.Path != "/v1/messages/count_tokens" || r2.Stream {
+		t.Fatalf("record 2 (count_tokens): %+v", r2)
+	}
+	if got := describeKey("sk-ant-secret"); got != "key(13 chars)" || strings.Contains(got, "secret") {
+		t.Fatalf("describeKey = %q", got)
+	}
+	// The chat-completions route is unchanged by the Anthropic additions.
+	if code, id := c.completion("still here", "Bearer x"); code != 200 || id != "chatcmpl-mock-6" {
+		t.Fatalf("chat completions after anthropic calls: %d %q", code, id)
+	}
+}
