@@ -15,6 +15,9 @@
 #   R7  linux archive present but checksums.txt disagrees               → exit 1
 #   R8  darwin job succeeded but the archive is absent                  → exit 1, ::error
 #   R9  --out writes the same markdown; relative --assets-dir works
+#   R10 annotations (::warning::/::error::) go to the console (stderr) only:
+#       never into the markdown on stdout or in --out, which the release
+#       workflow appends to the release notes
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPORT="$ROOT/scripts/release-platform-report.sh"
@@ -41,7 +44,9 @@ STEPS_OK='[{"name":"Set up job","conclusion":"success"},{"name":"Build and packa
 STEPS_FAIL='[{"name":"Set up job","conclusion":"success"},{"name":"Build and package (darwin/amd64)","conclusion":"failure"},{"name":"Upload to the draft","conclusion":"skipped"}]'
 STEPS_QUEUED='[{"name":"Set up job","conclusion":null},{"name":"Build and package (darwin/amd64)","conclusion":null}]'
 STEPS_CANCELLED='[{"name":"Set up job","conclusion":"success"},{"name":"Build and package (darwin/amd64)","conclusion":"cancelled"}]'
-run() { OUT="$WORK/out.md"; set +e; bash "$REPORT" "$@" >"$OUT" 2>&1; RC=$?; set -e; }
+# OUT holds the markdown (stdout); ERR holds the console annotations (stderr).
+run() { OUT="$WORK/out.md"; ERR="$WORK/out.err"; set +e; bash "$REPORT" "$@" >"$OUT" 2>"$ERR"; RC=$?; set -e; }
+no_annotations_in_markdown() { if grep -q '^::' "$OUT"; then echo "--- markdown:" >&2; cat "$OUT" >&2; fail "$1: workflow annotations leaked into the markdown report"; fi; }
 
 # R1
 make_assets "$WORK/a1" arm64 amd64
@@ -50,7 +55,8 @@ run --tag "$TAG" --assets-dir "$WORK/a1" --jobs-json "$J" --annotate
 [[ "$RC" == 0 ]] || { cat "$OUT"; fail "R1 must exit 0"; }
 grep -q '| linux/amd64 | .* | present, required, sha256' "$OUT" || fail "R1 linux row"
 [[ "$(grep -c 'present, best effort, `.sha256` verified (job succeeded)' "$OUT")" == 2 ]] || { cat "$OUT"; fail "R1 darwin rows"; }
-grep -q '^::' "$OUT" && fail "R1 must not annotate"
+grep -q '^::' "$ERR" && fail "R1 must not annotate"
+no_annotations_in_markdown R1
 pass "R1 all archives present and verified"
 
 # R2
@@ -59,7 +65,8 @@ J="$(jobs_json "$(job arm64 '"success"' '"mac-1"' "$STEPS_OK")" "$(job amd64 '"c
 run --tag "$TAG" --assets-dir "$WORK/a2" --jobs-json "$J" --annotate
 [[ "$RC" == 0 ]] || { cat "$OUT"; fail "R2 must exit 0 (linux present)"; }
 grep -q '| darwin/amd64 | .* | absent — macOS runner not acquired (job cancelled while queued, no step ran); macOS installs from source' "$OUT" || { cat "$OUT"; fail "R2 not-acquired row"; }
-grep -q '^::warning::darwin/amd64 archive absent: macOS runner not acquired' "$OUT" || fail "R2 warning annotation"
+grep -q '^::warning::darwin/amd64 archive absent: macOS runner not acquired' "$ERR" || fail "R2 warning annotation on the console"
+no_annotations_in_markdown R2
 grep -q 'FAILED' "$OUT" && fail "R2 must not call a queued cancellation a failure"
 pass "R2 a macOS runner that was never acquired is reported as such, with a warning, and does not block"
 
@@ -68,7 +75,8 @@ J="$(jobs_json "$(job arm64 '"success"' '"mac-1"' "$STEPS_OK")" "$(job amd64 '"f
 run --tag "$TAG" --assets-dir "$WORK/a2" --jobs-json "$J" --annotate
 [[ "$RC" == 0 ]] || { cat "$OUT"; fail "R3 must exit 0 (darwin is best effort; the workflow documents the decision)"; }
 grep -q '| darwin/amd64 | .* | absent — build FAILED at step "Build and package (darwin/amd64)" (a real macOS build or upload failure, not a runner-availability issue; fix forward) |' "$OUT" || { cat "$OUT"; fail "R3 failed-build row"; }
-grep -q '^::error::darwin/amd64 archive absent: build FAILED' "$OUT" || fail "R3 error annotation"
+grep -q '^::error::darwin/amd64 archive absent: build FAILED' "$ERR" || fail "R3 error annotation on the console"
+no_annotations_in_markdown R3
 grep -q 'not acquired' "$OUT" && fail "R3 a failed build must never be described as an unavailable runner"
 pass "R3 a failed macOS build is reported as a build failure with an error annotation, never as an unavailable runner"
 
@@ -98,14 +106,24 @@ pass "R7 a linux archive that disagrees with checksums.txt fails the report"
 # R8
 J="$(jobs_json "$(job arm64 '"success"' '"mac-1"' "$STEPS_OK")" "$(job amd64 '"success"' '"mac-2"' "$STEPS_OK")")"
 run --tag "$TAG" --assets-dir "$WORK/a2" --jobs-json "$J" --annotate
-if [[ "$RC" != 1 ]] || ! grep -q 'ABSENT although the darwin job succeeded' "$OUT" || ! grep -q '^::error::darwin/amd64: job succeeded but' "$OUT"; then cat "$OUT"; fail "R8 succeeded-but-absent must exit 1 with an error"; fi
+if [[ "$RC" != 1 ]] || ! grep -q 'ABSENT although the darwin job succeeded' "$OUT" || ! grep -q '^::error::darwin/amd64: job succeeded but' "$ERR"; then cat "$OUT" "$ERR"; fail "R8 succeeded-but-absent must exit 1 with an error"; fi
+no_annotations_in_markdown R8
 pass "R8 a darwin job that succeeded without leaving an archive fails the report"
 
 # R9
 mkdir -p "$WORK/r9"; cp -r "$WORK/a1" "$WORK/r9/assets"
-set +e; (cd "$WORK/r9" && bash "$REPORT" --tag "$TAG" --assets-dir assets --out report.md) >"$WORK/r9.out" 2>&1; RC=$?; set -e
+set +e; (cd "$WORK/r9" && bash "$REPORT" --tag "$TAG" --assets-dir assets --out report.md) >"$WORK/r9.out" 2>"$WORK/r9.err"; RC=$?; set -e
 [[ "$RC" == 0 && -s "$WORK/r9/report.md" ]] || { cat "$WORK/r9.out"; fail "R9 relative paths and --out"; }
 cmp -s "$WORK/r9/report.md" "$WORK/r9.out" || fail "R9 --out must equal stdout"
 if ! grep -q '^## Platform assets' "$WORK/r9/report.md" || ! grep -q 'Supported installer path: \*\*linux/amd64\*\*' "$WORK/r9/report.md"; then fail "R9 report header"; fi
 pass "R9 --out writes the report; relative --assets-dir resolves against the caller's directory"
+
+# R10: the --out file (what the workflow appends to the release notes) never carries annotations
+J="$(jobs_json "$(job arm64 '"success"' '"mac-1"' "$STEPS_OK")" "$(job amd64 '"failure"' '"mac-2"' "$STEPS_FAIL")")"
+run --tag "$TAG" --assets-dir "$WORK/a2" --jobs-json "$J" --annotate --out "$WORK/r10.md"
+[[ "$RC" == 0 && -s "$WORK/r10.md" ]] || { cat "$OUT" "$ERR"; fail "R10 report with --annotate --out"; }
+if grep -q '^::' "$WORK/r10.md"; then cat "$WORK/r10.md"; fail "R10 --out file (release notes) carries workflow annotations"; fi
+cmp -s "$WORK/r10.md" "$OUT" || fail "R10 --out must equal the markdown on stdout"
+grep -q '^::error::darwin/amd64 archive absent: build FAILED' "$ERR" || fail "R10 the annotation must still reach the console"
+pass "R10 annotations stay on the console; the markdown report and --out file are clean"
 echo "ALL PASS test-release-platform-report"
