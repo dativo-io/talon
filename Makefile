@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-openshell-live test-openshell-showcase-contract openshell-showcase-validate openshell-agent-image showcase-bundle test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-openshell-live test-openshell-showcase-contract test-release-verify verify-release openshell-showcase-validate openshell-agent-image showcase-bundle test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -71,6 +71,12 @@ test-openshell-live: ## REAL OpenShell live smoke (#482/#457): pinned released g
 test-openshell-showcase-contract: build ## Offline contract test of the canonical OpenShell showcase runner (vocabulary, embedded contract, standalone prepare validated by doctor, release-manifest gate) and of the bundle + customer path (#507); no Docker
 	@TALON_SHOWCASE_TALON_BIN="$(CURDIR)/bin/talon" bash ./examples/openshell/showcase/test-contract.sh
 	@TALON_SHOWCASE_TALON_BIN="$(CURDIR)/bin/talon" bash ./scripts/test-showcase-bundle.sh
+
+test-release-verify: ## Offline failure-injection test of the published-artifact path (#359): scripts/verify-release.sh + scripts/install.sh against a fake release on 127.0.0.1 (altered binary, modified/missing manifest digest, version/commit mismatch, private image, draft); no Docker, no network
+	@bash ./scripts/test-verify-release.sh
+
+verify-release: ## Verify a PUBLISHED release from the public artifacts (TAG=vX.Y.Z, default latest): checksums, executable version/commit, showcase manifest digest, bundle, anonymous image pulls, install.sh
+	@bash ./scripts/verify-release.sh --tag "$(or $(TAG),latest)" --install "$(CURDIR)/dist/verify-release-install"
 
 openshell-showcase-validate: ## Canonical OpenShell showcase against the REAL released runtime (SDK agent inside the sandbox, host-side approval and rejection, resume, evidence); needs Docker >= 28 on Linux, no keys
 	@bash ./examples/openshell/showcase/demo.sh validate

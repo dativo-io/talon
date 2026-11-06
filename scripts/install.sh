@@ -1,179 +1,169 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Dativo Talon installer
-# Usage: curl -sSL https://install.gettalon.dev | sh
+#!/bin/sh
+# Dativo Talon installer (#359): installs the PUBLISHED release binary, never
+# a source build, and fails closed on anything it cannot verify.
 #
-# Prebuilt release assets: linux/amd64 only (see README install matrix).
-# Other platforms fall back to "go install" when Go + CGO are available.
+#   curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | sh
+#   curl -fsSL https://install.gettalon.dev | sh
+#   TALON_VERSION=v1.15.4 INSTALL_DIR="$HOME/.local/bin" sh install.sh
+#
+# POSIX sh (dash, busybox, bash): the documented `| sh` must work on Debian
+# and Ubuntu, whose /bin/sh is dash.
+#
+# What it does: resolves the release (TALON_VERSION, default `latest`, which
+# never returns a draft or a pre-release), downloads the archive for this
+# platform, verifies its sha256 against the release's `checksums.txt` entry or
+# the archive's own `.sha256` asset, extracts `talon`, checks that it reports
+# exactly `Talon <version>`, prints both digests (the archive's and the
+# executable's — the latter is what the OpenShell showcase manifest lists as
+# `artifacts.talon.sha256`) and only then moves it into INSTALL_DIR.
+#
+# What it refuses: an archive without a published digest, a digest mismatch,
+# a binary that does not report the requested version, and — unless
+# TALON_INSTALL_ALLOW_SOURCE=1 — building from source when no prebuilt archive
+# exists for the platform (a source build is not the published artifact and
+# cannot be verified against the release). Prebuilt archives: linux/amd64
+# (the gated installer path), darwin/arm64 and darwin/amd64 (best effort).
+#
+# Environment:
+#   TALON_VERSION                 vX.Y.Z or `latest` (default)
+#   INSTALL_DIR                   default /usr/local/bin (sudo when not writable)
+#   TALON_INSTALL_ALLOW_SOURCE    1 permits `go install` when no archive exists
+#   TALON_RELEASE_REPO, TALON_INSTALL_API_BASE, TALON_INSTALL_DOWNLOAD_BASE
+#                                 overrides used by the repository's offline tests
+set -eu
 
-REPO="dativo-io/talon"
+REPO="${TALON_RELEASE_REPO:-dativo-io/talon}"
+API_BASE="${TALON_INSTALL_API_BASE:-https://api.github.com}"
+DOWNLOAD_BASE="${TALON_INSTALL_DOWNLOAD_BASE:-https://github.com/${REPO}/releases/download}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+REQUESTED="${TALON_VERSION:-latest}"
 
-# Detect OS and architecture
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
+die() { echo "Error: $*" >&2; exit 1; }
+sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+command -v curl >/dev/null 2>&1 || die "curl is required"
+command -v tar >/dev/null 2>&1 || die "tar is required"
+command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || die "sha256sum or shasum is required"
 
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
 case "$ARCH" in
-    x86_64)  ARCH="amd64" ;;
-    aarch64|arm64) ARCH="arm64" ;;
-    *)
-        echo "Error: Unsupported architecture: $ARCH"
-        exit 1
-        ;;
+  x86_64) ARCH="amd64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *) die "Unsupported architecture: $ARCH" ;;
 esac
-
 case "$OS" in
-    linux|darwin) ;;
-    mingw*|msys*|cygwin*) OS="windows" ;;
-    *)
-        echo "Error: Unsupported OS: $OS"
-        exit 1
-        ;;
+  linux|darwin) ;;
+  *) die "Unsupported OS: $OS (prebuilt archives exist for linux/amd64, darwin/arm64 and darwin/amd64)" ;;
 esac
-
 echo "Platform: ${OS}/${ARCH}"
 
-# Get latest release metadata
-echo "Fetching latest release..."
-LATEST_URL="https://api.github.com/repos/${REPO}/releases/latest"
-RELEASE_JSON=$(curl -sSL "${LATEST_URL}")
-
-if [ -z "$RELEASE_JSON" ] || ! echo "$RELEASE_JSON" | grep -q '"tag_name"'; then
-    echo "Error: Failed to fetch latest version. Check network connectivity."
-    exit 1
-fi
-
-LATEST=$(echo "$RELEASE_JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
-echo "Version: ${LATEST}"
-
-VERSION_STR="${LATEST#v}"
-if [ "$OS" = "windows" ]; then
-    ARCHIVE_EXT="zip"
-    ARCHIVE_FILE="talon.zip"
-    BINARY_NAME="talon.exe"
+# ---------------------------------------------------------------- release metadata
+if [ "$REQUESTED" = "latest" ]; then
+  RELEASE_URL="${API_BASE}/repos/${REPO}/releases/latest"
 else
-    ARCHIVE_EXT="tar.gz"
-    ARCHIVE_FILE="talon.tar.gz"
-    BINARY_NAME="talon"
+  case "$REQUESTED" in v*) ;; *) die "TALON_VERSION must be a tag like v1.15.4 (got '$REQUESTED')" ;; esac
+  RELEASE_URL="${API_BASE}/repos/${REPO}/releases/tags/${REQUESTED}"
 fi
-ASSET_NAME="talon_${VERSION_STR}_${OS}_${ARCH}.${ARCHIVE_EXT}"
+echo "Fetching release metadata (${REQUESTED})..."
+# GH_TOKEN / GITHUB_TOKEN, when present, authenticate this metadata read only
+# (CI runners share rate-limited IPs); the archive download stays anonymous.
+if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
+  RELEASE_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer ${GH_TOKEN:-${GITHUB_TOKEN:-}}" "$RELEASE_URL")" || die "cannot fetch $RELEASE_URL (no such published release, or no network)"
+else
+  RELEASE_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$RELEASE_URL")" || die "cannot fetch $RELEASE_URL (no such published release, or no network)"
+fi
+TAG="$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
+[ -n "$TAG" ] || die "release metadata has no tag_name"
+if [ "$REQUESTED" != "latest" ] && [ "$TAG" != "$REQUESTED" ]; then die "release metadata is for $TAG, requested $REQUESTED"; fi
+case "$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"draft": *\(true\|false\).*/\1/p' | head -n1)" in
+  true) die "$TAG is a draft release; it is not published" ;;
+esac
+VERSION="${TAG#v}"
+echo "Version: ${TAG}"
 
-asset_available() {
-    echo "$RELEASE_JSON" | grep -q "\"name\": *\"${ASSET_NAME}\""
-}
+ASSET_NAME="talon_${VERSION}_${OS}_${ARCH}.tar.gz"
+asset_listed() { printf '%s' "$RELEASE_JSON" | grep -q "\"name\": *\"$1\""; }
 
-install_via_go() {
-    if ! command -v go >/dev/null 2>&1; then
-        echo "Error: No prebuilt binary for ${OS}/${ARCH} in ${LATEST}, and Go is not installed."
-        echo ""
-        echo "Options:"
-        echo "  1. Install Go 1.22+ with CGO enabled, then:"
-        echo "       go install github.com/dativo-io/talon/cmd/talon@${LATEST}"
-        echo "     On macOS if linking fails, use:"
-        echo "       CC=/usr/bin/clang CGO_ENABLED=1 go install github.com/dativo-io/talon/cmd/talon@${LATEST}"
-        echo "  2. Clone the repo and run: make install"
-        echo ""
-        echo "Prebuilt tarballs are published for linux/amd64 only."
-        exit 1
-    fi
-
-    echo "No prebuilt binary for ${OS}/${ARCH} in ${LATEST}."
-    echo "Installing via go install (${LATEST})..."
-    GO_ENV=(env CGO_ENABLED=1)
-    if [ "$OS" = "darwin" ]; then
-        GO_ENV=(env -u CC CC=/usr/bin/clang CGO_ENABLED=1)
-    fi
-    if ! "${GO_ENV[@]}" go install "github.com/dativo-io/talon/cmd/talon@${LATEST}"; then
-        echo "go install failed. On macOS try: CC=/usr/bin/clang CGO_ENABLED=1 go install github.com/dativo-io/talon/cmd/talon@${LATEST}"
-        exit 1
-    fi
-
-    GOPATH_BIN=$(go env GOPATH)/bin
-    if [ -x "${GOPATH_BIN}/talon" ]; then
-        echo ""
-        echo "✓ Talon installed to ${GOPATH_BIN}/talon"
-        echo "  Ensure ${GOPATH_BIN} is on your PATH."
-        "${GOPATH_BIN}/talon" version
-    else
-        echo "✓ go install completed. Ensure \$(go env GOPATH)/bin is on your PATH."
-    fi
-    exit 0
-}
-
-if ! asset_available; then
-    install_via_go
+if ! asset_listed "$ASSET_NAME"; then
+  echo "No prebuilt archive ${ASSET_NAME} in ${TAG}."
+  if [ "${TALON_INSTALL_ALLOW_SOURCE:-0}" != "1" ]; then
+    cat >&2 <<EOT
+Error: no published binary for ${OS}/${ARCH}; this installer does not build from source by default
+  (a source build is not the released artifact and cannot be verified against the release).
+  Options:
+    1. Supported path: a linux/amd64 host (release archive verified by checksum).
+    2. Build from source knowingly (Go 1.26+ with CGO):
+         go install github.com/dativo-io/talon/cmd/talon@${TAG}
+       or re-run with TALON_INSTALL_ALLOW_SOURCE=1 to let this script do that.
+EOT
+    exit 1
+  fi
+  command -v go >/dev/null 2>&1 || die "TALON_INSTALL_ALLOW_SOURCE=1 but Go is not installed"
+  echo "TALON_INSTALL_ALLOW_SOURCE=1: installing from source with go install (${TAG}); this is NOT the published artifact."
+  if [ "$OS" = "darwin" ]; then
+    env -u CC CC=/usr/bin/clang CGO_ENABLED=1 go install "github.com/dativo-io/talon/cmd/talon@${TAG}" || die "go install failed"
+  else
+    CGO_ENABLED=1 go install "github.com/dativo-io/talon/cmd/talon@${TAG}" || die "go install failed"
+  fi
+  GOPATH_BIN="$(go env GOPATH)/bin"
+  echo "Installed from source to ${GOPATH_BIN}/talon (ensure ${GOPATH_BIN} is on your PATH)."
+  exit 0
 fi
 
-# Download prebuilt asset
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST}/${ASSET_NAME}"
-CHECKSUM_URL="https://github.com/${REPO}/releases/download/${LATEST}/checksums.txt"
-
+# ---------------------------------------------------------------- download and verify
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/talon-install.XXXXXX")"
+trap 'rm -rf "${TMP_DIR:?}"' EXIT INT TERM
+ARCHIVE="${TMP_DIR}/${ASSET_NAME}"
 echo "Downloading ${ASSET_NAME}..."
-TMP_DIR=$(mktemp -d)
-trap 'rm -rf "${TMP_DIR}"' EXIT
+curl -fsSL --retry 3 --retry-delay 2 -o "$ARCHIVE" "${DOWNLOAD_BASE}/${TAG}/${ASSET_NAME}" || die "download failed: ${DOWNLOAD_BASE}/${TAG}/${ASSET_NAME}"
 
-if ! curl -fsSL -o "${TMP_DIR}/${ARCHIVE_FILE}" "${DOWNLOAD_URL}"; then
-    echo "Error: Download failed for ${ASSET_NAME}"
-    install_via_go
+# The digest comes from the release's checksums.txt (goreleaser; the linux
+# archive) or from the archive's own .sha256 asset (the darwin archives).
+EXPECTED=""
+if curl -fsSL --retry 3 --retry-delay 2 -o "${TMP_DIR}/checksums.txt" "${DOWNLOAD_BASE}/${TAG}/checksums.txt" 2>/dev/null; then
+  EXPECTED="$(awk -v n="$ASSET_NAME" '$2 == n {print $1}' "${TMP_DIR}/checksums.txt" | head -n1)"
 fi
-curl -fsSL -o "${TMP_DIR}/checksums.txt" "${CHECKSUM_URL}"
-
-# Verify checksum
-echo "Verifying checksum..."
-EXPECTED=$(grep "${ASSET_NAME}" "${TMP_DIR}/checksums.txt" | awk '{print $1}')
-if [ -z "$EXPECTED" ]; then
-    echo "Error: ${ASSET_NAME} not found in checksums.txt"
-    exit 1
+if [ -z "$EXPECTED" ] && curl -fsSL --retry 3 --retry-delay 2 -o "${TMP_DIR}/${ASSET_NAME}.sha256" "${DOWNLOAD_BASE}/${TAG}/${ASSET_NAME}.sha256" 2>/dev/null; then
+  EXPECTED="$(awk '{print $1}' "${TMP_DIR}/${ASSET_NAME}.sha256" | head -n1)"
 fi
-ACTUAL=$( (sha256sum "${TMP_DIR}/${ARCHIVE_FILE}" 2>/dev/null || shasum -a 256 "${TMP_DIR}/${ARCHIVE_FILE}") | awk '{print $1}')
-
+[ -n "$EXPECTED" ] || die "no published sha256 for ${ASSET_NAME} (neither checksums.txt nor ${ASSET_NAME}.sha256 lists it); refusing to install an unverifiable archive"
+case "$EXPECTED" in *[!0-9a-f]*) die "published digest for ${ASSET_NAME} is not a sha256: '$EXPECTED'" ;; esac
+[ "${#EXPECTED}" -eq 64 ] || die "published digest for ${ASSET_NAME} is not a sha256: '$EXPECTED'"
+ACTUAL="$(sha256_of "$ARCHIVE")"
 if [ "$EXPECTED" != "$ACTUAL" ]; then
-    echo "Error: Checksum mismatch!"
-    echo "  Expected: $EXPECTED"
-    echo "  Got:      $ACTUAL"
-    exit 1
+  echo "Error: checksum mismatch for ${ASSET_NAME}" >&2
+  echo "  published: $EXPECTED" >&2
+  echo "  downloaded: $ACTUAL" >&2
+  exit 1
 fi
-echo "Checksum OK"
+echo "Checksum OK: ${ASSET_NAME} sha256 ${ACTUAL}"
 
-# Extract (goreleaser archives place the binary at the archive root)
-if [ "$OS" = "windows" ]; then
-    if ! command -v unzip >/dev/null 2>&1; then
-        echo "Error: unzip is required for Windows install."
-        exit 1
-    fi
-    unzip -q -o "${TMP_DIR}/${ARCHIVE_FILE}" -d "${TMP_DIR}"
-else
-    tar -xzf "${TMP_DIR}/${ARCHIVE_FILE}" -C "${TMP_DIR}"
-fi
+tar -xzf "$ARCHIVE" -C "$TMP_DIR" talon || die "archive does not contain talon at its root"
+BINARY="${TMP_DIR}/talon"
+[ -f "$BINARY" ] || die "talon not found in archive"
+chmod 0755 "$BINARY"
+REPORTED="$("$BINARY" version 2>/dev/null | head -n1 || true)"
+[ "$REPORTED" = "Talon ${VERSION}" ] || die "extracted binary reports '${REPORTED}', expected 'Talon ${VERSION}'"
+BINARY_SHA="$(sha256_of "$BINARY")"
+echo "Executable OK: talon reports '${REPORTED}', sha256 ${BINARY_SHA}"
 
-if [ ! -f "${TMP_DIR}/${BINARY_NAME}" ]; then
-    # Some archives nest one directory level
-    NESTED=$(find "${TMP_DIR}" -maxdepth 2 -name "${BINARY_NAME}" -type f | head -1)
-    if [ -n "$NESTED" ]; then
-        BINARY_PATH="$NESTED"
-    else
-        echo "Error: ${BINARY_NAME} not found in archive"
-        exit 1
-    fi
-else
-    BINARY_PATH="${TMP_DIR}/${BINARY_NAME}"
-fi
-
+# ---------------------------------------------------------------- install
 echo "Installing to ${INSTALL_DIR}..."
-if [ -w "${INSTALL_DIR}" ]; then
-    mv "${BINARY_PATH}" "${INSTALL_DIR}/${BINARY_NAME}"
+if [ -d "$INSTALL_DIR" ] && [ -w "$INSTALL_DIR" ]; then
+  mv "$BINARY" "${INSTALL_DIR}/talon"
+elif [ ! -e "$INSTALL_DIR" ] && mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+  mv "$BINARY" "${INSTALL_DIR}/talon"
 else
-    echo "Requires sudo for ${INSTALL_DIR}"
-    sudo mv "${BINARY_PATH}" "${INSTALL_DIR}/${BINARY_NAME}"
+  command -v sudo >/dev/null 2>&1 || die "${INSTALL_DIR} is not writable and sudo is unavailable; set INSTALL_DIR to a writable directory"
+  echo "Requires sudo for ${INSTALL_DIR}"
+  sudo mkdir -p "$INSTALL_DIR"
+  sudo mv "$BINARY" "${INSTALL_DIR}/talon"
+  sudo chmod 0755 "${INSTALL_DIR}/talon"
 fi
-chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-
-if [ -x "${INSTALL_DIR}/${BINARY_NAME}" ]; then
-    echo ""
-    echo "✓ Talon installed successfully!"
-    "${INSTALL_DIR}/${BINARY_NAME}" version
-else
-    echo ""
-    echo "✓ Installed at ${INSTALL_DIR}/${BINARY_NAME}. Add ${INSTALL_DIR} to your PATH if needed."
-fi
+[ -x "${INSTALL_DIR}/talon" ] || die "installation failed: ${INSTALL_DIR}/talon is not executable"
+echo ""
+echo "Talon ${TAG} installed: ${INSTALL_DIR}/talon"
+echo "  archive sha256    ${ACTUAL}  (${ASSET_NAME})"
+echo "  executable sha256 ${BINARY_SHA}  (the OpenShell showcase manifest's artifacts.talon.sha256)"
+"${INSTALL_DIR}/talon" version
+case ":${PATH}:" in *":${INSTALL_DIR}:"*) ;; *) echo "Add ${INSTALL_DIR} to your PATH." ;; esac

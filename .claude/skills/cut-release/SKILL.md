@@ -42,9 +42,13 @@ Every step marked **[human]** mutates GitHub, tags or registries and runs only o
 LATEST=$(gh release view --json tagName -q .tagName)
 gh release view "$LATEST" --json isDraft,assets -q '"draft=\(.isDraft)", .assets[].name'
 gh api "/repos/dativo-io/talon/actions/workflows/release.yml/runs?per_page=1" -q '.workflow_runs[0].conclusion'
+scripts/verify-release.sh --tag "$LATEST" --install /tmp/talon-verify-install --all-archives   # the customer's check: PASS verify-release: <tag>
+gh workflow run install-smoke.yml -f tag="$LATEST"   # the same on a clean runner (#359)
 docker pull ghcr.io/dativo-io/talon:latest
 gh workflow run release.yml -f tag="$LATEST"   # audit mode: re-verifies the published assets, changes nothing
 ```
+
+The gated installer path is linux/amd64 (#359): a darwin job that fails or never acquires a macOS runner no longer blocks publication; the job summary names the absent darwin archives. Record the digests `verify-release.sh` prints (archive, executable, bundle, manifest, both images) in the handoff.
 
 Also check: `draft=false`; the showcase bundle, its `.sha256` and its `.manifest.json` are among the assets and the manifest's `artifacts.talon.sha256` equals the sha256 of the `talon` inside `talon_<X.Y.Z>_linux_amd64.tar.gz`; both GHCR packages are public — `scripts/check-image-public.sh ghcr.io/dativo-io/talon:<X.Y.Z> ghcr.io/dativo-io/talon-openshell-agent:<X.Y.Z>` (the verify job runs the same check; a private package fails the rehearsal, as v1.15.4-rc.1 did); the release notes link at least one share artifact.
 

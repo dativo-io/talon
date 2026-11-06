@@ -288,20 +288,25 @@ Operating AI is the job; proving it is often the trigger. Talon is a single self
 
 ## Install
 
-Talon requires **CGO** (SQLite). Go **1.22+** recommended (CI uses 1.25.x).
+**Published binary (linux/amd64, the verified installer path):** the installer downloads the release archive, checks its sha256 against the release's published digest, checks that the executable reports exactly the requested version, prints both digests and only then installs. It never builds from source and fails closed on anything it cannot verify. Pin a version with `TALON_VERSION`.
 
 ```bash
-# From source (recommended on macOS)
-git clone https://github.com/dativo-io/talon && cd talon && make install
-
-# Or go install
-go install github.com/dativo-io/talon/cmd/talon@latest
-
-# Or Docker
-docker pull ghcr.io/dativo-io/talon:latest
+curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | sh
+# a specific release, into a directory you own
+curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.15.4 INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
-Release tarballs (linux/amd64) and an install script are on [Releases](https://github.com/dativo-io/talon/releases/latest). Platform matrix, checksums, and the macOS `!tapi-tbd` workaround: [Quickstart install guide](docs/QUICKSTART.md).
+Verify any published release yourself, from the public artifacts only (checksums, executable version and commit against the tag, OpenShell showcase manifest and bundle, anonymous image pulls): `scripts/verify-release.sh --tag vX.Y.Z` (`make verify-release TAG=vX.Y.Z`; needs curl, jq, tar, sha256sum — no Go, no token). It prints `PASS verify-release: vX.Y.Z` or names the asset and the reason.
+
+Other paths — macOS and arm64 Linux need **CGO** (SQLite) and Go 1.26+; the darwin archives on the release page are best effort (per-file `.sha256`, also installable with the script):
+
+```bash
+git clone https://github.com/dativo-io/talon && cd talon && make install     # from source (macOS: sets system clang)
+go install github.com/dativo-io/talon/cmd/talon@latest                        # or go install
+docker pull ghcr.io/dativo-io/talon:latest                                    # or Docker (public image)
+```
+
+Release assets are on [Releases](https://github.com/dativo-io/talon/releases/latest). Platform matrix and the macOS `!tapi-tbd` workaround: [Quickstart install guide](docs/QUICKSTART.md); how a release is verified before and after publication: [CONTRIBUTING](CONTRIBUTING.md#release-artifact-verification-maintainers).
 
 **First run:**
 

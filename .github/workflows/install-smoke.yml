@@ -1,0 +1,73 @@
+name: Install Smoke
+
+# The customer's installation path against a PUBLISHED release (#359): a
+# clean runner with no Go, no Docker, anonymous downloads and no checkout
+# beyond the two scripts it runs — scripts/verify-release.sh (public assets, every
+# digest, the executable's version and commit against the tag, the showcase
+# manifest's talon entry, the bundle, the anonymous image pulls) and
+# scripts/install.sh under `sh` (the documented `curl … | sh`), installed into
+# a scratch directory and compared byte for byte with the verified executable.
+#
+# Manual: `gh workflow run install-smoke.yml -f tag=v1.15.4` (default:
+# `releases/latest`). It changes nothing anywhere; a FAIL is the honest state
+# of that release (v1.15.0–v1.15.3 fail on the manifest's missing talon
+# entry, #507). The release workflow runs the same verifier before and after
+# publication; this workflow re-runs it on demand, from the customer's side.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release tag to verify (default: the latest published release)"
+        required: false
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  install-smoke:
+    name: Verify and install the published release (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/verify-release.sh
+            scripts/install.sh
+          sparse-checkout-cone-mode: false
+      - name: Verify the published assets and install with install.sh (no Go, anonymous downloads)
+        env:
+          TAG: ${{ inputs.tag || 'latest' }}
+          # Metadata reads only (release state, the tag's commit): anonymous
+          # api.github.com calls from shared runner IPs are rate-limited. Asset
+          # downloads, registry pulls and the installer's download stay
+          # anonymous, exactly as a customer's.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/verify"
+          env -u GOROOT PATH="/usr/bin:/bin" bash scripts/verify-release.sh --tag "$TAG" \
+            --work-dir "$RUNNER_TEMP/verify" --install "$RUNNER_TEMP/verify/install" --all-archives \
+            --summary-json "$RUNNER_TEMP/verify/summary.json" | tee "$RUNNER_TEMP/verify/verify.log"
+          { echo '### Published release verification'; echo '```'; sed -n '/^verify-release summary/,$p' "$RUNNER_TEMP/verify/verify.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Installed binary runs
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/verify/install/talon" version
+          "$RUNNER_TEMP/verify/install/talon" --help >/dev/null
+      - name: Keep the verdict
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cp "$RUNNER_TEMP/verify/verify.log" "$RUNNER_TEMP/verify/summary.json" artifacts/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: install-smoke-${{ inputs.tag || 'latest' }}
+          path: artifacts
+          if-no-files-found: ignore
