@@ -32,6 +32,7 @@ on:
 permissions:
   contents: write
   packages: write
+  actions: read   # release-verify reads this run's jobs to explain an absent darwin archive
 
 # One release run at a time, across ALL tags (#522 review): the movable
 # Docker tags follow `releases/latest`, a check-then-act that two runs for
@@ -239,14 +240,20 @@ jobs:
   # is published. In audit mode (workflow_dispatch) the same checks run
   # against a published release; nothing is uploaded or published, and the
   # only write is re-pointing the movable image tags at the latest release.
-  # The gated installer path is linux/amd64 (#359 MVP): the verification
-  # runs as soon as the linux archive and the showcase bundle are on the
-  # draft, whatever the darwin matrix did. `needs` still lists release-darwin
-  # so its uploads are finished (or abandoned) before anything is verified
-  # or published; its result is reported, not required — v1.15.4-rc.2 never
-  # reached this job because a macOS runner was not acquired for 15 minutes
-  # and the queued darwin/amd64 job ended `cancelled`. A release without
-  # darwin archives is published with a warning; macOS stays best effort.
+  # Supported-platform policy (#359 MVP, documented in CONTRIBUTING and the
+  # README): the gated installer path is linux/amd64; the darwin archives
+  # are best effort. The verification runs as soon as the linux archive and
+  # the showcase bundle are on the draft, whatever the darwin matrix did.
+  # `needs` still lists release-darwin so its uploads are finished (or
+  # abandoned) before anything is verified or published. The darwin outcome
+  # is then classified from this run's jobs (scripts/release-platform-report.sh):
+  # a macOS runner that was never acquired (v1.15.4-rc.2: queued 15 minutes,
+  # `cancelled`, three times) is a warning and must not hold a Linux release
+  # hostage; a FAILED macOS build is reported as exactly that (error
+  # annotation, release notes), never as an unavailable runner, and is fixed
+  # forward; a darwin job that succeeded without leaving an archive stops
+  # the publication. The release page carries a "Platform assets" section
+  # stating which archives this version ships and why the others are absent.
   release-verify:
     name: Verify from the release, then publish
     needs: [release-showcase-bundle, release-darwin]
@@ -284,12 +291,6 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           bash scripts/verify-release.sh --tag "$RELEASE_TAG" --assets-dir "$RUNNER_TEMP/assets" --work-dir "$RUNNER_TEMP/verify" \
             --skip-images --summary-json "$RUNNER_TEMP/verify-draft.json" | tee "$RUNNER_TEMP/verify-draft.log"
-          for arch in arm64 amd64; do
-            if [ ! -s "$RUNNER_TEMP/assets/talon_${VERSION}_darwin_${arch}.tar.gz" ]; then
-              echo "::warning::talon_${VERSION}_darwin_${arch}.tar.gz is not on the release (darwin job: ${{ needs.release-darwin.result }}); macOS stays a best-effort, source-install platform for this version"
-              echo "- darwin/${arch} archive **absent** (darwin job result: ${{ needs.release-darwin.result }})" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          done
           MANIFEST="$RUNNER_TEMP/assets/talon-openshell-showcase_${VERSION}_linux_amd64.manifest.json"
           {
             echo "TALON_SHOWCASE_TALON_BIN=$RUNNER_TEMP/verify/talon/talon"
@@ -297,6 +298,20 @@ jobs:
             echo "TALON_SHOWCASE_RELEASE_MANIFEST=$MANIFEST"
           } >> "$GITHUB_ENV"
           { echo '### Draft verification'; echo '```'; sed -n '/^verify-release summary/,$p' "$RUNNER_TEMP/verify-draft.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # Which platform archives this release ships, and why the others are
+      # absent, read from this run's jobs: "macOS runner not acquired" and
+      # "build FAILED at step …" are different statements (#359). Exit 1 only
+      # for a missing/wrong linux archive or a darwin job that succeeded
+      # without an archive; an absent darwin archive otherwise does not block.
+      - name: Platform assets report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-platform-report.sh --tag "$RELEASE_TAG" --assets-dir "$RUNNER_TEMP/assets" \
+            --run-id "$GITHUB_RUN_ID" --repo "$GH_REPO" --annotate --out "$RUNNER_TEMP/platform-assets.md"
+          { echo; cat "$RUNNER_TEMP/platform-assets.md"; echo; } >> "$GITHUB_STEP_SUMMARY"
       # Customers have no GHCR login: the README's `docker pull` and the
       # manifest's agent image (pulled by OpenShell, not by this runner's
       # docker client) both need PUBLIC packages. A workflow-created package is
@@ -353,6 +368,12 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/release-guard.sh "$RELEASE_TAG"
+          # The release page states the platform truth for this version: the
+          # verified "Platform assets" section is appended to the generated
+          # notes while the release is still a draft.
+          gh release view "$RELEASE_TAG" --json body -q .body > "$RUNNER_TEMP/notes.md"
+          { printf '\n\n'; cat "$RUNNER_TEMP/platform-assets.md"; } >> "$RUNNER_TEMP/notes.md"
+          gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md"
           gh release edit "$RELEASE_TAG" --draft=false
           gh release view "$RELEASE_TAG" --json isDraft,url -q '"published: \(.url) draft=\(.isDraft)"'
       # The movable tags follow the repository's LATEST release. Publishing the
@@ -433,7 +454,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           cp "$RUNNER_TEMP/showcase-validate.log" artifacts/ 2>/dev/null || true
-          cp "$RUNNER_TEMP/verify-draft.log" "$RUNNER_TEMP/verify-draft.json" "$RUNNER_TEMP/verify-public.log" "$RUNNER_TEMP/public/verify-public.json" artifacts/ 2>/dev/null || true
+          cp "$RUNNER_TEMP/verify-draft.log" "$RUNNER_TEMP/verify-draft.json" "$RUNNER_TEMP/platform-assets.md" "$RUNNER_TEMP/verify-public.log" "$RUNNER_TEMP/public/verify-public.json" artifacts/ 2>/dev/null || true
           for d in /tmp/talon-openshell-showcase.*; do
             [ -d "$d/logs" ] || continue
             dest="artifacts/$(basename "$d")"

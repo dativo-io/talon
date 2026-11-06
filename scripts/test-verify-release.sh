@@ -24,6 +24,14 @@
 #       no `go` invoked
 #   N9  a draft release is refused by the installer and flagged by the verifier
 #   N10 installer: an unpublished version pin fails before any download
+#   N11 registry answers HTTP 200 without a Docker-Content-Digest header
+#   N12 registry answers with a malformed digest
+#   N13 the tag ref cannot be parsed → the commit check must fail, not skip
+#   N14 empty checksums.txt
+#   N15 release metadata that is not a release object (installer + verifier)
+#   N16 a .sha256 asset that does not contain a sha256
+#   P3  relative --assets-dir/--work-dir/--install/--summary-json resolve
+#       against the caller's directory (regression: the verifier used to cd)
 #   (the installer's own checksum mismatch and version refusal are N1 and N5)
 #
 # No network beyond 127.0.0.1, no Docker. Needs Go (to build the test talon
@@ -35,6 +43,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # TALON_TEST_INSTALL_SH points the test at another installer (RED check: the
 # pre-#359 installer fails P1 under sh, P2, N8 and N9).
 INSTALL_SH="${TALON_TEST_INSTALL_SH:-$ROOT/scripts/install.sh}"
+VERIFY_SH="${TALON_TEST_VERIFY_SH:-$ROOT/scripts/verify-release.sh}"
 for tool in go python3 curl jq tar sha256sum; do command -v "$tool" >/dev/null 2>&1 || { echo "test-verify-release: $tool is required" >&2; exit 2; }; done
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/talon-verify-release-test.XXXXXX")"
@@ -90,11 +99,33 @@ publish() { # release-dir tag [draft] -> serve these assets as the release <tag>
   cp "$WWW/repos/dativo-io/talon/releases/tags/$tag" "$WWW/repos/dativo-io/talon/releases/latest"
   printf '{"ref": "refs/tags/%s", "object": {"type": "commit", "sha": "%s"}}' "$tag" "${TAG_COMMIT_OVERRIDE:-$COMMIT_FULL}" >"$WWW/repos/dativo-io/talon/git/ref/tags/$tag"
   echo '{"token": "anonymous"}' >"$WWW/token"
-  echo '{"schemaVersion": 2}' >"$WWW/v2/dativo-io/talon/manifests/${tag#v}"
-  echo '{"schemaVersion": 2}' >"$WWW/v2/dativo-io/talon-openshell-agent/manifests/${tag#v}"
+  echo '{"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": []}' >"$WWW/v2/dativo-io/talon/manifests/${tag#v}"
+  echo '{"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [{"digest": "agent"}]}' >"$WWW/v2/dativo-io/talon-openshell-agent/manifests/${tag#v}"
 }
 publish "$WORK/release" "$TAG"
-python3 -u -m http.server --bind 127.0.0.1 --directory "$WWW" 0 >"$WORK/server.log" 2>&1 &
+# The fake server: static files, plus the registry's Docker-Content-Digest
+# header on /v2/<repo>/manifests/<tag> (the sha256 of the served body, as a
+# real registry computes it) — unless a sibling marker says otherwise:
+# <file>.nodigest omits the header (N11), <file>.baddigest sends garbage (N12).
+cat >"$WORK/fakeserver.py" <<'PYEOF'
+import hashlib, http.server, os, sys
+class H(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        path = self.translate_path(self.path.split('?', 1)[0])
+        if '/v2/' in self.path and '/manifests/' in self.path and os.path.isfile(path):
+            if os.path.exists(path + '.baddigest'):
+                self.send_header('Docker-Content-Digest', 'sha256:notahash')
+            elif not os.path.exists(path + '.nodigest'):
+                with open(path, 'rb') as f:
+                    self.send_header('Docker-Content-Digest', 'sha256:' + hashlib.sha256(f.read()).hexdigest())
+        super().end_headers()
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer.allow_reuse_address = True
+srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), lambda *a, **k: H(*a, directory=sys.argv[1], **k))
+print('Serving HTTP on 127.0.0.1 port %d' % srv.server_address[1], flush=True)
+srv.serve_forever()
+PYEOF
+python3 -I -u "$WORK/fakeserver.py" "$WWW" >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 PORT=""
 for _ in $(seq 1 50); do PORT="$(sed -n 's/.*port \([0-9]*\).*/\1/p' "$WORK/server.log" | head -n1)"; [[ -n "$PORT" ]] && break; sleep 0.1; done
@@ -104,7 +135,7 @@ export TALON_RELEASE_API_BASE="$BASE" TALON_RELEASE_DOWNLOAD_BASE="$BASE/dl" TAL
 export TALON_INSTALL_API_BASE="$BASE" TALON_INSTALL_DOWNLOAD_BASE="$BASE/dl" TALON_INSTALL_SH="$INSTALL_SH"
 verify() { # tag extra-args... -> rc, output in $OUT
   OUT="$WORK/verify.out"; set +e
-  bash "$ROOT/scripts/verify-release.sh" --tag "$1" --work-dir "$WORK/vw-$RANDOM" "${@:2}" >"$OUT" 2>&1; RC=$?; set -e
+  bash "$VERIFY_SH" --tag "$1" --work-dir "$WORK/vw-$RANDOM" "${@:2}" >"$OUT" 2>&1; RC=$?; set -e
 }
 install_sh() { # install-dir env... -> rc, output in $OUT
   OUT="$WORK/install.out"; set +e
@@ -119,7 +150,9 @@ grep -q "^PASS verify-release: $TAG" "$OUT" || fail "P1 verdict line"
 [[ "$(sha256sum "$WORK/install-p1/talon" | cut -d' ' -f1)" == "$TALON_SHA" ]] || fail "P1 installed executable differs from the built one"
 [[ "$(jq -r .verdict "$WORK/p1.json")" == PASS && "$(jq -r .talon_executable_sha256 "$WORK/p1.json")" == "$TALON_SHA" && "$(jq -r .installed_sha256 "$WORK/p1.json")" == "$TALON_SHA" ]] || fail "P1 summary json: $(cat "$WORK/p1.json")"
 grep -q "talon was built from the tag's commit ($COMMIT_SHORT)" "$OUT" || fail "P1 commit agreement not reported"
-pass "P1 intact release verifies end to end; install.sh (sh) installs the byte-identical executable; summary json written"
+AGENT_DIGEST="sha256:$(sha256sum "$WWW/v2/dativo-io/talon-openshell-agent/manifests/$VERSION" | cut -d' ' -f1)"
+[[ "$(jq -r .images.agent.digest "$WORK/p1.json")" == "$AGENT_DIGEST" && "$(jq -r .images.talon.digest "$WORK/p1.json")" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "P1 image digests must be the registry's sha256 digests: $(jq -c .images "$WORK/p1.json")"
+pass "P1 intact release verifies end to end; install.sh (sh) installs the byte-identical executable; summary json written with real image digests"
 install_sh "$WORK/install-pin" TALON_VERSION="$TAG"
 [[ "$RC" == 0 && "$(sha256sum "$WORK/install-pin/talon" | cut -d' ' -f1)" == "$TALON_SHA" ]] || { cat "$OUT"; fail "P1 pinned install"; }
 grep -q "Version: $TAG" "$OUT" || fail "P1 pinned version not reported"
@@ -204,7 +237,7 @@ publish "$WORK/release" "$TAG"
 # ---------------------------------------------------------------- N7 agent image not pullable anonymously
 rm -f "$WWW/v2/dativo-io/talon-openshell-agent/manifests/$VERSION"
 verify "$TAG"
-expect_fail "$OUT" "$RC" "talon-openshell-agent:$VERSION is not pullable without credentials" "N7 private/missing agent image must fail"
+expect_fail "$OUT" "$RC" "talon-openshell-agent:$VERSION: anonymous manifest fetch returned HTTP 404 (tag missing, or package private)" "N7 private/missing agent image must fail"
 grep -q "ghcr.io/dativo-io/talon:$VERSION pullable without credentials" "$OUT" || fail "N7 the talon image check must still pass"
 pass "N7 an agent image that is not pullable anonymously fails the release"
 publish "$WORK/release" "$TAG"
@@ -234,5 +267,66 @@ publish "$WORK/release" "$TAG"
 install_sh "$WORK/install-n10" TALON_VERSION=v9.9.9
 expect_fail "$OUT" "$RC" "no such published release" "N10 unknown version must fail"
 pass "N10 an unpublished version pin fails before anything is downloaded"
+
+# ---------------------------------------------------------------- N11/N12 registry: 200 without a digest, malformed digest
+touch "$WWW/v2/dativo-io/talon-openshell-agent/manifests/$VERSION.nodigest"
+verify "$TAG"
+expect_fail "$OUT" "$RC" "talon-openshell-agent:$VERSION: HTTP 200 but no valid Docker-Content-Digest header" "N11 a 200 without a digest header must not pass"
+grep -q "talon-openshell-agent:$VERSION pullable" "$OUT" && fail "N11 reported the agent image as pullable"
+pass "N11 a registry answer of HTTP 200 without a digest header fails the image check"
+rm -f "$WWW/v2/dativo-io/talon-openshell-agent/manifests/$VERSION.nodigest"
+touch "$WWW/v2/dativo-io/talon/manifests/$VERSION.baddigest"
+verify "$TAG"
+expect_fail "$OUT" "$RC" "talon:$VERSION: HTTP 200 but no valid Docker-Content-Digest header (got 'sha256:notahash')" "N12 a malformed digest must not pass"
+pass "N12 a malformed Docker-Content-Digest fails the image check"
+rm -f "$WWW/v2/dativo-io/talon/manifests/$VERSION.baddigest"
+
+# ---------------------------------------------------------------- N13 tag ref unparseable → commit check fails, never skips
+echo '<html>rate limited</html>' >"$WWW/repos/dativo-io/talon/git/ref/tags/$TAG"
+verify "$TAG" --skip-images
+expect_fail "$OUT" "$RC" "cannot resolve the commit of tag $TAG" "N13 an unparseable tag ref must fail the commit check"
+pass "N13 a tag ref that cannot be parsed fails instead of skipping the commit check"
+publish "$WORK/release" "$TAG"
+
+# ---------------------------------------------------------------- N14 empty checksums.txt
+tamper_dir n14; : >"$WORK/n14/checksums.txt"; publish "$WORK/n14" "$TAG"
+verify "$TAG" --skip-images
+expect_fail "$OUT" "$RC" "required asset missing or empty: checksums.txt" "N14 an empty checksums.txt must fail"
+install_sh "$WORK/install-n14" TALON_VERSION="$TAG"
+expect_fail "$OUT" "$RC" "no published sha256 for $LINUX_ARCHIVE" "N14 installer must refuse without a published digest"
+[[ ! -e "$WORK/install-n14/talon" ]] || fail "N14 installer left a binary behind"
+pass "N14 an empty checksums.txt (and no .sha256) fails the verifier and the installer"
+publish "$WORK/release" "$TAG"
+
+# ---------------------------------------------------------------- N15 release metadata that is not a release object
+echo '<html>Bad Gateway</html>' >"$WWW/repos/dativo-io/talon/releases/tags/$TAG"
+verify "$TAG" --skip-images
+expect_fail "$OUT" "$RC" "release metadata for $TAG is not a release object" "N15 unparseable release metadata must fail the verifier"
+install_sh "$WORK/install-n15" TALON_VERSION="$TAG"
+expect_fail "$OUT" "$RC" "release metadata has no tag_name" "N15 installer must refuse unparseable metadata"
+printf '{"tag_name": "v9.9.9", "draft": false, "assets": []}' >"$WWW/repos/dativo-io/talon/releases/tags/$TAG"
+verify "$TAG" --skip-images
+expect_fail "$OUT" "$RC" "release metadata for $TAG is not a release object" "N15 metadata for another tag must fail the verifier"
+install_sh "$WORK/install-n15b" TALON_VERSION="$TAG"
+expect_fail "$OUT" "$RC" "release metadata is for v9.9.9, requested $TAG" "N15 installer must refuse metadata for another tag"
+pass "N15 release metadata that is unparseable or for another tag is refused by verifier and installer"
+publish "$WORK/release" "$TAG"
+
+# ---------------------------------------------------------------- N16 a .sha256 asset without a sha256
+tamper_dir n16; echo "not-a-digest  $BUNDLE_NAME.tar.gz" >"$WORK/n16/$BUNDLE_NAME.tar.gz.sha256"; publish "$WORK/n16" "$TAG"
+verify "$TAG" --skip-images
+expect_fail "$OUT" "$RC" "$BUNDLE_NAME.tar.gz.sha256 does not contain a sha256" "N16 a garbage .sha256 must fail"
+pass "N16 a .sha256 asset without a sha256 fails"
+publish "$WORK/release" "$TAG"
+
+# ---------------------------------------------------------------- P3 relative paths resolve against the caller's directory
+mkdir -p "$WORK/rel/assets"; cp "$WORK/release"/* "$WORK/rel/assets/"; rm -f "$WORK/rel/assets/build.log"
+OUT="$WORK/verify.out"; set +e
+(cd "$WORK/rel" && bash "$VERIFY_SH" --tag "$TAG" --assets-dir assets --work-dir wd --install inst --summary-json out/summary.json --skip-images) >"$OUT" 2>&1; RC=$?; set -e
+[[ "$RC" == 0 ]] || { cat "$OUT"; fail "P3 relative paths must verify"; }
+[[ -s "$WORK/rel/out/summary.json" && -x "$WORK/rel/inst/talon" && -x "$WORK/rel/wd/talon/talon" && -d "$WORK/rel/wd/bundle/$BUNDLE_NAME" ]] || { find "$WORK/rel" -maxdepth 3 | head -40; fail "P3 outputs must land relative to the caller's directory"; }
+[[ ! -e "$WORK/rel/assets/wd" && ! -e "$WORK/rel/assets/out" && ! -e "$WORK/rel/assets/inst" ]] || fail "P3 outputs leaked into the assets directory (cwd dependence)"
+[[ "$(jq -r .verdict "$WORK/rel/out/summary.json")" == PASS && "$(jq -r .installed_sha256 "$WORK/rel/out/summary.json")" == "$TALON_SHA" ]] || fail "P3 summary: $(cat "$WORK/rel/out/summary.json")"
+pass "P3 relative --assets-dir/--work-dir/--install/--summary-json resolve against the caller's directory"
 
 echo "ALL PASS test-verify-release: published-artifact verifier and installer fail closed on every injected defect"

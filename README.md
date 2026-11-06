@@ -298,7 +298,7 @@ curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/instal
 
 Verify any published release yourself, from the public artifacts only (checksums, executable version and commit against the tag, OpenShell showcase manifest and bundle, anonymous image pulls): `scripts/verify-release.sh --tag vX.Y.Z` (`make verify-release TAG=vX.Y.Z`; needs curl, jq, tar, sha256sum — no Go, no token). It prints `PASS verify-release: vX.Y.Z` or names the asset and the reason.
 
-Other paths — macOS and arm64 Linux need **CGO** (SQLite) and Go 1.26+; the darwin archives on the release page are best effort (per-file `.sha256`, also installable with the script):
+Other paths — macOS and arm64 Linux need **CGO** (SQLite) and Go 1.26+; the darwin archives on the release page are best effort (per-file `.sha256`, also installable with the script) and each release's **Platform assets** section states whether this version ships them:
 
 ```bash
 git clone https://github.com/dativo-io/talon && cd talon && make install     # from source (macOS: sets system clang)
