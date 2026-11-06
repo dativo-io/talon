@@ -5,8 +5,8 @@
 # and is dynamically linked against glibc (NEEDED libc.so.6, symbols up to
 # GLIBC_2.34). The runtime base must therefore carry glibc: on alpine (musl)
 # the image pulls fine and then fails with `exec /usr/local/bin/talon: no such
-# file or directory`, which is how v1.16.0-rc.1 failed its release gate
-# ("Run the released Docker image"). debian:bookworm-slim ships glibc 2.36.
+# file or directory`, which is how v1.16.0-rc.1 and rc.2 failed their release
+# gate ("Run the released Docker image"). debian:bookworm-slim ships glibc 2.36.
 # The development image (./Dockerfile) builds in golang:alpine against musl
 # and keeps its alpine runtime; the two are intentionally different.
 FROM debian:bookworm-slim
