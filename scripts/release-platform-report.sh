@@ -19,12 +19,12 @@
 #   - the job was cancelled before any step ran        → "macOS runner not acquired"
 #   - the job was cancelled after it started           → "cancelled at step …"
 #   - skipped / no job data                            → stated as such
-# --annotate emits GitHub Actions annotations (warning for an unavailable
-# runner, error for a failed build; neither changes the exit status, the
-# publication decision belongs to the workflow and is documented there).
-# The markdown goes to stdout and to --out; the workflow appends it to the
-# release notes before publishing, so the release page states the platform
-# truth for this version.
+# --annotate emits GitHub Actions annotations on STDERR (warning for an
+# unavailable runner, error for a failed build; neither changes the exit
+# status, the publication decision belongs to the workflow and is documented
+# there). The markdown goes to stdout and to --out only; the workflow appends
+# it to the release notes before publishing, so the release page states the
+# platform truth for this version without workflow command lines in it.
 set -euo pipefail
 TAG=""; ASSETS_DIR=""; JOBS_JSON=""; JOBS_TMP=""; RUN_ID=""; REPO="${GITHUB_REPOSITORY:-dativo-io/talon}"; OUT=""; ANNOTATE=0
 while [[ $# -gt 0 ]]; do
@@ -57,7 +57,9 @@ fi
 RC=0
 REPORT="$(mktemp "${TMPDIR:-/tmp}/release-platform-report.XXXXXX")"
 trap 'rm -f "${REPORT:?}" ${JOBS_TMP:+"$JOBS_TMP"}' EXIT
-annotate() { if [[ "$ANNOTATE" == 1 ]]; then echo "::$1::$2"; fi; }
+# Annotations go to the console (stderr) only: the markdown on stdout and in
+# --out is appended to the release notes and must never carry `::` commands.
+annotate() { if [[ "$ANNOTATE" == 1 ]]; then echo "::$1::$2" >&2; fi; }
 job_state() { # arch -> one line describing the darwin job's outcome
   local arch="$1" job conclusion runner first_failed started_steps
   [[ -n "$JOBS_JSON" ]] || { echo "no job data (reason unknown)"; return; }

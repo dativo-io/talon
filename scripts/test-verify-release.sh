@@ -30,6 +30,9 @@
 #   N14 empty checksums.txt
 #   N15 release metadata that is not a release object (installer + verifier)
 #   N16 a .sha256 asset that does not contain a sha256
+#   N17 installer: release metadata with a valid tag and asset list but no
+#       `draft` field (or a non-boolean one) is refused — publication must be
+#       stated as `"draft": false`, not merely not stated as true
 #   P3  relative --assets-dir/--work-dir/--install/--summary-json resolve
 #       against the caller's directory (regression: the verifier used to cd)
 #   (the installer's own checksum mismatch and version refusal are N1 and N5)
@@ -317,6 +320,20 @@ tamper_dir n16; echo "not-a-digest  $BUNDLE_NAME.tar.gz" >"$WORK/n16/$BUNDLE_NAM
 verify "$TAG" --skip-images
 expect_fail "$OUT" "$RC" "$BUNDLE_NAME.tar.gz.sha256 does not contain a sha256" "N16 a garbage .sha256 must fail"
 pass "N16 a .sha256 asset without a sha256 fails"
+publish "$WORK/release" "$TAG"
+
+# ---------------------------------------------------------------- N17 installer: metadata without an explicit draft: false
+publish "$WORK/release" "$TAG"
+jq 'del(.draft)' "$WWW/repos/dativo-io/talon/releases/tags/$TAG" >"$WORK/n17.json" && cp "$WORK/n17.json" "$WWW/repos/dativo-io/talon/releases/tags/$TAG"
+install_sh "$WORK/install-n17" TALON_VERSION="$TAG"
+expect_fail "$OUT" "$RC" 'does not state "draft": false' "N17 installer must refuse metadata without an explicit draft: false"
+[[ ! -e "$WORK/install-n17/talon" ]] || fail "N17 installer left a binary behind"
+jq '.draft = "false"' "$WORK/n17.json" >"$WWW/repos/dativo-io/talon/releases/tags/$TAG"
+install_sh "$WORK/install-n17b" TALON_VERSION="$TAG"
+expect_fail "$OUT" "$RC" 'does not state "draft": false' "N17 installer must refuse a non-boolean draft field"
+verify "$TAG" --skip-images
+expect_fail "$OUT" "$RC" "release metadata for $TAG is not a release object" "N17 verifier must refuse a non-boolean draft field"
+pass "N17 release metadata without an explicit boolean draft: false is refused by the installer (and by the verifier)"
 publish "$WORK/release" "$TAG"
 
 # ---------------------------------------------------------------- P3 relative paths resolve against the caller's directory

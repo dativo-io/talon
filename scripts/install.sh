@@ -75,8 +75,14 @@ fi
 TAG="$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
 [ -n "$TAG" ] || die "release metadata has no tag_name"
 if [ "$REQUESTED" != "latest" ] && [ "$TAG" != "$REQUESTED" ]; then die "release metadata is for $TAG, requested $REQUESTED"; fi
-case "$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"draft": *\(true\|false\).*/\1/p' | head -n1)" in
+# Publication must be STATED: only an explicit boolean `"draft": false`
+# passes. A missing, malformed or non-boolean field is refused — a release
+# page that cannot say it is published is not one to install from.
+DRAFT="$(printf '%s' "$RELEASE_JSON" | tr -d '\n' | sed -n 's/.*"draft": *\([a-z]*\).*/\1/p' | head -n1)"
+case "$DRAFT" in
+  false) ;;
   true) die "$TAG is a draft release; it is not published" ;;
+  *) die "release metadata for $TAG does not state \"draft\": false (got '${DRAFT:-no draft field}'); refusing to install from metadata that cannot confirm publication" ;;
 esac
 VERSION="${TAG#v}"
 echo "Version: ${TAG}"
