@@ -20,7 +20,7 @@
 2 · reliability    raw request (email + IBAN) → redacted ([EMAIL], [IBAN]) → local model down
    + shared policy → disallowed provider skipped → policy-valid fallback → provider's own reply
 3 · org policy     admin_* tool → HTTP 403 before the provider, $0.0000 spent
-   + cost          projected spend + estimate over the soft session cap → next call denied
+   + cost          projected spend + estimate-based session cap → next call denied
 4 · operations     live budget edit → safe reload → fleet shows blocked (and why)
    + proof         audit list --session → verify offline: 8 records · 8 valid · 0 invalid
 ```
