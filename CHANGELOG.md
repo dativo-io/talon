@@ -17,6 +17,10 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.16.1] - 2026-11-07
+
+Anthropic wire proof release: the real Claude Code executable (2.1.319) inside the real OpenShell v0.1.3 sandbox now runs through Talon's delegated Anthropic middleware in CI (#528, C01–C03), and `make test-smoke` sends real Anthropic Messages API requests through the gateway next to its OpenAI requests (smoke section 42). Exercising the real client and the real provider exposed four defects on streamed and refused responses — a panic on held SSE, no deliverable stream under a preventive policy on v0.1.3, `count_tokens` settlements, and provider refusals evidenced as answered requests — all fixed here with regressions. Patch release: no configuration, schema or code changes; evidence gains additive values only.
+
 ### Added
 
 - **`make test-smoke` now exercises the real Anthropic API next to the real OpenAI API (smoke section 42).** Problem: the black-box smoke suite sent real requests to OpenAI only; every Anthropic test in the repository ran against fixtures or a mock, so a regression on the live Anthropic wire (auth header selection, `anthropic-version`, SSE usage settlement, `count_tokens`, pricing-table cost) could ship unnoticed. Who cares: operators fronting Claude Code or any Anthropic SDK client with Talon, and anyone cutting a release from `make test-smoke`. What: `tests/smoke_sections/42_anthropic.sh` — a real `/v1/proxy/anthropic/v1/messages` round trip with the agent key as `x-api-key` and as `Authorization: Bearer` (Claude Code's form) and the provider key only in the vault; a streamed answer (`message_start … message_stop`) whose usage is settled from the stream; `count_tokens` evidenced at cost 0; a provider validation error relayed as HTTP 400 and evidenced as a failed execution; `model_not_allowed` for a priced model outside the provider allow list, attributed to Talon's policy in evidence with no failover and no usage; `pricing_unavailable` for an unpriced model; and the successful request's signed record checked for provider, model, the exact usage the provider reported, cost = usage × `pricing/models.yaml`, `talon audit verify` and `talon costs --by-provider`. The suite does not claim a provider-side zero-call measurement for denials (no counter exists against the real API). Verify: `ANTHROPIC_API_KEY=… SMOKE_ONLY=42_anthropic make test-smoke`; full run `make test-smoke` with both keys. Upgrade impact: a complete `make test-smoke` run now requires `ANTHROPIC_API_KEY` as well as `OPENAI_API_KEY`; a missing key is reported as a prerequisite instead of a silent skip, `SMOKE_ONLY` selections need only the keys of their sections, and offline sections (37–41) still need none. `TALON_SMOKE_ANTHROPIC_MODEL` (default `claude-haiku-4-5`, the cheapest priced Claude model) and `TALON_SMOKE_ANTHROPIC_BASE_URL` (development stand-in; never counts as real-provider verification) tune the section.
@@ -950,6 +954,7 @@ Fleet Operations v1 (#265 milestone): discover, inspect, stop, and safely reconf
 - Data residency: tier-based EU model routing.
 
 [Unreleased]: https://github.com/dativo-io/talon/compare/v1.15.2...HEAD
+[1.16.1]: https://github.com/dativo-io/talon/compare/v1.16.0...v1.16.1
 [1.16.0]: https://github.com/dativo-io/talon/compare/v1.15.3...v1.16.0
 [1.15.3]: https://github.com/dativo-io/talon/compare/v1.15.2...v1.15.3
 [1.15.2]: https://github.com/dativo-io/talon/compare/v1.15.1...v1.15.2
