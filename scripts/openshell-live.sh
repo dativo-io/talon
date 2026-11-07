@@ -137,6 +137,19 @@ CLAUDE_BIN="/usr/local/bin/claude"
 CLAUDE_MODEL="${TALON_CLAUDE_MODEL:-claude-sonnet-4-5}"          # priced in pricing/models.yaml; allowed
 CLAUDE_BLOCKED_MODEL="claude-opus-4-8"                           # priced; denied by the organization policy below
 CLAUDE_HOME="${TALON_OPENSHELL_CLAUDE_HOME:-/sandbox}"
+# Opt-in REAL provider mode of the claude-code lane (#528 mode B): the same
+# sandbox, policy, middleware and client, but the provider is
+# api.anthropic.com and the credential is a real Anthropic key that enters
+# ONLY through OpenShell's provider store (`provider create --from-existing`
+# reads ANTHROPIC_API_KEY from this shell's environment; the harness never
+# prints it, never passes it on a command line and Talon never holds it).
+# Spends real money (a few short turns); never runs in CI. Assertions that
+# need the mock's records are replaced by Talon's signed records.
+LIVE_ANTHROPIC="${TALON_CLAUDE_LIVE_ANTHROPIC:-0}"
+if [[ "$LIVE_ANTHROPIC" == "1" ]]; then
+  [[ "$LANE" == "claude-code" ]] || { echo "FAIL TALON_CLAUDE_LIVE_ANTHROPIC=1 needs TALON_OPENSHELL_LANE=claude-code" >&2; exit 2; }
+  [[ -n "${ANTHROPIC_API_KEY:-}" ]] || { echo "MISSING ANTHROPIC_API_KEY: the real-provider mode takes the key from the environment and hands it to OpenShell's provider store only" >&2; exit 2; }
+fi
 if [[ "$LANE" == "claude-code" ]]; then
   WORKLOAD_IMAGE="${TALON_OPENSHELL_WORKLOAD_IMAGE:-talon-openshell-claude-code:$CLAUDE_CODE_VERSION}"
   WORKLOAD_IMAGE_DIGEST="(local build: pinned by claude $CLAUDE_CODE_VERSION sha256 $CLAUDE_CODE_SHA256)"
@@ -377,11 +390,15 @@ grep -q "secret_name: \"$AGENT-talon-key\"" "$AGENT_FILE" || die "scaffold shape
 # default lane, the Anthropic Messages mock (what Claude Code speaks) for the
 # claude-code lane. The provider name selects Talon's wire format
 # (api_family: anthropic → x-api-key, /v1/messages, count_tokens, SSE usage).
+PROVIDER_HOST="host.openshell.internal"; PROVIDER_PORT="$MOCK_PORT"; PROVIDER_BASE_URL="http://host.openshell.internal:$MOCK_PORT"
+if [[ "$LIVE_ANTHROPIC" == "1" ]]; then
+  PROVIDER_HOST="api.anthropic.com"; PROVIDER_PORT="443"; PROVIDER_BASE_URL="https://api.anthropic.com"
+fi
 if [[ "$LANE" == "claude-code" ]]; then
   PROVIDER_YAML="    anthropic:
       enabled: true
       secret_name: \"anthropic-api-key\"       # /v1/proxy only; never read on the delegated path
-      base_url: \"http://host.openshell.internal:$MOCK_PORT\"   # the HOST maps delegated requests to this provider"
+      base_url: \"$PROVIDER_BASE_URL\"   # the HOST maps delegated requests to this provider"
 else
   PROVIDER_YAML="    openai:
       enabled: true
@@ -587,21 +604,31 @@ category: inference
 inference_capable: true
 credentials:
   - name: api_key
-    description: mock provider key (injected by OpenShell, never seen by Talon)
+    description: provider key (injected by OpenShell after Talon's decision, never seen by Talon)
     env_vars: [$PROVIDER_ENV]
     required: true
     auth_style: $PROVIDER_AUTH_STYLE
     header_name: $PROVIDER_HEADER
+discovery:
+  credentials: [api_key]
 endpoints:
-  - host: host.openshell.internal
-    port: $MOCK_PORT
+  - host: $PROVIDER_HOST
+    port: $PROVIDER_PORT
     protocol: rest
     access: read-write
     enforcement: enforce
 binaries: [$PROVIDER_BINARY]
 EOT
 "${CLI[@]}" profile import -f "$WORK/profile.yaml" --global >>"$LOGS/setup.log" 2>&1 || die "profile import"
-"${CLI[@]}" provider create --name "$PROVIDER_NAME" --type "$PROFILE_ID" --global-profile --credential "$PROVIDER_ENV=$PROVIDER_SECRET" >>"$LOGS/setup.log" 2>&1 || die "provider create"
+if [[ "$LIVE_ANTHROPIC" == "1" ]]; then
+  # The real key goes from this environment into OpenShell's provider store
+  # and nowhere else (not on a command line, not into $WORK, not to Talon).
+  "${CLI[@]}" provider create --name "$PROVIDER_NAME" --type "$PROFILE_ID" --global-profile --from-existing >>"$LOGS/setup.log" 2>&1 || die "provider create --from-existing (is ANTHROPIC_API_KEY exported?)"
+  PROVIDER_SECRET="$ANTHROPIC_API_KEY"   # only ever used as a grep needle against Talon's state, logs and the sandbox env
+  unset ANTHROPIC_API_KEY
+else
+  "${CLI[@]}" provider create --name "$PROVIDER_NAME" --type "$PROFILE_ID" --global-profile --credential "$PROVIDER_ENV=$PROVIDER_SECRET" >>"$LOGS/setup.log" 2>&1 || die "provider create"
+fi
 # filesystem_policy is a FIXTURE need, not a governance statement: OpenShell's
 # proxy-mode baseline grants read/execute under /usr, /lib, /etc, /app,
 # /var/log and /proc only. The Alpine-based fixture keeps busybox (sh, sleep)
@@ -609,6 +636,10 @@ EOT
 # ("failed to spawn sandbox entrypoint process '/bin/sleep': Permission
 # denied", OpenShell Live run 38270547122). include_workdir stays true, the
 # default an omitted block would have.
+# The talon middleware is selected by host: Talon's own API host always, and
+# the provider host when it is not the same one (real-provider mode).
+MW_INCLUDE='"host.openshell.internal"'
+[[ "$PROVIDER_HOST" == "host.openshell.internal" ]] || MW_INCLUDE="$MW_INCLUDE, \"$PROVIDER_HOST\""
 cat >"$WORK/policy.yaml" <<EOT
 version: 1
 filesystem_policy:
@@ -620,12 +651,12 @@ network_middlewares:
     order: 10
     on_error: fail_closed
     endpoints:
-      include: ["host.openshell.internal"]
+      include: [$MW_INCLUDE]
 network_policies:
   $PROVIDER_NAME:
     endpoints:
-      - host: host.openshell.internal
-        port: $MOCK_PORT
+      - host: $PROVIDER_HOST
+        port: $PROVIDER_PORT
         protocol: rest
         access: read-write
         enforcement: enforce
