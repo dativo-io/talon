@@ -431,3 +431,30 @@ func TestMockProvider_AnthropicMessages(t *testing.T) {
 		}
 	})
 }
+
+// The model is echoed from the request body (untrusted): every Anthropic
+// body is marshalled, so a model carrying quotes or backslashes stays
+// valid JSON on both wires (CodeQL "potentially unsafe quoting", PR #531).
+func TestMockProvider_AnthropicModelIsJSONEscaped(t *testing.T) {
+	hostile := `claude"-\x` + " "
+	_, _, b := anthropicResponse("", 1, hostile, false)
+	var msg struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(b, &msg); err != nil || msg.Model != hostile {
+		t.Fatalf("json body: err=%v model=%q body=%s", err, msg.Model, b)
+	}
+	_, _, sse := anthropicResponse("", 2, hostile, true)
+	var start struct {
+		Message struct {
+			Model string `json:"model"`
+		} `json:"message"`
+	}
+	first := strings.SplitN(strings.TrimPrefix(string(sse), "event: message_start\ndata: "), "\n", 2)[0]
+	if err := json.Unmarshal([]byte(first), &start); err != nil || start.Message.Model != hostile {
+		t.Fatalf("sse message_start: err=%v model=%q data=%s", err, start.Message.Model, first)
+	}
+	if got := len(sseEvents(t, sse)); got != 6 {
+		t.Fatalf("sse events with hostile model: %d", got)
+	}
+}

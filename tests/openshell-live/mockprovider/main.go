@@ -352,23 +352,57 @@ func anthropicResponse(scenario string, seq int, model string, stream bool) (sta
 		return http.StatusBadRequest, "application/json", []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"invalid request: the input mentions ` + mockPII + `"}}`)
 	}
 	id := fmt.Sprintf("msg_mock_%d", seq)
+	// Every body is marshalled from typed values: the model echoes a
+	// request-derived string and must be JSON-escaped, never quoted by hand.
+	usageOf := func(in, out int) anthropicUsage { return anthropicUsage{InputTokens: &in, OutputTokens: out} }
 	if !stream {
-		return http.StatusOK, "application/json", []byte(fmt.Sprintf(`{"id":%q,"type":"message","role":"assistant","model":%q,"content":[{"type":"text","text":%s}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":3}}`, id, model, jsonString(text)))
+		msg := anthropicMessage{ID: id, Type: "message", Role: "assistant", Model: model, Content: []anthropicBlock{{Type: "text", Text: text}}, StopReason: strPtr("end_turn"), Usage: usageOf(12, 3)}
+		return http.StatusOK, "application/json", mustJSON(msg)
 	}
 	var b strings.Builder
-	event := func(name, data string) { fmt.Fprintf(&b, "event: %s\ndata: %s\n\n", name, data) }
-	event("message_start", fmt.Sprintf(`{"type":"message_start","message":{"id":%q,"type":"message","role":"assistant","model":%q,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":1}}}`, id, model))
-	event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
-	event("content_block_delta", fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%s}}`, jsonString(text)))
-	event("content_block_stop", `{"type":"content_block_stop","index":0}`)
-	event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}`)
-	event("message_stop", `{"type":"message_stop"}`)
+	event := func(name string, data any) { fmt.Fprintf(&b, "event: %s\ndata: %s\n\n", name, mustJSON(data)) }
+	event("message_start", map[string]any{"type": "message_start", "message": anthropicMessage{ID: id, Type: "message", Role: "assistant", Model: model, Content: []anthropicBlock{}, Usage: usageOf(12, 1)}})
+	event("content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": anthropicBlock{Type: "text", Text: ""}})
+	event("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": text}})
+	event("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	event("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil}, "usage": anthropicUsage{OutputTokens: 3}})
+	event("message_stop", map[string]any{"type": "message_stop"})
 	return http.StatusOK, "text/event-stream", []byte(b.String())
 }
 
-func jsonString(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
+// anthropicMessage is the Messages API object the mock returns (field order
+// as Anthropic emits it; stop_reason/stop_sequence are null while open).
+type anthropicMessage struct {
+	ID           string           `json:"id"`
+	Type         string           `json:"type"`
+	Role         string           `json:"role"`
+	Model        string           `json:"model"`
+	Content      []anthropicBlock `json:"content"`
+	StopReason   *string          `json:"stop_reason"`
+	StopSequence *string          `json:"stop_sequence"`
+	Usage        anthropicUsage   `json:"usage"`
+}
+
+type anthropicBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// anthropicUsage is the usage object; input_tokens is absent in
+// message_delta, where only the output count is reported.
+type anthropicUsage struct {
+	InputTokens  *int `json:"input_tokens,omitempty"`
+	OutputTokens int  `json:"output_tokens"`
+}
+
+func strPtr(s string) *string { return &s }
+
+func mustJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err) // fixed shapes of the test double; a marshal failure is a programming error
+	}
+	return b
 }
 
 // requestModel reads the model field of a JSON request body ("" when absent).
