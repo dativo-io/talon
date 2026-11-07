@@ -128,7 +128,11 @@ nested fields are:
   (`post_delivery_observation` — a streamed response delivered as it arrived
   and scanned afterwards; `observation` — a non-streaming response scanned
   before the write but never altered; `preventive` — held until the verdict
-  and possibly redacted or withheld), optional `streamed` (bool), `status`
+  and possibly redacted or withheld; `preventive_per_unit` — a streamed
+  response inspected unit by unit while the external runtime held each unit,
+  withheld from the first unit carrying PII on, never redacted; prevention is
+  per unit, a value split across units is caught at the unit completing it),
+  optional `streamed` (bool), `status`
   (`complete` | `incomplete`), optional `incomplete_reason`
   (`capture_limit_exceeded` | `upstream_error` | `client_cancelled` |
   `scanner_unavailable` | `no_text_content`), and optional `bytes_observed` /

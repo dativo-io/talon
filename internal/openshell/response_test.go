@@ -3,6 +3,7 @@ package openshell
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -319,4 +320,104 @@ func TestResponse_SelfDestinationIsSkipped(t *testing.T) {
 	defer h.gw.mu.Unlock()
 	assert.Empty(t, h.gw.preflights, "the decider is not consulted")
 	assert.Empty(t, h.gw.settlements)
+}
+
+// Guarded stream over the real gRPC exchange: STREAM_BYTES is selected,
+// every unit is answered only after the guard saw it, a withheld unit is a
+// block_delivery carrying the reason code and the settlement's evidence id,
+// exactly one settlement carries the guard's summary, and a later
+// session_end does not settle again.
+func TestResponse_GuardedStreamWithholdsUnit(t *testing.T) {
+	s := newSigner(t, "k1")
+	h := responseHarness(t, s)
+	h.gw.plan = func(gateway.DelegatedResponsePreflight) gateway.DelegatedResponsePlan {
+		return gateway.DelegatedResponsePlan{Mode: gateway.ResponseModeStreamGuarded, Matched: true, Agent: "sandboxed-agent"}
+	}
+	h.gw.guard = func(unit []byte) gateway.DelegatedUnitVerdict {
+		if strings.Contains(string(unit), "jane.doe@example.com") {
+			return gateway.DelegatedUnitVerdict{Block: true, Code: "output_pii_blocked", Message: "withheld"}
+		}
+		return gateway.DelegatedUnitVerdict{}
+	}
+	h.gw.settle = func(in gateway.DelegatedResponseBody) gateway.DelegatedSettlement {
+		if in.Guard != nil && in.Guard.Blocked {
+			return gateway.DelegatedSettlement{EvidenceID: "ev_guard_block", Block: true, Code: in.Guard.Code}
+		}
+		return gateway.DelegatedSettlement{EvidenceID: "ev_guard_pass", Basis: "table"}
+	}
+	sseOnly := []*middlewarev1.HttpHeader{}
+	open := func() *responseExchange {
+		ex := h.openResponse(t, s.token(t, nil))
+		pf := preflightEvent(200, "text/event-stream", sseOnly...)
+		// The real v0.1.3 offer for text/event-stream: no WHOLE_BODY_BYTES.
+		pf.GetPreflight().PermittedBodyModes = []middlewarev1.HttpResponseBodyMode{
+			middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_HEADERS_ONLY,
+			middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_STREAM_BYTES,
+		}
+		require.NoError(t, ex.stream.Send(pf))
+		res, err := ex.stream.Receive()
+		require.NoError(t, err)
+		require.NotNil(t, res.GetPreflightResult().GetInspect(), "%v", res)
+		assert.Equal(t, middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_STREAM_BYTES, res.GetPreflightResult().GetInspect().GetBodyMode())
+		return ex
+	}
+
+	t.Run("withheld", func(t *testing.T) {
+		ex := open()
+		defer ex.cancel()
+		require.NoError(t, ex.stream.Send(bodyEvent(1, "event: content_block_delta\ndata: {\"delta\":{\"text\":\"hello \"}}\n\n", false)))
+		res, err := ex.stream.Receive()
+		require.NoError(t, err)
+		require.NotNil(t, res.GetBodyResult().GetPassThrough(), "a clean unit is released: %v", res)
+		require.NoError(t, ex.stream.Send(bodyEvent(2, "event: content_block_delta\ndata: {\"delta\":{\"text\":\"jane.doe@example.com\"}}\n\n", false)))
+		res, err = ex.stream.Receive()
+		require.NoError(t, err)
+		br := res.GetBodyResult()
+		require.NotNil(t, br.GetBlockDelivery(), "the PII unit is withheld: %v", res)
+		assert.Equal(t, uint64(2), br.GetSequence())
+		assert.Equal(t, "output_pii_blocked", br.GetReasonCode())
+		assert.Equal(t, "block", br.GetMetadata()["talon_decision"])
+		assert.Equal(t, "ev_guard_block", br.GetMetadata()["talon_evidence_id"])
+		require.NoError(t, ex.stream.Send(sessionEnd(middlewarev1.MiddlewareSessionEndReason_MIDDLEWARE_SESSION_END_REASON_NORMAL)))
+		require.NoError(t, ex.stream.CloseRequest())
+		_, err = ex.stream.Receive()
+		require.Error(t, err, "the exchange is drained after the block")
+		h.gw.mu.Lock()
+		defer h.gw.mu.Unlock()
+		require.Len(t, h.gw.settlements, 1, "exactly one settlement, at the block")
+		st := h.gw.settlements[0]
+		assert.Equal(t, gateway.ResponseModeStreamGuarded, st.Mode)
+		require.NotNil(t, st.Guard)
+		assert.True(t, st.Guard.Blocked)
+		assert.Equal(t, 2, st.Guard.BlockedAt)
+		assert.Equal(t, 2, st.Guard.Units)
+		assert.Equal(t, "", st.Incomplete, "a withheld stream is a verdict, not an abnormal end")
+	})
+	t.Run("released", func(t *testing.T) {
+		h.gw.mu.Lock()
+		h.gw.settlements = nil
+		h.gw.mu.Unlock()
+		ex := open()
+		defer ex.cancel()
+		units := []string{"event: message_start\ndata: {}\n\n", "event: content_block_delta\ndata: {\"delta\":{\"text\":\"fine\"}}\n\n", "event: message_stop\ndata: {}\n\n"}
+		for i, u := range units {
+			require.NoError(t, ex.stream.Send(bodyEvent(uint64(i+1), u, i == len(units)-1)))
+			res, err := ex.stream.Receive()
+			require.NoError(t, err)
+			br := res.GetBodyResult()
+			require.NotNil(t, br.GetPassThrough(), "unit %d: %v", i+1, res)
+			if i == len(units)-1 {
+				assert.Equal(t, "ev_guard_pass", br.GetMetadata()["talon_evidence_id"], "the final unit carries the settlement")
+			}
+		}
+		require.NoError(t, ex.stream.Send(sessionEnd(middlewarev1.MiddlewareSessionEndReason_MIDDLEWARE_SESSION_END_REASON_NORMAL)))
+		require.NoError(t, ex.stream.CloseRequest())
+		time.Sleep(50 * time.Millisecond)
+		h.gw.mu.Lock()
+		defer h.gw.mu.Unlock()
+		require.Len(t, h.gw.settlements, 1)
+		require.NotNil(t, h.gw.settlements[0].Guard)
+		assert.False(t, h.gw.settlements[0].Guard.Blocked)
+		assert.Equal(t, 3, h.gw.settlements[0].Guard.Units)
+	})
 }

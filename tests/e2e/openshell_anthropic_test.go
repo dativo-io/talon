@@ -57,6 +57,9 @@ type anthropicFixtureProvider struct {
 	apiKeys  []string
 	bodies   []string
 	truncate bool
+	// responsePII makes the streamed answer carry an e-mail address (the
+	// provider echoing PII), for the guarded-stream case.
+	responsePII bool
 }
 
 func startAnthropicFixtureProvider(t *testing.T) *anthropicFixtureProvider {
@@ -71,7 +74,7 @@ func startAnthropicFixtureProvider(t *testing.T) *anthropicFixtureProvider {
 		p.queries = append(p.queries, r.URL.RawQuery)
 		p.apiKeys = append(p.apiKeys, r.Header.Get("x-api-key"))
 		p.bodies = append(p.bodies, string(body))
-		truncate := p.truncate
+		truncate, responsePII := p.truncate, p.responsePII
 		p.mu.Unlock()
 		if strings.HasSuffix(r.URL.Path, "/count_tokens") {
 			w.Header().Set("Content-Type", "application/json")
@@ -84,6 +87,9 @@ func startAnthropicFixtureProvider(t *testing.T) *anthropicFixtureProvider {
 		}
 		_ = json.Unmarshal(body, &req)
 		text := fmt.Sprintf("mock anthropic completion %d", seq)
+		if responsePII {
+			text = "please contact jane.doe@example.com about the refund"
+		}
 		if !req.Stream {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprintf(w, `{"id":"msg_%d","type":"message","role":"assistant","model":%q,"content":[{"type":"text","text":%q}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":3}}`, seq, req.Model, text)
@@ -191,20 +197,34 @@ func anthropicExchange(t *testing.T, sup *fixtureSupervisor, provider *anthropic
 	upstreamBody, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 
+	// Permitted modes as OpenShell v0.1.3 computes them
+	// (crates/openshell-supervisor-middleware/src/response/validation.rs):
+	// HEADERS_ONLY always; WHOLE_BODY_BYTES only for a response that is not
+	// open-ended — text/event-stream never gets it; STREAM_BYTES when the
+	// binding has a payload cap. The first real run of the lane (PR #531)
+	// found this: a fixture that offered WHOLE_BODY for SSE had hidden it.
+	contentType := resp.Header.Get("Content-Type")
+	modes := []middlewarev1.HttpResponseBodyMode{
+		middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_HEADERS_ONLY,
+		middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES,
+		middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_STREAM_BYTES,
+	}
+	if strings.HasPrefix(contentType, "text/event-stream") {
+		modes = []middlewarev1.HttpResponseBodyMode{
+			middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_HEADERS_ONLY,
+			middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_STREAM_BYTES,
+		}
+	}
 	rc := connect.NewClient[middlewarev1.HttpResponseEvent, middlewarev1.HttpResponseEventResult](sup.client, sup.talonURL+"/openshell.middleware.v1.HttpResponsePreReturn/Evaluate", connect.WithGRPC())
 	st := rc.CallBidiStream(ctx)
 	st.RequestHeader().Set("Authorization", "Bearer "+token)
 	if err := st.Send(&middlewarev1.HttpResponseEvent{Event: &middlewarev1.HttpResponseEvent_Preflight{Preflight: &middlewarev1.HttpResponsePreflight{
-		Context:        &middlewarev1.RequestContext{RequestId: requestID, SandboxId: osSandbox},
-		Target:         &middlewarev1.HttpRequestTarget{Scheme: "https", Host: "api.anthropic.com", Port: 443, Method: "POST", Path: path, Query: query},
-		StatusCode:     uint32(resp.StatusCode),
-		Headers:        []*middlewarev1.HttpHeader{{Name: "content-type", Value: resp.Header.Get("Content-Type")}},
-		MiddlewareName: "talon-governance",
-		PermittedBodyModes: []middlewarev1.HttpResponseBodyMode{
-			middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_HEADERS_ONLY,
-			middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES,
-			middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_STREAM_BYTES,
-		},
+		Context:            &middlewarev1.RequestContext{RequestId: requestID, SandboxId: osSandbox},
+		Target:             &middlewarev1.HttpRequestTarget{Scheme: "https", Host: "api.anthropic.com", Port: 443, Method: "POST", Path: path, Query: query},
+		StatusCode:         uint32(resp.StatusCode),
+		Headers:            []*middlewarev1.HttpHeader{{Name: "content-type", Value: contentType}},
+		MiddlewareName:     "talon-governance",
+		PermittedBodyModes: modes,
 	}}}); err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
@@ -228,31 +248,69 @@ func anthropicExchange(t *testing.T, sup *fixtureSupervisor, provider *anthropic
 		_ = st.CloseRequest()
 		return reqRes, resp.StatusCode, upstreamBody, respMeta
 	}
-	respMeta["body_mode"] = pres.GetInspect().GetBodyMode().String()
-	if err := st.Send(&middlewarev1.HttpResponseEvent{Event: &middlewarev1.HttpResponseEvent_Body{Body: &middlewarev1.HttpResponseBodyUnit{Sequence: 1, Payload: &middlewarev1.HttpResponseBodyUnit_Data{Data: upstreamBody}, EndOfStream: true}}}); err != nil {
-		t.Fatalf("body: %v", err)
+	mode := pres.GetInspect().GetBodyMode()
+	respMeta["body_mode"] = mode.String()
+	// WHOLE_BODY: one unit. STREAM_BYTES: one unit per provider flush (an
+	// SSE frame each, as Anthropic-style providers flush), each held by the
+	// runtime until Talon's result, delivered as that result says.
+	units := [][]byte{upstreamBody}
+	if mode == middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_STREAM_BYTES {
+		units = sseFrames(upstreamBody)
 	}
-	br, err := st.Receive()
-	if err != nil {
-		t.Fatalf("body result: %v", err)
-	}
-	bres := br.GetBodyResult()
-	if bres == nil {
-		t.Fatalf("no body result: %v", br)
-	}
-	for k, v := range bres.GetMetadata() {
-		respMeta[k] = v
+	for i, u := range units {
+		if err := st.Send(&middlewarev1.HttpResponseEvent{Event: &middlewarev1.HttpResponseEvent_Body{Body: &middlewarev1.HttpResponseBodyUnit{Sequence: uint64(i + 1), Payload: &middlewarev1.HttpResponseBodyUnit_Data{Data: u}, EndOfStream: i == len(units)-1}}}); err != nil {
+			t.Fatalf("body unit %d: %v", i+1, err)
+		}
+		br, err := st.Receive()
+		if err != nil {
+			t.Fatalf("body result %d: %v", i+1, err)
+		}
+		bres := br.GetBodyResult()
+		if bres == nil {
+			t.Fatalf("no body result: %v", br)
+		}
+		for k, v := range bres.GetMetadata() {
+			respMeta[k] = v
+		}
+		switch {
+		case bres.GetBlockDelivery() != nil:
+			// Before commitment OpenShell answers the canonical 403; after it
+			// (a later stream unit) it aborts delivery: nothing further.
+			respMeta["blocked_at_unit"] = fmt.Sprint(i + 1)
+			respMeta["block_reason_code"] = bres.GetReasonCode()
+			_ = st.CloseRequest()
+			if len(delivered) == 0 {
+				return reqRes, http.StatusForbidden, nil, respMeta
+			}
+			return reqRes, resp.StatusCode, delivered, respMeta
+		case bres.GetTransform() != nil:
+			delivered = append(delivered, bres.GetTransform().GetData()...)
+		default:
+			delivered = append(delivered, u...)
+		}
 	}
 	_ = st.Send(&middlewarev1.HttpResponseEvent{Event: &middlewarev1.HttpResponseEvent_SessionEnd{SessionEnd: &middlewarev1.MiddlewareSessionEnd{Reason: middlewarev1.MiddlewareSessionEndReason_MIDDLEWARE_SESSION_END_REASON_NORMAL}}})
 	_ = st.CloseRequest()
-	switch {
-	case bres.GetBlockDelivery() != nil:
-		return reqRes, http.StatusForbidden, nil, respMeta
-	case bres.GetTransform() != nil:
-		return reqRes, resp.StatusCode, bres.GetTransform().GetData(), respMeta
-	default:
-		return reqRes, resp.StatusCode, upstreamBody, respMeta
+	return reqRes, resp.StatusCode, delivered, respMeta
+}
+
+// sseFrames splits an SSE body into its frames (delimiter kept); a trailing
+// partial frame — a stream the provider cut — is the last unit.
+func sseFrames(body []byte) [][]byte {
+	var units [][]byte
+	for len(body) > 0 {
+		i := bytes.Index(body, []byte("\n\n"))
+		if i < 0 {
+			units = append(units, body)
+			break
+		}
+		units = append(units, body[:i+2])
+		body = body[i+2:]
 	}
+	if len(units) == 0 {
+		units = [][]byte{{}}
+	}
+	return units
 }
 
 //nolint:gocyclo // one sequential black-box scenario against the running binary
@@ -388,9 +446,40 @@ gateway:
 	if status != 200 || !bytes.Contains(delivered, []byte("event: message_stop")) || !bytes.Contains(delivered, []byte("mock anthropic completion 1")) {
 		t.Fatalf("the sandbox must receive the complete SSE answer: %d %s (meta %v)", status, delivered, respMeta)
 	}
+	if respMeta["body_mode"] != "HTTP_RESPONSE_BODY_MODE_STREAM_BYTES" {
+		t.Fatalf("an SSE answer under a preventive policy is inspected unit by unit on v0.1.3 (no WHOLE_BODY offer); got %v", respMeta)
+	}
 	settlementID := respMeta["talon_evidence_id"]
 	if settlementID == "" {
 		t.Fatalf("no settlement evidence id: %v", respMeta)
+	}
+
+	// 1b. The provider's streamed answer carries PII: the unit carrying it
+	// is withheld together with everything after it (OpenShell holds each
+	// unit until Talon answers); the sandbox never receives the value; the
+	// settlement is a blocked, per-unit-preventive record.
+	provider.mu.Lock()
+	provider.responsePII = true
+	provider.mu.Unlock()
+	res, status, delivered, piiMeta := anthropicExchange(t, sup, provider, token(), "/v1/messages", "beta=true", claudeCodeRequest(model, "hi", true))
+	provider.mu.Lock()
+	provider.responsePII = false
+	provider.mu.Unlock()
+	if res.GetDecision() != middlewarev1.Decision_DECISION_ALLOW {
+		t.Fatalf("response-PII request: %v", res)
+	}
+	if bytes.Contains(delivered, []byte(email)) || bytes.Contains(delivered, []byte("message_stop")) {
+		t.Fatalf("the sandbox must receive neither the e-mail nor a completed stream: %d %s", status, delivered)
+	}
+	if piiMeta["blocked_at_unit"] != "3" || piiMeta["block_reason_code"] != "output_pii_blocked" || piiMeta["talon_decision"] != "block" {
+		t.Fatalf("the delta carrying the e-mail (unit 3 after message_start and content_block_start) must be the withheld unit: %v", piiMeta)
+	}
+	if !bytes.Contains(delivered, []byte("event: content_block_start")) {
+		t.Fatalf("units before the withheld one were released (per-unit prevention): %s", delivered)
+	}
+	piiSettlementID := piiMeta["talon_evidence_id"]
+	if piiSettlementID == "" {
+		t.Fatalf("no settlement evidence id for the withheld stream: %v", piiMeta)
 	}
 
 	// 2. count_tokens: governed on the same path, recorded as its own
@@ -400,7 +489,7 @@ gateway:
 		t.Fatalf("count_tokens: %v status=%d delivered=%s meta=%v", res, status, delivered, countMeta)
 	}
 	countDecisionID := res.GetMetadata()["talon_evidence_id"]
-	if calls, paths, _, _, _ = provider.snapshot(); calls != 2 || paths[1] != "/v1/messages/count_tokens" {
+	if calls, paths, _, _, _ = provider.snapshot(); calls != 3 || paths[2] != "/v1/messages/count_tokens" {
 		t.Fatalf("provider after count_tokens: %d %v", calls, paths)
 	}
 
@@ -410,7 +499,7 @@ gateway:
 		t.Fatalf("expected model_not_allowed DENY, got %v status=%d", res, status)
 	}
 	denyID := res.GetMetadata()["talon_evidence_id"]
-	if calls, _, _, _, _ = provider.snapshot(); calls != 2 {
+	if calls, _, _, _, _ = provider.snapshot(); calls != 3 {
 		t.Fatalf("a Talon DENY must produce zero provider calls; count = %d", calls)
 	}
 
@@ -422,7 +511,7 @@ gateway:
 			t.Fatalf("%s: expected identity DENY, got status=%d res=%v", name, status, res)
 		}
 	}
-	if calls, _, _, _, _ = provider.snapshot(); calls != 2 {
+	if calls, _, _, _, _ = provider.snapshot(); calls != 3 {
 		t.Fatalf("identity failures must produce zero provider calls; count = %d", calls)
 	}
 
@@ -491,6 +580,27 @@ gateway:
 	if set["session_id"] != osAnthropicSession || dec["session_id"] != osAnthropicSession {
 		t.Fatalf("session join: decision=%v settlement=%v", dec["session_id"], set["session_id"])
 	}
+	responseScan := func(r map[string]any) map[string]any {
+		cls, _ := r["classification"].(map[string]any)
+		rs, _ := cls["response_scan"].(map[string]any)
+		return rs
+	}
+	if responseScan(set)["enforcement"] != "preventive_per_unit" || !strings.Contains(annotations(set), "stream_unit_guarded") {
+		t.Fatalf("a guarded stream settles as preventive_per_unit with stream_unit_guarded: scan=%v annotations=%s", responseScan(set), annotations(set))
+	}
+	pset := byID[piiSettlementID]
+	if pset == nil {
+		t.Fatalf("withheld-stream settlement %s missing", piiSettlementID)
+	}
+	if pd, _ := pset["policy_decision"].(map[string]any); pd["allowed"] != false {
+		t.Fatalf("the withheld stream must settle as blocked: %v", pset["policy_decision"])
+	}
+	if cls, _ := pset["classification"].(map[string]any); cls["output_pii_detected"] != true || responseScan(pset)["enforcement"] != "preventive_per_unit" {
+		t.Fatalf("withheld-stream classification: %v", pset["classification"])
+	}
+	if pset["correlation_id"] == "" || pset["correlation_id"] == dec["correlation_id"] {
+		t.Fatalf("the withheld stream settles under its own decision: %v", pset["correlation_id"])
+	}
 	cdec := byID[countDecisionID]
 	if cdec == nil || cdec["invocation_type"] != "gateway_count_tokens" || exec(cdec)["cost"] != 0.0 {
 		t.Fatalf("count_tokens decision: %v", cdec)
@@ -534,7 +644,7 @@ gateway:
 			t.Errorf("leak of %q in evidence or logs", leak)
 		}
 	}
-	for _, id := range []string{decisionID, settlementID, countDecisionID, denyID} {
+	for _, id := range []string{decisionID, settlementID, piiSettlementID, countDecisionID, denyID} {
 		if out, _, code := RunTalon(t, dir, nil, "audit", "verify", id); code != 0 || !strings.Contains(strings.ToUpper(out), "VALID") {
 			t.Errorf("audit verify %s: %d %s", id, code, out)
 		}

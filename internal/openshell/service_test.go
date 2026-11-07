@@ -51,6 +51,35 @@ type fakeGateway struct {
 	settlements []gateway.DelegatedResponseBody
 	plan        func(gateway.DelegatedResponsePreflight) gateway.DelegatedResponsePlan
 	settle      func(gateway.DelegatedResponseBody) gateway.DelegatedSettlement
+	guard       func(unit []byte) gateway.DelegatedUnitVerdict
+}
+
+// fakeGuard drives the guarded-stream path with a scripted per-unit verdict.
+type fakeGuard struct {
+	verdict func(unit []byte) gateway.DelegatedUnitVerdict
+	summary gateway.StreamGuardSummary
+}
+
+func (f *fakeGuard) Inspect(_ context.Context, unit []byte) gateway.DelegatedUnitVerdict {
+	f.summary.Units++
+	v := f.verdict(unit)
+	if v.Block {
+		f.summary.Blocked, f.summary.BlockedAt, f.summary.Code = true, f.summary.Units, v.Code
+	}
+	return v
+}
+
+func (f *fakeGuard) Summary() *gateway.StreamGuardSummary { s := f.summary; return &s }
+
+func (f *fakeGateway) GuardDelegatedStream(_ context.Context, pf gateway.DelegatedResponsePreflight) (gateway.StreamUnitInspector, *gateway.DelegatedResponsePlan) {
+	if pf.Principal == nil {
+		return nil, &gateway.DelegatedResponsePlan{Block: true, Code: gateway.CodeWorkloadIdentityRequired}
+	}
+	verdict := f.guard
+	if verdict == nil {
+		verdict = func([]byte) gateway.DelegatedUnitVerdict { return gateway.DelegatedUnitVerdict{} }
+	}
+	return &fakeGuard{verdict: verdict}, nil
 }
 
 func (f *fakeGateway) PlanDelegatedResponse(_ context.Context, pf gateway.DelegatedResponsePreflight) gateway.DelegatedResponsePlan {
