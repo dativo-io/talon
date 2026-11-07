@@ -77,13 +77,19 @@ mock_mode || MODE_LABEL="REAL provider (api.anthropic.com; key in OpenShell's pr
 # (telemetry/update checks would only be denied by the sandbox policy and
 # clutter the OCSF log). The mock mode points the client at the mock
 # provider endpoint; the real-provider mode leaves the client's default.
+# Observed on the real runtime (PR #531 run 42385751830): when a stream is
+# cut or withheld, claude-cli/2.1.319 retries the streaming request about
+# ten times with backoff over ~3 minutes, then retries WITHOUT streaming;
+# the turn timeout must outlast that, or the client keeps running in the
+# sandbox after the harness moved on and its late calls land in the next
+# case's counters.
 CLAUDE_BASE_URL_ENV=()
 mock_mode && CLAUDE_BASE_URL_ENV=(--env "ANTHROPIC_BASE_URL=http://host.openshell.internal:$MOCK_PORT")
 claude_turn() {
   local sb="$1" prompt="$2"; shift 2
   local out code
   set +e
-  out="$("${CLI[@]}" sandbox exec --name "$sb" --no-tty --no-login-shell --timeout 180 \
+  out="$("${CLI[@]}" sandbox exec --name "$sb" --no-tty --no-login-shell --timeout 360 \
     "${CLAUDE_BASE_URL_ENV[@]}" \
     --env "HOME=$CLAUDE_HOME" --env "CLAUDE_CONFIG_DIR=$CLAUDE_HOME/.claude" \
     --env "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" --env "DISABLE_TELEMETRY=1" --env "DISABLE_AUTOUPDATER=1" --env "CI=1" \
@@ -260,7 +266,9 @@ if mock_mode; then
   CALLS_AFTER_TRUNCATED="$(provider_calls)"
   [[ "$CALLS_AFTER_TRUNCATED" -ge 3 ]] || die "CC9 the truncated-stream request never reached the provider (calls=$CALLS_AFTER_TRUNCATED)"
   [[ "$(turn_field "$OUT" .result)" != "mock anthropic completion 3" ]] || die "CC9 claude reported the full answer of a stream the provider cut short"
-  log "CC9 truncated stream: claude exit $CODE, is_error=$(turn_field "$OUT" .is_error), provider calls now $CALLS_AFTER_TRUNCATED (client retries counted, each a fresh Talon decision)"
+  CC9_STREAM_RETRIES="$(provider_state | jq '[.records[] | select(.scenario=="truncated-stream" and .stream==true)] | length')"
+  CC9_FALLBACK="$(provider_state | jq '[.records[] | select(.scenario=="truncated-stream" and .stream==false)] | length')"
+  log "CC9 truncated stream: claude exit $CODE, is_error=$(turn_field "$OUT" .is_error), provider calls now $CALLS_AFTER_TRUNCATED ($CC9_STREAM_RETRIES streaming attempts, $CC9_FALLBACK non-streaming fallback(s); each a fresh Talon decision)"
   pass "CC9 truncated stream: the client did not report a completed answer (exit $CODE); provider calls $CALLS_AFTER_TRUNCATED"
 else
   log "CC9 truncated stream: not exercised against the real provider (mock scenario)"
@@ -280,7 +288,8 @@ if mock_mode; then
   [[ "$(provider_calls)" -gt "$CALLS_BEFORE_CC10" ]] || die "CC10 the response-pii request never reached the provider"
   WITHHELD="$(talon_count '.invocation_type=="gateway_response" and .policy_decision.allowed==false and .classification.output_pii_detected==true and .classification.response_scan.enforcement=="preventive_per_unit" and (.gateway_annotations|index("stream_unit_guarded")!=null)')"
   [[ "${WITHHELD:-0}" -ge 1 ]] || die "CC10 Talon recorded no withheld (preventive_per_unit, output_pii_detected, blocked) settlement: $(talon_export | jq -c '[.records[] | select(.invocation_type=="gateway_response")] | map({allowed: .policy_decision.allowed, scan: .classification.response_scan, annotations: .gateway_annotations})' | head -c 1200)"
-  CC10_RESULT="withheld (claude exit $CODE, is_error=$(turn_field "$OUT" .is_error); $WITHHELD blocked per-unit settlement(s))"
+  CC10_FALLBACK_REDACTED="$(talon_count '.invocation_type=="gateway_response" and .policy_decision.allowed==true and .classification.output_pii_detected==true and .classification.response_scan.enforcement=="preventive"')"
+  CC10_RESULT="withheld (claude exit $CODE, is_error=$(turn_field "$OUT" .is_error); $WITHHELD withheld per-unit settlement(s); the client's non-streaming fallback: $CC10_FALLBACK_REDACTED whole-body redacted settlement(s))"
   pass "CC10 streamed response PII: OpenShell held each unit, talon withheld the stream from the unit carrying $PII_EMAIL on; the client never printed it (exit $CODE)"
 else
   log "CC10 streamed response PII: not exercised against the real provider (mock scenario)"
@@ -307,11 +316,15 @@ if mock_mode; then
   # body for SSE), settled allowed with the usage the guard parsed.
   SETTLED_SSE="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .execution.tokens.input==12 and .execution.tokens.output==3 and .execution.cost>0 and .classification.response_scan.enforcement=="preventive_per_unit" and (.gateway_annotations|index("response_observed")!=null) and (.gateway_annotations|index("stream_unit_guarded")!=null))] | length' "$EXPORT")"
   [[ "${SETTLED_SSE:-0}" -ge 2 ]] || die "expected >=2 released guarded-stream settlements carrying the SSE usage 12/3 priced from the table, found ${SETTLED_SSE:-0}: $(jq -c '[.records[] | select(.invocation_type=="gateway_response")] | map({allowed: .policy_decision.allowed, pricing_basis: .execution.pricing_basis, tokens: .execution.tokens, scan: .classification.response_scan.enforcement, annotations: .gateway_annotations})' "$EXPORT" | head -c 1500)"
-  # The truncated stream (CC9) never settles as the full answer: every
-  # record claiming output 3 is a released or withheld complete stream.
-  FULL_OUTPUT="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .execution.tokens.output==3)] | length' "$EXPORT")"
-  WITHHELD_FULL="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==false and .execution.tokens.output==3)] | length' "$EXPORT")"
-  [[ "$FULL_OUTPUT" == "$((SETTLED_SSE + WITHHELD_FULL))" ]] || die "a settlement claims the full output usage for the truncated stream (released=$SETTLED_SSE, withheld=$WITHHELD_FULL, with output 3=$FULL_OUTPUT)"
+  # The truncated stream (CC9) never settles as the full answer: a guarded
+  # stream that settled allowed with the full output usage is one of the
+  # released complete streams, and the client's truncated attempts settle
+  # with less. (The client's non-streaming fallbacks are JSON bodies held
+  # whole — not guarded — and legitimately carry the full usage.)
+  GUARDED_FULL="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .execution.tokens.output==3 and (.gateway_annotations|index("stream_unit_guarded")!=null))] | length' "$EXPORT")"
+  [[ "$GUARDED_FULL" == "$SETTLED_SSE" ]] || die "a guarded stream settled allowed with the full output usage outside the released complete streams (guarded full=$GUARDED_FULL, released complete=$SETTLED_SSE)"
+  GUARDED_PARTIAL="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .execution.tokens.output!=3 and (.gateway_annotations|index("stream_unit_guarded")!=null))] | length' "$EXPORT")"
+  [[ "${GUARDED_PARTIAL:-0}" -ge 1 ]] || die "expected the truncated-stream attempts to settle as guarded streams with less than the full output usage, found none: $(jq -c '[.records[] | select(.invocation_type=="gateway_response")] | map({allowed: .policy_decision.allowed, tokens: .execution.tokens, annotations: .gateway_annotations})' "$EXPORT" | head -c 1500)"
 else
   SETTLED_SSE="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .execution.tokens.input>0 and .execution.tokens.output>0 and .execution.cost>0 and (.gateway_annotations|index("response_observed")!=null))] | length' "$EXPORT")"
   [[ "${SETTLED_SSE:-0}" -ge 2 ]] || die "expected >=2 settlements carrying the real provider's observed usage priced from the table, found ${SETTLED_SSE:-0}: $(jq -c '[.records[] | select(.invocation_type=="gateway_response")] | map({pricing_basis: .execution.pricing_basis, tokens: .execution.tokens, annotations: .gateway_annotations})' "$EXPORT" | head -c 1200)"
@@ -345,7 +358,8 @@ ALL PASS openshell live smoke
   model / profile:    $CLAUDE_MODEL allowed, $CLAUDE_BLOCKED_MODEL denied by company policy; OpenShell provider profile $PROFILE_ID → $PROVIDER_HOST:$PROVIDER_PORT (x-api-key injected after talon PRE_CREDENTIALS)
   client wire:        $CLIENT_WIRE; count_tokens calls $COUNT_TOKENS_CALLS
   provider calls:     $(mock_mode && echo "$(provider_calls) governed (mock)" || echo "real provider (count not observable; $ALLOWED allowed decisions)"), shadow (ungoverned endpoint) $(shadow_calls), truncated-stream probe $CALLS_AFTER_TRUNCATED
-  response path:      SSE guarded unit by unit (OpenShell v0.1.3 offers no WHOLE_BODY_BYTES for text/event-stream); $SETTLED_SSE released settlements; streamed response PII: $CC10_RESULT
+  response path:      SSE guarded unit by unit (OpenShell v0.1.3 offers no WHOLE_BODY_BYTES for text/event-stream); $SETTLED_SSE released complete settlements, $(mock_mode && echo "$GUARDED_PARTIAL" || echo "n/a") partial (truncated) ones; streamed response PII: $CC10_RESULT
+  client behaviour:   on a cut or withheld stream claude-cli/$CLAUDE_CODE_VERSION retries the stream with backoff, then falls back to a non-streaming request$(mock_mode && echo " (CC9: ${CC9_STREAM_RETRIES:-?} stream attempts, ${CC9_FALLBACK:-?} fallback; each attempt a fresh Talon decision and provider call)")
   driver:             docker $(docker version --format '{{.Server.Version}}') on $(uname -r) ($ARCH)
   openshell images:   $(docker ps -a --format '{{.Image}}' | grep -i openshell | sort -u | tr '\n' ' ')
   host address:       $HOST_IP (talon middleware https://$HOST_IP:$TALON_GRPC_PORT, talon http :$TALON_HTTP_PORT, mock provider :$MOCK_PORT, shadow provider :$SHADOW_PORT)
