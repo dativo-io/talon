@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/failover"
 )
 
@@ -473,6 +474,38 @@ func TestGateway_UpstreamError_EvidenceStillRecorded(t *testing.T) {
 	require.NotEmpty(t, records, "evidence must be recorded even when upstream returns an error")
 	assert.Equal(t, "openclaw-main", records[0].AgentID)
 	assert.Equal(t, "gpt-4o-mini", records[0].Execution.ModelUsed)
+	// Found by smoke section 42 against the Anthropic wire: a provider error
+	// relayed to the client was evidenced like a success — allowed, no error,
+	// no status, zero usage. The terminal record must say the execution
+	// failed at the provider; the policy decision itself stays allowed.
+	assert.True(t, records[0].PolicyDecision.Allowed, "policy allowed the request; the provider refused it")
+	assert.Equal(t, "upstream status 404", records[0].Execution.Error)
+	assert.Equal(t, evidence.StatusFailed, records[0].Status)
+	assert.Equal(t, evidence.FailureReasonProviderPermanent, records[0].FailureReason)
+	assert.Zero(t, records[0].Execution.Tokens.Output)
+	// Cost is deliberately not asserted: with no usage reported Talon books
+	// the pre-request estimate (budget-conservative, existing rule); whether a
+	// provider-refused request should settle at zero is a separate decision.
+}
+
+// A transient upstream failure with no fallback chain configured is relayed
+// as-is (chainless gateway behaviour) and evidenced as a transient provider
+// failure, so a retry-exhausted or chainless 5xx is distinguishable from a
+// permanent refusal in the audit trail.
+func TestGateway_Upstream5xxNoChain_EvidencedAsTransientFailure(t *testing.T) {
+	gw, _, evStore := setupOpenClawGateway(t, "allow", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad gateway","type":"server_error"}}`))
+	})
+	w := makeGatewayRequest(gw, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}`)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	records, err := evStore.List(context.Background(), "test-tenant", "", time.Time{}, time.Now().Add(time.Second), 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, records)
+	assert.Equal(t, "upstream status 502", records[0].Execution.Error)
+	assert.Equal(t, evidence.StatusFailed, records[0].Status)
+	assert.Equal(t, evidence.FailureReasonProviderTransient, records[0].FailureReason)
 }
 
 func TestGateway_PIIRedact_ThenUpstream404(t *testing.T) {

@@ -993,6 +993,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardErr != nil {
 		forwardErrStr = forwardErr.Error()
 	}
+	// A provider refusal (4xx/5xx relayed to the agent with no transport
+	// error and no failover engaged) is a failed execution, not a success
+	// with zero usage: name the upstream status the way failover attempt
+	// records do, so the audit trail does not read as an answered request.
+	providerRefused := forwardErr == nil && failoverOut != nil && !failoverOut.FailClosed && failoverOut.UpstreamStatus >= http.StatusBadRequest
+	if providerRefused && forwardErrStr == "" {
+		forwardErrStr = fmt.Sprintf("upstream status %d", failoverOut.UpstreamStatus)
+	}
 	responseBlocked := responsePII != nil && responsePII.Blocked
 	evAllowed := !responseBlocked
 	var evReasons []string
@@ -1006,9 +1014,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	persisted, recordErr := g.recordEvidence(ctx, correlationID, agent, selectedProvider, selectedModel, start, extracted.Text, classification, &tokenUsage, cost, durationMS, forwardErrStr, evAllowed, evReasons, inputPIIRedacted, responsePII, attSummary, toolResult, false, "", 0, 0, cacheStored, ttftMS, tpotMS, estimatedCost, func(p *RecordGatewayEvidenceParams) {
 		p.Failover = failoverEvCtx
-		if failoverOut != nil && failoverOut.FailClosed {
-			p.Status = "failed"
+		switch {
+		case failoverOut != nil && failoverOut.FailClosed:
+			p.Status = evidence.StatusFailed
 			p.FailureReason = evidence.FailureReasonNoValidFallbackCandidate
+		case providerRefused:
+			p.Status = evidence.StatusFailed
+			p.FailureReason = evidence.FailureReasonProviderPermanent
+			if failoverOut.UpstreamClass.Transient {
+				p.FailureReason = evidence.FailureReasonProviderTransient
+			}
 		}
 		if isCountTokens {
 			p.InvocationType = "gateway_count_tokens"
