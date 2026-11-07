@@ -793,3 +793,32 @@ func TestDelegatedResponse_GuardedStreamWithholdsFromPIIUnit(t *testing.T) {
 	assert.Equal(t, "output_scanner_unavailable", v.Code)
 	assert.Equal(t, "output_scanner_unavailable", sg.Summary().Code)
 }
+
+// A guarded stream the provider cut before OpenShell delivered any unit
+// (observed on v0.1.3, PR #531 run 42388578162: the exchange ends with no
+// body at all) still settles under its decision and says so: nothing
+// released or withheld, no usage (the estimate stands), the scan recorded as
+// incomplete with the abnormal-end reason — never a silent "observed".
+func TestDelegatedResponse_GuardedStreamCutBeforeFirstUnit(t *testing.T) {
+	gw, store := setupDelegatedGatewayWith(t, "redact", nil, responseGoverned)
+	require.True(t, gw.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)).Allowed)
+	pf := preflightFor(200, "text/event-stream")
+	pf.BodyInspectable = false
+	require.Equal(t, ResponseModeStreamGuarded, gw.PlanDelegatedResponse(context.Background(), pf).Mode)
+	guard, refused := gw.GuardDelegatedStream(context.Background(), pf)
+	require.Nil(t, refused)
+	st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf, Mode: ResponseModeStreamGuarded, Incomplete: evidence.ResponseScanIncompleteUpstreamError, CaptureCap: 1 << 20, Guard: guard.Summary()})
+	assert.False(t, st.Block, "%+v", st)
+	assert.Equal(t, TokenUsage{}, st.Tokens)
+	assert.Equal(t, PricingBasisEstimateNoUsage, st.Basis)
+	recs := recordsOfType(t, store, InvocationTypeGatewayResponse)
+	require.Len(t, recs, 1)
+	r := recs[0]
+	require.NotNil(t, r.Classification.ResponseScan, "the abnormal end must be in the signed record")
+	assert.Equal(t, evidence.ResponseScanEnforcementPreventivePerUnit, r.Classification.ResponseScan.Enforcement)
+	assert.Equal(t, evidence.ResponseScanStatusIncomplete, r.Classification.ResponseScan.Status)
+	assert.Equal(t, evidence.ResponseScanIncompleteUpstreamError, r.Classification.ResponseScan.IncompleteReason)
+	assert.Contains(t, r.GatewayAnnotations, annotationStreamUnitGuarded)
+	assert.True(t, r.PolicyDecision.Allowed)
+	assert.False(t, r.Classification.OutputPIIDetected)
+}

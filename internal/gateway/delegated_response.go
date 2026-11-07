@@ -1079,7 +1079,15 @@ func (g *Gateway) observe(ctx context.Context, in DelegatedResponseBody, rc *res
 	bodyChanged := false
 	scanCtx := classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse)
 	switch {
-	case forced != "" || !observing || len(in.Body) == 0:
+	case forced != "" || !observing:
+	case in.Mode == ResponseModeStreamGuarded:
+		// Also when no unit ever arrived: the guard's facts (nothing
+		// released, nothing withheld) and, below, the abnormal end are what
+		// the record must say — OpenShell v0.1.3 ends a stream the provider
+		// cut before its first unit without delivering any (observed, #528).
+		scan = guardScanResult(in, action)
+		annotations = append(annotations, annotationStreamUnitGuarded)
+	case len(in.Body) == 0:
 	case in.Mode == ResponseModeWholeBody && (providerError || (!sh.isJSON && !sh.isSSE)):
 		// Error envelopes and plain text: scan the whole text; a preventive
 		// policy blocks on PII rather than rewrite an envelope it does not
@@ -1095,9 +1103,6 @@ func (g *Gateway) observe(ctx context.Context, in DelegatedResponseBody, rc *res
 		bodyChanged = scan != nil && !scan.Blocked && !bytes.Equal(body, in.Body)
 	case in.Mode == ResponseModeStream:
 		scan = g.observeDelegatedStream(scanCtx, in, action)
-	case in.Mode == ResponseModeStreamGuarded:
-		scan = guardScanResult(in, action)
-		annotations = append(annotations, annotationStreamUnitGuarded)
 	}
 	if scan != nil && in.Mode == ResponseModeWholeBody {
 		// For a held body the capture bound or an abnormal end is the ROOT

@@ -322,7 +322,7 @@ if mock_mode; then
   # streams (CC1, CC2 — guarded, released unit by unit) or one of the
   # client's non-streaming fallbacks (JSON, held whole); the attempts the
   # provider cut (streamed truncated-stream calls) account for none of them.
-  CLEAN_STREAMED="$(provider_state | jq '[.records[] | select(.stream==true and .scenario=="")] | length')"
+  CLEAN_STREAMED="$(provider_state | jq '[.records[] | select(.stream==true and (.scenario // "")=="")] | length')"
   NONSTREAM_CALLS="$(provider_state | jq '[.records[] | select(.stream==false)] | length')"
   TRUNC_ATTEMPTS="$(provider_state | jq '[.records[] | select(.stream==true and .scenario=="truncated-stream")] | length')"
   ALLOWED_FULL="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .execution.tokens.output==3)] | length' "$EXPORT")"
@@ -330,13 +330,16 @@ if mock_mode; then
   [[ "${TRUNC_ATTEMPTS:-0}" -ge 1 ]] || die "CC9 produced no streamed truncated-stream call at the provider"
   [[ "$GUARDED_FULL" == "$CLEAN_STREAMED" && "$SETTLED_SSE" == "$CLEAN_STREAMED" ]] || die "guarded streams settled with the full output usage ($GUARDED_FULL, released complete $SETTLED_SSE) do not match the clean complete streamed calls the provider answered ($CLEAN_STREAMED): a cut attempt settled as the full answer. gateway_response records: $(jq -c '.records[] | select(.invocation_type=="gateway_response") | {allowed: .policy_decision.allowed, tokens: .execution.tokens, basis: .execution.pricing_basis, status: .status, failure: .failure_reason, scan: .classification.response_scan.status, annotations: .gateway_annotations}' "$EXPORT")"
   [[ "$ALLOWED_FULL" == "$((CLEAN_STREAMED + NONSTREAM_CALLS))" ]] || die "allowed settlements with the full output usage ($ALLOWED_FULL) must be the clean complete streams ($CLEAN_STREAMED) plus the client's non-streaming fallbacks ($NONSTREAM_CALLS). gateway_response records: $(jq -c '.records[] | select(.invocation_type=="gateway_response") | {allowed: .policy_decision.allowed, tokens: .execution.tokens, basis: .execution.pricing_basis, status: .status, failure: .failure_reason, scan: .classification.response_scan.status, annotations: .gateway_annotations}' "$EXPORT")"
-  # How the cut attempts were settled is recorded, not assumed: as guarded
-  # partial streams (the exchange ended with a final unit or session_end)
-  # or as unobserved estimates (OpenShell ended the exchange without either;
-  # the sweeper booked the estimate after settlement_timeout).
+  # How the cut attempts were settled is recorded, not assumed. Observed on
+  # v0.1.3 (PR #531): OpenShell ends a stream the provider cut before its
+  # first unit WITHOUT delivering any unit, so Talon settles the exchange
+  # at once with no body — allowed, no usage (estimate_no_usage), the scan
+  # recorded as incomplete with the abnormal-end reason. A cut after some
+  # units were released would settle as a guarded partial stream instead.
   GUARDED_PARTIAL="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .execution.tokens.output!=3 and (.gateway_annotations|index("stream_unit_guarded")!=null))] | length' "$EXPORT")"
-  UNOBSERVED="$(jq '[.records[] | select(.invocation_type=="gateway_response" and (.failure_reason=="response_unobserved" or .execution.pricing_basis=="estimate_unsettled"))] | length' "$EXPORT")"
-  log "CC9 settlements of the $TRUNC_ATTEMPTS cut attempts: $GUARDED_PARTIAL guarded partial (output usage < full), $UNOBSERVED unobserved estimates (exchange ended without a final unit; swept after settlement_timeout); none as the full answer"
+  NO_UNIT="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .execution.tokens.input==0 and .execution.pricing_basis=="estimate_no_usage" and .classification.response_scan.status=="incomplete" and (.gateway_annotations|index("stream_unit_guarded")!=null))] | length' "$EXPORT")"
+  [[ "$((GUARDED_PARTIAL))" -ge "$TRUNC_ATTEMPTS" ]] || die "the $TRUNC_ATTEMPTS cut attempts must each settle as a guarded stream with less than the full usage (found $GUARDED_PARTIAL, of which $NO_UNIT with no unit delivered). gateway_response records: $(jq -c '.records[] | select(.invocation_type=="gateway_response") | {allowed: .policy_decision.allowed, tokens: .execution.tokens, basis: .execution.pricing_basis, scan: .classification.response_scan, annotations: .gateway_annotations}' "$EXPORT")"
+  log "CC9 settlements of the $TRUNC_ATTEMPTS cut attempts: $GUARDED_PARTIAL guarded with less than the full usage, of which $NO_UNIT reached the hook with no unit at all (estimate_no_usage, scan incomplete); none as the full answer"
   jq -c '.records[] | select(.invocation_type=="gateway_response") | {id: .id, allowed: .policy_decision.allowed, tokens: .execution.tokens, basis: .execution.pricing_basis, status: .status, failure: .failure_reason, scan: .classification.response_scan, annotations: .gateway_annotations}' "$EXPORT" >"$LOGS/gateway-response-settlements.jsonl"
 else
   SETTLED_SSE="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .execution.tokens.input>0 and .execution.tokens.output>0 and .execution.cost>0 and (.gateway_annotations|index("response_observed")!=null))] | length' "$EXPORT")"
@@ -371,7 +374,7 @@ ALL PASS openshell live smoke
   model / profile:    $CLAUDE_MODEL allowed, $CLAUDE_BLOCKED_MODEL denied by company policy; OpenShell provider profile $PROFILE_ID → $PROVIDER_HOST:$PROVIDER_PORT (x-api-key injected after talon PRE_CREDENTIALS)
   client wire:        $CLIENT_WIRE; count_tokens calls $COUNT_TOKENS_CALLS
   provider calls:     $(mock_mode && echo "$(provider_calls) governed (mock)" || echo "real provider (count not observable; $ALLOWED allowed decisions)"), shadow (ungoverned endpoint) $(shadow_calls), truncated-stream probe $CALLS_AFTER_TRUNCATED
-  response path:      SSE guarded unit by unit (OpenShell v0.1.3 offers no WHOLE_BODY_BYTES for text/event-stream); $SETTLED_SSE released complete settlements; cut attempts: $(mock_mode && echo "$GUARDED_PARTIAL guarded partial, $UNOBSERVED unobserved estimates" || echo "n/a"); streamed response PII: $CC10_RESULT
+  response path:      SSE guarded unit by unit (OpenShell v0.1.3 offers no WHOLE_BODY_BYTES for text/event-stream); $SETTLED_SSE released complete settlements; cut attempts: $(mock_mode && echo "$GUARDED_PARTIAL guarded with less than the full usage ($NO_UNIT with no unit delivered: OpenShell v0.1.3 ends a stream cut before its first unit without delivering any)" || echo "n/a"); streamed response PII: $CC10_RESULT
   client behaviour:   on a cut or withheld stream claude-cli/$CLAUDE_CODE_VERSION retries the stream with backoff, then falls back to a non-streaming request$(mock_mode && echo " (CC9: ${CC9_STREAM_RETRIES:-?} stream attempts, ${CC9_FALLBACK:-?} fallback; each attempt a fresh Talon decision and provider call)")
   driver:             docker $(docker version --format '{{.Server.Version}}') on $(uname -r) ($ARCH)
   openshell images:   $(docker ps -a --format '{{.Image}}' | grep -i openshell | sort -u | tr '\n' ' ')
