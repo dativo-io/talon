@@ -16,7 +16,7 @@ test_section_22_cache() {
   # across the smoke run's shared data dir, so a live-key run's earlier
   # sections can exhaust the tightened 30/min before the cache hit is ever
   # evaluated. This section's agent gets its own generous limit; the runs
-  # stay in tenant default so the report/dashboard parity check (section
+  # stay in tenant default so the report/metrics API parity check (section
   # 23) keeps counting them.
   if command -v yq &>/dev/null; then
     yq -i '.policies.rate_limits.requests_per_minute = 600' "$dir/agent.talon.yaml" 2>/dev/null || true

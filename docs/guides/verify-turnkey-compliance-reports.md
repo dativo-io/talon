@@ -1,6 +1,6 @@
 # How to verify the turnkey compliance report generator end-to-end
 
-The compliance report generator is part of Talon's **proof layer** — reports are generated from the signed evidence records that budgets, policies, and routing decisions already produce, so verifying it means verifying that chain end to end. Use this checklist after upgrading Talon or before a release demo to confirm the Turnkey Compliance Report Generator (epic #109) still works: EU policy packs, the compliance HTTP API, the dashboard Compliance tab, the unified FinOps view, and the signed control-plane evidence each export leaves.
+The compliance report generator is part of Talon's **proof layer** — reports are generated from the signed evidence records that budgets, policies, and routing decisions already produce, so verifying it means verifying that chain end to end. Use this checklist after upgrading Talon or before a release demo to confirm the Turnkey Compliance Report Generator (epic #109) still works: EU policy packs, the compliance HTTP API, the metrics snapshot cross-checks, and the signed control-plane evidence each export leaves.
 
 This is the **portable, repo-canonical** version of the interactive verification canvas. The steps and expected outcomes are the same; work through the checkboxes here in any editor, terminal, or CI prep session.
 
@@ -40,7 +40,7 @@ Build current `main` and prepare a clean workspace.
   export TALON_ADMIN_KEY=test-admin-key
   ```
 
-  **Expect:** both variables set. The admin key gates the dashboard and all `/v1/compliance/*` endpoints.
+  **Expect:** both variables set. The admin key gates the metrics snapshot and all `/v1/compliance/*` endpoints.
 
 ---
 
@@ -141,7 +141,7 @@ Declare a controller identity, start the server, optionally seed evidence.
   /tmp/talon serve --port 8080 --gateway
   ```
 
-  **Expect:** `curl -s localhost:8080/health` returns ok. **`--gateway` is required for Phase 5:** without it, `/api/v1/metrics` and `/gateway/dashboard` return plain-text `404` (a common symptom is `jq: Cannot index number` on the `"404"` body). Works even when `talon.config.yaml` has no `gateway:` block — defaults apply.
+  **Expect:** `curl -s localhost:8080/health` returns ok. **`--gateway` is required for Phase 5:** without it, `/api/v1/metrics` returns plain-text `404` (a common symptom is `jq: Cannot index number` on the `"404"` body). Works even when `talon.config.yaml` has no `gateway:` block — defaults apply.
 
 - [ ] **Optional: seed real evidence**
 
@@ -226,78 +226,59 @@ Admin-only `/v1/compliance/*`: coverage, exports, auth, control-plane evidence.
 
 ---
 
-## Phase 4 — Dashboard compliance tab
+## Phase 4 — Legacy browser surfaces are gone
 
-Browser flow: coverage, warnings, filters, one-click exports, dashboard semantics.
+The embedded dashboards were removed; nothing in this checklist runs in a browser.
 
-- [ ] **Open the unified dashboard**
+- [ ] **No HTML dashboard at the root or under `/dashboard`**
 
-  ```text
-  http://localhost:8080/dashboard?talon_admin_key=test-admin-key
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/
+  curl -s -o /dev/null -w '%{http_code}\n' -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" localhost:8080/dashboard
+  curl -s -o /dev/null -w '%{http_code}\n' -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" localhost:8080/gateway/dashboard
   ```
 
-  **Expect:** dashboard loads; tab bar includes **Compliance** alongside Evidence, Plans, Memory, FinOps, Tenants.
+  **Expect:** `404`, `404`, `404`.
 
-- [ ] **Framework coverage cards**
+- [ ] **No admin key in the URL**
 
-  **Expect:** one card per framework with control rows (article, Talon control, source) and evidence counts. Wording is **supports** / **supporting evidence** — never "compliant".
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' "localhost:8080/v1/compliance/coverage?talon_admin_key=$TALON_ADMIN_KEY"
+  ```
 
-- [ ] **Declaration warnings react to config**
-
-  With the controller declared (Phase 2), the RoPA controller warning is gone. To see warnings: remove the `compliance:` block from `talon.config.yaml`, restart `serve`, refresh.
-
-  **Expect:** without declarations, actionable warnings (e.g. controller identity not declared); with them, warnings clear.
-
-- [ ] **One-click exports**
-
-  **Expect:** RoPA (HTML), Annex IV (JSON), and Report (HTML + framework dropdown) download the same documents as Phase 3 curls, honoring active filters.
-
-- [ ] **Tenant / agent / date filters**
-
-  **Expect:** setting tenant `default`, an agent, or from/to dates updates coverage and the recent-evidence table; clearing filters restores the full view.
-
-- [ ] **Blocked card and Detail vs Verify** *(dashboard UX)*
-
-  On the **Evidence** tab: note **Blocked (all evidence)** matches the "All evidence: N denied" line from `/v1/dashboard/denials-by-reason`. Click the card — the table filters to denied rows but the card number stays stable. Click **Detail** on a row: Integrity stays **Not checked** and the detail pane says to use **Verify**. Click **Verify**: Integrity flips to **Verified**.
-
-  **Expect:** no jump from denied count to visible-row count on card click; Detail is read-only; only Verify updates Integrity. See [Gateway dashboard reference — Unified dashboard semantics](../reference/gateway-dashboard.md#unified-dashboard-semantics).
+  **Expect:** `401` — only the `X-Talon-Admin-Key` header or `Authorization: Bearer` authenticates.
 
 ---
 
-## Phase 5 — Unified FinOps view
+## Phase 5 — Metrics snapshot cross-checks
 
 Budget, cache, spend breakdowns, denials-by-reason. Requires Phase 2 server with `--gateway`.
 
-- [ ] **FinOps & Runtime tab**
-
-  **Expect:** gateway metric cards plus **Budget & cache** and **Spend by agent** / **Spend by model / provider** tables. Without gateway traffic, empty states (`—`) are correct.
-
-- [ ] **Cross-check against the metrics API**
+- [ ] **Snapshot shape**
 
   ```bash
   curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" \
-    "localhost:8080/api/v1/metrics" | jq '{budget: .budget_status, cache: .cache_stats}'
+    "localhost:8080/api/v1/metrics" | jq '{budget: .budget_status, cache: .cache_stats, by_agent: .agent_stats, by_provider: .provider_breakdown}'
   ```
 
-  **Expect:** dashboard cards match the snapshot values.
+  **Expect:** `budget_status` and `cache_stats` objects plus `agent_stats` / `provider_breakdown` arrays. Without gateway traffic, zeros and empty arrays are correct.
 
-- [ ] **Denials-by-reason in the governance quadrant**
+- [ ] **CLI parity**
+
+  ```bash
+  talon metrics --json --url http://localhost:8080 | jq '.[0]'
+  ```
+
+  **Expect:** the same `agent_stats` rows as the snapshot (same server, same collector).
+
+- [ ] **Denials by reason**
 
   ```bash
   curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" \
-    "localhost:8080/v1/dashboard/denials-by-reason" | jq .
+    "localhost:8080/api/v1/metrics" | jq '.denials_by_reason'
   ```
 
-  **Expect:** Evidence tab shows **All evidence: N denied** with per-reason breakdown (`pii_block`, `policy_deny`, …) matching the API.
-
-- [ ] **Gateway dashboard deep link**
-
-  ```bash
-  curl -s -o /dev/null -w '%{http_code}\n' -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" \
-    "localhost:8080/gateway/dashboard"
-  ```
-
-  **Expect:** `200`. FinOps tab links via **Open full Gateway telemetry →**. Without `--gateway`, the dashboard hides gateway links and shows a restart hint instead of a 404.
+  **Expect:** `null` with no denials, otherwise per-reason buckets (`pii_block`, `policy_deny`, `session_budget_exceeded`, …) sorted by count.
 
 ---
 
@@ -319,7 +300,7 @@ Automated suites plus teardown.
   cd ~/tmp/dativo/talon && bash tests/smoke_test.sh
   ```
 
-  **Expect:** **SECTION 34 — Compliance Dashboard Mode** passes. Needs port 8080 free, `curl`, and `jq`.
+  **Expect:** **SECTION 34 — Compliance API** passes. Needs port 8080 free, `curl`, and `jq`.
 
 - [ ] **Cleanup**
 
@@ -333,13 +314,13 @@ Automated suites plus teardown.
 
 ## You're done
 
-You verified policy packs, the compliance API, dashboard exports, FinOps unification, dashboard UX semantics, and (optionally) the automated regression suites.
+You verified policy packs, the compliance API, the absence of the legacy browser surfaces, the metrics snapshot cross-checks, and (optionally) the automated regression suites.
 
 | I want to… | Doc |
 |------------|-----|
 | Walk a new teammate through the happy path | [Turnkey compliance reports tutorial](../tutorials/turnkey-compliance-reports.md) |
 | Export for a real auditor handoff | [Compliance export runbook](compliance-export-runbook.md) |
 | Understand each pack | [EU compliance policy packs](policy-packs.md) |
-| API and metrics field reference | [Gateway dashboard reference](../reference/gateway-dashboard.md) |
+| Metrics snapshot field reference | [Gateway metrics API reference](../reference/gateway-metrics-api.md) |
 
-Commands in this guide are aligned with `tests/smoke_sections/34_compliance_dashboard.sh` and `internal/server/handlers_compliance.go`.
+Commands in this guide are aligned with `tests/smoke_sections/34_compliance_api.sh` and `internal/server/handlers_compliance.go`.

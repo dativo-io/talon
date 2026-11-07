@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the plan review example.
-# Shows: agent creates plan → plan pending → approve via dashboard → execution.
+# Shows: agent creates plan → plan pending → approve via CLI or API → execution.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,26 +22,28 @@ echo ""
 echo "Steps:"
 echo "  1. Agent receives the query and creates an execution plan"
 echo "  2. Plan is held in PENDING state (not executed)"
-echo "  3. You approve or reject via the dashboard"
+echo "  3. You approve or reject via the CLI (talon plan approve) or the API"
 echo "  4. If approved, the agent executes the plan"
 echo ""
 
-echo "Starting Talon server with dashboard..."
+echo "Starting Talon server (plan review API + auto-dispatch)..."
 "$TALON" serve --port 8080 &
 TALON_PID=$!
 sleep 2
 
 echo ""
 echo "Running agent with plan review enabled..."
-echo "  Dashboard: http://localhost:8080/dashboard"
-echo "  Pending plans: http://localhost:8080/v1/plans/pending"
+echo "  Pending plans (CLI): talon plan pending"
+echo "  Pending plans (API): http://localhost:8080/v1/plans/pending"
 echo ""
 
 "$TALON" run --policy "$SCRIPT_DIR/agent.talon.yaml" \
   "Research the latest EU AI Act enforcement timeline and summarize key deadlines" || true
 
 echo ""
-echo "Check the dashboard for the pending plan:"
-echo "  open http://localhost:8080/dashboard"
+echo "Review and decide on the pending plan:"
+echo "  talon plan pending"
+echo "  talon plan approve <plan-id>        # or: talon plan reject <plan-id>"
+echo "  # API: curl -X POST -H \"X-Talon-Admin-Key: \$TALON_ADMIN_KEY\" http://localhost:8080/v1/plans/<plan-id>/approve"
 
 kill $TALON_PID 2>/dev/null || true

@@ -130,7 +130,7 @@ talon costs --session <session-id> --json
 talon audit verify --session <session-id>
 ```
 
-The dashboard (`talon serve` HTTP UI) shows the same data in the **Coding Sessions** panel.
+With `talon serve --gateway`, `talon metrics --json` / `GET /api/v1/metrics` carry the same data in the `sessions` array.
 
 **Troubleshooting**
 

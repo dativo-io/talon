@@ -130,4 +130,4 @@ docker compose down
 ## See also
 
 - [Observability in Talon](../../docs/OBSERVABILITY.md) — full metrics reference.
-- [Gateway dashboard reference](../../docs/reference/gateway-dashboard.md) — built-in dashboard API.
+- [Gateway metrics API reference](../../docs/reference/gateway-metrics-api.md) — built-in metrics snapshot and SSE API.

@@ -77,10 +77,10 @@ Choose the shortest path for your situation:
 |-----|--------|-------------|
 | [60-Second Demo (no API key)](tutorials/quickstart-demo.md) | Integrate | Docker Compose demo with mock provider — see the full pipeline in action in 60 seconds. |
 | [Exact-action proof (no provider key)](tutorials/action-gateway-proof.md) | Actions | Run the counting-target HTTP Action Gateway smoke: denial, approval, exactly one claim-dispatch, replay and signed lifecycle verification. |
-| [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Proof | End-to-end tamper-evidence demo: verify in dashboard, export signed evidence, tamper one field, verify failure with CLI. |
+| [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Proof | End-to-end tamper-evidence demo: verify via API, export signed evidence, tamper one field, verify failure with CLI. |
 | [Your first governed agent](tutorials/first-governed-agent.md) | Integrate | Install → init → run → see evidence. Native Talon (requires Go + API key). |
 | [Manual governed session](tutorials/manual-governed-session.md) | Sessions | Reproduce a governed session by hand: tools, enforcement, sovereignty, session budgets, tamper check. |
-| [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) | Proof | Init with EU policy packs → dashboard Compliance tab → signed RoPA / Annex IV exports, each leaving evidence. No API key needed. |
+| [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) | Proof | Init with EU policy packs → coverage over the compliance API → signed RoPA / Annex IV exports, each leaving evidence. No API key needed. |
 
 ### How-to guides (goal-oriented)
 
@@ -108,7 +108,7 @@ Choose the shortest path for your situation:
 | [Slack bot integration](guides/slack-bot-integration.md) | Integrate | Route your Slack bot's LLM calls through Talon for cost caps, PII controls, and an audit trail. |
 | [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) | Integrate | Use Talon from GitHub Actions or GitLab CI. |
 | [How to export evidence for auditors](guides/compliance-export-runbook.md) | Proof | Export, verify, and hand off audit evidence. |
-| [How to verify turnkey compliance reports](guides/verify-turnkey-compliance-reports.md) | Proof | End-to-end checklist: policy packs, compliance API, dashboard Compliance tab, FinOps, auth matrix, smoke section 34. |
+| [How to verify turnkey compliance reports](guides/verify-turnkey-compliance-reports.md) | Proof | End-to-end checklist: policy packs, compliance API, metrics cross-checks, auth matrix, smoke section 34. |
 | [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md) | Proof | Fill `talon.config.yaml` and `agent.talon.yaml` declarations; regenerate RoPA/Annex IV without placeholders. |
 
 ### Reference (technical description)
@@ -129,8 +129,8 @@ Choose the shortest path for your situation:
 | [Governance control matrix](reference/governance-control-matrix.md) | Which controls run on each entry path (runner, gateway, MCP server/proxy, graph adapter), by-design limitations, and the parity contract that prevents posture drift. |
 | [Conformance suite & count](reference/conformance.md) | What counts as a conformance test for the evidence + policy paths, and how to reproduce the published count with `make conformance`. |
 | [Reproducible benchmarks](reference/benchmarks.md) | Gateway pipeline overhead, PII scan latency, and evidence write throughput (`make benchmarks`). |
-| [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs dashboard). |
-| [Gateway dashboard](reference/gateway-dashboard.md) | Dashboard endpoints, metrics API schema, snapshot fields, and authentication. |
+| [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs metrics). |
+| [Gateway metrics API](reference/gateway-metrics-api.md) | Metrics JSON/SSE endpoints, snapshot fields, CLI parity, and authentication. |
 | [Operational control plane](reference/operational-control-plane.md) | Run management (list/kill/pause/resume), tenant lockdown, runtime overrides, tool approval gates. |
 
 ### Explanation (understanding-oriented)

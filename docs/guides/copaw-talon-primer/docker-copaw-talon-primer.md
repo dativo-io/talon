@@ -42,7 +42,7 @@ Talon stores the real provider key in its vault; CoPaw only ever holds the agent
 
 4. **Verify**
 
-   `talon audit list --agent gateway-copaw-primer` (the `agent.name` from `agent.talon.yaml` is the evidence `agent_id`) and the dashboard **CoPaw Agents** tab.
+   `talon audit list --agent gateway-copaw-primer` (the `agent.name` from `agent.talon.yaml` is the evidence `agent_id`) and `GET /v1/copaw/stats` (admin key).
 
 See [CoPaw integration](../copaw-integration.md) for full steps and troubleshooting.
 

@@ -126,16 +126,11 @@ talon compliance annex-iv --format json --tenant default --agent support-agent
 
 The pack explicitly lists the Annex IV items Talon **cannot** produce (model development process, performance metrics, declaration of conformity) with their owners — Talon is the deployment-governance layer, not the model provider. As with the RoPA, missing declarations are flagged in the output rather than failing the command, and the result is supporting documentation for Annex IV review, not a conformity assessment.
 
-## If you prefer the dashboard (no CLI needed)
+## Over HTTP (no CLI on the auditor's machine)
 
-`talon serve` exposes the same generators over admin-authenticated HTTP, and the `/dashboard` **Compliance** tab wraps them with one-click exports — a DPO can review framework coverage and download a RoPA or Annex IV pack without touching the CLI:
+`talon serve` exposes the same generators over admin-authenticated HTTP, so a DPO can review framework coverage (`/v1/compliance/coverage`: evidence counts per GDPR / EU AI Act / NIS2 / DORA / ISO 27001 control and pending declaration warnings) and download a RoPA or Annex IV pack with `curl`. Start the server with an admin key (`TALON_ADMIN_KEY=... talon serve`) and send it in the header.
 
-1. Start the server with an admin key: `TALON_ADMIN_KEY=... talon serve`
-2. Open `http://localhost:8080/dashboard?talon_admin_key=YOUR_KEY` and select the **Compliance** tab.
-3. Review per-framework control coverage (evidence counts per GDPR / EU AI Act / NIS2 / DORA / ISO 27001 control), pending declaration warnings, and recent signed evidence in scope.
-4. Use the export buttons for one-click downloads: **RoPA (HTML/JSON)**, **Annex IV (HTML/JSON)**, or a framework-filtered report.
-
-The underlying endpoints are admin-only and mirror the CLI semantics (`tenant`, `agent`, `from`/`to` as `YYYY-MM-DD`, `format=html|json`):
+The endpoints are admin-only and mirror the CLI semantics (`tenant`, `agent`, `from`/`to` as `YYYY-MM-DD`, `format=html|json`):
 
 ```bash
 curl -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" "http://localhost:8080/v1/compliance/coverage"

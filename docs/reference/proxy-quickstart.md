@@ -51,7 +51,7 @@ Quickstart uses upstream BYOK as a scoped exception:
 
 ## Live operational feed
 
-Quickstart traffic is projected into the same operational feed used by the dashboard and CLI:
+Quickstart traffic is projected into the same operational feed used by the metrics API and CLI:
 
 - `GET /api/v1/events/recent?limit=50`
 - `GET /api/v1/events/stream` (SSE, supports `Last-Event-ID`)

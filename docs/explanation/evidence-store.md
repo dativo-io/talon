@@ -159,7 +159,7 @@ Practical split:
 
 ## Evidence Verify API
 
-The dashboard and API expose record-level verification:
+The API exposes record-level verification:
 
 ```http
 GET /v1/evidence/{id}/verify

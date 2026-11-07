@@ -515,7 +515,7 @@ talon audit list --agent zendesk-vendor-proxy --limit 1
 
 ### Phase 4: Human Oversight (Week 4)
 - Add approval workflows for high-risk actions
-- Train team on plan review dashboard
+- Train team on plan review (`talon plan` CLI and `/v1/plans/*` API)
 - Configure alert thresholds
 - **Risk:** Low (improves control)
 - **Goal:** EU AI Act Article 14 compliance
@@ -635,7 +635,7 @@ there is no passive mode that polls the vendor's own audit logs.
 5. **Expand usage:**
    - Add more vendors through Talon
    - Enable advanced features (memory, triggers)
-   - Train team on plan review dashboard
+   - Train team on plan review (`talon plan` CLI and `/v1/plans/*` API)
 
 ---
 

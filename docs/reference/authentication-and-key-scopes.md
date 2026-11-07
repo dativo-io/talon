@@ -10,7 +10,7 @@ This reference describes Talon's auth model across gateway traffic, tenant-scope
 |---|---|---|---|
 | **Agent key** | Talon vault, bound via `agent.key.secret_name` in `agent.talon.yaml` — mint with `talon secrets set <name> "$(openssl rand -hex 24)"` | Workload identity: authenticates `/v1/proxy` traffic **and** tenant-scoped API access, scoped to the agent's derived tenant | `Authorization: Bearer <agent_key>` (the gateway also accepts `x-api-key: <agent_key>`) |
 | **Approver credential** | `talon approver add --tenant <t> --groups <g>` (256-bit, revocable, versioned; prefix `talon_appr_`) | Human reviewer authority: decisions on Action Gateway approvals, tenant-scoped and policy-authorized by group | `Authorization: Bearer talon_appr_…` on `POST /v1/approvals/{id}/decisions` only |
-| **Admin key** | `TALON_ADMIN_KEY` env var | Operator authority: cross-tenant dashboards, secrets, policy admin, and the **legacy** Plan Review and tool-approval decisions (current behavior; converging on approver credentials under #430/#433) | `X-Talon-Admin-Key: <key>` (preferred), `Authorization: Bearer <key>` (fallback) |
+| **Admin key** | `TALON_ADMIN_KEY` env var | Operator authority: cross-tenant reads and metrics, secrets, policy admin, and the **legacy** Plan Review and tool-approval decisions (current behavior; converging on approver credentials under #430/#433) | `X-Talon-Admin-Key: <key>` (preferred), `Authorization: Bearer <key>` (fallback) |
 
 Notes:
 
@@ -28,18 +28,18 @@ Notes:
 | Native execution paths (`/v1/agents/run`, `/v1/chat/completions`, `/mcp`, `/mcp/proxy`, `/v1/graph/events`) | Native-only serve: agent key (bearer). Gateway serve: **admin key required — strictly** | Native execution runs the agent's own policy WITHOUT `gateway.organization_policy` / provider constraints, so when a gateway is served these routes need operator authority. Fail-closed: with a gateway and **no** `TALON_ADMIN_KEY` configured they return 401 for everyone (the dev-open rule never applies here) — agent traffic goes through `/v1/proxy` |
 | Tenant-or-admin read paths (`/v1/evidence*`, `/v1/status`, `/v1/costs*`, `/v1/memory*`, `GET /v1/triggers`, `GET /v1/triggers/{name}/history`, `/v1/plans/pending`, `/v1/plans/{id}`) | Agent key (bearer) **or** admin key | Agent keys see only their OWN agent's records (evidence, costs, memory); cross-tenant admin visibility for the admin key. `/v1/status` also reports coarse installation-level operational counters (event-stream totals, metrics summary, active-run count) — operator telemetry, not record contents, and not agent-private state |
 | Webhook triggers (`POST /v1/triggers/{name}`) | **Webhook secret only** — `Authorization: Bearer <value of triggers.webhooks[].secret_name>` (#479) | The sender is a ticketing system or automation platform, not a Talon workload: agent keys and the admin key are refused (`401 unauthorized`), there is no dev-open rule, the secret must be at least 32 bytes, and the body (512 KiB, exactly one JSON value) is read only after authentication. A denied request starts no run and writes no evidence. Webhooks are **native-only execution**: `talon serve --gateway` (and quickstart) refuse to start while any discovered agent declares a trigger, because trigger runs execute outside `gateway.organization_policy` |
-| Admin-only paths (`/v1/plans/{id}/approve`, `/v1/plans/{id}/reject`, `/v1/plans/{id}/modify`, `/v1/memory/{agent_id}/approve`, `/v1/secrets*`, `/v1/policies*`, `/v1/dashboard/*`, `/v1/compliance/*`, `/v1/copaw/*`) | Admin key | Control-plane actions |
+| Admin-only paths (`/v1/plans/{id}/approve`, `/v1/plans/{id}/reject`, `/v1/plans/{id}/modify`, `/v1/memory/{agent_id}/approve`, `/v1/secrets*`, `/v1/policies*`, `/v1/compliance/*`, `/v1/copaw/*`) | Admin key | Control-plane actions |
 | Operational control plane (`/v1/runs*`, `/v1/overrides*`, `/v1/tool-approvals*`) | Admin key | Run management, tenant overrides, legacy tool approval gates |
 | Action Gateway runtime routes (`POST /v1/action-operations`, `GET /v1/action-operations/{id}`, `POST /v1/action-operations/{id}/attempts`, `GET /v1/approvals/{id}`) | Agent key only | Exact-action spine; admin keys and dev-open requests get `401 agent_identity_required` |
 | Action Gateway decisions (`POST /v1/approvals/{id}/decisions`) | Approver credential only | Admin keys, agent keys, workload identities and legacy role approvers are refused |
-| Gateway dashboard + metrics (`/gateway/dashboard`, `/api/v1/metrics`, `/api/v1/metrics/stream`) | Admin key | Operational dashboards and telemetry streams |
+| Gateway metrics (`/api/v1/metrics`, `/api/v1/metrics/stream`) | Admin key | Operational telemetry snapshot and stream; header or bearer only — no query-string or cookie credentials |
 
 ---
 
 ## Practical rules
 
 - Use the workload's **agent key** for normal tenant traffic: the same key authenticates `/v1/proxy` and the tenant-scoped read APIs, always scoped to the derived tenant. In a **native-only** serve it also authenticates `POST /v1/agents/run`.
-- Use an **approver credential** for Action Gateway decisions; the admin key is refused there. Use **`TALON_ADMIN_KEY`** for admin/operator actions, the legacy Plan Review and tool-approval decisions, and all dashboard/metrics endpoints — and for the native execution routes whenever a gateway is served. Agent keys never grant admin authority, and the admin key never impersonates an agent.
+- Use an **approver credential** for Action Gateway decisions; the admin key is refused there. Use **`TALON_ADMIN_KEY`** for admin/operator actions, the legacy Plan Review and tool-approval decisions, and the metrics endpoints — and for the native execution routes whenever a gateway is served. Agent keys never grant admin authority, and the admin key never impersonates an agent.
 - Prefer `X-Talon-Admin-Key` for admin calls; bearer fallback is accepted.
 - Auth openness is governed only by the admin-key dev rule (running with no `TALON_ADMIN_KEY` configured is dev mode) — never by how many agents happen to be configured. **Exception (fail-closed):** the native execution routes in gateway mode never dev-open — no admin key means they deny.
 - Webhook triggers use neither key family and never dev-open: each webhook names its own vault secret (`triggers.webhooks[].secret_name`, minted with `talon secrets set`), and the sender presents the value as a bearer token. Signature-based senders (GitHub `X-Hub-Signature-256`, Slack signing secrets) are not supported; put an intermediary that can set an `Authorization` header in front of Talon, or wait for a provider-signature verifier (follow-up to #479).
@@ -99,7 +99,7 @@ curl -i -H "X-Talon-Admin-Key: <admin_key>" http://localhost:8080/v1/secrets
 ## Related docs
 
 - [Configuration and environment](configuration.md)
-- [Gateway dashboard](gateway-dashboard.md)
+- [Gateway metrics API](gateway-metrics-api.md)
 - [Operational control plane](operational-control-plane.md)
 - [How to offer Talon to multiple customers (multi-tenant/MSP)](../guides/multi-tenant-msp.md)
 - [Plan review example](../../examples/plan-review/README.md)

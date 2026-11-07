@@ -80,7 +80,7 @@ If those are your questions, Talon sits in front of your existing OpenAI/Anthrop
 ### 4. Session understanding — know what every use case did
 
 - Session identity from `X-Talon-Session-ID`, vendor headers (Claude Code, Codex CLI), or a synthetic evidence-only ID — attribution boundaries kept honest.
-- Session-scoped audit and cost rollups (`talon audit list --session`, `talon audit verify --session`); live metrics API, SSE stream, OpenTelemetry GenAI traces, embedded dashboards.
+- Session-scoped audit and cost rollups (`talon audit list --session`, `talon audit verify --session`); live metrics API, SSE stream, OpenTelemetry GenAI traces.
 
 → [Governing coding agents](docs/guides/governing-coding-agents.md)
 
@@ -241,7 +241,7 @@ Full byte-level breakdown: [What Talon does to your request](docs/explanation/wh
 | **Cost control** | Per-agent daily/monthly caps evaluated before the call; session budgets (soft); cache-aware, currency-labeled per-request estimation from an editable pricing table; attribution by tenant/agent. | [Cap AI spend per agent](docs/guides/cost-governance-by-agent.md) |
 | **Reliability** | Error-driven, policy-valid provider fallback chains; connect/response-header timeout controls; provider-native error shapes; OTel GenAI traces. | [Fallback chains](docs/reference/configuration.md#provider-fallback-chains-error-driven-failover) · [Observability](docs/OBSERVABILITY.md) |
 | **Shared policy** | Presidio-compatible input/output PII scanning (EU identifiers + email, phone, card, passport, IP) with redact/block/warn; tool allowlists/forbidden globs filtered before the model; egress and sovereignty rules. | [Policy cookbook](docs/guides/policy-cookbook.md) |
-| **Session understanding** | Session identity (explicit/vendor/synthetic), session-scoped audit + cost rollups, dashboard session drill-down, metrics API + SSE stream. | [Governing coding agents](docs/guides/governing-coding-agents.md) · [Gateway dashboard](docs/reference/gateway-dashboard.md) |
+| **Session understanding** | Session identity (explicit/vendor/synthetic), session-scoped audit + cost rollups, metrics API + SSE stream with session drill-down. | [Governing coding agents](docs/guides/governing-coding-agents.md) · [Gateway metrics API](docs/reference/gateway-metrics-api.md) |
 | **Proof layer (cross-cutting)** | HMAC-SHA256 signed record per request; verify online/offline; export to CSV/JSON/signed-JSON; compliance report generators (GDPR Art. 30 RoPA, EU AI Act Annex IV) built on the evidence. | [Evidence store](docs/explanation/evidence-store.md) · [Conformance](docs/reference/conformance.md) |
 | **Differentiators** | Single self-hosted binary; provider registry with jurisdiction + EU-region metadata; `eu_strict` / `eu_preferred` / `global` routing enforced by OPA; air-gap deployment mode. | [Provider registry](docs/reference/provider-registry.md) · [Air-gapped deployment](docs/guides/air-gapped-deployment.md) |
 
@@ -390,7 +390,7 @@ Artifacts a skeptical reviewer can grep in one session:
 [Evidence store](docs/explanation/evidence-store.md) ·
 [Conformance](docs/reference/conformance.md) ·
 [Roadmap](ROADMAP.md) ·
-[Gateway dashboard](docs/reference/gateway-dashboard.md)
+[Gateway metrics API](docs/reference/gateway-metrics-api.md)
 
 ---
 

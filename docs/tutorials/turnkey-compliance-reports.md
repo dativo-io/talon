@@ -1,6 +1,6 @@
 # Turnkey compliance reports: from init to a signed RoPA
 
-Compliance reports are Talon's **proof layer** at work: because every budget, policy, and routing decision already produces a signed evidence record, RoPA and Annex IV documents can be generated from operations you are running anyway — not assembled by hand. In this tutorial you go from an empty directory to a downloadable GDPR Record of Processing Activities (RoPA) in one path: initialize a project with EU compliance policy packs, declare the controller identity, start the server, review framework coverage in the dashboard, and export a RoPA and an EU AI Act Annex IV pack — with every export leaving its own signed evidence record. By the end you will have seen the full compliance reporting loop without writing any code.
+Compliance reports are Talon's **proof layer** at work: because every budget, policy, and routing decision already produces a signed evidence record, RoPA and Annex IV documents can be generated from operations you are running anyway — not assembled by hand. In this tutorial you go from an empty directory to a downloadable GDPR Record of Processing Activities (RoPA) in one path: initialize a project with EU compliance policy packs, declare the controller identity, start the server, review framework coverage over the compliance API, and export a RoPA and an EU AI Act Annex IV pack — with every export leaving its own signed evidence record. By the end you will have seen the full compliance reporting loop without writing any code.
 
 Everything Talon produces here is **supporting documentation**: evidence and declared facts mapped to framework articles. It is not a certification or a compliance determination.
 
@@ -75,27 +75,28 @@ echo "admin key: $TALON_ADMIN_KEY"
 talon serve --port 8080 --gateway
 ```
 
-The `--gateway` flag also mounts the FinOps metrics surface (`/api/v1/metrics`, `/gateway/dashboard`) used later in this tutorial. Without it those routes return 404 and the dashboard hides the gateway links. Declarations are re-read on each request, so you can edit `talon.config.yaml` later without restarting.
+The `--gateway` flag also mounts the metrics snapshot (`/api/v1/metrics`) used later in this tutorial. Without it that route returns 404. Declarations are re-read on each request, so you can edit `talon.config.yaml` later without restarting.
 
-## 5. Review framework coverage in the dashboard
+## 5. Review framework coverage over the API
 
-Open the dashboard in a browser (the query parameter is how browsers authenticate; it is moved out of the URL immediately):
+Ask the server which framework controls your deployment supports (the admin key goes in the header):
 
-```text
-http://localhost:8080/dashboard?talon_admin_key=YOUR_ADMIN_KEY
+```bash
+curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" \
+  "http://localhost:8080/v1/compliance/coverage" | jq '{frameworks: [.frameworks[] | {framework, controls: (.controls | length)}], declaration_warnings, claim_note}'
 ```
 
-Select the **Compliance** tab. You will see:
+You will see:
 
-- **Framework coverage** — one card per framework (GDPR, EU AI Act, NIS2, DORA, ISO 27001) listing each control mapping (article, Talon control, source) with the count of signed evidence records supporting it.
-- **Declaration warnings** — anything still missing for a complete RoPA or Annex IV pack. Because you declared the controller in step 3, that warning is gone; remove the block and refresh to see it appear.
-- **Recent evidence** — the latest signed records in the selected tenant/agent/date scope. The filters at the top apply to the coverage counts and to every export below.
+- **Framework coverage** — one entry per framework (GDPR, EU AI Act, NIS2, DORA, ISO 27001) listing each control mapping (article, Talon control, source) with the count of signed evidence records supporting it.
+- **Declaration warnings** — anything still missing for a complete RoPA or Annex IV pack. Because you declared the controller in step 3, that warning is gone; remove the block and re-run the request to see it appear.
+- **Claim note** — the document is supporting documentation, not a completed legal filing.
+
+`tenant`, `agent`, `from` and `to` query parameters scope the coverage counts and every export below. The same facts are available offline with `talon compliance report --framework gdpr`.
 
 ## 6. Export your first RoPA
 
-Click **RoPA (HTML)**. The browser downloads `talon-ropa.html`: a GDPR Art. 30 Record of Processing Activities naming Example GmbH as controller, with processing activities derived from evidence and a claim note stating that the document is supporting documentation, not a completed legal filing.
-
-The same generators are available over the admin API — useful for scripting or CI:
+Export the GDPR Art. 30 Record of Processing Activities. `talon-ropa.html` names Example GmbH as controller, lists processing activities derived from evidence, and carries a claim note stating that the document is supporting documentation, not a completed legal filing. The generators are admin API endpoints, so the same commands work from scripts or CI:
 
 ```bash
 curl -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" -o ropa.html \
@@ -106,7 +107,7 @@ curl -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" -o gdpr-report.html \
   "http://localhost:8080/v1/compliance/report?framework=gdpr"
 ```
 
-Try the **Annex IV** export too: it produces the EU AI Act technical-documentation pack and explicitly lists the Annex IV items Talon *cannot* produce (model development process, performance metrics) with their owners — Talon governs deployment, it is not the model provider.
+The **Annex IV** export produces the EU AI Act technical-documentation pack and explicitly lists the Annex IV items Talon *cannot* produce (model development process, performance metrics) with their owners — Talon governs deployment, it is not the model provider.
 
 ## 7. The export itself is evidence
 
@@ -117,11 +118,15 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" \
   "http://localhost:8080/v1/evidence?invocation_type=control_plane&limit=10" | jq '.entries[].id'
 ```
 
-You will find one record per export you performed (`compliance_export_ropa`, `compliance_export_annex_iv`, `compliance_export_report`). They also appear in the dashboard's Evidence tab.
+You will find one record per export you performed (`compliance_export_ropa`, `compliance_export_annex_iv`, `compliance_export_report`). They also appear in `talon audit list`.
 
-## 8. Optional: spend in the same place
+## 8. Optional: spend from the same evidence
 
-Switch to the **FinOps & Runtime** tab. With `--gateway` enabled you get budget utilization, cache statistics, and spend broken down by agent, model, and provider — empty until gateway traffic flows, populated as soon as it does. Governance and cost live on the same page because both are derived from the same signed evidence.
+With `--gateway` enabled, the metrics snapshot gives you budget utilization, cache statistics, and spend broken down by agent, model, and provider — empty until gateway traffic flows, populated as soon as it does. Governance and cost come from the same signed evidence:
+
+```bash
+curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/metrics | jq '{budget: .budget_status, cache: .cache_stats, by_provider: .provider_breakdown}'
+```
 
 ---
 
@@ -136,6 +141,6 @@ You initialized a policy with article-annotated compliance packs, declared the c
 | Export and verify evidence for a real handoff | [How to export evidence for auditors](../guides/compliance-export-runbook.md) |
 | Understand each policy pack in detail | [EU compliance policy packs](../guides/policy-packs.md) |
 | Fill in all RoPA / Annex IV declarations | [How to clear DECLARATION MISSING blocks](../guides/ropa-declarations.md) |
-| Explore the metrics API behind the FinOps tab | [Gateway dashboard reference](../reference/gateway-dashboard.md) |
+| Explore the metrics snapshot | [Gateway metrics API reference](../reference/gateway-metrics-api.md) |
 | Verify the full epic end-to-end (checklist, auth matrix, regression) | [How to verify turnkey compliance reports](../guides/verify-turnkey-compliance-reports.md) |
 | Understand what an evidence record contains | [Evidence store](../explanation/evidence-store.md) |

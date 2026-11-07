@@ -155,7 +155,7 @@ talon costs --session <session-id> --json
 talon audit verify --session <session-id>
 ```
 
-The dashboard (`talon serve` HTTP UI) shows the same data in the **Coding Sessions** panel.
+With `talon serve --gateway`, `talon metrics --json` / `GET /api/v1/metrics` carry the same data in the `sessions` array.
 
 Because Codex always streams, cost figures depend on Talon parsing the usage block out of the terminal `response.completed` event — that parsing is shipped (`internal/gateway/forward.go`, `TestExtractUsage_ResponsesCompleted`); without it streamed cost would be estimate-only. One pricing caveat from [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary): a pricing entry without cache rates bills cache tokens at the full input rate (`pricing_basis: "cache_fallback_input_rate"`) — keep the pricing table current.
 

@@ -166,7 +166,7 @@ run_start ──→ step_start ──→ [tool_call] ──→ step_end ──�
 
 Use one `session_id` per graph workflow and send it on every event. This is
 strongly recommended for evidence continuity (`session_id` joins, exports, and
-dashboard timeline correlation).
+`/api/v1/events` timeline correlation).
 
 Each event returns a Decision:
 

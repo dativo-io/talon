@@ -82,15 +82,16 @@ Expected result:
 
 The HMAC-SHA256 signature makes later modification detectable during verification.
 
-### 6. Open the dashboard
+### 6. Read the same facts over the API
 
-Visit [http://localhost:8080/dashboard](http://localhost:8080/dashboard) to see evidence records, costs, and PII findings in the browser.
+With `talon serve` running, the evidence records, costs and PII findings are available as JSON (admin key in the header):
 
-Use the Evidence tab to:
+```bash
+curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" 'http://localhost:8080/v1/evidence?limit=5' | jq '.entries[] | {id, allowed: .policy_decision.allowed, cost: .execution.cost}'
+curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/v1/costs | jq .
+```
 
-- check the per-row integrity state (`Not checked`, `Verified`, `Invalid`, `Unable to verify`),
-- open the persistent signature block from **Detail**,
-- verify that the governance decision and spend attribution are visible beside signature status.
+Talon ships no browser dashboard; the CLI and these endpoints are the operator surface (the read-only console is tracked in [#533](https://github.com/dativo-io/talon/issues/533)).
 
 ## What you just proved
 

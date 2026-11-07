@@ -362,4 +362,4 @@ For non-agentic (single-shot) LLM calls, Talon checks the estimated cost against
 - [Authentication and key scopes](authentication-and-key-scopes.md) — endpoint auth requirements
 - [Configuration reference](configuration.md) — `agent.talon.yaml` and `talon.config.yaml`
 - [Incident response playbook](../guides/incident-response-playbook.md) — operational runbooks
-- [Gateway dashboard](gateway-dashboard.md) — real-time metrics
+- [Gateway metrics API](gateway-metrics-api.md) — real-time metrics snapshot and SSE stream

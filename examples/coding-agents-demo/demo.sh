@@ -108,7 +108,7 @@ cmd_budget() {
 cmd_audit() {
   say "4. The session as a unit: summary, per-subagent rollup, cost"
   talon_exec audit list --session "$SESSION"
-  say "4b. Same numbers, machine-readable (identical to the dashboard's sessions panel)"
+  say "4b. Same numbers, machine-readable (identical to the sessions block of GET /api/v1/metrics)"
   talon_exec costs --session "$SESSION" --json | tee "$OUT_DIR/session-costs.json"
 }
 
@@ -129,7 +129,7 @@ cmd_all() {
   say "Done"
   note "One session · two providers · per-subagent attribution · a budget deny"
   note "with structured {limit, spent, estimate} in signed evidence · zero real API keys."
-  note "Dashboard: $GATEWAY/gateway/dashboard?talon_admin_key=demo-admin-key (Coding Sessions panel)"
+  note "Live metrics (sessions block, admin key via header): talon metrics --json --url $GATEWAY"
 }
 
 wait_ready

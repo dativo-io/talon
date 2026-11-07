@@ -110,7 +110,7 @@ The agent file is also the agent's **one** policy override on top of the gateway
 | `capabilities.forbidden_tools` | Unioned with the org and provider lists for gateway tools; also the use case's DENY for its **catalogued actions** (#425). Glob patterns with the gateway vocabulary (`*`, `delete_*`, case-insensitive); a malformed glob or a pattern containing a comma or a control character is a load error |
 | `capabilities.tool_policy_action` | `filter` or `block`; monotonic at the agent layer — an agent can tighten `filter` → `block` but never loosen `block` → `filter` (#287) |
 | `metadata.team` | Attributes spend and evidence to a team (`talon costs --by-team`) |
-| `metadata.tags` | Telemetry classification (e.g. `copaw` drives OTel/dashboard views) |
+| `metadata.tags` | Telemetry classification (e.g. `copaw` drives OTel views and `/v1/copaw/*` stats) |
 
 PII actions are **monotonic**: the organization baseline is a floor, and a per-agent override only takes effect when it is *stricter* (`block` > `redact` > `warn` > `allow`). An agent can tighten `warn` to `redact` or `block`, but nothing an agent file says — including turning on bare scan flags — can weaken the org floor. See [Identity resolution and effective policy](#identity-resolution-and-effective-policy) for the exact replace-vs-merge rules.
 
@@ -197,7 +197,7 @@ All `TALON_*` environment variables map to fields in `talon.config.yaml`. Enviro
 | `TALON_GATEWAY_CONFIG` | Gateway config file read by native-only `talon serve` and the offline commands (`talon validate`, `talon actions`, `talon agents`, `talon costs`) for the organization baseline and the company action policy (#425). An absent file means no company policy; a present but invalid file is an error for every one of them. | `talon.config.yaml` |
 | `TALON_MAX_ATTACHMENT_MB` | Max attachment size in MB. | `10` |
 | `TALON_OLLAMA_BASE_URL` | Ollama endpoint. | `http://localhost:11434` |
-| `TALON_ADMIN_KEY` | Admin key for control-plane and dashboard (serve only). | — |
+| `TALON_ADMIN_KEY` | Admin key for control-plane and metrics endpoints (serve only). | — |
 | `TALON_MCP_ALLOWED_ORIGINS` | Comma-separated browser origins allowed on `/mcp` and `/mcp/proxy` in addition to absent, loopback and same-host `Origin` (DNS-rebinding guard, #447). `*` is ignored; the CORS wildcard never applies to MCP. | — |
 | `OPENAI_API_KEY` | OpenAI key (dev fallback when not in vault). | -- |
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL (e.g. for tests). | -- |
@@ -445,7 +445,7 @@ presented key ──► known agent? ──yes──► agent identity ─► or
                      reject      (only exception: explicit quickstart synthetic identity)
 ```
 
-The effective policy for one request is: **organization baseline (`organization_policy.defaults`) → the agent's one override → provider destination constraints**. Provider constraints (`allowed_models` / `blocked_models`, `forbidden_tools`, `tool_policy_action` on the provider entry) are hard constraints applied to the already-resolved policy — not a second override layer. The organization additionally declares its own hard constraints (`organization_policy.constraints`: `allowed_providers`, `allowed_models` / `blocked_models`, `allowed_tools`, `forbidden_tools`, budget ceilings, `max_data_tier`, `egress`) that bind every agent regardless of its override. One function (`ResolveEffectivePolicy`, `internal/gateway/effective.go`) computes this for enforcement, failover candidate checks, `talon costs`, and the dashboard budget endpoint; nothing re-derives baseline + override independently.
+The effective policy for one request is: **organization baseline (`organization_policy.defaults`) → the agent's one override → provider destination constraints**. Provider constraints (`allowed_models` / `blocked_models`, `forbidden_tools`, `tool_policy_action` on the provider entry) are hard constraints applied to the already-resolved policy — not a second override layer. The organization additionally declares its own hard constraints (`organization_policy.constraints`: `allowed_providers`, `allowed_models` / `blocked_models`, `allowed_tools`, `forbidden_tools`, budget ceilings, `max_data_tier`, `egress`) that bind every agent regardless of its override. One function (`ResolveEffectivePolicy`, `internal/gateway/effective.go`) computes this for enforcement, failover candidate checks, `talon costs`, and the `/v1/costs/budget` endpoint; nothing re-derives baseline + override independently.
 
 Per-field contract (mirrors `internal/gateway/effective.go`; the code and this table are kept in sync):
 
@@ -754,28 +754,29 @@ gateway:
 
 Destination → provider mapping uses the **host** of each enabled provider's `base_url`; a host with no match is denied with `destination_not_governed`. Sandbox identities are bound to use cases in the agent file (`agent.workload_identity.bindings`), never here.
 
-### Gateway dashboard
+### Gateway metrics API
 
-When the gateway is enabled, Talon serves a real-time metrics dashboard. Access is controlled by `TALON_ADMIN_KEY` (`X-Talon-Admin-Key` header).
+When the gateway is enabled, Talon serves a real-time metrics snapshot. Access is controlled by `TALON_ADMIN_KEY` (`X-Talon-Admin-Key` header). Talon ships no browser dashboard; `talon metrics` reads the same snapshot.
 
-Dashboard endpoints:
+Metrics endpoints:
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /gateway/dashboard` | Single-page HTML dashboard with auto-refreshing charts. |
 | `GET /api/v1/metrics` | Metrics snapshot as JSON (programmatic access). |
 | `GET /api/v1/metrics/stream` | Server-Sent Events stream (one snapshot every 5 seconds). |
 
-All three endpoints require the admin key:
+Both endpoints require the admin key:
 
 - `X-Talon-Admin-Key: <TALON_ADMIN_KEY>` (preferred)
 - or `Authorization: Bearer <TALON_ADMIN_KEY>` (fallback)
 
-See [Gateway dashboard reference](gateway-dashboard.md) for the full API schema and snapshot field descriptions.
+Query-string and cookie credentials are not accepted.
+
+See [Gateway metrics API reference](gateway-metrics-api.md) for the full API schema and snapshot field descriptions.
 
 ### Server and API
 
-- **Admin key:** Set `TALON_ADMIN_KEY` to protect admin-only and dashboard/metrics endpoints.
+- **Admin key:** Set `TALON_ADMIN_KEY` to protect admin-only and metrics endpoints.
 - **Agent keys:** each agent's vault-bound traffic key (`agent.key.secret_name`) authenticates `/v1/proxy` **and** the tenant-scoped evidence/costs/status APIs, scoped to the agent's derived tenant.
 - **Gateway:** Enable with `--gateway` and `--gateway-config <path>`. See [How to choose your integration path](../guides/choosing-integration-path.md) and gateway guides.
 - **MCP proxy:** Enable with `--proxy-config <path>`. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md).

@@ -146,5 +146,5 @@ Use the evidence ID from a previous run. You will see the full record: classific
 You installed Talon, created a project, ran a governed agent, triggered a policy denial, and viewed the audit trail. Next you can:
 
 - **Configure more:** See [Configuration and environment](../reference/configuration.md) for environment variables and options.
-- **Run the server:** See [QUICKSTART.md](../QUICKSTART.md) for `talon serve`, dashboard, and API.
+- **Run the server:** See [QUICKSTART.md](../QUICKSTART.md) for `talon serve` and the API.
 - **Follow a how-to:** See the [documentation index](../README.md) for guides (Slack bot, OpenClaw, cost governance, compliance export, and more).
