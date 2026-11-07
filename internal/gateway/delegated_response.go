@@ -1113,6 +1113,12 @@ func (g *Gateway) observe(ctx context.Context, in DelegatedResponseBody, rc *res
 		result.PIITypes, result.Redacted = scan.PIITypes, scan.Redacted && !blocked
 	}
 	tokens := usage.Input + usage.Output
+	if row != nil && row.isCountTokens {
+		// A count is not consumption: the record keeps the provider's figure,
+		// the session accumulates neither cost nor tokens for it (as on the
+		// proxy path).
+		tokens = 0
+	}
 	out := settlementOutcome{cost: cost, block: blocked, sessionState: sessionStateNone, sessionCost: cost, sessionTokens: tokens}
 	if blocked {
 		out.code = reasons[0]
@@ -1127,7 +1133,12 @@ func (g *Gateway) observe(ctx context.Context, in DelegatedResponseBody, rc *res
 // held body and returns the body to deliver (possibly a replacement).
 func (g *Gateway) applyResponsePolicy(ctx context.Context, in DelegatedResponseBody, action, wire string) ([]byte, *ResponsePIIScanResult) {
 	if strings.Contains(strings.ToLower(in.Preflight.ContentType), "text/event-stream") {
-		capture := &responseCapture{statusCode: in.Preflight.Status}
+		// The capture needs a header-bearing writer behind it: the proxy path
+		// wraps the real ResponseWriter, the delegated path has none (the
+		// body is held by the runtime), so an in-memory one stands in. A nil
+		// embedded writer made every held SSE body (any streaming client
+		// under a preventive response policy) panic here (#528).
+		capture := &responseCapture{ResponseWriter: &bufferResponseWriter{header: http.Header{}}, statusCode: in.Preflight.Status}
 		capture.body.Write(in.Body)
 		capture.Header().Set("Content-Type", in.Preflight.ContentType)
 		sink := &bufferResponseWriter{header: http.Header{}}
