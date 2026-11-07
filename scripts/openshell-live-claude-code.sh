@@ -266,10 +266,12 @@ if mock_mode; then
   CALLS_AFTER_TRUNCATED="$(provider_calls)"
   [[ "$CALLS_AFTER_TRUNCATED" -ge 3 ]] || die "CC9 the truncated-stream request never reached the provider (calls=$CALLS_AFTER_TRUNCATED)"
   [[ "$(turn_field "$OUT" .result)" != "mock anthropic completion 3" ]] || die "CC9 claude reported the full answer of a stream the provider cut short"
+  # The client is expected to RECOVER (observed: ~10 stream retries, then a
+  # non-streaming request answered in full); CC9 does not claim it fails.
   CC9_STREAM_RETRIES="$(provider_state | jq '[.records[] | select(.scenario=="truncated-stream" and .stream==true)] | length')"
   CC9_FALLBACK="$(provider_state | jq '[.records[] | select(.scenario=="truncated-stream" and .stream==false)] | length')"
   log "CC9 truncated stream: claude exit $CODE, is_error=$(turn_field "$OUT" .is_error), provider calls now $CALLS_AFTER_TRUNCATED ($CC9_STREAM_RETRIES streaming attempts, $CC9_FALLBACK non-streaming fallback(s); each a fresh Talon decision)"
-  pass "CC9 truncated stream: the client did not report a completed answer (exit $CODE); provider calls $CALLS_AFTER_TRUNCATED"
+  pass "CC9 truncated stream: the client never reported the cut stream's answer; it recovered through its own non-streaming fallback (exit $CODE, $CC9_STREAM_RETRIES stream attempts, $CC9_FALLBACK fallback); provider calls $CALLS_AFTER_TRUNCATED — the lane's claim is the settlement property, not a client failure"
 else
   log "CC9 truncated stream: not exercised against the real provider (mock scenario)"
 fi

@@ -3,6 +3,10 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 
@@ -92,19 +96,37 @@ func (g *Gateway) GuardDelegatedStream(ctx context.Context, pf DelegatedResponse
 	return &DelegatedStreamGuard{action: rc.action, scanner: g.classifier}, nil
 }
 
-// Inspect scans one unit before the runtime releases it.
+// Inspect scans one unit before the runtime releases it. Nothing leaves
+// uninspected: the complete frames of the unit are parsed and every string
+// value of each event is scanned (text, thinking, tool-use input JSON,
+// populated content_block_start fields — not only delta.text), and a
+// trailing fragment cut mid-frame by the transport is scanned as raw text
+// with its JSON escapes decoded, so a value whose frame terminator has not
+// arrived yet is still caught before the bytes carrying it are released.
+// CR, LF and CRLF line endings are all recognised. A content-bearing frame
+// that cannot be parsed, or a carried fragment beyond the bound, withholds
+// the stream rather than passing unscanned bytes (PR #531 review, P1).
 func (sg *DelegatedStreamGuard) Inspect(ctx context.Context, unit []byte) DelegatedUnitVerdict {
 	sg.summary.Units++
 	if sg.summary.Blocked {
 		// The runtime sends no units after a block; a repeat stays withheld.
 		return DelegatedUnitVerdict{Block: true, Code: sg.summary.Code, Message: "stream already withheld"}
 	}
-	complete := sg.completeFrames(unit)
+	complete, partial, overflow := sg.frames(unit)
+	if overflow {
+		return sg.withhold(CodeResponseScanIncomplete, "a frame carried across units exceeds the inspection bound; the stream is withheld (fail-closed)")
+	}
 	for _, block := range bytes.Split(complete, []byte("\n\n")) {
 		extractUsageFromSSELine(block, &sg.summary.Usage)
 	}
-	text := accumulateSSEContent(complete)
-	if text == "" {
+	text, unparseable := sseEventText(complete)
+	if unparseable {
+		return sg.withhold(CodeResponseContentUnsupported, "a content-bearing frame could not be parsed; the stream is withheld (fail-closed)")
+	}
+	if len(partial) > 0 {
+		text += "\n" + fragmentText(partial)
+	}
+	if strings.TrimSpace(text) == "" {
 		return DelegatedUnitVerdict{}
 	}
 	scanText := sg.tail + text
@@ -130,25 +152,138 @@ func (sg *DelegatedStreamGuard) Inspect(ctx context.Context, unit []byte) Delega
 	return DelegatedUnitVerdict{}
 }
 
-// completeFrames joins the carried partial frame with the unit and returns
-// the complete SSE frames; the trailing partial frame is carried forward
-// (bounded, oldest bytes dropped past the bound).
-func (sg *DelegatedStreamGuard) completeFrames(unit []byte) []byte {
-	data := append(sg.frame, unit...) //nolint:gocritic // the carry is consumed here
+// frames joins the carried partial frame with the unit (line endings
+// normalised to LF for inspection only; the unit itself is never rewritten)
+// and returns the complete SSE frames, the trailing partial frame, and
+// whether the carry exceeded its bound. The partial frame is carried into
+// the next unit so it is parsed whole once its terminator arrives; it is
+// never dropped — past the bound the caller withholds the stream.
+func (sg *DelegatedStreamGuard) frames(unit []byte) (complete, partial []byte, overflow bool) {
+	data := append(sg.frame, normalizeLineEndings(unit)...) //nolint:gocritic // the carry is consumed here
 	idx := bytes.LastIndex(data, []byte("\n\n"))
 	if idx < 0 {
-		sg.frame = boundTail(data, streamGuardFrameCarryLimit)
-		return nil
+		sg.frame = data
+		return nil, data, len(data) > streamGuardFrameCarryLimit
 	}
-	sg.frame = boundTail(append([]byte(nil), data[idx+2:]...), streamGuardFrameCarryLimit)
-	return data[:idx+2]
+	sg.frame = append([]byte(nil), data[idx+2:]...)
+	return data[:idx+2], sg.frame, len(sg.frame) > streamGuardFrameCarryLimit
 }
 
-func boundTail(b []byte, limit int) []byte {
-	if len(b) <= limit {
+func normalizeLineEndings(b []byte) []byte {
+	if !bytes.ContainsRune(b, '\r') {
 		return b
 	}
-	return b[len(b)-limit:]
+	b = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(b, []byte("\r"), []byte("\n"))
+}
+
+// sseEventText returns the scannable text of complete SSE frames: for each
+// frame the data lines (joined per the SSE grammar) parsed as JSON and every
+// string value in the document collected, structural identifiers excluded.
+// A data payload that is neither JSON nor the OpenAI "[DONE]" sentinel is
+// content Talon cannot inspect: unparseable is true and the caller fails
+// closed. Comment lines, event-only frames and empty data carry nothing.
+func sseEventText(frames []byte) (text string, unparseable bool) {
+	var sb strings.Builder
+	for _, frame := range bytes.Split(frames, []byte("\n\n")) {
+		var data [][]byte
+		for _, line := range bytes.Split(frame, []byte("\n")) {
+			if bytes.HasPrefix(line, []byte("data:")) {
+				data = append(data, bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:"))))
+			}
+		}
+		if len(data) == 0 {
+			continue
+		}
+		payload := bytes.Join(data, []byte("\n"))
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		var doc any
+		if err := json.Unmarshal(payload, &doc); err != nil {
+			return "", true
+		}
+		collectStrings(doc, &sb)
+	}
+	return sb.String(), false
+}
+
+// sseStructuralKeys are identifiers and enumerations, never model output.
+var sseStructuralKeys = map[string]struct{}{
+	"type": {}, "id": {}, "model": {}, "role": {}, "stop_reason": {}, "stop_sequence": {}, "signature": {},
+	"object": {}, "service_tier": {}, "finish_reason": {}, "system_fingerprint": {}, "event": {},
+}
+
+// collectStrings appends every string value of a decoded JSON document,
+// in document order, except values under structural keys.
+func collectStrings(v any, sb *strings.Builder) {
+	switch x := v.(type) {
+	case string:
+		if sb.Len() > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(x)
+	case []any:
+		for _, e := range x {
+			collectStrings(e, sb)
+		}
+	case map[string]any:
+		for _, k := range sortedKeys(x) {
+			if _, structural := sseStructuralKeys[k]; structural {
+				continue
+			}
+			collectStrings(x[k], sb)
+		}
+	}
+}
+
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// fragmentText is the raw text of a frame cut mid-way by the transport,
+// with the JSON escapes a cut string may contain decoded (\uXXXX, \", \\,
+// \/ and the whitespace escapes), so a value split from its terminator
+// is scanned as the reader would see it. Field names and punctuation
+// around it are harmless to the scanner.
+func fragmentText(fragment []byte) string {
+	s := string(fragment)
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			sb.WriteByte(s[i])
+			continue
+		}
+		switch s[i+1] {
+		case 'u':
+			if i+6 <= len(s) {
+				if decoded, err := strconv.Unquote(`"\u` + s[i+2:i+6] + `"`); err == nil {
+					sb.WriteString(decoded)
+					i += 5
+					continue
+				}
+			}
+			sb.WriteByte(s[i])
+		case '"', '\\', '/':
+			sb.WriteByte(s[i+1])
+			i++
+		case 'n', 't', 'r', 'b', 'f':
+			sb.WriteByte(' ')
+			i++
+		default:
+			sb.WriteByte(s[i])
+		}
+	}
+	return sb.String()
 }
 
 func (sg *DelegatedStreamGuard) withhold(code, message string) DelegatedUnitVerdict {
@@ -178,8 +313,11 @@ func guardScanResult(in DelegatedResponseBody, action string) *ResponsePIIScanRe
 	result.PIIDetected, result.PIITypes, result.Tier = in.Guard.PIIDetected, in.Guard.PIITypes, in.Guard.Tier
 	if in.Guard.Blocked {
 		result.Blocked, result.BlockReason = true, in.Guard.Code
-		if in.Guard.Code == "output_scanner_unavailable" {
+		switch in.Guard.Code {
+		case "output_scanner_unavailable":
 			result.markIncomplete(evidence.ResponseScanIncompleteScannerUnavailable)
+		case CodeResponseScanIncomplete:
+			result.markIncomplete(evidence.ResponseScanIncompleteCaptureLimitExceeded)
 		}
 	}
 	return result

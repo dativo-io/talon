@@ -822,3 +822,85 @@ func TestDelegatedResponse_GuardedStreamCutBeforeFirstUnit(t *testing.T) {
 	assert.True(t, r.PolicyDecision.Allowed)
 	assert.False(t, r.Classification.OutputPIIDetected)
 }
+
+// Review of PR #531 (P1): a preventive per-unit mode must never release a
+// unit it did not inspect. The guard scans every unit in full — complete
+// frames by every string value of the event (text, thinking, tool-use
+// input JSON, populated content_block_start fields), a trailing cut
+// fragment as raw text with JSON escapes decoded — recognises CR/CRLF
+// line endings, and fails closed on a content-bearing frame it cannot
+// parse or a carried fragment beyond the bound.
+func TestDelegatedStreamGuard_InspectsEveryUnitAndFailsClosed(t *testing.T) {
+	gw, _ := setupDelegatedGatewayWith(t, "redact", nil, responseGoverned)
+	const email = "jane.doe@example.com"
+	newGuard := func() *DelegatedStreamGuard { return &DelegatedStreamGuard{action: "redact", scanner: gw.classifier} }
+	// cutInside splits a frame n bytes into the first occurrence of marker.
+	cutInside := func(frame, marker string, n int) []string {
+		i := strings.Index(frame, marker) + n
+		return []string{frame[:i], frame[i:]}
+	}
+	delta := func(kind, field, value string) string {
+		return `event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"` + kind + `","` + field + `":` + strconv.Quote(value) + `}}`
+	}
+	for name, tc := range map[string]struct {
+		units []string
+		code  string // "" = every unit released
+		at    int
+	}{
+		"complete value in an unterminated frame": {
+			units: []string{delta("text_delta", "text", "mail "+email), "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"unterminated frame cut inside the value": {
+			units: cutInside(delta("text_delta", "text", "mail "+email)+"\n\n", "example.com", 3), code: "output_pii_blocked", at: 2,
+		},
+		"CRLF frame": {
+			units: []string{strings.ReplaceAll(delta("text_delta", "text", email), "\n", "\r\n") + "\r\n\r\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"CR-only frame": {
+			units: []string{strings.ReplaceAll(delta("text_delta", "text", email), "\n", "\r") + "\r\r"}, code: "output_pii_blocked", at: 1,
+		},
+		"tool-use input (input_json_delta.partial_json)": {
+			units: []string{delta("input_json_delta", "partial_json", `{"email":"`+email+`"}`) + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"thinking delta": {
+			units: []string{delta("thinking_delta", "thinking", "the user is "+email) + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"populated content_block_start text": {
+			units: []string{`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"` + email + `"}}` + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"populated content_block_start tool_use input": {
+			units: []string{`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"send","input":{"to":"` + email + `"}}}` + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"JSON-escaped value in a cut fragment": {
+			units: []string{`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"jane.doe@example.com`}, code: "output_pii_blocked", at: 1,
+		},
+		"unparseable content-bearing frame": {
+			units: []string{"data: {not json at all\n\n"}, code: CodeResponseContentUnsupported, at: 1,
+		},
+		"carried fragment beyond the bound": {
+			units: []string{"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"" + strings.Repeat("x", streamGuardFrameCarryLimit)}, code: CodeResponseScanIncomplete, at: 1,
+		},
+		"benign frames and a benign cut fragment": {
+			units: []string{": keep-alive\n\n", "event: ping\ndata: {\"type\":\"ping\"}\n\n", "data: [DONE]\n\n", delta("text_delta", "text", "all good") + "\n\n", "event: content_block_delta\ndata: {\"type\":\"content_block_de"}, code: "",
+		},
+		"OpenAI tool call arguments": {
+			units: []string{`data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"send","arguments":"{\"to\":\"` + email + `\"}"}}]}}]}` + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sg := newGuard()
+			blockedAt, code := 0, ""
+			for i, u := range tc.units {
+				if v := sg.Inspect(context.Background(), []byte(u)); v.Block {
+					blockedAt, code = i+1, v.Code
+					break
+				}
+			}
+			assert.Equal(t, tc.code, code, "verdict code")
+			assert.Equal(t, tc.at, blockedAt, "unit withheld (0 = none)")
+			if tc.code == "" {
+				assert.False(t, sg.Summary().Blocked)
+			}
+		})
+	}
+}
