@@ -39,7 +39,7 @@ When you need the proof layer for an auditor or customer review, continue with t
 
 Smoke-check the builder path: `make verify-newcomer` (from repo root).
 
-## Start Here (jobs-to-be-done)
+## Open-source and corporate adoption\n\nTalon OSS retains the complete local enforcement, exact-action approval and signed evidence kernel. The commercial edition is being developed for integration with corporate identity/domain systems, SIEM/SOC, external approval workflows, cross-team operations and selected supported production profiles. Those features are **planned, not shipped**. See [OSS vs Enterprise boundaries](explanation/oss-enterprise-boundary.md) and the [public editions overview](https://dativo.io/enterprise/).\n\n## Start Here (jobs-to-be-done)
 
 Choose the shortest path for your situation:
 

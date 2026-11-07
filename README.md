@@ -7,7 +7,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/dativo-io/talon)](https://github.com/dativo-io/talon/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Every AI use case — a customer-support assistant, a coding assistant, a document summarizer — needs to obey the same company rules even when teams choose different models or runtimes. **Dativo Talon** is an Apache-2.0, self-hosted control plane that resolves company policy plus use-case-specific rules and enforces them at supported boundaries. On routed model traffic, it governs provider access, data, budgets, retry/fallback and sessions. On consequential actions, the shipped **HTTP Action Gateway** binds the exact action and arguments, supports `DENY > REQUIRE_APPROVAL > ALLOW`, and records the authorized attempt with signed evidence. The MCP and native action paths have not yet converged on that exact-action contract; Talon does not control local effects that bypass its boundary.
+**Open source vs Enterprise:** Talon OSS is a complete Apache-2.0 enforcement and evidence core—not a limited trial. A separate Enterprise edition is being developed for corporate OIDC/domain and reviewer administration, SIEM/SOC integrations, existing approval workflows, supported deployment profiles and commercial support. **Those Enterprise integrations are not released features.** See [edition boundaries](docs/explanation/oss-enterprise-boundary.md) and the [public editions overview](https://dativo.io/enterprise/).\n\nEvery AI use case — a customer-support assistant, a coding assistant, a document summarizer — needs to obey the same company rules even when teams choose different models or runtimes. **Dativo Talon** is an Apache-2.0, self-hosted control plane that resolves company policy plus use-case-specific rules and enforces them at supported boundaries. On routed model traffic, it governs provider access, data, budgets, retry/fallback and sessions. On consequential actions, the shipped **HTTP Action Gateway** binds the exact action and arguments, supports `DENY > REQUIRE_APPROVAL > ALLOW`, and records the authorized attempt with signed evidence. The MCP and native action paths have not yet converged on that exact-action contract; Talon does not control local effects that bypass its boundary.
 
 [![A live terminal demo of real Talon CLI and API calls — the local model is down so a customer request fails over, skipping a provider the use case isn't allowed to use; customer email and IBAN are redacted before the provider; a forbidden admin tool is rejected by a company boundary; a projected-cost budget stops the next call before spend; and `talon agents` shows the fleet, with every decision signed](docs/assets/talon_hero.gif)](examples/product-demo/)
 
@@ -20,7 +20,7 @@ Every AI use case — a customer-support assistant, a coding assistant, a docume
 2 · reliability    raw request (email + IBAN) → redacted ([EMAIL], [IBAN]) → local model down
    + shared policy → disallowed provider skipped → policy-valid fallback → provider's own reply
 3 · org policy     admin_* tool → HTTP 403 before the provider, $0.0000 spent
-   + cost          projected spend + estimate over the soft session cap → next call denied
+   + cost          projected spend + estimate-based session cap → next call denied
 4 · operations     live budget edit → safe reload → fleet shows blocked (and why)
    + proof         audit list --session → verify offline: 8 records · 8 valid · 0 invalid
 ```
