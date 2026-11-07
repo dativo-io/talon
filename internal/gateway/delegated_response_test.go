@@ -904,3 +904,55 @@ func TestDelegatedStreamGuard_InspectsEveryUnitAndFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// Re-review of PR #531 (P1 ×2): structural keys are excluded only at
+// envelope positions, never inside model-generated content (a tool input
+// field named id or model is scanned); consecutive streamed fragments
+// inside one unit are joined as one string, so a value split across two
+// events coalesced into one body unit is still recognised.
+func TestDelegatedStreamGuard_EnvelopeOnlyExclusionAndCoalescedEvents(t *testing.T) {
+	gw, _ := setupDelegatedGatewayWith(t, "redact", nil, responseGoverned)
+	const email = "jane.doe@example.com"
+	newGuard := func() *DelegatedStreamGuard { return &DelegatedStreamGuard{action: "redact", scanner: gw.classifier} }
+	split := anthropicSSEUnits("jane.doe@exa", "mple.com")
+	textDelta := func(s string) string {
+		return "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":" + strconv.Quote(s) + "}}\n\n"
+	}
+	for name, tc := range map[string]struct {
+		units []string
+		code  string
+		at    int
+	}{
+		"tool input field named id": {
+			units: []string{`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"send","input":{"id":"` + email + `"}}}` + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"tool input field named model, nested": {
+			units: []string{`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"send","input":{"payload":{"model":"` + email + `","type":"` + email + `"}}}}` + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"OpenAI tool call id-named argument": {
+			units: []string{`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"send","arguments":"{\"id\":\"` + email + `\"}"}}]}}]}` + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"two text deltas coalesced into one unit": {
+			units: []string{strings.Join(split, "")}, code: "output_pii_blocked", at: 1,
+		},
+		"complete delta followed by a cut delta in one unit": {
+			units: []string{textDelta("jane.doe@exa") + strings.TrimSuffix(textDelta("mple.com"), "\"}}\n\n")}, code: "output_pii_blocked", at: 1,
+		},
+		"envelope identifiers are not model output": {
+			units: []string{`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"` + email + `","type":"message","role":"assistant","model":"` + email + `","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":1}}}` + "\n\n"}, code: "",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sg := newGuard()
+			blockedAt, code := 0, ""
+			for i, u := range tc.units {
+				if v := sg.Inspect(context.Background(), []byte(u)); v.Block {
+					blockedAt, code = i+1, v.Code
+					break
+				}
+			}
+			assert.Equal(t, tc.code, code, "verdict code")
+			assert.Equal(t, tc.at, blockedAt, "unit withheld (0 = none)")
+		})
+	}
+}

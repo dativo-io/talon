@@ -124,7 +124,9 @@ func (sg *DelegatedStreamGuard) Inspect(ctx context.Context, unit []byte) Delega
 		return sg.withhold(CodeResponseContentUnsupported, "a content-bearing frame could not be parsed; the stream is withheld (fail-closed)")
 	}
 	if len(partial) > 0 {
-		text += "\n" + fragmentText(partial)
+		// The string still open at the cut continues the preceding text;
+		// the whole raw fragment is scanned as well.
+		text += openStringTail(partial) + "\n" + fragmentText(partial)
 	}
 	if strings.TrimSpace(text) == "" {
 		return DelegatedUnitVerdict{}
@@ -179,12 +181,18 @@ func normalizeLineEndings(b []byte) []byte {
 
 // sseEventText returns the scannable text of complete SSE frames: for each
 // frame the data lines (joined per the SSE grammar) parsed as JSON and every
-// string value in the document collected, structural identifiers excluded.
-// A data payload that is neither JSON nor the OpenAI "[DONE]" sentinel is
-// content Talon cannot inspect: unparseable is true and the caller fails
-// closed. Comment lines, event-only frames and empty data carry nothing.
+// string value in the document collected. Protocol metadata is excluded by
+// its LOCATION in the provider envelope, never by key name alone: a field
+// named id or model inside a tool input is model output and is scanned.
+// Consecutive streamed fragments (text, partial_json, thinking, content,
+// arguments, Responses delta) are joined as one string, so a value split
+// across two events that the runtime coalesced into one unit is still
+// recognised. A data payload that is neither JSON nor the OpenAI "[DONE]"
+// sentinel is content Talon cannot inspect: unparseable is true and the
+// caller fails closed. Comment lines, event-only frames and empty data carry
+// nothing.
 func sseEventText(frames []byte) (text string, unparseable bool) {
-	var sb strings.Builder
+	var b scanTextBuilder
 	for _, frame := range bytes.Split(frames, []byte("\n\n")) {
 		var data [][]byte
 		for _, line := range bytes.Split(frame, []byte("\n")) {
@@ -203,36 +211,66 @@ func sseEventText(frames []byte) (text string, unparseable bool) {
 		if err := json.Unmarshal(payload, &doc); err != nil {
 			return "", true
 		}
-		collectStrings(doc, &sb)
+		collectStrings(doc, "", true, &b)
 	}
-	return sb.String(), false
+	return b.sb.String(), false
 }
 
-// sseStructuralKeys are identifiers and enumerations, never model output.
+// sseStructuralKeys are identifiers and enumerations of the provider
+// envelope, never model output — excluded only at envelope positions.
 var sseStructuralKeys = map[string]struct{}{
 	"type": {}, "id": {}, "model": {}, "role": {}, "stop_reason": {}, "stop_sequence": {}, "signature": {},
 	"object": {}, "service_tier": {}, "finish_reason": {}, "system_fingerprint": {}, "event": {},
 }
 
-// collectStrings appends every string value of a decoded JSON document,
-// in document order, except values under structural keys.
-func collectStrings(v any, sb *strings.Builder) {
+// sseEnvelopeContainers are the envelope objects whose DIRECT members may
+// be structural; the event root is one implicitly. A path that leaves this
+// set (content_block.input, message.content, choices[].delta.tool_calls, …)
+// is model output and is scanned whole.
+var sseEnvelopeContainers = map[string]struct{}{
+	"message": {}, "delta": {}, "content_block": {}, "usage": {}, "choices": {}, "response": {}, "error": {},
+}
+
+// sseFragmentKeys name the streamed pieces of one logical string.
+var sseFragmentKeys = map[string]struct{}{
+	"text": {}, "partial_json": {}, "thinking": {}, "content": {}, "arguments": {}, "delta": {},
+}
+
+// scanTextBuilder assembles the classifier input: fragments of one logical
+// string are concatenated directly, other values are separated.
+type scanTextBuilder struct {
+	sb           strings.Builder
+	lastFragment bool
+}
+
+func (b *scanTextBuilder) add(key, s string) {
+	_, fragment := sseFragmentKeys[key]
+	if b.sb.Len() > 0 && (!fragment || !b.lastFragment) {
+		b.sb.WriteByte('\n')
+	}
+	b.sb.WriteString(s)
+	b.lastFragment = fragment
+}
+
+// collectStrings appends every string value of a decoded JSON document in
+// key order. envelope is true while the path has stayed within the
+// envelope containers from the root; only there are structural keys
+// skipped.
+func collectStrings(v any, key string, envelope bool, b *scanTextBuilder) {
 	switch x := v.(type) {
 	case string:
-		if sb.Len() > 0 {
-			sb.WriteByte('\n')
-		}
-		sb.WriteString(x)
+		b.add(key, x)
 	case []any:
 		for _, e := range x {
-			collectStrings(e, sb)
+			collectStrings(e, key, envelope, b)
 		}
 	case map[string]any:
 		for _, k := range sortedKeys(x) {
-			if _, structural := sseStructuralKeys[k]; structural {
+			if _, structural := sseStructuralKeys[k]; structural && envelope {
 				continue
 			}
-			collectStrings(x[k], sb)
+			_, container := sseEnvelopeContainers[k]
+			collectStrings(x[k], k, envelope && container, b)
 		}
 	}
 }
@@ -244,6 +282,17 @@ func sortedKeys(m map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// openStringTail is the part of a transport-cut fragment after its last
+// `":"` — the string value that was still open when the transport cut the
+// frame — so it continues the preceding event's text with no separator.
+func openStringTail(fragment []byte) string {
+	i := bytes.LastIndex(fragment, []byte(`":"`))
+	if i < 0 {
+		return ""
+	}
+	return fragmentText(fragment[i+3:])
 }
 
 // fragmentText is the raw text of a frame cut mid-way by the transport,
