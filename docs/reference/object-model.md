@@ -239,7 +239,7 @@ HMAC signatures make evidence tamper-evident and verifiable; they do not make st
 
 ## Operator projection
 
-CLI, API, dashboard and reviewer surfaces must consume one shared projection and keep object statuses separate.
+CLI, API, console and reviewer surfaces must consume one shared projection and keep object statuses separate.
 
 Example session view:
 

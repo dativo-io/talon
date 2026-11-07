@@ -41,8 +41,9 @@ docker compose exec talon /usr/local/bin/talon audit show <evidence-id>
 # Verify signature integrity:
 docker compose exec talon /usr/local/bin/talon audit verify <evidence-id>
 
-# Open the dashboard:
-open http://localhost:8080/dashboard
+# Operator status over the admin API (this demo stack sets no TALON_ADMIN_KEY,
+# so no X-Talon-Admin-Key header is needed; set one for anything beyond a local demo):
+curl http://localhost:8080/v1/status
 ```
 
 ## What's Happening

@@ -60,7 +60,7 @@ talon run --dry-run "Your query here"
 export OPENAI_API_KEY=sk-proj-...
 talon run "Your query here"
 
-# Server (API + dashboard + optional gateway/proxy)
+# Server (API + optional gateway/proxy)
 export TALON_ADMIN_KEY="replace-with-strong-admin-key"
 talon serve --port 8080
 

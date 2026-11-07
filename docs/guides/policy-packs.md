@@ -57,8 +57,8 @@ audit:
 
 Every `supports:` line must reference a `Framework + Article` entry in
 `compliance.DefaultMappings()` (`internal/compliance/mapping.go`) — the same
-mapping table that drives `talon compliance report` and the dashboard
-compliance mode. A link-integrity test
+mapping table that drives `talon compliance report` and the
+`/v1/compliance/coverage` endpoint. A link-integrity test
 (`internal/pack/overlay_mapping_test.go`) fails the build if an annotation
 points at an article Talon has no shipping control for, so packs can never
 over-claim.
@@ -83,6 +83,5 @@ talon validate                      # schema + policy validation
 talon compliance report --framework gdpr   # see covered controls + evidence
 ```
 
-The dashboard compliance tab (`/dashboard` → Compliance) shows the same
-per-framework coverage with evidence counts, derived from the identical
-mapping table.
+`GET /v1/compliance/coverage` (admin key) returns the same per-framework
+coverage with evidence counts, derived from the identical mapping table.

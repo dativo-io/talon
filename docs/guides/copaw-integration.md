@@ -21,7 +21,7 @@ talon init --pack copaw --name copaw-gateway
 # Or run `talon init` and choose CoPaw from the wizard.
 ```
 
-This creates `agent.talon.yaml` — the **`copaw-gateway` agent**: CoPaw's Talon traffic identity (`agent.key.secret_name: copaw-gateway-talon-key`) plus its policy override (cost limits, gateway model allowlist, `metadata.tags: [copaw]` for the CoPaw dashboard views) — and `talon.config.yaml` (gateway config with providers and the organization baseline under `organization_policy`).
+This creates `agent.talon.yaml` — the **`copaw-gateway` agent**: CoPaw's Talon traffic identity (`agent.key.secret_name: copaw-gateway-talon-key`) plus its policy override (cost limits, gateway model allowlist, `metadata.tags: [copaw]` for the CoPaw stats endpoints) — and `talon.config.yaml` (gateway config with providers and the organization baseline under `organization_policy`).
 
 ### 2. Set the vault key, store the real provider key, mint the agent key
 
@@ -90,7 +90,7 @@ talon audit list
 talon audit list --agent copaw-gateway
 ```
 
-Evidence rows will show `agent_id: copaw-gateway`. The Talon dashboard (`/dashboard`) has a **CoPaw Agents** tab with stats and alerts (driven by the `copaw` entry in the agent's `metadata.tags`).
+Evidence rows will show `agent_id: copaw-gateway`. `GET /v1/copaw/stats` and `GET /v1/copaw/alerts` (admin key) return CoPaw-specific request counts, cost and alerts (driven by the `copaw` entry in the agent's `metadata.tags`).
 
 ### 6. Policy and monitoring
 

@@ -247,7 +247,7 @@ PERSON and LOCATION are optional recognizers in the default EU patterns; they ar
 
 **Goal:** Pause execution until a human approves (EU AI Act Art. 14 style).
 
-**Where:** `agent.talon.yaml` under `compliance.human_oversight` and/or plan review configuration. When enabled, the runner generates an execution plan and waits for approval via dashboard or API (`POST /v1/plans/{id}/approve`).
+**Where:** `agent.talon.yaml` under `compliance.human_oversight` and/or plan review configuration. When enabled, the runner generates an execution plan and waits for approval via CLI (`talon plan approve`) or API (`POST /v1/plans/{id}/approve`).
 
 ```yaml
 compliance:
@@ -465,7 +465,7 @@ policies:
             score: 0.95
 ```
 
-Watch a session: `talon audit list --session <id>` (per-subagent rollup), `talon costs --session <id> --json`, or the dashboard's Coding Sessions panel — all three read the same signed evidence through the same aggregation. Full walk-through: [Governing coding agents](governing-coding-agents.md).
+Watch a session: `talon audit list --session <id>` (per-subagent rollup), `talon costs --session <id> --json`, or the `sessions` array of `talon metrics --json` — all three read the same signed evidence through the same aggregation. Full walk-through: [Governing coding agents](governing-coding-agents.md).
 
 ---
 

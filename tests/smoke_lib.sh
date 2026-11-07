@@ -12,7 +12,6 @@ SMOKE_PATH_HEALTH="/health"
 SMOKE_PATH_GW_PROXY="/v1/proxy/openai/v1/chat/completions"
 SMOKE_PATH_METRICS="/api/v1/metrics"
 SMOKE_PATH_METRICS_STREAM="/api/v1/metrics/stream"
-SMOKE_PATH_GATEWAY_DASHBOARD="/gateway/dashboard"
 SMOKE_PATH_EVIDENCE="/v1/evidence"
 SMOKE_PATH_EVENTS_RECENT="/api/v1/events/recent"
 SMOKE_PATH_EVENTS_STREAM="/api/v1/events/stream"
@@ -89,19 +88,12 @@ smoke_get_code() {
   fi
 }
 
-# --- Dashboard: GET metrics JSON ---
+# --- Metrics API: GET metrics JSON ---
 # Usage: smoke_gw_get_metrics base_url "<admin_key>"
 # Outputs: JSON body (stdout)
 smoke_gw_get_metrics() {
   local base="$1" admin_key="$2"
   curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_METRICS}" 2>/dev/null
-}
-
-# --- Dashboard: GET dashboard HTML ---
-# Usage: smoke_gw_get_dashboard base_url "<admin_key>"
-smoke_gw_get_dashboard() {
-  local base="$1" admin_key="$2"
-  curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_GATEWAY_DASHBOARD}" 2>/dev/null
 }
 
 # --- Evidence: fetch most recent evidence record (full JSON) via admin API ---

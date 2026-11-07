@@ -23,7 +23,7 @@ response = llm.invoke("What is GDPR Article 30?")
 Best for: **single LLM calls, stateless usage, quick integration**.
 
 For a full LangGraph walkthrough (safe vs dangerous tools, `filter` vs `block`, model
-allowlist denials, and dashboard metrics), open
+allowlist denials, and the metrics API), open
 [`langgraph_talon_tool_governance.ipynb`](langgraph_talon_tool_governance.ipynb).
 
 ## 2. Graph Events API (full governance)

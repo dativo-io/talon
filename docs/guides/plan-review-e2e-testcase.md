@@ -32,12 +32,9 @@ Structured end-to-end test for all **user-facing** Plan Review workflows. Pair w
 | F17 | Modify | `POST /v1/plans/{id}/modify` | Approve-with-annotations; `plan_modified` evidence |
 | F18 | Dispatch CLI | `talon plan execute` | Runs approved plan when serve not running |
 | F19 | Dispatch serve | Auto-dispatcher (~2s) | Picks approved undispatched plans; `invocation_type=plan_dispatch` |
-| F20 | Dashboard | `/dashboard` → Plans Awaiting Review | Approve/reject buttons; pending count cards |
-| F21 | Dashboard | Review history tab | `GET /v1/dashboard/review-history` |
 | F22 | Metrics | `/api/v1/metrics` summary | `pending_plans`, `approved_plans`, `dispatched_plans`, `plan_dispatch_errors` |
-| F23 | FinOps | Dashboard tenant table | Per-tenant `pending_plans` column |
 | F24 | Auth | Agent key | Can trigger runs and **read** plans; **cannot** approve |
-| F25 | Auth | Admin key | Approve/reject/modify; dashboard; evidence read on minimal serve |
+| F25 | Auth | Admin key | Approve/reject/modify; metrics; evidence read on minimal serve |
 | F26 | Evidence | `plan_review` invocation | Records approve/reject/modify decision |
 | F27 | Evidence | `plan_dispatch` + final run | Dispatch reuses `session_id` from gated trigger |
 | F28 | Approvers | `talon approver add/list/delete` | Named reviewer keys for API approve |
@@ -52,7 +49,7 @@ Structured end-to-end test for all **user-facing** Plan Review workflows. Pair w
 |----------|----------|
 | `TALON_SECRETS_KEY` | Yes |
 | `OPENAI_API_KEY` or vault secret | Yes (live LLM steps) |
-| `TALON_ADMIN_KEY` | Yes (API/dashboard approve, evidence read) |
+| `TALON_ADMIN_KEY` | Yes (API approve, evidence read, metrics) |
 | `jq` | Recommended |
 | `curl` | For API phases |
 | `sed` | YAML edits without `yq` |
@@ -271,19 +268,19 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://127.0.0.1:8080/v1/status
 
 ---
 
-### TC-PR-010 — Dashboard metrics (manual)
+### TC-PR-010 — Plan counters in the metrics snapshot
 
 | Field | Value |
 |-------|-------|
-| Features | F20, F21, F22, F23 |
+| Features | F22 |
 
-1. Start serve; trigger one gated run (leave pending).
-2. Open `http://127.0.0.1:8080/dashboard?talon_admin_key=$TALON_ADMIN_KEY`
-3. Verify **Pending plans** card > 0.
-4. Open **Plans Awaiting Review** → approve one plan.
-5. Confirm pending count drops; check **Review history** tab.
+1. Start serve with `--gateway`; trigger one gated run (leave pending).
+2. `curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://127.0.0.1:8080/api/v1/metrics | jq .plan_stats`
+3. Verify `pending` > 0 and matches `talon plan list` (or `GET /v1/plans/pending`).
+4. Approve one plan (`talon plan approve <id>` or `POST /v1/plans/{id}/approve`).
+5. Re-read the snapshot: `pending` drops by one, `approved` rises by one; `talon audit list --invocation-type plan_review` shows the decision.
 
-**Pass:** UI matches CLI pending count; approve removes row; history shows decision.
+**Pass:** snapshot counters match the CLI pending count before and after the approval; the decision is in evidence.
 
 ---
 
@@ -329,7 +326,7 @@ sed -i 's/human_oversight:.*/human_oversight: "on-demand"/' agent.talon.yaml
 | Reject blocks execute | TC-PR-007 | ☐ |
 | Serve auto-dispatch | TC-PR-008 | ☐ |
 | API read + status | TC-PR-009 | ☐ |
-| Dashboard (manual) | TC-PR-010 | ☐ |
+| Plan counters in metrics | TC-PR-010 | ☐ |
 | PII execute (optional) | TC-PR-011 | ☐ |
 | Cleanup | TC-PR-012 | ☐ |
 

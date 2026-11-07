@@ -377,7 +377,7 @@ Response side: with `gateway.openshell.response_governance` Talon implements `HT
 | Verified workload / runtime principal | gateway-signed JWT verified against configured issuer, audience and keys, bound through `agent.workload_identity.bindings` ([#457](https://github.com/dativo-io/talon/issues/457) owns breadth) | the bound use case on the delegated path | approval authority; a verified identity without a binding is `workload_identity_unbound` |
 | Application / session attribution | `X-Talon-Session-ID`, `X-Talon-Client`, `managed_by`, MCP `clientInfo` | grouping and display | authentication, authority, policy input |
 | Human reviewer principal | local approver credential (`talon approver add`), tenant-scoped, policy-authorized groups; OIDC is a later resolver | decisions on `action_execution` approvals | operator authority, runtime identity |
-| Platform operator | `TALON_ADMIN_KEY` | secrets, policies, fleet, dashboards, legacy plan and tool approvals (current, converging under [#430](https://github.com/dativo-io/talon/issues/430)) | Action Gateway approvals (refused), impersonating an agent |
+| Platform operator | `TALON_ADMIN_KEY` | secrets, policies, fleet, metrics, legacy plan and tool approvals (current, converging under [#430](https://github.com/dativo-io/talon/issues/430)) | Action Gateway approvals (refused), impersonating an agent |
 | Protocol / request / task correlation | JSON-RPC id, MCP Task id, `requestState`, trace ids | continuation and correlation | operation identity, bearer authorization |
 
 Talon is not an identity provider, certificate authority, token issuer or trust mesh.

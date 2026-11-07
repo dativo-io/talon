@@ -7,7 +7,7 @@ Article 14 (human oversight for high-risk AI systems).
 
 1. Agent receives a query and creates an execution plan
 2. Plan is held in `PENDING` state -- not executed until approved
-3. Operator reviews the plan via the dashboard or API
+3. Operator reviews the plan via the CLI (`talon plan pending` / `talon plan approve`) or the admin API (`POST /v1/plans/{id}/approve`)
 4. On approval, the `talon serve` auto-dispatch worker executes the plan once with full evidence logging
 
 ## Setup
@@ -25,7 +25,7 @@ bash examples/plan-review/run.sh
 
 ## Operator guide
 
-Full end-to-end steps (CLI approve/execute, serve auto-dispatch, dashboard, test matrix, troubleshooting):
+Full end-to-end steps (CLI approve/execute, serve auto-dispatch, admin API, test matrix, troubleshooting):
 
 **[How to test and operate Plan Review](../../docs/guides/plan-review-operators.md)**
 

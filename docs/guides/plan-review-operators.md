@@ -17,7 +17,7 @@ sequenceDiagram
   Operator->>Talon: talon run or POST /v1/agents/run
   Talon->>Talon: Policy + classify + build execution plan
   Talon-->>Operator: plan_pending — no LLM call yet
-  Operator->>Talon: Approve or reject (CLI, API, dashboard)
+  Operator->>Talon: Approve or reject (CLI, API)
   alt Approved and talon serve running
     Talon->>LLM: Auto-dispatch within ~2s
   else Approved without serve
@@ -41,7 +41,7 @@ sequenceDiagram
 ```bash
 export TALON_SECRETS_KEY="$(openssl rand -hex 32)"
 export OPENAI_API_KEY="sk-..."                        # or: talon secrets set openai-api-key ...
-export TALON_ADMIN_KEY="strong-admin-key"             # API/dashboard approvals
+export TALON_ADMIN_KEY="strong-admin-key"             # API approvals
 
 mkdir my-workspace && cd my-workspace
 talon init --scaffold --name my-agent
@@ -171,19 +171,6 @@ Verify dispatch:
 curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" \
   'http://localhost:8080/v1/evidence?limit=5&invocation_type=plan_dispatch' | jq .
 ```
-
----
-
-## Path C — Dashboard
-
-```
-http://localhost:8080/dashboard?talon_admin_key=$TALON_ADMIN_KEY
-```
-
-1. Trigger a gated run (`talon run` or API).
-2. Open **Plans Awaiting Review**.
-3. Approve or reject (reject prompts for a reason).
-4. With `talon serve` running, execution starts automatically after approve.
 
 ---
 

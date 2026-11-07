@@ -21,7 +21,7 @@ echo "Point your app at:"
 echo "  OPENAI_BASE_URL=http://localhost:8080/v1/proxy/openai/v1"
 echo "  OPENAI_API_KEY=talon-gw-myapp-001"
 echo ""
-echo "Dashboard: http://localhost:8080/dashboard"
+echo "Live metrics (admin key via X-Talon-Admin-Key): talon metrics --url http://localhost:8080"
 echo ""
 
 "$TALON" serve --port 8080 --gateway --gateway-config "$SCRIPT_DIR/talon.config.yaml"

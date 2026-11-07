@@ -144,17 +144,16 @@ Registered by `internal/memory`. Emitted on memory operations.
 
 ---
 
-## Gateway dashboard metrics
+## Gateway metrics API
 
-In addition to OTel metrics, Talon provides a **real-time runtime dashboard** with an in-memory metrics collector. The collector is fed from successful `evidence.Store.Store()` commits (all invocation types), then periodically reconciled from evidence as an authoritative repair path.
+In addition to OTel metrics, Talon provides a **real-time runtime metrics snapshot** from an in-memory metrics collector. The collector is fed from successful `evidence.Store.Store()` commits (all invocation types), then periodically reconciled from evidence as an authoritative repair path. Talon ships no browser dashboard on top of it; `talon metrics` reads the same snapshot.
 
-The dashboard snapshot is available at:
+The snapshot is available at:
 
-- **HTML dashboard:** `GET /gateway/dashboard` — single-page HTML with auto-refreshing charts.
 - **JSON API:** `GET /api/v1/metrics` — full snapshot for programmatic access.
 - **SSE stream:** `GET /api/v1/metrics/stream` — Server-Sent Events, one snapshot every 5 seconds.
 
-The dashboard snapshot includes:
+The snapshot includes:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -186,17 +185,16 @@ The dashboard snapshot includes:
 | `plan_stats` | object | Plan lifecycle counters (pending/approved/rejected/modified/dispatched/failures). |
 | `dropped_events` | int | Collector events dropped due to in-process backpressure. |
 
-See [Gateway dashboard reference](reference/gateway-dashboard.md) for full configuration, authentication, and API details.
+See [Gateway metrics API reference](reference/gateway-metrics-api.md) for full configuration, authentication, and API details.
 
 ### Operational-event projection
 
-Projection: `Evidence → OperationalEvent → Metrics / UI / CLI`. Metrics emit only after evidence persists, and live increments are driven by store post-commit observer notifications. Collector overflow is exposed as `dropped_events` in the snapshot, `metrics_events_dropped` in `/v1/status`, and OTel counter `talon.metrics.events_dropped.total`. Periodic reconciliation from evidence is bounded and idempotent, used to repair drift rather than define an alternate source of truth.
+Projection: `Evidence → OperationalEvent → Metrics / CLI`. Metrics emit only after evidence persists, and live increments are driven by store post-commit observer notifications. Collector overflow is exposed as `dropped_events` in the snapshot, `metrics_events_dropped` in `/v1/status`, and OTel counter `talon.metrics.events_dropped.total`. Periodic reconciliation from evidence is bounded and idempotent, used to repair drift rather than define an alternate source of truth.
 
 | Surface | Endpoint / source | Scope | Parity expectation |
 |---------|-------------------|-------|--------------------|
 | Evidence list | `/v1/evidence` | all evidence rows in tenant window | authoritative ordering: `timestamp DESC, id DESC` |
 | Events API | `/api/v1/events/recent`, `/api/v1/events/stream` | `terminal_plus_lifecycle_subset` (evidence-backed only) | same ordering and evidence-linked fields |
-| Dashboard | `/dashboard` recent-events table | mirrors events API rows, with compact signal chips | reflects events API without manual refresh |
 | Metrics snapshot | `/api/v1/metrics` | `all_activity` collector projection | consistent summary/breakdown invariants and reconciliation health |
 | Status | `/v1/status` | reliability contract fields | exposes `metrics_events_dropped`, `events_stream_gaps`, `events_replay_misses`, `events_backlog_drops`, reconcile status |
 

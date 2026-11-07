@@ -1,24 +1,24 @@
-# Gateway dashboard reference
+# Gateway metrics API reference
 
-The gateway dashboard provides real-time visibility into LLM API gateway traffic. It shows request volumes, cost, PII detections, policy enforcement, tool governance, and budget utilization — all from a single embedded HTML page with no external dependencies.
+The gateway metrics API exposes a real-time snapshot of governed LLM gateway traffic: request volumes, cost, PII detections, policy enforcement, tool governance, budget utilization and orchestration sessions. It is a machine-readable surface (JSON and Server-Sent Events) consumed by `talon metrics` and by operator tooling. Talon ships no browser dashboard on top of it; the read-only operations console is tracked in [#533](https://github.com/dativo-io/talon/issues/533).
 
 ---
 
-## Enabling the dashboard
+## Enabling the metrics API
 
-The dashboard is available when Talon runs in gateway mode:
+The metrics routes are mounted when Talon runs in gateway mode:
 
 ```bash
 talon serve --gateway --gateway-config talon.config.yaml
 ```
 
-The dashboard is served on the same port as the API (default `:8080`).
+They are served on the same port as the API (default `:8080`).
 
-Without `--gateway` (or `--proxy-quickstart`), the gateway routes are **not mounted**: `GET /gateway/dashboard`, `GET /api/v1/metrics`, and `GET /api/v1/metrics/stream` all return `404 page not found` as plain text (a common symptom is `jq` failing with `Cannot index number` on the "404" body). The unified governance dashboard (`/dashboard`) detects this at load time and hides its gateway telemetry links, showing a hint to restart with `--gateway` instead. `--gateway` works even when `talon.config.yaml` has no `gateway:` block — defaults apply.
+Without `--gateway` (or `--proxy-quickstart`), the gateway routes are **not mounted**: `GET /api/v1/metrics` and `GET /api/v1/metrics/stream` return `404 page not found` as plain text (a common symptom is `jq` failing with `Cannot index number` on the "404" body). `--gateway` works even when `talon.config.yaml` has no `gateway:` block — defaults apply.
 
 ### Configuration
 
-Set the server admin key so dashboard and metrics endpoints are protected:
+Set the server admin key so the metrics endpoints are protected:
 
 ```bash
 export TALON_ADMIN_KEY="your-secret-admin-key"
@@ -31,34 +31,18 @@ If `TALON_ADMIN_KEY` is unset, admin endpoints are unrestricted (dev only).
 
 ## Endpoints
 
-All dashboard endpoints are served on the main server port (same as `/health`, `/v1/evidence`, etc.).
+Both endpoints are served on the main server port (same as `/health`, `/v1/evidence`, etc.).
 
-### `GET /gateway/dashboard`
-
-Returns the single-file HTML dashboard. The page auto-connects to the SSE stream for live updates, with a polling fallback.
-
-**Authentication:** Requires admin auth. Any of:
+**Authentication:** admin auth, either of:
 
 - **Header (recommended):** `X-Talon-Admin-Key: <key>`
 - **Bearer:** `Authorization: Bearer <key>`
-- **Query (GET only, for browser bookmarks):** `?talon_admin_key=<key>` (legacy `?token=<key>` is still accepted)
 
-Use the query parameter when opening either dashboard in a browser (browsers cannot send custom headers on navigation). Same pattern for both:
-
-- **Governance dashboard:** `http://localhost:8080/dashboard?talon_admin_key=YOUR_TALON_ADMIN_KEY`
-- **Gateway dashboard:** `http://localhost:8080/gateway/dashboard?talon_admin_key=YOUR_TALON_ADMIN_KEY`
-
-Each page reads `talon_admin_key` (or legacy `token`), sets `window.TALON_ADMIN_KEY`, and removes the query from the URL so the key is not left in the address bar. API calls then use the header. Ensure the server was started with `TALON_ADMIN_KEY` set to the same value.
-
-```bash
-curl -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/gateway/dashboard
-```
+Query-string and cookie credentials are not accepted; the key never belongs in a URL.
 
 ### `GET /api/v1/metrics`
 
 Returns the current metrics snapshot as JSON.
-
-**Authentication:** Same as above.
 
 ```bash
 curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/metrics | jq .
@@ -190,8 +174,6 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/me
 
 Server-Sent Events stream. Pushes one JSON snapshot every 5 seconds.
 
-**Authentication:** Same as above.
-
 ```bash
 curl -N -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/metrics/stream
 ```
@@ -204,7 +186,7 @@ data: {"generated_at":"2026-03-09T14:32:05Z","uptime":"2h15m",...}
 data: {"generated_at":"2026-03-09T14:32:10Z","uptime":"2h15m",...}
 ```
 
-The HTML dashboard connects to this endpoint automatically for live updates. If SSE fails, it falls back to polling `/api/v1/metrics` every 10 seconds.
+Consumers that cannot hold an SSE connection (for example behind a buffering proxy) poll `/api/v1/metrics` instead.
 
 ---
 
@@ -219,7 +201,7 @@ When traffic comes from `--proxy-quickstart`, evidence records may include:
 - `upstream_key_fingerprint`
 - `gateway_annotations`
 
-These are additive attributes and do not change existing dashboard snapshot keys.
+These are additive attributes and do not change existing snapshot keys.
 
 ### `summary` (top-level KPIs)
 
@@ -244,7 +226,7 @@ These are additive attributes and do not change existing dashboard snapshot keys
 
 ### `requests_timeline`, `pii_timeline`, `cost_timeline`
 
-Time-series arrays with 5-minute buckets. Used by the dashboard to render sparklines.
+Time-series arrays with 5-minute buckets, suitable for sparklines or time-bucket charts.
 
 - `requests_timeline[].time` — bucket label (e.g. `"14:25"`).
 - `requests_timeline[].count` — request count in the bucket.
@@ -301,7 +283,7 @@ Per-provider request counts and cost. One entry per selected provider in evidenc
 | `monthly_limit` | float | Monthly cost cap (see note below). |
 | `monthly_percent` | float | Monthly utilization percentage. |
 
-The global budget widget denominates against what enforcement actually gates on (#288): in gateway mode, the **sum of per-agent binding effective caps** over the identity registry — registry + `ResolveEffectivePolicy`, the same path enforcement uses, where the binding cap is the tightest of the agent's resolved cap and the organization ceiling (`constraints.max_daily_cost`/`max_monthly_cost`, #287). In single-file mode this is exactly that one agent's cap; with `agents_dir` (#267) it sums the whole discovered fleet; per-agent drill-down is `talon agents` (#270, shipped), and the read-only dashboard projection is #143. Native mode (no gateway) uses the agent policy's own `cost_limits` — what the runner enforces.
+`budget_status` denominates against what enforcement actually gates on (#288): in gateway mode, the **sum of per-agent binding effective caps** over the identity registry — registry + `ResolveEffectivePolicy`, the same path enforcement uses, where the binding cap is the tightest of the agent's resolved cap and the organization ceiling (`constraints.max_daily_cost`/`max_monthly_cost`, #287). In single-file mode this is exactly that one agent's cap; with `agents_dir` (#267) it sums the whole discovered fleet; per-agent drill-down is `talon agents` (#270, shipped); the read-only browser console is #533. Native mode (no gateway) uses the agent policy's own `cost_limits` — what the runner enforces.
 
 #### `GET /v1/costs/budget` (per-agent budget endpoint)
 
@@ -341,7 +323,7 @@ Orchestration session drill-down (#199): the most recently active client- or
 vendor-asserted coding sessions (bounded to the 20 most recent), re-derived
 from signed evidence on every snapshot by the **same pure function** behind
 `talon audit list --session <id>` (`evidence.BuildSessionSummary`) — the
-dashboard and the CLI cannot disagree, and a metrics-collector rebuild
+API and the CLI cannot disagree, and a metrics-collector rebuild
 (`ReconcileFromStore`) cannot change these numbers. Omitted when no
 orchestration data exists (synthetic per-request session ids never appear).
 Each entry is a session summary:
@@ -369,14 +351,14 @@ descending count; omitted when there are no denials.
 
 ---
 
-## CLI ↔ dashboard parity
+## CLI ↔ API parity
 
-The dashboard metrics and CLI commands (`talon costs`, `talon audit list`, `talon report`) share the same underlying `MetricsQuerier` interface against the evidence store. This ensures:
+`talon metrics` reads this snapshot from a running server (`--url`, default `http://localhost:8080`; `TALON_ADMIN_KEY` authenticates) and prints the same numbers. The snapshot and the CLI commands that read the evidence store directly (`talon costs`, `talon audit list`, `talon report`) share the same underlying `MetricsQuerier` interface, which ensures:
 
-- `talon costs --tenant default` reports the same daily/monthly totals as `budget_status` in the dashboard.
+- `talon costs --tenant default` reports the same daily/monthly totals as `budget_status`.
 - `talon costs --by-provider` aligns with `provider_breakdown` in `/api/v1/metrics`.
 - `talon report` counts match `summary.total_requests` and `summary.pii_detections`.
-- Evidence records shown by `talon audit list` are the same records that feed the dashboard timelines.
+- Evidence records shown by `talon audit list` are the same records that feed the timelines.
 
 Cost export surfaces:
 
@@ -385,7 +367,7 @@ Cost export surfaces:
 
 Both export surfaces include evidence ID, tenant/agent, timestamp, model/provider, cost, token counts, and policy decision/reason so rows can be joined to signed evidence exports by evidence ID.
 
-The in-memory collector adds real-time aggregation (5-minute buckets, latency percentiles) on top of the querier, so the dashboard may reflect very recent events slightly sooner than CLI queries that read directly from SQLite.
+The in-memory collector adds real-time aggregation (5-minute buckets, latency percentiles) on top of the querier, so the snapshot may reflect very recent events slightly sooner than CLI queries that read directly from SQLite.
 
 ## Evidence-first runtime
 
@@ -407,7 +389,7 @@ Scope (locked in v1.5.0):
 | Status fields | `curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/v1/status` | includes `metrics_events_dropped`, `events_stream_gaps`, `events_replay_misses`, `events_backlog_drops` |
 | Recent events | `curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" "http://localhost:8080/api/v1/events/recent?limit=10"` | each row has `event_id`, `evidence_id`, `decision`, `reason_code`, optional `reasons[]`, `cost_eur`, `correlation_id` |
 | SSE resume | `curl -N -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" -H "Last-Event-ID: <id>" http://localhost:8080/api/v1/events/stream` | stream resumes after `<id>`; emits `event: gap` on cursor miss |
-| Dashboard parity | open `http://localhost:8080/dashboard?talon_admin_key=$TALON_ADMIN_KEY` | "Session timeline" rows match `/api/v1/events/recent` |
+| CLI parity | `talon metrics --json --url http://localhost:8080` | `agent_stats` rows match `/api/v1/metrics` on the same server |
 
 ---
 
@@ -416,42 +398,22 @@ Scope (locked in v1.5.0):
 | Concern | Approach |
 |---------|----------|
 | Authentication | `TALON_ADMIN_KEY` on the server. Clients send `X-Talon-Admin-Key` (preferred) or bearer fallback. Token comparison uses `crypto/subtle.ConstantTimeCompare`. |
-| Network binding | Dashboard is served on the main listen address. Bind to `127.0.0.1:8080` (default) to prevent external access. Use a reverse proxy with TLS for production. |
+| Network binding | The metrics routes are served on the main listen address. Bind to `127.0.0.1:8080` (default) to prevent external access. Use a reverse proxy with TLS for production. |
 | No secrets in responses | The metrics snapshot never contains API keys, secrets, or raw prompt/response content. |
-| CORS | Not enabled by default. Add CORS middleware if the dashboard is accessed from a different origin. |
+| Credentials in URLs | Not accepted. Query-string (`?talon_admin_key=`, `?token=`) and cookie admin credentials were removed with the legacy dashboards; only the header and bearer forms authenticate. |
 
 ---
 
 ## Relationship to OTel metrics
 
-The dashboard and OTel metrics are complementary:
+The metrics API and OTel metrics are complementary:
 
-| | Gateway dashboard | OTel metrics |
+| | Gateway metrics API | OTel metrics |
 |---|---|---|
-| **Purpose** | Real-time operational view | Long-term storage, alerting, Grafana |
+| **Purpose** | Real-time operational snapshot | Long-term storage, alerting, Grafana |
 | **Data source** | In-memory collector + evidence backfill | OTel SDK instruments |
 | **Retention** | In-process (resets on restart) | Depends on backend (Prometheus, etc.) |
-| **Access** | Browser / curl | Prometheus, Grafana, OTLP backends |
+| **Access** | `talon metrics` / curl / SSE | Prometheus, Grafana, OTLP backends |
 | **Granularity** | 5-minute buckets, per-agent | Per-request via attributes |
 
-Use the dashboard for at-a-glance monitoring. Use OTel + Grafana for historical analysis, alerting, and SLA tracking. See [Observability](../OBSERVABILITY.md) for the full OTel metrics catalogue and [`examples/observability/`](../../examples/observability/) for the local Grafana stack.
-
----
-
-## Related governance dashboard endpoints
-
-When using the main governance dashboard (`/dashboard`), Talon also exposes:
-
-- `GET /v1/dashboard/agent-health` - per-agent risk-oriented health summary
-- `GET /v1/dashboard/drift-signals` - drift z-scores (cost anomaly, denial-rate spike, PII-rate change)
-- `GET /v1/dashboard/denials-by-reason` - store-wide denied total with a per-reason breakdown (`pii_block`, `policy_deny`, `attachment_block`, `tool_filtered`)
-
-These endpoints are used by the embedded UI and can also be queried directly for custom dashboards.
-
-### Unified dashboard semantics
-
-A few `/dashboard` behaviors worth knowing when reading the page:
-
-- The **Blocked (all evidence)** card shows the store-wide denied total from `/v1/dashboard/denials-by-reason` — the same number as the "All evidence: N denied" line. It does not change when the evidence table is filtered; clicking the card applies the Denied filter to drill into those records.
-- **Visible requests** and **Visible cost** are computed from the currently visible evidence rows, so they *do* change with filters.
-- The **Detail** button is read-only: it shows the signed fields, trust/spend attribution, and step trace without verifying the record. Signature verification only happens via the explicit **Verify** / **Verify visible records** buttons, which update the Integrity column.
+Use the metrics API for at-a-glance monitoring. Use OTel + Grafana for historical analysis, alerting, and SLA tracking. See [Observability](../OBSERVABILITY.md) for the full OTel metrics catalogue and [`examples/observability/`](../../examples/observability/) for the local Grafana stack.

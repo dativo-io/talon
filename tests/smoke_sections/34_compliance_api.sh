@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Smoke test section: 34_compliance_dashboard
+# Smoke test section: 34_compliance_api
 # Sourced by tests/smoke_test.sh — do not run directly.
 
 # -----------------------------------------------------------------------------
-# SECTION 34 — Compliance dashboard mode (#129): /v1/compliance/* HTTP API +
-# dashboard compliance tab. A DPO must be able to see framework coverage and
-# export a RoPA / Annex IV artifact without the CLI.
+# SECTION 34 — Compliance API (#129): /v1/compliance/* HTTP API. A DPO must be
+# able to read framework coverage and export a RoPA / Annex IV artifact over
+# admin-authenticated HTTP without the CLI.
 # -----------------------------------------------------------------------------
-test_section_34_compliance_dashboard() {
-  local section="34_compliance_dashboard"
+test_section_34_compliance_api() {
+  local section="34_compliance_api"
   local port="8080"
   local base_url="http://127.0.0.1:${port}"
   echo ""
-  echo "=== SECTION 34 — Compliance Dashboard Mode ==="
+  echo "=== SECTION 34 — Compliance API ==="
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
   if ! wait_port_free "$port" 180 10; then
-    log_failure "compliance dashboard section could not acquire port ${port}" "port remained busy"
+    log_failure "compliance API section could not acquire port ${port}" "port remained busy"
     cd "$REPO_ROOT" || true
     return 0
   fi
@@ -31,7 +31,7 @@ test_section_34_compliance_dashboard() {
 
 compliance:
   controller:
-    name: "Smoke Dashboard GmbH"
+    name: "Smoke Compliance GmbH"
     contact: "privacy@smoke.test"
 EOF
 
@@ -56,8 +56,8 @@ GWEOF
   fi
 
   local SRV_PID=""
-  local srv_log="$dir/compliance_dashboard_serve.log"
-  if ! start_owned_talon_server "compliance dashboard server" "$srv_log" "$port" \
+  local srv_log="$dir/compliance_api_serve.log"
+  if ! start_owned_talon_server "compliance API server" "$srv_log" "$port" \
       serve --port "$port" --gateway --gateway-config "$dir/talon.config.yaml"; then
     cd "$REPO_ROOT" || true
     return 0
@@ -65,16 +65,6 @@ GWEOF
   SRV_PID="$SMOKE_SERVER_PID"
   local admin_key="${TALON_ADMIN_KEY}"
   local agent_key="talon-gw-compliance-001"
-
-  # --- 34.1: Dashboard HTML serves the compliance tab and export hooks ---
-  assert_pass "GET /dashboard 200" \
-    test "$(smoke_get_code "$base_url" "/dashboard")" = "200"
-  local dash_html; dash_html="$(curl -s "${base_url}/dashboard" 2>/dev/null)"
-  assert_pass "dashboard HTML has compliance tab" grep -q 'data-tab="compliance"' <<< "$dash_html"
-  assert_pass "dashboard HTML has compliance panel" grep -q 'panel-compliance' <<< "$dash_html"
-  assert_pass "dashboard HTML has RoPA export hook" grep -q '/v1/compliance/ropa' <<< "$dash_html"
-  assert_pass "dashboard HTML has Annex IV export hook" grep -q '/v1/compliance/annex-iv' <<< "$dash_html"
-  assert_pass "dashboard HTML has coverage hook" grep -q '/v1/compliance/coverage' <<< "$dash_html"
 
   # --- 34.2: Coverage endpoint (admin) ---
   local coverage; coverage="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "${base_url}/v1/compliance/coverage" 2>/dev/null)"
@@ -96,7 +86,7 @@ GWEOF
   assert_pass "ropa export carries claim note" \
     jq -e '.claim_note | test("not a completed legal filing")' <<< "$ropa_json" &>/dev/null
   local ropa_html; ropa_html="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "${base_url}/v1/compliance/ropa" 2>/dev/null)"
-  assert_pass "ropa HTML lists declared controller" grep -q "Smoke Dashboard GmbH" <<< "$ropa_html"
+  assert_pass "ropa HTML lists declared controller" grep -q "Smoke Compliance GmbH" <<< "$ropa_html"
   local annex_json; annex_json="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "${base_url}/v1/compliance/annex-iv?format=json" 2>/dev/null)"
   assert_pass "annex-iv export is valid JSON" jq -e '.' <<< "$annex_json" &>/dev/null
   assert_pass "annex-iv export has Annex IV title" \

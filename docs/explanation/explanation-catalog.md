@@ -65,9 +65,6 @@ Compatibility alias:
 ## Surface Mapping
 
 - CLI: `talon audit show` prints explanation `code`, `decision`, `stage`, `reason`, `trigger`, `fix`, `policy_ref`, `version_identity`.
-- Dashboard:
-  - Evidence table status includes primary explanation code.
-  - Trace modal shows primary explanation reason and remediation metadata.
 - API:
   - `GET /v1/evidence` includes `primary_explanation_code` and `primary_explanation_reason`.
   - `GET /v1/evidence/{id}` and `GET /v1/evidence/{id}/trace` include full `explanations[]`.
@@ -78,4 +75,4 @@ When introducing a new explanation code or changing explanation semantics:
 1. Add/update the code in `internal/explanation/explanation.go`.
 2. Add/update tests in `internal/explanation/explanation_test.go`.
 3. Update this catalog in the same PR.
-4. Verify CLI and dashboard rendering for the new code path.
+4. Verify CLI and API rendering for the new code path.

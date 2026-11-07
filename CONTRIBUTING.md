@@ -178,7 +178,7 @@ a draft and an unknown version pin must each fail closed, for the verifier and f
 5. From a machine that is not the runner: `scripts/verify-release.sh --tag vX.Y.Z --install <dir>` → `PASS verify-release: vX.Y.Z`; then `gh workflow run install-smoke.yml -f tag=vX.Y.Z` → green.
 6. Record the printed digests (archive, executable, bundle, manifest, both images) wherever the release is consumed (for example a demo's proof manifest). A FAIL anywhere is fixed forward in the next version, never by editing published assets.
 
-Check that release notes link at least one share artifact (screenshot, GIF, or migration snippet). To refresh Mission Control screenshots, see [docs/contributor/mission-control-screenshots.md](docs/contributor/mission-control-screenshots.md).
+Check that release notes link at least one share artifact (terminal recording, GIF, or migration snippet).
 
 ## Weekly Repo Quality Scorecard (maintainers)
 

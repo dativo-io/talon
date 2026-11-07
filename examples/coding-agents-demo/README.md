@@ -140,8 +140,8 @@ Session sess-coding-demo
     executor  ←generator      1 req  €…
 ```
 
-`talon costs --session … --json` returns the same numbers the dashboard's
-**Coding Sessions** panel shows — both are produced by the same aggregation
+`talon costs --session … --json` returns the same numbers the `sessions` block of
+`GET /api/v1/metrics` carries — both are produced by the same aggregation
 function over the same signed records, so they cannot disagree.
 
 **5. Hold the evidence.** `talon audit export --session … --format signed-json`

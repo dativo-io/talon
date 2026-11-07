@@ -115,12 +115,15 @@ fi
 echo "       Audit trail:"
 echo "$AUDIT" | head -5
 
-echo "[6/6] Checking dashboard..."
+echo "[6/6] Checking the legacy dashboard route is gone..."
+# The embedded browser dashboards were removed (#533/#546); the root and
+# /dashboard must be plain 404s. Anything else means a stale image or build.
 DASHBOARD_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/dashboard 2>/dev/null || echo "000")
-if [ "$DASHBOARD_CODE" = "200" ]; then
-  echo "       Dashboard returns HTTP 200"
+if [ "$DASHBOARD_CODE" = "404" ]; then
+  echo "       /dashboard returns HTTP 404 (no legacy UI served)"
 else
-  echo "WARN: Dashboard returned HTTP $DASHBOARD_CODE (non-blocking)"
+  echo "FAIL: /dashboard returned HTTP $DASHBOARD_CODE, expected 404 (legacy dashboard must not be served)"
+  exit 1
 fi
 
 echo ""
@@ -130,4 +133,4 @@ echo "Summary:"
 echo "  - docker compose up: OK"
 echo "  - curl request with PII: HTTP 200, valid OpenAI format"
 echo "  - talon audit list: Evidence records present"
-echo "  - Dashboard: HTTP $DASHBOARD_CODE"
+echo "  - Legacy /dashboard route: HTTP $DASHBOARD_CODE (removed, expected 404)"

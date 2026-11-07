@@ -25,7 +25,7 @@ flowchart LR
       gw["Gateway: agent-key auth, rate limit, PII scan, OPA policy, tool filter, redact/block"]
       vault["Secrets vault (AES-256-GCM, SQLite)"]
       evid["Evidence store (HMAC-signed, SQLite)"]
-      admin["Admin / dashboard plane"]
+      admin["Admin / control plane (CLI + API)"]
     end
   end
 
@@ -112,7 +112,7 @@ Trust-boundary crossings (each is a point where data changes trust domain):
 
 - Secrets are encrypted at rest (AES-256-GCM); evidence is signed (HMAC-SHA256). The
   SQLite files themselves rely on host filesystem permissions.
-- Admin/control-plane and dashboard/metrics endpoints are gated by `TALON_ADMIN_KEY`
+- Admin/control-plane and metrics endpoints are gated by `TALON_ADMIN_KEY` (header or bearer; no query-string or cookie credentials)
   (`X-Talon-Admin-Key`). If unset, those endpoints are unrestricted — set it in production.
 
 ### 3.6 Webhook sender ↔ Server (`POST /v1/triggers/{name}`)
@@ -154,7 +154,7 @@ Talon uses three operator-managed secrets (see
 |-----|---------|--------|---------|
 | `TALON_SIGNING_KEY` | HMAC-SHA256 evidence signing | >= 32 raw bytes or 64+ hex chars | Auto-derived per machine |
 | `TALON_SECRETS_KEY` | AES-256-GCM vault encryption | 32 raw bytes or 64 hex chars | Auto-derived per machine |
-| `TALON_ADMIN_KEY` | Admin/control-plane + dashboard auth | operator-chosen string | unset (endpoints unrestricted) |
+| `TALON_ADMIN_KEY` | Admin/control-plane + metrics auth | operator-chosen string | unset (endpoints unrestricted) |
 
 In addition to these three, each agent has an **agent traffic key**: a vault-bound
 secret (referenced by `agent.key.secret_name`, encrypted under `TALON_SECRETS_KEY`)

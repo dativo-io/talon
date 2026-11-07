@@ -15,7 +15,7 @@ Companies create more AI use cases than they can reliably operate. Each one — 
 | **Cost control** | Spend is visible and capped per use case | Daily/monthly caps deny **before** the provider call; hard session caps by atomic reservation (estimate-based admission); threshold crossings as signed evidence + one org cost webhook; cache-aware, currency-labeled attribution |
 | **Reliability** | One failure behavior instead of N | Same-provider retries with backoff for transient failures (evidence-visible), then error-driven fallback chains, every candidate policy-checked, fail-closed on exhaustion |
 | **Shared policy** | Central policy defaults with explicit exceptions | Organization baseline + one explicit per-agent override for PII, tools, models, budgets, egress/sovereignty (#266) |
-| **Session understanding** | Know what each use case did, spent, and why it failed | Session identity, session-scoped audit and cost rollups, dashboard drill-down |
+| **Session understanding** | Know what each use case did, spent, and why it failed | Session identity, session-scoped audit and cost rollups, metrics API drill-down |
 
 Underneath all four sits the **proof layer**: every enforcement decision becomes an HMAC-signed, tamper-evident record you can verify (including offline) and export. Compliance reports (GDPR Art. 30 RoPA, EU AI Act Annex IV) are generated from that evidence — supporting controls and documentation, never a compliance determination. See [Evidence store](evidence-store.md).
 
@@ -52,7 +52,7 @@ One typed approval kernel for plan review and action execution, replacing the le
 MCP governance convergence onto ActionGovernance and one canonical POST /mcp (#431), Tasks continuation (#448)
 Durable native run checkpoints and approval waits (#430)
 n8n/external runtime adapter over the same action and approval services (#434)
-CLI-primary fleet operations; dashboard as a read-only projection of the same semantics (#143)
+CLI-primary fleet operations; read-only OSS operations console as a projection of the same semantics (#533)
 ```
 
 ## Vocabulary
@@ -86,13 +86,13 @@ A session may show **attention required** because it has a pending approval, unr
 
 `managed_by` is the single session field that names the concrete runtime or orchestrator responsible for the session lifecycle—for example `talon`, `n8n`, `claude-code` or `codex`. The separate `source` field records only how Talon obtained the session identity. Neither field authenticates authority or changes policy, and Talon does not expose a separate `lifecycle_owner` concept.
 
-## Operator model: CLI primary, dashboard secondary
+## Operator model: CLI primary, console secondary
 
 The operator interface is the local `talon` CLI, run where Talon runs — there is no remote-administration requirement, and configuration in YAML is the source of truth. Today the CLI covers auditing, costs, sessions, providers, secrets and compliance exports; it also covers the fleet: `talon agents` is the shipped attention queue (STATE/HEALTH/COST/WHY columns, with `talon agents show <name>`) and `talon agents enable/disable` is the host-local kill switch (Fleet Operations v1).
 
-The dashboard is the secondary surface, and its direction is a **read-only projection** for inspection, filtering, verification and export. A focused approval inbox is an explicit narrow exception for authorized human decisions; it does not turn the fleet dashboard into a generic workflow system.
+Talon currently ships no browser UI: the legacy dashboards were removed, and the replacement OSS operations console (#533) is a **read-only projection** of the same backend semantics for inspection, filtering, verification and export. A focused approval inbox (#433) is an explicit narrow exception for authorized human decisions; it does not turn the console into a generic workflow system.
 
-The design rule for all surfaces: session status, run status, approval decision, operation status, attempt result, health, budget state and effective policy must be computed once and shared, never flattened or re-derived independently per interface. Parts of that already exist (the dashboard's metrics are rebuilt from the same evidence the CLI reads); completing it is tracked on the roadmap.
+The design rule for all surfaces: session status, run status, approval decision, operation status, attempt result, health, budget state and effective policy must be computed once and shared, never flattened or re-derived independently per interface. Parts of that already exist (the `/api/v1/metrics` snapshot is rebuilt from the same evidence the CLI reads); completing it is tracked on the roadmap.
 
 ## Failure interpretation
 

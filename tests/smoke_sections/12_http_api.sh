@@ -3,7 +3,7 @@
 # Sourced by tests/smoke_test.sh — do not run directly.
 
 # -----------------------------------------------------------------------------
-# SECTION 12 — HTTP API and Dashboard (QUICKSTART serve, REST API reference)
+# SECTION 12 — HTTP API (QUICKSTART serve, REST API reference)
 # -----------------------------------------------------------------------------
 test_section_12_http_api() {
   local section="12_http"
@@ -63,7 +63,7 @@ GWEOF
   assert_pass "GET /health 200" test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health)" = "200"
   local status_json; status_json="$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/status)"
   assert_pass "GET /status 200 with status field" jq -e '.status' <<< "$status_json" &>/dev/null
-  assert_pass "GET /status has dashboard fields (pending_memory_reviews, blocked_count, tenant_id)" \
+  assert_pass "GET /status has operator fields (pending_memory_reviews, blocked_count, tenant_id)" \
     jq -e 'has("pending_memory_reviews") and has("blocked_count") and has("tenant_id")' <<< "$status_json" &>/dev/null
   assert_pass "GET /v1/evidence 200 JSON array" \
     jq -e 'type == "object" and (.entries | type == "array")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/evidence)" &>/dev/null
@@ -93,30 +93,33 @@ GWEOF
     jq -e 'has("daily_used") and has("monthly_used")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/costs/budget)" &>/dev/null
   assert_pass "GET /v1/costs/report 200 with total_eur and from/to" \
     jq -e 'has("total_eur") and has("from") and has("to")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/costs/report)" &>/dev/null
-  assert_pass "GET /v1/dashboard/tenants-summary 200 with tenants and agents" \
-    jq -e 'has("tenants") and has("agents")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/tenants-summary)" &>/dev/null
-  assert_pass "GET /v1/dashboard/denials-by-reason 200 with total and by_reason" \
-    jq -e 'has("total") and has("by_reason")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/denials-by-reason)" &>/dev/null
-  assert_pass "GET /v1/dashboard/governance-alerts 200 with alerts array" \
-    jq -e 'has("alerts") and (.alerts | type == "array")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/governance-alerts)" &>/dev/null
-  assert_pass "GET /v1/dashboard/audit-pack 200 with evidence_count" \
-    jq -e 'has("evidence_count") and has("generated_at")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/audit-pack)" &>/dev/null
-  assert_pass "GET /v1/dashboard/review-history 200 with reviews array" \
-    jq -e 'has("reviews") and (.reviews | type == "array")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/review-history)" &>/dev/null
   assert_pass "POST /v1/evidence/export 200 with CSV or JSON body" \
     test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Talon-Admin-Key: $admin_key" -H "Content-Type: application/json" -d '{"limit":10,"format":"json"}' http://127.0.0.1:8080/v1/evidence/export)" = "200"
   local export_body; export_body="$(curl -s -X POST -H "X-Talon-Admin-Key: $admin_key" -H "Content-Type: application/json" -d '{"limit":10,"format":"json"}' http://127.0.0.1:8080/v1/evidence/export)"
   assert_pass "POST /v1/evidence/export JSON returns array of records" \
     jq -e 'type == "array"' <<< "$export_body" &>/dev/null
-  local dash_headers
-  dash_headers="$(curl -sI http://127.0.0.1:8080/dashboard 2>/dev/null | head -10)"
-  assert_pass "GET /dashboard 200" bash -c 'echo "$1" | grep -qi "200"' _ "$dash_headers"
-  assert_pass "GET /dashboard Content-Type text/html" grep -qi 'text/html' <<< "$dash_headers"
-  local gov_dash_html
-  gov_dash_html="$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/dashboard)"
-  assert_pass "governance dashboard contains Talon Mission Control marker" grep -q "Talon Mission Control" <<< "$gov_dash_html"
-  assert_pass "governance dashboard contains session timeline marker" grep -q "Session timeline (lifecycle)" <<< "$gov_dash_html"
-  assert_pass "governance dashboard contains compliance preview marker" grep -q "Compliance report preview" <<< "$gov_dash_html"
+  # Legacy dashboards are removed (#533/#546): the root, /dashboard and the
+  # dashboard-only API family must be plain 404s, never HTML, with or without
+  # the admin key. No redirect to a replacement UI exists yet.
+  assert_pass "GET / → 404 (legacy governance dashboard removed)" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)" = "404"
+  assert_pass "GET / with admin key → 404" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/)" = "404"
+  assert_pass "HEAD / → 404" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -I http://127.0.0.1:8080/)" = "404"
+  assert_pass "GET /dashboard → 404" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/dashboard)" = "404"
+  local dash_headers; dash_headers="$(curl -sI http://127.0.0.1:8080/dashboard 2>/dev/null | head -10)"
+  assert_fail "GET /dashboard response is not text/html" grep -qi 'text/html' <<< "$dash_headers"
+  assert_pass "GET /v1/dashboard/tenants-summary with admin key → 404 (dashboard-only API removed)" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/tenants-summary)" = "404"
+  # Browser-side admin credential paths are gone: the admin key authenticates
+  # only via X-Talon-Admin-Key / Authorization: Bearer, never via query string
+  # or cookie.
+  assert_pass "GET /v1/evidence?talon_admin_key=<key> → 401 (query-string admin auth removed)" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080/v1/evidence?talon_admin_key=${admin_key}")" = "401"
+  assert_pass "GET /v1/evidence with talon_admin_session cookie → 401 (cookie admin auth removed)" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: talon_admin_session=${admin_key}" http://127.0.0.1:8080/v1/evidence)" = "401"
   assert_pass "No key → 401" test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/evidence)" = "401"
   local tenant_ev_code; tenant_ev_code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $agent_key" http://127.0.0.1:8080/v1/evidence)"
   if [[ "$tenant_ev_code" == "200" ]]; then

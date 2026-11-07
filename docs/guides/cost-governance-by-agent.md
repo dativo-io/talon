@@ -13,7 +13,7 @@ This guide shows the fastest path to that outcome for a support-bot agent.
 - Hard daily/monthly spend caps for one agent (`support-slack-bot`)
 - Deny **before** any upstream provider call when the next request would exceed cap
 - Signed evidence for both allowed and denied decisions
-- Dashboard + CLI visibility for today/month, by agent/model/provider
+- CLI + API visibility for today/month, by agent/model/provider
 
 ---
 
@@ -70,7 +70,7 @@ gateway:
 
 For a demo, temporarily lower the agent's `cost_limits.daily` (for example `0.01`) so you can trigger a denial quickly.
 
-**Effective caps = one calculation path.** The caps enforcement applies are resolved by the same function that feeds `talon costs` and the dashboard budget endpoint: organization baseline (`organization_policy.defaults.daily_cost` / `monthly_cost`) → the agent's one override (an agent cap replaces the baseline when > 0). Org budget ceilings (`organization_policy.constraints.max_daily_cost` / `max_monthly_cost`, #287) are enforced **in addition** to the resolved per-agent cap — an agent override can never raise them, and a ceiling denial names the organization in the deny reason (`budget_exceeded: request would exceed organization daily cost limit`). What you see reported is exactly what is enforced.
+**Effective caps = one calculation path.** The caps enforcement applies are resolved by the same function that feeds `talon costs` and the `/v1/costs/budget` endpoint: organization baseline (`organization_policy.defaults.daily_cost` / `monthly_cost`) → the agent's one override (an agent cap replaces the baseline when > 0). Org budget ceilings (`organization_policy.constraints.max_daily_cost` / `max_monthly_cost`, #287) are enforced **in addition** to the resolved per-agent cap — an agent override can never raise them, and a ceiling denial names the organization in the deny reason (`budget_exceeded: request would exceed organization daily cost limit`). What you see reported is exactly what is enforced.
 
 ---
 
@@ -91,7 +91,7 @@ Ensure provider keys are in vault (for example `talon secrets set openai-api-key
 3. Send a second request that would exceed budget
 4. Verify Talon denies **before** the provider call
 5. Verify signed evidence exists for the denial
-6. Verify dashboard budget utilization reflects the event
+6. Verify `budget_status` in the metrics snapshot reflects the event
 
 Example calls — the bot authenticates with its **agent key** (`$AGENT_KEY` from step 1):
 
@@ -118,7 +118,7 @@ Expected deny characteristics:
 
 ---
 
-## 4. Verify with CLI and dashboard
+## 4. Verify with CLI and API
 
 CLI:
 
@@ -143,10 +143,9 @@ HTTP/API equivalents:
 - `GET /v1/costs/budget?agent_id=support-slack-bot`
 - `POST /v1/costs/export`
 
-Dashboard:
+Real-time snapshot (requires `--gateway`):
 
-- `/gateway/dashboard` for the real-time agent/model/provider operational view
-- `/dashboard` for the evidence-backed governance view and drill-down
+- `talon metrics` or `GET /api/v1/metrics` — `budget_status`, `agent_stats`, `model_breakdown`, `provider_breakdown`
 
 ---
 
@@ -181,6 +180,6 @@ policies:
 | I want to… | Doc |
 |------------|-----|
 | Verify signed exports and tamper checks | [How to export evidence for auditors](compliance-export-runbook.md) |
-| Understand dashboard metrics schema | [Gateway dashboard](../reference/gateway-dashboard.md) |
+| Understand the metrics snapshot schema | [Gateway metrics API](../reference/gateway-metrics-api.md) |
 | Add more agents/models | [Configuration and environment](../reference/configuration.md) |
 | Apply additional governance snippets | [Policy cookbook](policy-cookbook.md) |

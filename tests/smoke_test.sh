@@ -38,7 +38,7 @@
 # Share smoke_test_logs.out.txt to verify flows and consistency.
 #
 # Structure:
-# - Request layer: tests/smoke_lib.sh is sourced early. All Talon gateway/dashboard HTTP
+# - Request layer: tests/smoke_lib.sh is sourced early. All Talon gateway/API HTTP
 #   requests and canonical payloads (PII, cache, tool block/filter, normal) live there.
 #   Use smoke_gw_post_chat, smoke_gw_get_metrics, smoke_health, SMOKE_BODY_*, etc. so we
 #   don't duplicate URLs or request bodies across sections.
@@ -48,10 +48,10 @@
 # - Section index: 01 binary | 02 init | 03 validate | 04 secrets | 05 dry-run | 06 live-run |
 #   07 PII | 08 attachments | 09 cost | 10 audit | 11 memory | 12 HTTP API | 13 gateway |
 #   14 deny | 15 multi-tenant | 16 shadow | 17 config-provider | 18 compliance-export |
-#   19 CI/CD | 20 edge-cases | 21 doctor/report/enforce | 22 cache | 23 dashboard-metrics | 24 plan-dispatch | 25 sessions |
+#   19 CI/CD | 20 edge-cases | 21 doctor/report/enforce | 22 cache | 23 gateway-metrics | 24 plan-dispatch | 25 sessions |
 #   26 pii-enrichment | 27 runtime-governance | 28 control-plane | 29 consistency |
 #   30 graph-events | 31 quickstart | 32 egress | 33 auditor-documents |
-#   34 compliance-dashboard | 35 failover | 36 external-scanner (llama/llm engine;
+#   34 compliance-api | 35 failover | 36 external-scanner (llama/llm engine;
 #   hermetic llama stand-in by default, TALON_SMOKE_OLLAMA_URL opts into real Ollama) |
 #   37 mcp-governance (#372 governance-contract smoke: the same assertions as
 #   `make test-mcp-governance-smoke`, no provider key; mandatory, counted) |
@@ -518,7 +518,7 @@ stop_talon_pid() {
 }
 
 # smoke_free_port: a currently free loopback TCP port for sections whose
-# feature does not require a specific port (dashboard, gateway, quickstart).
+# feature does not require a specific port (metrics, gateway, quickstart).
 smoke_free_port() {
   if command -v python3 &>/dev/null; then
     python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null && return 0
@@ -765,10 +765,10 @@ for _section_file in \
   11_memory.sh 12_http_api.sh 13_gateway.sh 14_deny.sh 15_multi_tenant.sh \
   17_config_provider.sh 18_compliance_export.sh 19_cicd.sh \
   20_edge_cases.sh 21_doctor_report_enforce.sh 22_cache.sh \
-  23_dashboard_metrics.sh 24_plan_dispatch.sh 25_sessions.sh \
+  23_gateway_metrics.sh 24_plan_dispatch.sh 25_sessions.sh \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
-  33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh \
+  33_auditor_documents.sh 34_compliance_api.sh 35_failover.sh \
   36_external_scanner.sh 37_mcp_governance.sh 38_openshell.sh 39_budget.sh \
   40_webhook_triggers.sh 41_action_gateway.sh 42_anthropic.sh; do
   # shellcheck source=/dev/null
@@ -850,7 +850,7 @@ main() {
   run_section "20_edge_cases" test_section_20_edge_cases
   run_section "21_doctor_report_enforce" test_section_21_doctor_report_enforce
   run_section "22_cache" test_section_22_cache
-  run_section "23_dashboard_metrics" test_section_23_dashboard_metrics
+  run_section "23_gateway_metrics" test_section_23_gateway_metrics
   run_section "24_plan_dispatch" test_section_24_plan_dispatch
   run_section "25_sessions" test_section_25_sessions
   run_section "26_pii_enrichment" test_section_26_pii_enrichment
@@ -860,7 +860,7 @@ main() {
   run_section "31_quickstart" test_section_31_quickstart
   run_section "32_egress" test_section_32_egress
   run_section "33_auditor_documents" test_section_33_auditor_documents
-  run_section "34_compliance_dashboard" test_section_34_compliance_dashboard
+  run_section "34_compliance_api" test_section_34_compliance_api
   run_section "35_failover" test_section_35_failover
   run_section "36_external_scanner" test_section_36_external_scanner
   run_section "37_mcp_governance" test_section_37_mcp_governance

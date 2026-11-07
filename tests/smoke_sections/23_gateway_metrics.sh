@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Smoke test section: 23_dashboard_metrics
+# Smoke test section: 23_gateway_metrics
 # Sourced by tests/smoke_test.sh — do not run directly.
 
 # -----------------------------------------------------------------------------
-# SECTION 23 — Gateway Dashboard Metrics (dashboard API, CLI↔dashboard parity)
+# SECTION 23 — Gateway Metrics API (metrics API, CLI↔API parity)
 # -----------------------------------------------------------------------------
-test_section_23_dashboard_metrics() {
-  local section="23_dashboard_metrics"
-  local dashboard_port; dashboard_port="$(smoke_free_port)"   # dashboard needs no fixed port
-  local dashboard_base_url="http://127.0.0.1:${dashboard_port}"
+test_section_23_gateway_metrics() {
+  local section="23_gateway_metrics"
+  local metrics_port; metrics_port="$(smoke_free_port)"   # metrics API needs no fixed port
+  local metrics_base_url="http://127.0.0.1:${metrics_port}"
   echo ""
-  echo "=== SECTION 23 — Gateway Dashboard Metrics ==="
+  echo "=== SECTION 23 — Gateway Metrics API ==="
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
-  if ! wait_port_free "$dashboard_port" 180 10; then
-    log_failure "dashboard metrics section could not acquire port ${dashboard_port}" "port remained busy"
-    dump_diag_kv "port ${dashboard_port} in use" \
-      "lsof=$(lsof -nP -iTCP:"${dashboard_port}" -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')" \
+  if ! wait_port_free "$metrics_port" 180 10; then
+    log_failure "gateway metrics section could not acquire port ${metrics_port}" "port remained busy"
+    dump_diag_kv "port ${metrics_port} in use" \
+      "lsof=$(lsof -nP -iTCP:"${metrics_port}" -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')" \
       "TALON_SERVE_PID=${TALON_SERVE_PID:-}" \
       "TALON_GATEWAY_PID=${TALON_GATEWAY_PID:-}"
     cd "$REPO_ROOT" || true
@@ -28,7 +28,7 @@ test_section_23_dashboard_metrics() {
   # Per-dimension agents (#266): metrics (baseline), pii-block, tool-filter.
   # This section deliberately restarts the gateway per phase with
   # TALON_DEFAULT_POLICY (multi-agent single-process serving exists via
-  # agents_dir, #267); the dashboard collector backfills from evidence at
+  # agents_dir, #267); the metrics collector backfills from evidence at
   # startup, so cross-phase agent_stats survive restarts.
   mkdir -p "$dir/agents"
   dm_write_agent() { cat > "$dir/agents/$1.talon.yaml" <<AGEOF
@@ -65,7 +65,7 @@ AGEOF
   run_talon secrets set "metrics-agent-talon-key" "talon-gw-metrics-001" &>/dev/null || true
   run_talon secrets set "pii-block-agent-talon-key" "talon-gw-pii-block-001" &>/dev/null || true
   run_talon secrets set "tool-filter-agent-talon-key" "talon-gw-tool-filter-001" &>/dev/null || true
-  # Add gateway config with dashboard token
+  # Add gateway config (metrics API is admin-key gated)
   if [[ -f "$dir/talon.config.yaml" ]]; then
     if ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
       cat >> "$dir/talon.config.yaml" <<'GWEOF'
@@ -92,7 +92,7 @@ gateway:
       forbidden_tools: ["delete_*"]
 GWEOF
     fi
-    # Enable semantic cache so dashboard cache_stats and CLI cache metrics can be tested.
+    # Enable semantic cache so metrics API cache_stats and CLI cache metrics can be tested.
     # Scaffold already has a cache: key; avoid duplicating it (YAML forbids duplicate keys).
     if grep -qE '^\s*cache\s*:' "$dir/talon.config.yaml" 2>/dev/null; then
       if command -v yq &>/dev/null; then
@@ -112,13 +112,13 @@ CACHEEOF
     fi
   fi
   local GW_PID=""
-  local gw_log_file="$dir/dashboard_gateway_serve.log"
-  dm_stop() { [[ -n "$GW_PID" ]] && { stop_owned_talon_server "$GW_PID" "$dashboard_port" || true; GW_PID=""; }; }
+  local gw_log_file="$dir/gateway_metrics_serve.log"
+  dm_stop() { [[ -n "$GW_PID" ]] && { stop_owned_talon_server "$GW_PID" "$metrics_port" || true; GW_PID=""; }; }
   dm_start() { # phase agent file; collector backfills prior evidence at startup
     dm_stop
     if ! TALON_DEFAULT_POLICY="$dir/agents/$1.talon.yaml" \
-      start_owned_talon_server "dashboard gateway (phase $1)" "$gw_log_file" "$dashboard_port" \
-        serve --port "$dashboard_port" --gateway --gateway-config "$dir/talon.config.yaml"; then
+      start_owned_talon_server "metrics gateway (phase $1)" "$gw_log_file" "$metrics_port" \
+        serve --port "$metrics_port" --gateway --gateway-config "$dir/talon.config.yaml"; then
       dump_diag_file "phase agent file" "$dir/agents/$1.talon.yaml"
       return 1
     fi
@@ -131,7 +131,7 @@ CACHEEOF
 
   # --- 23.2: Metrics JSON endpoint structure (before any proxy traffic) ---
   # Take snapshot before gw_probe so pre-traffic counters are truly 0.
-  local snap_before; snap_before="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
+  local snap_before; snap_before="$(smoke_gw_get_metrics "$metrics_base_url" "$admin_key")"
   assert_pass "GET /api/v1/metrics returns valid JSON" jq -e '.' <<< "$snap_before" &>/dev/null
   assert_pass "metrics snapshot has summary.total_requests" \
     jq -e '.summary.total_requests >= 0' <<< "$snap_before" &>/dev/null
@@ -141,7 +141,7 @@ CACHEEOF
     jq -e '.uptime' <<< "$snap_before" &>/dev/null
   assert_pass "metrics snapshot has generated_at" \
     jq -e '.generated_at' <<< "$snap_before" &>/dev/null
-  # Summary sub-fields (all documented in docs/reference/gateway-dashboard.md)
+  # Summary sub-fields (all documented in docs/reference/gateway-metrics-api.md)
   assert_pass "summary has blocked_requests" \
     jq -e '.summary | has("blocked_requests")' <<< "$snap_before" &>/dev/null
   assert_pass "summary has pii_detections" \
@@ -199,42 +199,27 @@ CACHEEOF
     jq -e '.summary.success_rate | type == "number"' <<< "$snap_before" &>/dev/null
 
   # Verify the gateway routes are actually registered (not just health)
-  local gw_probe; gw_probe="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-metrics-001" "$SMOKE_BODY_EMPTY")"
+  local gw_probe; gw_probe="$(smoke_gw_post_chat "$metrics_base_url" "Bearer talon-gw-metrics-001" "$SMOKE_BODY_EMPTY")"
   if [[ "$gw_probe" == "404" ]]; then
-    log_failure "gateway routes not registered for dashboard metrics section" "proxy=${dashboard_base_url}${SMOKE_PATH_GW_PROXY} got=404"
+    log_failure "gateway routes not registered for gateway metrics section" "proxy=${metrics_base_url}${SMOKE_PATH_GW_PROXY} got=404"
     dm_stop
     cd "$REPO_ROOT" || true
     return 0
   fi
 
-  # --- 23.1: Dashboard HTML served ---
-  assert_pass "GET /gateway/dashboard 200 (with admin key)" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}${SMOKE_PATH_GATEWAY_DASHBOARD}")" = "200"
-  local dash_html; dash_html="$(smoke_gw_get_dashboard "$dashboard_base_url" "$admin_key")"
-  assert_pass "dashboard HTML contains Talon" grep -qi "talon" <<< "$dash_html"
-  assert_pass "dashboard HTML contains Mission Control marker" grep -q "Talon <span>Mission Control</span>" <<< "$dash_html"
-  assert_pass "dashboard HTML contains Gateway Activity Feed marker" grep -q "Gateway Activity Feed" <<< "$dash_html"
-  assert_pass "dashboard HTML contains Compliance Report Preview marker" grep -q "Compliance Report Preview" <<< "$dash_html"
-  assert_pass "dashboard HTML links governance evidence review with gateway hash" grep -q "/dashboard#evidence-gateway" <<< "$dash_html"
-  assert_pass "dashboard HTML contains reliability badge marker" grep -q "reliability-badge" <<< "$dash_html"
-  assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
-  assert_pass "dashboard HTML contains Success Rate KPI" grep -qi "Success Rate" <<< "$dash_html"
-  assert_pass "dashboard HTML contains Timeouts KPI" grep -qi "Timeouts" <<< "$dash_html"
-  assert_pass "dashboard HTML contains Violation Trend (7d) panel" grep -qi "Violation Trend (7d)" <<< "$dash_html"
-  # Header carries the pricing-table currency since #216 (e.g. "Cost/Success (USD)").
-  assert_pass "dashboard agent table contains Cost/Success column" grep -qi "Cost/Success" <<< "$dash_html"
-  assert_pass "dashboard agent table contains Trend(7d) column" grep -qi "Trend(7d)" <<< "$dash_html"
-  assert_pass "dashboard agent table contains Success column header" grep -q ">Success<" <<< "$dash_html"
-  assert_pass "dashboard agent table contains Failed column header" grep -q ">Failed<" <<< "$dash_html"
-  assert_pass "dashboard agent table contains Timeout column header" grep -q ">Timeout<" <<< "$dash_html"
-  assert_pass "dashboard agent table contains Denied column header" grep -q ">Denied<" <<< "$dash_html"
-  assert_pass "dashboard agent table contains Rate column header" grep -q ">Rate<" <<< "$dash_html"
+  # --- 23.1: Legacy gateway dashboard route is gone (#533/#546) ---
+  # The metrics API stays; the embedded HTML page does not. With the admin key
+  # the route must be a plain 404 (no HTML, no redirect to a replacement UI).
+  local legacy_dash_code; legacy_dash_code="$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "${metrics_base_url}/gateway/dashboard")"
+  assert_pass "GET /gateway/dashboard with admin key → 404 (legacy dashboard removed)" test "$legacy_dash_code" = "404"
+  local legacy_dash_body; legacy_dash_body="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "${metrics_base_url}/gateway/dashboard" 2>/dev/null)"
+  assert_fail "GET /gateway/dashboard body is not HTML" grep -qi "<html" <<< "$legacy_dash_body"
 
   # --- 23.2b: PII and tool governance behaviour (per-agent overrides + organization baseline, #266) ---
   # (1) PII block: agent with pii_action: "block" must get 400 on PII body
   # Phase restart (#266): pii-block dimension runs as its own agent.
   if ! dm_start "pii-block-agent"; then cd "$REPO_ROOT" || true; return 0; fi
-  local pii_block_code; pii_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_PII")"
+  local pii_block_code; pii_block_code="$(smoke_gw_post_chat "$metrics_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_PII")"
   if [[ "$pii_block_code" == "400" ]]; then
     echo "  ✓  PII block config: request with pii-block-agent returns 400"
     record_pass
@@ -247,7 +232,7 @@ CACHEEOF
   # The gateway serves the pii-block agent in this phase (#266: one agent per
   # phase restart), so present THAT agent's key — the org forbidden list binds
   # every agent, which is exactly what this probe demonstrates.
-  local tool_block_code; tool_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_TOOL_BLOCK")"
+  local tool_block_code; tool_block_code="$(smoke_gw_post_chat "$metrics_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_TOOL_BLOCK")"
   if [[ "$tool_block_code" == "403" ]]; then
     echo "  ✓  Tool block config: request with forbidden tool delete_all returns 403"
     record_pass
@@ -257,7 +242,7 @@ CACHEEOF
   # (3) Tool filter: agent with forbidden_tools exec_cmd + tool_policy_action filter → 200, tools stripped
   # Phase restart (#266): tool-filter dimension runs as its own agent.
   if ! dm_start "tool-filter-agent"; then cd "$REPO_ROOT" || true; return 0; fi
-  local tool_filter_code; tool_filter_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-tool-filter-001" "$SMOKE_BODY_TOOL_FILTER")"
+  local tool_filter_code; tool_filter_code="$(smoke_gw_post_chat "$metrics_base_url" "Bearer talon-gw-tool-filter-001" "$SMOKE_BODY_TOOL_FILTER")"
   if [[ "$tool_filter_code" == "200" ]]; then
     echo "  ✓  Tool filter config: request with allowed+forbidden tools returns 200 (forbidden stripped)"
     record_pass
@@ -276,17 +261,17 @@ CACHEEOF
   local req_num
   for req_num in $(seq 1 20); do
     if [[ "$req_num" -eq 1 ]] || [[ "$req_num" -eq 2 ]]; then
-      smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$SMOKE_BODY_CACHE" >/dev/null || true
+      smoke_gw_post_chat "$metrics_base_url" "Bearer $gw_key" "$SMOKE_BODY_CACHE" >/dev/null || true
     elif [[ "$req_num" -le 12 ]]; then
-      smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$(smoke_body_normal "$req_num")" >/dev/null || true
+      smoke_gw_post_chat "$metrics_base_url" "Bearer $gw_key" "$(smoke_body_normal "$req_num")" >/dev/null || true
     else
-      smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$SMOKE_BODY_PII" >/dev/null || true
+      smoke_gw_post_chat "$metrics_base_url" "Bearer $gw_key" "$SMOKE_BODY_PII" >/dev/null || true
     fi
   done
   sleep 3
 
   # --- 23.4: Metrics reflect the gateway requests ---
-  local snap_after; snap_after="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
+  local snap_after; snap_after="$(smoke_gw_get_metrics "$metrics_base_url" "$admin_key")"
   assert_pass "metrics snapshot after requests is valid JSON" jq -e '.' <<< "$snap_after" &>/dev/null
   local after_count; after_count="$(jq '.summary.total_requests' <<< "$snap_after")"
   local after_successful; after_successful="$(jq '.summary.total_successful' <<< "$snap_after")"
@@ -428,7 +413,7 @@ CACHEEOF
       echo "  ✓  cross-check: total_cost_eur ($cost) ≈ sum(model_breakdown[].cost_eur) ($cost_sum)"
       record_pass
     else
-      echo "  -  cross-check: total_cost_eur ($cost) vs model_breakdown sum ($cost_sum), diff=$cost_diff (dashboard may use store)"
+      echo "  -  cross-check: total_cost_eur ($cost) vs model_breakdown sum ($cost_sum), diff=$cost_diff (metrics API may use store)"
     fi
   fi
   # error_rate in [0, 1]
@@ -489,7 +474,7 @@ CACHEEOF
     echo "  -  budget_status not present (budget limits may not be configured)"
   fi
 
-  # --- 23.5c: Semantic cache stats (dashboard + CLI parity) ---
+  # --- 23.5c: Semantic cache stats (metrics API + CLI parity) ---
   local has_cache; has_cache="$(jq 'has("cache_stats") and (.cache_stats != null)' <<< "$snap_after")"
   if [[ "$has_cache" == "true" ]]; then
     assert_pass "snapshot has cache_stats object" \
@@ -514,7 +499,7 @@ CACHEEOF
         record_pass
       fi
     fi
-    # CLI parity: talon cache stats and talon costs cache line vs dashboard cache_stats
+    # CLI parity: talon cache stats and talon costs cache line vs metrics API cache_stats
     assert_pass "talon cache stats exits 0 (semantic cache CLI)" run_talon cache stats
     local costs_cache_line; costs_cache_line="$(run_talon costs 2>/dev/null | grep -i "Cache (7d)" || true)"
     if [[ -n "$costs_cache_line" ]] && [[ -n "$cache_saved" ]] && [[ "$cache_saved" != "null" ]]; then
@@ -522,10 +507,10 @@ CACHEEOF
       if [[ -n "$costs_saved" ]]; then
         local saved_diff; saved_diff="$(echo "scale=8; d=$cache_saved - $costs_saved; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
         if [[ "$(echo "$saved_diff < 0.02" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
-          echo "  ✓  semantic cache CLI↔dashboard parity: cache_stats.cost_saved ($cache_saved) ≈ talon costs ($costs_saved)"
+          echo "  ✓  semantic cache CLI↔API parity: cache_stats.cost_saved ($cache_saved) ≈ talon costs ($costs_saved)"
           record_pass
         else
-          echo "  -  cache cost_saved: dashboard $cache_saved vs CLI $costs_saved (diff=$saved_diff)"
+          echo "  -  cache cost_saved: metrics API $cache_saved vs CLI $costs_saved (diff=$saved_diff)"
         fi
       fi
     fi
@@ -579,7 +564,7 @@ CACHEEOF
     echo "  -  agent_stats does not include metrics-agent (may use different name)"
   fi
 
-  # --- 23.7: CLI costs ↔ dashboard cost parity ---
+  # --- 23.7: CLI costs ↔ metrics API cost parity ---
   local cli_cost_out; cli_cost_out="$(run_talon costs --tenant default 2>/dev/null)"; true
   assert_pass "talon costs --tenant default exits 0" run_talon costs --tenant default
   # Extract the "Total" daily cost from CLI (currency-symbol-prefixed value in
@@ -590,41 +575,41 @@ CACHEEOF
   fi
   echo "[SMOKE] CONSISTENCY|cli_daily_cost|${cli_daily_cost:-none}"
 
-  # Compare CLI daily cost with dashboard budget_status.daily_used (both use MetricsQuerier.CostTotal)
+  # Compare CLI daily cost with metrics API budget_status.daily_used (both use MetricsQuerier.CostTotal)
   if [[ "$has_budget" == "true" ]]; then
-    local dash_daily_used; dash_daily_used="$(jq -r '.budget_status.daily_used' <<< "$snap_after")"
-    echo "[SMOKE] CONSISTENCY|dashboard_daily_used|${dash_daily_used:-none}"
-    if [[ -n "$cli_daily_cost" ]] && [[ -n "$dash_daily_used" ]] && [[ "$dash_daily_used" != "null" ]]; then
+    local api_daily_used; api_daily_used="$(jq -r '.budget_status.daily_used' <<< "$snap_after")"
+    echo "[SMOKE] CONSISTENCY|metrics_daily_used|${api_daily_used:-none}"
+    if [[ -n "$cli_daily_cost" ]] && [[ -n "$api_daily_used" ]] && [[ "$api_daily_used" != "null" ]]; then
       # Both query CostTotal(dayStart, dayEnd) from the same SQLite evidence store
-      local cost_diff; cost_diff="$(echo "scale=8; d=$dash_daily_used - $cli_daily_cost; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+      local cost_diff; cost_diff="$(echo "scale=8; d=$api_daily_used - $cli_daily_cost; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
       if [[ "$(echo "$cost_diff < 0.01" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
-        echo "  ✓  CLI daily cost ($cli_daily_cost) ≈ dashboard budget_status.daily_used ($dash_daily_used)"
+        echo "  ✓  CLI daily cost ($cli_daily_cost) ≈ metrics API budget_status.daily_used ($api_daily_used)"
         record_pass
       else
-        log_failure "CLI daily cost ($cli_daily_cost) != dashboard daily_used ($dash_daily_used), diff=$cost_diff" \
-          "cli=$cli_daily_cost dash=$dash_daily_used"
+        log_failure "CLI daily cost ($cli_daily_cost) != metrics API daily_used ($api_daily_used), diff=$cost_diff" \
+          "cli=$cli_daily_cost api=$api_daily_used"
       fi
     else
-      echo "  -  cost parity: could not parse CLI daily cost or dashboard daily_used"
+      echo "  -  cost parity: could not parse CLI daily cost or metrics API daily_used"
     fi
     # Also verify budget percentages are consistent: daily_percent ≈ daily_used/daily_limit * 100
-    local dash_daily_pct; dash_daily_pct="$(jq -r '.budget_status.daily_percent' <<< "$snap_after")"
-    local dash_daily_lim; dash_daily_lim="$(jq -r '.budget_status.daily_limit' <<< "$snap_after")"
-    if [[ -n "$dash_daily_used" ]] && [[ "$dash_daily_lim" != "null" ]] && [[ "$dash_daily_lim" != "0" ]]; then
-      local expected_pct; expected_pct="$(echo "scale=4; $dash_daily_used / $dash_daily_lim * 100" | bc -l 2>/dev/null || echo 0)"
-      local pct_diff; pct_diff="$(echo "scale=4; d=$dash_daily_pct - $expected_pct; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+    local api_daily_pct; api_daily_pct="$(jq -r '.budget_status.daily_percent' <<< "$snap_after")"
+    local api_daily_lim; api_daily_lim="$(jq -r '.budget_status.daily_limit' <<< "$snap_after")"
+    if [[ -n "$api_daily_used" ]] && [[ "$api_daily_lim" != "null" ]] && [[ "$api_daily_lim" != "0" ]]; then
+      local expected_pct; expected_pct="$(echo "scale=4; $api_daily_used / $api_daily_lim * 100" | bc -l 2>/dev/null || echo 0)"
+      local pct_diff; pct_diff="$(echo "scale=4; d=$api_daily_pct - $expected_pct; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
       if [[ "$(echo "$pct_diff < 1.0" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
-        echo "  ✓  budget daily_percent ($dash_daily_pct%) is consistent with daily_used/daily_limit"
+        echo "  ✓  budget daily_percent ($api_daily_pct%) is consistent with daily_used/daily_limit"
         record_pass
       else
-        echo "  -  budget daily_percent ($dash_daily_pct%) vs computed ($expected_pct%), diff=$pct_diff"
+        echo "  -  budget daily_percent ($api_daily_pct%) vs computed ($expected_pct%), diff=$pct_diff"
       fi
     fi
   else
-    echo "  -  budget_status absent — skipping CLI↔dashboard cost parity"
+    echo "  -  budget_status absent — skipping CLI↔API cost parity"
   fi
 
-  # CLI costs --by-model: compare model names with dashboard model_breakdown
+  # CLI costs --by-model: compare model names with metrics API model_breakdown
   local cli_bymodel; cli_bymodel="$(run_talon costs --by-model --tenant default 2>/dev/null)"; true
   assert_pass "talon costs --by-model exits 0" run_talon costs --by-model --tenant default
   # Extract model names from CLI output: body rows are left-aligned (%-32s)
@@ -633,72 +618,72 @@ CACHEEOF
   # extraction, NOT a charset whitelist: model ids are an open namespace
   # ("meta-llama/Llama-3.1-8B-Instruct", "claude-3-5-sonnet-v2@20241022").
   local cli_models; cli_models="$(echo "$cli_bymodel" | awk '/^[^ ]/ && /[€$]/ {print $1}' | grep -v -E '^(Total|Model|Tenant)$' | sort)"
-  local dash_models; dash_models="$(jq -r '.model_breakdown[].model // empty' <<< "$snap_after" 2>/dev/null | sort)"
+  local api_models; api_models="$(jq -r '.model_breakdown[].model // empty' <<< "$snap_after" 2>/dev/null | sort)"
   echo "[SMOKE] CONSISTENCY|cli_models|$(echo "$cli_models" | tr '\n' ',')"
-  echo "[SMOKE] CONSISTENCY|dash_models|$(echo "$dash_models" | tr '\n' ',')"
-  if [[ -n "$cli_models" ]] && [[ -n "$dash_models" ]]; then
+  echo "[SMOKE] CONSISTENCY|api_models|$(echo "$api_models" | tr '\n' ',')"
+  if [[ -n "$cli_models" ]] && [[ -n "$api_models" ]]; then
     # Subset, not equality: the CLI table is the UNION of today's and
-    # month-to-date models while dashboard model_breakdown is today-only, so
+    # month-to-date models while metrics API model_breakdown is today-only, so
     # a persistent TALON_DATA_DIR legitimately carries month-only CLI rows.
-    # The invariant over one store: every dashboard (today) model must appear
+    # The invariant over one store: every metrics API (today) model must appear
     # in the CLI table.
     local missing_models
-    missing_models="$(comm -13 <(echo "$cli_models") <(echo "$dash_models"))"
+    missing_models="$(comm -13 <(echo "$cli_models") <(echo "$api_models"))"
     if [[ -z "$missing_models" ]]; then
-      echo "  ✓  every dashboard model_breakdown model appears in CLI costs --by-model"
+      echo "  ✓  every metrics API model_breakdown model appears in CLI costs --by-model"
       record_pass
     else
-      log_failure "dashboard model_breakdown models must appear in CLI costs --by-model" \
-        "missing=[$missing_models] cli=[$cli_models] dash=[$dash_models]"
+      log_failure "metrics API model_breakdown models must appear in CLI costs --by-model" \
+        "missing=[$missing_models] cli=[$cli_models] api=[$api_models]"
     fi
   else
     # Non-USD/EUR pricing currencies render without €/$ (e.g. "CHF 0.0012"),
     # which empties the CLI extraction — a parser limitation, not a product
     # divergence, so stay informational.
-    echo "  -  model parity: could not extract models from CLI or dashboard"
+    echo "  -  model parity: could not extract models from CLI or metrics API"
   fi
 
-  # CLI costs --by-provider: compare provider names with dashboard provider_breakdown
+  # CLI costs --by-provider: compare provider names with metrics API provider_breakdown
   local cli_byprovider; cli_byprovider="$(run_talon costs --by-provider --tenant default 2>/dev/null)"; true
   assert_pass "talon costs --by-provider exits 0" run_talon costs --by-provider --tenant default
   local cli_providers
   cli_providers="$(echo "$cli_byprovider" | awk '/[€$]/ {print $1}' | grep -E '^[a-zA-Z0-9._-]+$' | grep -v -E '^(Total|Provider|Tenant|7d)$' | sort)"
-  local dash_providers; dash_providers="$(jq -r '.provider_breakdown[].provider // empty' <<< "$snap_after" 2>/dev/null | sort)"
+  local api_providers; api_providers="$(jq -r '.provider_breakdown[].provider // empty' <<< "$snap_after" 2>/dev/null | sort)"
   echo "[SMOKE] CONSISTENCY|cli_providers|$(echo "$cli_providers" | tr '\n' ',')"
-  echo "[SMOKE] CONSISTENCY|dash_providers|$(echo "$dash_providers" | tr '\n' ',')"
-  if [[ -n "$dash_providers" ]]; then
-    if [[ "$cli_providers" == "$dash_providers" ]]; then
-      echo "  ✓  CLI costs --by-provider providers match dashboard provider_breakdown"
+  echo "[SMOKE] CONSISTENCY|api_providers|$(echo "$api_providers" | tr '\n' ',')"
+  if [[ -n "$api_providers" ]]; then
+    if [[ "$cli_providers" == "$api_providers" ]]; then
+      echo "  ✓  CLI costs --by-provider providers match metrics API provider_breakdown"
       record_pass
     else
-      log_failure "CLI --by-provider provider set should match dashboard provider_breakdown" \
-        "cli=[$cli_providers] dash=[$dash_providers]"
+      log_failure "CLI --by-provider provider set should match metrics API provider_breakdown" \
+        "cli=[$cli_providers] api=[$api_providers]"
     fi
   else
     echo "  -  provider_breakdown is empty (may need more traffic)"
   fi
 
-  # --- 23.7b: CLI report ↔ dashboard evidence count + PII parity ---
+  # --- 23.7b: CLI report ↔ metrics API evidence count + PII parity ---
   # --- 23.7a: CLI metrics command (Prompt 16) ---
-  assert_pass "talon metrics exits 0" run_talon metrics --url "$dashboard_base_url"
-  local cli_metrics_out; cli_metrics_out="$(run_talon metrics --url "$dashboard_base_url" 2>/dev/null)"; true
+  assert_pass "talon metrics exits 0" run_talon metrics --url "$metrics_base_url"
+  local cli_metrics_out; cli_metrics_out="$(run_talon metrics --url "$metrics_base_url" 2>/dev/null)"; true
   assert_pass "talon metrics output contains AGENT column" grep -q "AGENT" <<< "$cli_metrics_out"
   assert_pass "talon metrics output contains SUCCESS column" grep -q "SUCCESS" <<< "$cli_metrics_out"
   assert_pass "talon metrics output contains FAILED column" grep -q "FAILED" <<< "$cli_metrics_out"
   assert_pass "talon metrics output contains TIMEOUT column" grep -q "TIMEOUT" <<< "$cli_metrics_out"
   assert_pass "talon metrics output contains DENIED column" grep -q "DENIED" <<< "$cli_metrics_out"
   assert_pass "talon metrics output contains VIOLATIONS(7d) column" grep -q "VIOLATIONS(7d)" <<< "$cli_metrics_out"
-  local cli_metrics_json; cli_metrics_json="$(run_talon metrics --json --url "$dashboard_base_url" 2>/dev/null)"; true
+  local cli_metrics_json; cli_metrics_json="$(run_talon metrics --json --url "$metrics_base_url" 2>/dev/null)"; true
   assert_pass "talon metrics --json outputs valid JSON array" jq -e 'type=="array"' <<< "$cli_metrics_json" &>/dev/null
   assert_pass "talon metrics --json includes success_rate field" jq -e 'all(.[]; has("success_rate"))' <<< "$cli_metrics_json" &>/dev/null
   assert_pass "talon metrics --json includes cost_per_success field" jq -e 'all(.[]; has("cost_per_success"))' <<< "$cli_metrics_json" &>/dev/null
   assert_pass "talon metrics --json includes timed_out field" jq -e 'all(.[]; has("timed_out"))' <<< "$cli_metrics_json" &>/dev/null
   assert_pass "talon metrics --json includes violation_trend field" jq -e 'all(.[]; has("violation_trend"))' <<< "$cli_metrics_json" &>/dev/null
-  local cli_metrics_agent; cli_metrics_agent="$(run_talon metrics --agent metrics-agent --url "$dashboard_base_url" 2>/dev/null)"; true
+  local cli_metrics_agent; cli_metrics_agent="$(run_talon metrics --agent metrics-agent --url "$metrics_base_url" 2>/dev/null)"; true
   assert_pass "talon metrics --agent shows single-agent heading" grep -q "Agent Metrics: metrics-agent" <<< "$cli_metrics_agent"
   assert_pass "talon metrics --agent includes Violation trend (7d)" grep -q "Violation trend (7d)" <<< "$cli_metrics_agent"
 
-  # --- 23.7b: CLI report ↔ dashboard evidence count + PII parity ---
+  # --- 23.7b: CLI report ↔ metrics API evidence count + PII parity ---
   local cli_report; cli_report="$(run_talon report --tenant default 2>/dev/null)"; true
   assert_pass "talon report --tenant default exits 0" run_talon report --tenant default
   assert_pass "CLI report contains evidence count" grep -q "Evidence records today" <<< "$cli_report"
@@ -706,28 +691,28 @@ CACHEEOF
 
   # Extract evidence count from report "Evidence records today: N"
   local report_count; report_count="$(echo "$cli_report" | grep 'Evidence records today' | grep -oE '[0-9]+' | head -1)"
-  local dash_total; dash_total="$(jq '.summary.total_requests' <<< "$snap_after")"
+  local api_total; api_total="$(jq '.summary.total_requests' <<< "$snap_after")"
   echo "[SMOKE] CONSISTENCY|report_evidence_today|${report_count:-none}"
-  echo "[SMOKE] CONSISTENCY|dashboard_total_requests|${dash_total:-none}"
-  if [[ -n "$report_count" ]] && [[ -n "$dash_total" ]] && [[ "$dash_total" != "null" ]]; then
-    if [[ "$report_count" -eq "$dash_total" ]]; then
-      echo "  ✓  CLI report evidence count ($report_count) == dashboard total_requests ($dash_total)"
+  echo "[SMOKE] CONSISTENCY|metrics_total_requests|${api_total:-none}"
+  if [[ -n "$report_count" ]] && [[ -n "$api_total" ]] && [[ "$api_total" != "null" ]]; then
+    if [[ "$report_count" -eq "$api_total" ]]; then
+      echo "  ✓  CLI report evidence count ($report_count) == metrics API total_requests ($api_total)"
       record_pass
     else
-      # Dashboard total_requests is event-based and can exceed persisted evidence count.
-      # Allow a bounded one-sided drift (dashboard >= report) while still failing on larger mismatches.
-      local dash_minus_report=$(( dash_total - report_count ))
-      if [[ $dash_minus_report -ge 0 ]] && [[ $dash_minus_report -le 5 ]]; then
-        echo "  ✓  CLI report evidence ($report_count) <= dashboard total_requests ($dash_total) within allowed drift ($dash_minus_report)"
+      # Metrics API total_requests is event-based and can exceed persisted evidence count.
+      # Allow a bounded one-sided drift (metrics >= report) while still failing on larger mismatches.
+      local api_minus_report=$(( api_total - report_count ))
+      if [[ $api_minus_report -ge 0 ]] && [[ $api_minus_report -le 5 ]]; then
+        echo "  ✓  CLI report evidence ($report_count) <= metrics API total_requests ($api_total) within allowed drift ($api_minus_report)"
         record_pass
       else
-        local count_diff=$dash_minus_report
+        local count_diff=$api_minus_report
         [[ $count_diff -lt 0 ]] && count_diff=$(( -count_diff ))
-        log_failure "evidence count mismatch: report=$report_count dashboard=$dash_total" "diff=$count_diff"
+        log_failure "evidence count mismatch: report=$report_count metrics=$api_total" "diff=$count_diff"
       fi
     fi
   else
-    echo "  -  evidence count parity: could not parse report ($report_count) or dashboard ($dash_total)"
+    echo "  -  evidence count parity: could not parse report ($report_count) or metrics API ($api_total)"
   fi
 
   # Extract daily cost from report "Cost today (EUR): <value>" and compare with CLI costs total
@@ -743,40 +728,40 @@ CACHEEOF
     fi
   fi
 
-  # PII type parity: compare PII types from report vs dashboard pii_breakdown
+  # PII type parity: compare PII types from report vs metrics API pii_breakdown
   local report_pii_types; report_pii_types="$(echo "$cli_report" | grep -E '^\s+- [a-z]+:' | awk '{gsub(/:/, "", $2); print $2}' | sort)"
-  local dash_pii_types; dash_pii_types="$(jq -r '.pii_breakdown[].type // empty' <<< "$snap_after" 2>/dev/null | sort)"
+  local api_pii_types; api_pii_types="$(jq -r '.pii_breakdown[].type // empty' <<< "$snap_after" 2>/dev/null | sort)"
   echo "[SMOKE] CONSISTENCY|report_pii_types|$(echo "$report_pii_types" | tr '\n' ',')"
-  echo "[SMOKE] CONSISTENCY|dash_pii_types|$(echo "$dash_pii_types" | tr '\n' ',')"
-  if [[ -n "$report_pii_types" ]] && [[ -n "$dash_pii_types" ]]; then
-    # Report shows 7d window PII; dashboard shows since process start. Types should overlap.
+  echo "[SMOKE] CONSISTENCY|api_pii_types|$(echo "$api_pii_types" | tr '\n' ',')"
+  if [[ -n "$report_pii_types" ]] && [[ -n "$api_pii_types" ]]; then
+    # Report shows 7d window PII; metrics API shows since process start. Types should overlap.
     local shared_types=0
     while IFS= read -r ptype; do
-      if echo "$dash_pii_types" | grep -qx "$ptype"; then
+      if echo "$api_pii_types" | grep -qx "$ptype"; then
         (( shared_types++ ))
       fi
     done <<< "$report_pii_types"
     if [[ $shared_types -gt 0 ]]; then
-      echo "  ✓  PII types overlap: $shared_types type(s) shared between report and dashboard"
+      echo "  ✓  PII types overlap: $shared_types type(s) shared between report and metrics API"
       record_pass
     else
-      echo "  -  PII types mismatch: report=[$report_pii_types] dash=[$dash_pii_types]"
+      echo "  -  PII types mismatch: report=[$report_pii_types] api=[$api_pii_types]"
     fi
   else
     echo "  -  PII type parity: no PII types to compare"
   fi
 
-  # --- 23.7c: audit export ↔ dashboard record count ---
+  # --- 23.7c: audit export ↔ metrics API record count ---
   local export_json; export_json="$(run_talon audit export --format json --tenant default --from 2020-01-01 --to 2099-12-31 2>/dev/null)"; true
   if echo "$export_json" | jq -e '.records' &>/dev/null; then
     local export_count; export_count="$(echo "$export_json" | jq '.records | length')"
     echo "[SMOKE] CONSISTENCY|audit_export_count|${export_count:-none}"
-    if [[ -n "$export_count" ]] && [[ "$export_count" != "null" ]] && [[ -n "$dash_total" ]] && [[ "$dash_total" != "null" ]]; then
-      if [[ "$export_count" -ge "$dash_total" ]]; then
-        echo "  ✓  audit export records ($export_count) >= dashboard total_requests ($dash_total)"
+    if [[ -n "$export_count" ]] && [[ "$export_count" != "null" ]] && [[ -n "$api_total" ]] && [[ "$api_total" != "null" ]]; then
+      if [[ "$export_count" -ge "$api_total" ]]; then
+        echo "  ✓  audit export records ($export_count) >= metrics API total_requests ($api_total)"
         record_pass
       else
-        echo "  -  audit export ($export_count) < dashboard total ($dash_total) — possible timing issue"
+        echo "  -  audit export ($export_count) < metrics total ($api_total) — possible timing issue"
       fi
     fi
     # Verify export records have required compliance fields
@@ -791,23 +776,21 @@ CACHEEOF
         jq -e '.records[0] | has("model_used")' <<< "$export_json" &>/dev/null
     fi
   else
-    echo "  -  audit export JSON parse failed — skipping export↔dashboard parity"
+    echo "  -  audit export JSON parse failed — skipping export↔metrics parity"
   fi
 
-  # --- 23.8: Dashboard admin-key auth works ---
-  assert_pass "dashboard HTML without admin key → 401" \
-    test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_GATEWAY_DASHBOARD")" = "401"
-  assert_pass "dashboard metrics without admin key → 401" \
-    test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_METRICS")" = "401"
-  assert_pass "dashboard metrics with wrong admin key → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: wrong" "${dashboard_base_url}${SMOKE_PATH_METRICS}")" = "401"
+  # --- 23.8: Metrics API admin-key auth works ---
+  assert_pass "metrics API without admin key → 401" \
+    test "$(smoke_get_code "$metrics_base_url" "$SMOKE_PATH_METRICS")" = "401"
+  assert_pass "metrics API with wrong admin key → 401" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: wrong" "${metrics_base_url}${SMOKE_PATH_METRICS}")" = "401"
   assert_pass "SSE stream without admin key → 401" \
-    test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_METRICS_STREAM")" = "401"
-  assert_pass "dashboard metrics with admin key → 200" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}${SMOKE_PATH_METRICS}")" = "200"
+    test "$(smoke_get_code "$metrics_base_url" "$SMOKE_PATH_METRICS_STREAM")" = "401"
+  assert_pass "metrics API with admin key → 200" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "${metrics_base_url}${SMOKE_PATH_METRICS}")" = "200"
 
   # --- 23.9: SSE stream works ---
-  local sse_out; sse_out="$(timeout 8 curl -s -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}${SMOKE_PATH_METRICS_STREAM}" 2>/dev/null)" || true
+  local sse_out; sse_out="$(timeout 8 curl -s -H "X-Talon-Admin-Key: $admin_key" "${metrics_base_url}${SMOKE_PATH_METRICS_STREAM}" 2>/dev/null)" || true
   if echo "$sse_out" | grep -q "data:"; then
     echo "  ✓  SSE stream returns data events"
     record_pass
@@ -836,7 +819,7 @@ CACHEEOF
     fi
   fi
 
-  # --- 23.11: Prompt 16 enhanced-metrics consistency (outcome accounting, cost efficiency, CLI↔dashboard parity) ---
+  # --- 23.11: Prompt 16 enhanced-metrics consistency (outcome accounting, cost efficiency, CLI↔API parity) ---
   echo ""
   echo "  -- 23.11: Enhanced metrics consistency checks (Prompt 16) --"
 
@@ -969,79 +952,79 @@ CACHEEOF
         )
       )' <<< "$snap_after" &>/dev/null
 
-  # 23.11e: CLI metrics --json ↔ dashboard parity (both hit /api/v1/metrics on the same running server)
+  # 23.11e: CLI metrics --json ↔ API parity (both hit /api/v1/metrics on the same running server)
   echo ""
-  echo "  -- 23.11e: CLI metrics --json ↔ dashboard parity --"
-  local cli_snap; cli_snap="$(run_talon metrics --json --url "$dashboard_base_url" 2>/dev/null)"; true
-  local dash_snap; dash_snap="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
-  if jq -e 'type=="array"' <<< "$cli_snap" &>/dev/null && jq -e '.' <<< "$dash_snap" &>/dev/null; then
+  echo "  -- 23.11e: CLI metrics --json ↔ API parity --"
+  local cli_snap; cli_snap="$(run_talon metrics --json --url "$metrics_base_url" 2>/dev/null)"; true
+  local api_snap; api_snap="$(smoke_gw_get_metrics "$metrics_base_url" "$admin_key")"
+  if jq -e 'type=="array"' <<< "$cli_snap" &>/dev/null && jq -e '.' <<< "$api_snap" &>/dev/null; then
     # CLI metrics --json returns agent_stats; compare counts for each agent
     for cname in $(jq -r '.[].agent' <<< "$cli_snap" 2>/dev/null); do
-      local cli_req dash_req cli_sr dash_sr cli_cps dash_cps cli_tout dash_tout
+      local cli_req api_req cli_sr api_sr cli_cps api_cps cli_tout api_tout
       cli_req="$(jq --arg c "$cname" '.[] | select(.agent == $c) | .requests' <<< "$cli_snap")"
-      dash_req="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .requests' <<< "$dash_snap")"
+      api_req="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .requests' <<< "$api_snap")"
       cli_sr="$(jq --arg c "$cname" '.[] | select(.agent == $c) | .success_rate' <<< "$cli_snap")"
-      dash_sr="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .success_rate' <<< "$dash_snap")"
+      api_sr="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .success_rate' <<< "$api_snap")"
       cli_cps="$(jq --arg c "$cname" '.[] | select(.agent == $c) | .cost_per_success' <<< "$cli_snap")"
-      dash_cps="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .cost_per_success' <<< "$dash_snap")"
+      api_cps="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .cost_per_success' <<< "$api_snap")"
       cli_tout="$(jq --arg c "$cname" '.[] | select(.agent == $c) | .timed_out' <<< "$cli_snap")"
-      dash_tout="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .timed_out' <<< "$dash_snap")"
+      api_tout="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .timed_out' <<< "$api_snap")"
       # Requests: CLI may lag by 1-2 if a request lands between the two fetches
-      if [[ -n "$cli_req" ]] && [[ -n "$dash_req" ]] && [[ "$cli_req" != "null" ]] && [[ "$dash_req" != "null" ]]; then
-        local req_diff=$(( dash_req - cli_req ))
+      if [[ -n "$cli_req" ]] && [[ -n "$api_req" ]] && [[ "$cli_req" != "null" ]] && [[ "$api_req" != "null" ]]; then
+        local req_diff=$(( api_req - cli_req ))
         [[ $req_diff -lt 0 ]] && req_diff=$(( -req_diff ))
         if [[ $req_diff -le 2 ]]; then
-          echo "  ✓  CLI↔dash parity: $cname requests cli=$cli_req dash=$dash_req (diff=$req_diff)"
+          echo "  ✓  CLI↔API parity: $cname requests cli=$cli_req api=$api_req (diff=$req_diff)"
           record_pass
         else
-          log_failure "CLI↔dash parity: $cname requests cli=$cli_req dash=$dash_req (diff=$req_diff)" "tolerance=2"
+          log_failure "CLI↔API parity: $cname requests cli=$cli_req api=$api_req (diff=$req_diff)" "tolerance=2"
         fi
       fi
       # Success rate: within 0.05 tolerance (tiny request-count drift)
-      if [[ -n "$cli_sr" ]] && [[ -n "$dash_sr" ]] && [[ "$cli_sr" != "null" ]] && [[ "$dash_sr" != "null" ]]; then
-        local sr_diff; sr_diff="$(echo "scale=6; d=$cli_sr - $dash_sr; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+      if [[ -n "$cli_sr" ]] && [[ -n "$api_sr" ]] && [[ "$cli_sr" != "null" ]] && [[ "$api_sr" != "null" ]]; then
+        local sr_diff; sr_diff="$(echo "scale=6; d=$cli_sr - $api_sr; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
         if [[ "$(echo "$sr_diff < 0.05" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
-          echo "  ✓  CLI↔dash parity: $cname success_rate cli=$cli_sr dash=$dash_sr"
+          echo "  ✓  CLI↔API parity: $cname success_rate cli=$cli_sr api=$api_sr"
           record_pass
         else
-          echo "  -  CLI↔dash drift: $cname success_rate cli=$cli_sr dash=$dash_sr diff=$sr_diff"
+          echo "  -  CLI↔API drift: $cname success_rate cli=$cli_sr api=$api_sr diff=$sr_diff"
         fi
       fi
       # Cost per success: within 20% tolerance (float drift from concurrent updates)
-      if [[ -n "$cli_cps" ]] && [[ -n "$dash_cps" ]] && [[ "$cli_cps" != "null" ]] && [[ "$dash_cps" != "null" ]]; then
-        local cps_diff; cps_diff="$(echo "scale=8; d=$cli_cps - $dash_cps; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
-        local cps_tol; cps_tol="$(echo "scale=8; t=$dash_cps * 0.2; if (t < 0.0001) 0.0001 else t" | bc -l 2>/dev/null || echo 0.0001)"
+      if [[ -n "$cli_cps" ]] && [[ -n "$api_cps" ]] && [[ "$cli_cps" != "null" ]] && [[ "$api_cps" != "null" ]]; then
+        local cps_diff; cps_diff="$(echo "scale=8; d=$cli_cps - $api_cps; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+        local cps_tol; cps_tol="$(echo "scale=8; t=$api_cps * 0.2; if (t < 0.0001) 0.0001 else t" | bc -l 2>/dev/null || echo 0.0001)"
         if [[ "$(echo "$cps_diff < $cps_tol" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
-          echo "  ✓  CLI↔dash parity: $cname cost_per_success cli=$cli_cps dash=$dash_cps"
+          echo "  ✓  CLI↔API parity: $cname cost_per_success cli=$cli_cps api=$api_cps"
           record_pass
         else
-          echo "  -  CLI↔dash drift: $cname cost_per_success cli=$cli_cps dash=$dash_cps diff=$cps_diff"
+          echo "  -  CLI↔API drift: $cname cost_per_success cli=$cli_cps api=$api_cps diff=$cps_diff"
         fi
       fi
       # Timed out: exact match expected (no timeouts in normal smoke)
-      if [[ -n "$cli_tout" ]] && [[ -n "$dash_tout" ]] && [[ "$cli_tout" != "null" ]] && [[ "$dash_tout" != "null" ]]; then
-        if [[ "$cli_tout" -eq "$dash_tout" ]]; then
-          echo "  ✓  CLI↔dash parity: $cname timed_out=$cli_tout"
+      if [[ -n "$cli_tout" ]] && [[ -n "$api_tout" ]] && [[ "$cli_tout" != "null" ]] && [[ "$api_tout" != "null" ]]; then
+        if [[ "$cli_tout" -eq "$api_tout" ]]; then
+          echo "  ✓  CLI↔API parity: $cname timed_out=$cli_tout"
           record_pass
         else
-          echo "  -  CLI↔dash drift: $cname timed_out cli=$cli_tout dash=$dash_tout"
+          echo "  -  CLI↔API drift: $cname timed_out cli=$cli_tout api=$api_tout"
         fi
       fi
     done
-    echo "[SMOKE] CONSISTENCY|cli_dash_metrics_parity|checked"
+    echo "[SMOKE] CONSISTENCY|cli_api_metrics_parity|checked"
   else
-    echo "  -  CLI↔dashboard parity: could not parse CLI or dashboard JSON"
+    echo "  -  CLI↔API parity: could not parse CLI or metrics API JSON"
   fi
 
   # 23.11f: Live-traffic monotonicity — fire 5 more requests, take a new snapshot, verify counters only grow
   echo ""
   echo "  -- 23.11f: Live-traffic monotonicity (fire 5 requests, verify counters grow) --"
-  local snap_before_live; snap_before_live="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
+  local snap_before_live; snap_before_live="$(smoke_gw_get_metrics "$metrics_base_url" "$admin_key")"
   for i in 1 2 3 4 5; do
-    smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$(smoke_body_normal "live_$i")" >/dev/null || true
+    smoke_gw_post_chat "$metrics_base_url" "Bearer $gw_key" "$(smoke_body_normal "live_$i")" >/dev/null || true
   done
   sleep 2
-  local snap_after_live; snap_after_live="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
+  local snap_after_live; snap_after_live="$(smoke_gw_get_metrics "$metrics_base_url" "$admin_key")"
   local live_before_total live_after_total live_before_succ live_after_succ live_before_cost live_after_cost
   live_before_total="$(jq '.summary.total_requests' <<< "$snap_before_live")"
   live_after_total="$(jq '.summary.total_requests' <<< "$snap_after_live")"
@@ -1106,7 +1089,7 @@ CACHEEOF
   echo ""
   echo "  -- 23.12: Evidence-first SSOT parity (Issue #43) --"
 
-  local status_json; status_json="$(smoke_get_status "$dashboard_base_url" "$admin_key")"
+  local status_json; status_json="$(smoke_get_status "$metrics_base_url" "$admin_key")"
   if jq -e '.' <<< "$status_json" &>/dev/null; then
     assert_pass "status exposes metrics_events_dropped" \
       jq -e 'has("metrics_events_dropped")' <<< "$status_json" &>/dev/null
@@ -1121,7 +1104,7 @@ CACHEEOF
     assert_pass "status exposes metrics_recovered_events" \
       jq -e 'has("metrics_recovered_events")' <<< "$status_json" &>/dev/null
   else
-    log_failure "status endpoint not reachable for SSOT checks" "url=${dashboard_base_url}${SMOKE_PATH_STATUS}"
+    log_failure "status endpoint not reachable for SSOT checks" "url=${metrics_base_url}${SMOKE_PATH_STATUS}"
     dump_diag_json "status_json" "$status_json"
   fi
 
@@ -1130,7 +1113,7 @@ CACHEEOF
   assert_pass "metrics snapshot dropped_events absent (healthy) or numeric >=0" \
     jq -e '(has("dropped_events") | not) or (.dropped_events | type == "number" and . >= 0)' <<< "$snap_after_live" &>/dev/null
 
-  local events_json; events_json="$(smoke_get_events_recent "$dashboard_base_url" "$admin_key" 50)"
+  local events_json; events_json="$(smoke_get_events_recent "$metrics_base_url" "$admin_key" 50)"
   if jq -e '.events | type == "array"' <<< "$events_json" &>/dev/null; then
     assert_pass "events recent returns events array" \
       jq -e '.events | type == "array"' <<< "$events_json" &>/dev/null
@@ -1171,7 +1154,7 @@ CACHEEOF
         jq -e '[.events[].timestamp] | . == (. | sort | reverse)' <<< "$events_json" &>/dev/null
 
       # Evidence linkage: each event.evidence_id must exist in /v1/evidence index.
-      local ev_index; ev_index="$(smoke_get_evidence_index "$dashboard_base_url" "$admin_key" 200)"
+      local ev_index; ev_index="$(smoke_get_evidence_index "$metrics_base_url" "$admin_key" 200)"
       if jq -e '.entries | type == "array"' <<< "$ev_index" &>/dev/null; then
         local missing_links
         missing_links="$(jq -n --argjson ev "$ev_index" --argjson op "$events_json" '
@@ -1196,12 +1179,12 @@ CACHEEOF
       echo "  -  events recent is empty (skip per-row invariants)"
     fi
   else
-    log_failure "events recent endpoint did not return events array" "url=${dashboard_base_url}${SMOKE_PATH_EVENTS_RECENT}"
+    log_failure "events recent endpoint did not return events array" "url=${metrics_base_url}${SMOKE_PATH_EVENTS_RECENT}"
     dump_diag_json "events_json" "$events_json"
   fi
 
   # SSE: confirm stream emits both `id:` and `data:` lines for at least one event.
-  local sse_evts; sse_evts="$(smoke_capture_events_stream "$dashboard_base_url" "$admin_key" 4)"
+  local sse_evts; sse_evts="$(smoke_capture_events_stream "$metrics_base_url" "$admin_key" 4)"
   if echo "$sse_evts" | grep -q '^data:' && echo "$sse_evts" | grep -q '^id:'; then
     echo "  ✓  events SSE stream emits id+data per event"
     record_pass
@@ -1227,7 +1210,7 @@ CACHEEOF
 
   # CLI parity: `talon events tail --json` should produce the same shape as the API.
   local cli_events_out; cli_events_out="$(timeout 4 env TALON_ADMIN_KEY="$admin_key" \
-    talon events tail --url "$dashboard_base_url" --json 2>/dev/null | head -1)" || true
+    talon events tail --url "$metrics_base_url" --json 2>/dev/null | head -1)" || true
   if [[ -n "$cli_events_out" ]]; then
     if jq -e 'has("event_id") and has("evidence_id") and has("decision")' <<< "$cli_events_out" &>/dev/null; then
       echo "  ✓  talon events tail --json emits projection-shaped rows"

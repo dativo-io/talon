@@ -145,7 +145,7 @@ The first adapter with any populated header wins. Onboarding a new client is exa
 
 #### Header hygiene
 
-Every orchestration value must be RFC 7230 token charset and at most **128 bytes**. Violations are **rejected with HTTP 400 — never truncated** — so hostile client-asserted strings never reach signed evidence or operator dashboards (`TestResolveOrchestration_Hygiene`, `TestGatewayOrchestration_HygieneRejectedAtGateway`).
+Every orchestration value must be RFC 7230 token charset and at most **128 bytes**. Violations are **rejected with HTTP 400 — never truncated** — so hostile client-asserted strings never reach signed evidence or operator surfaces (`TestResolveOrchestration_Hygiene`, `TestGatewayOrchestration_HygieneRejectedAtGateway`).
 
 #### Session semantics: what "one session" means
 
@@ -175,9 +175,9 @@ How the session cap (`session_limits.max_cost`) behaves — precisely:
 - Budget state is a **precondition**: if the session store (session cap) or the evidence-store spend read (daily/monthly caps) fails while the cap binds, the request is denied **503 `budget_unavailable`** with nothing dispatched, and the signed deny carries `session_budget_unavailable` / `agent_budget_unavailable` so an outage is never mistaken for exhaustion (`TestSessionBudget_StoreFailure_FailClosed`, `TestBudget_AgentSpendUnreadable_FailClosed`). The code is retriable; the store, not the request, is the problem.
 - A model missing from `pricing/models.yaml` cannot be priced, and a cap enforced against a flat guess is not a cap: under a binding cap the request is denied **403 `pricing_unavailable`** naming the model to add (`TestBudget_UnpricedModel_DeniedUnderCap`). Keep the table current when a provider ships a new model — the error tells you which one.
 
-### 5. Watch it: audit, costs, dashboard
+### 5. Watch it: audit, costs, metrics
 
-All session surfaces read the same signed evidence through one aggregation (`evidence.BuildSessionSummary`) — the CLI, the export, and the dashboard cannot disagree.
+All session surfaces read the same signed evidence through one aggregation (`evidence.BuildSessionSummary`) — the CLI, the export, and the metrics API cannot disagree.
 
 ```bash
 # Per-session summary + the session's records (per-subagent rollup)
@@ -196,7 +196,7 @@ talon costs --session sess-feature-4711 --json
 
 Scoping: without `--tenant`/`--agent` these session commands are **unscoped** (they show the whole session, whichever tenant owns it — local CLI access implies DB access anyway); pass `--tenant` and/or `--agent` to filter. Note `talon costs`' *calendar* rollups (no `--session`) default to tenant `default` — the session forms do not.
 
-The dashboard (`talon serve`) has a **Coding Sessions (orchestration)** panel showing active sessions with per-subagent attribution and `denials_by_reason` — budget trips show up as `session_budget_exceeded` counts.
+With `talon serve --gateway`, the metrics snapshot (`talon metrics --json`, `GET /api/v1/metrics`) carries a `sessions` array with the same per-session summaries and per-subagent attribution, and `denials_by_reason` — budget trips show up as `session_budget_exceeded` counts.
 
 ### 6. Run the offline demo
 
@@ -218,7 +218,7 @@ The mock provider speaks both the Anthropic Messages wire and the OpenAI Respons
 | Runaway spend inside one coding session | Per-session soft cap; new requests denied 403 with provider-native `session_budget_exceeded` | `max_session_cost`; `TestSessionBudget_SoftCapOvershoot` |
 | Session shifts spend to the other provider's route | Session spend accumulates cross-provider; denied on both routes | `TestSessionBudget_CrossProviderDeny` |
 | Two teams collide on the same session id | Sessions scoped per (tenant, agent) — separate sessions, separate budgets | `TestSessionBudget_AgentAndTenantIsolation` |
-| Hostile header value aimed at evidence or dashboards | Hygiene gate: token charset, ≤128 bytes, reject 400 (never truncate) | `TestGatewayOrchestration_HygieneRejectedAtGateway` |
+| Hostile header value aimed at evidence or operator surfaces | Hygiene gate: token charset, ≤128 bytes, reject 400 (never truncate) | `TestGatewayOrchestration_HygieneRejectedAtGateway` |
 | Junk stage strings bloating session state | Fixed stage set (`generation`/`judge`/`commit`); others dropped at ingestion | `TestNormalizeStage` |
 | Subagent forges its identity | Attribution, not authentication: `provenance: client_asserted`; identity never a policy input; budgets bind to the Talon agent | `TestPolicyInputParity_WithAssertedSession`; [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
 | Session or evidence store outage while a cap binds | Fail-closed: 503 `budget_unavailable`, zero dispatch; gap annotated in the signed deny (`session_budget_unavailable` / `agent_budget_unavailable`) | `TestSessionBudget_StoreFailure_FailClosed`, `TestBudget_AgentSpendUnreadable_FailClosed` |
@@ -254,7 +254,7 @@ The mock provider speaks both the Anthropic Messages wire and the OpenAI Respons
 
 ## You're done
 
-Your fleet's traffic now flows through one gateway: every request carries session and subagent attribution, session budgets deny runaway spend on either provider route, and one aggregation feeds the CLI, the export, and the dashboard.
+Your fleet's traffic now flows through one gateway: every request carries session and subagent attribution, session budgets deny runaway spend on either provider route, and one aggregation feeds the CLI, the export, and the metrics API.
 
 **Next steps:**
 

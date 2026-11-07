@@ -3,7 +3,7 @@
 This walkthrough gives you a fast auditor-ready proof:
 
 1. run a request,
-2. verify evidence in the dashboard,
+2. verify evidence over the API,
 3. export signed evidence,
 4. tamper one field,
 5. show CLI verification failure.
@@ -28,13 +28,16 @@ curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   }'
 ```
 
-## 2) Open dashboard evidence and verify
+## 2) Verify the latest record over the API
 
-- Open [http://localhost:8080/dashboard](http://localhost:8080/dashboard).
-- Go to the **Evidence** tab.
-- Click **Verify** for your latest row (or **Verify visible records**).
-- Confirm integrity state shows `✓ Verified`.
-- Click **Detail** and confirm the signature block + trust/spend details (cost, tokens, model, provider).
+```bash
+ID=$(curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" 'http://localhost:8080/v1/evidence?limit=1' | jq -r '.entries[0].id')
+curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" "http://localhost:8080/v1/evidence/$ID/verify" | jq .
+curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" "http://localhost:8080/v1/evidence/$ID" | jq '{signature, policy_decision, execution: {model_used: .execution.model_used, cost: .execution.cost, tokens: .execution.tokens}}'
+```
+
+- Confirm the verify response reports the signature as valid.
+- Confirm the record carries the signature next to the policy decision and the trust/spend details (cost, tokens, model, provider).
 
 ## 3) Export signed evidence
 
@@ -82,4 +85,4 @@ This is the proof moment: Talon detects post-creation tampering.
 
 Use this during audits or buyer calls:
 
-> Talon signs every evidence record at creation time with HMAC-SHA256 and stores the signature with policy decision, hashes, model, and cost metadata. Teams can verify records later from dashboard or CLI (`talon audit verify` / `talon audit verify --file`). If a signed field is modified after creation, verification fails.
+> Talon signs every evidence record at creation time with HMAC-SHA256 and stores the signature with policy decision, hashes, model, and cost metadata. Teams can verify records later over the API (`GET /v1/evidence/{id}/verify`) or the CLI (`talon audit verify` / `talon audit verify --file`). If a signed field is modified after creation, verification fails.
