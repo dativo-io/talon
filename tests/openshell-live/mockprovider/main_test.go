@@ -435,6 +435,37 @@ func TestMockProvider_AnthropicMessages(t *testing.T) {
 // The model is echoed from the request body (untrusted): every Anthropic
 // body is marshalled, so a model carrying quotes or backslashes stays
 // valid JSON on both wires (CodeQL "potentially unsafe quoting", PR #531).
+// The smoke suite's provider-error case (section 42) sends max_tokens 0 and
+// expects the provider's 400 invalid_request_error envelope, not a message.
+func TestMockProvider_AnthropicRejectsMaxTokensBelowOne(t *testing.T) {
+	srv := httptest.NewServer(newHandler(&state{}, "", 1<<20))
+	defer srv.Close()
+	c := &providerClient{client: srv.Client()}
+	status, ct, body := anthropicCall(t, c, srv.URL, "/v1/messages", `{"model":"claude-haiku-4-5","max_tokens":0,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	var env struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("error body is not JSON: %v: %s", err, body)
+	}
+	expect(t, "max_tokens 0", map[string]bool{
+		"status 400":               status == http.StatusBadRequest,
+		"json content type":        strings.HasPrefix(ct, "application/json"),
+		"type=error":               env.Type == "error",
+		"invalid_request_error":    env.Error.Type == "invalid_request_error",
+		"message names max_tokens": strings.Contains(env.Error.Message, "max_tokens"),
+	})
+	// A valid max_tokens still answers normally.
+	status, _, _ = anthropicCall(t, c, srv.URL, "/v1/messages", `{"model":"claude-haiku-4-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	if status != http.StatusOK {
+		t.Fatalf("valid request: status %d", status)
+	}
+}
+
 func TestMockProvider_AnthropicModelIsJSONEscaped(t *testing.T) {
 	hostile := `claude"-\x` + " "
 	_, _, b := anthropicResponse("", 1, hostile, false)

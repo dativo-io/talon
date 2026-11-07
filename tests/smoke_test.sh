@@ -5,8 +5,8 @@
 # Brief version 1.0 — March 2026 — Dativo Talon CPO/CTO
 #
 # Black-box E2E smoke test: exercises every user-visible capability as documented
-# in docs/. Runs on Linux with talon binary on PATH; OpenAI only. Produces a
-# pass/fail report suitable for a compliance officer.
+# in docs/. Runs on Linux with talon binary on PATH against the REAL OpenAI and
+# Anthropic APIs. Produces a pass/fail report suitable for a compliance officer.
 #
 # Usage: ./smoke_test.sh   or: make test-smoke (from repo root)
 # Prerequisites:
@@ -15,6 +15,14 @@
 #   - TALON_SECRETS_KEY set (32-byte for AES-256-GCM vault)
 #   - openai-api-key in vault: either set OPENAI_API_KEY (script sets it), or use existing vault by
 #     exporting TALON_DATA_DIR to a directory where you already ran: talon secrets set openai-api-key <key>
+#   - anthropic-api-key in vault: either set ANTHROPIC_API_KEY (script sets it), or the same existing
+#     vault after: talon secrets set anthropic-api-key <key>   (section 42 sends real Anthropic requests)
+#   A full run requires BOTH provider keys; a missing one is reported as a prerequisite, never skipped.
+#   Export them from your secret store (e.g. `set -a; . ~/.config/talon/dev.env; set +a`); never paste
+#   them into command lines — the harness redacts `secrets set` lines, sk-/sk-ant- tokens, bearer and
+#   x-api-key values before anything reaches a log.
+#   SMOKE_ONLY selections need only the keys their sections use: offline sections (37–41) need none,
+#   42_anthropic needs ANTHROPIC_API_KEY only, everything else needs OPENAI_API_KEY.
 # Optional: TALON_SIGNING_KEY, TALON_ADMIN_KEY, TALON_AGENT_KEY (defaults applied for smoke run). curl, jq; port 8080 free.
 #
 # Output: All sections run regardless of failures. Failures print exit code and
@@ -53,7 +61,11 @@
 #   39 budget | 40 webhook-triggers (#479, offline) |
 #   41 action-gateway (#458/#425 exact governed action + one company action
 #   policy: the same assertions as `make test-action-smoke`; no provider key;
-#   mandatory, counted).
+#   mandatory, counted) |
+#   42 anthropic (REAL Anthropic Messages API through the gateway: connectivity,
+#   streaming SSE, count_tokens, provider error relay, model_not_allowed and
+#   pricing_unavailable denials, signed evidence with provider-reported usage
+#   and pricing-table cost; needs ANTHROPIC_API_KEY; mandatory, counted).
 #
 # QA notes (from brief):
 # - Section 10/18 (Tamper test): Evidence DB is TALON_DATA_DIR/evidence.db; corrupt
@@ -92,6 +104,8 @@ CURRENT_SECTION=""
 SMOKE_CREATED_DATA_DIR=0
 # 1 if openai-api-key is already in vault (no OPENAI_API_KEY needed)
 VAULT_HAS_OPENAI_KEY=0
+# 1 if anthropic-api-key is already in vault (no ANTHROPIC_API_KEY needed)
+VAULT_HAS_ANTHROPIC_KEY=0
 
 # --- Persist pass/fail so counts survive subshells (run_section runs each section in a subshell) ---
 record_pass() {
@@ -117,7 +131,8 @@ redact_secrets() {
   sed -E \
     -e 's/(secrets[[:space:]]+set[[:space:]]+[^[:space:]]+[[:space:]]+).*/\1***REDACTED***/' \
     -e 's/sk-[A-Za-z0-9_-]{20,}/sk-***REDACTED***/g' \
-    -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/=-]{32,}/\1***REDACTED***/g'
+    -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/=-]{32,}/\1***REDACTED***/g' \
+    -e 's/([Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy]:[[:space:]]*)[A-Za-z0-9._~+\/=-]{32,}/\1***REDACTED***/g'
 }
 redact_str() { printf '%s' "$1" | redact_secrets; }
 
@@ -285,26 +300,34 @@ dump_diag_env() {
     "TALON_AGENT_KEY=${TALON_AGENT_KEY:+(set, ${#TALON_AGENT_KEY} chars, value=${TALON_AGENT_KEY})}" \
     "TALON_SIGNING_KEY=${TALON_SIGNING_KEY:+(set)}" \
     "OPENAI_API_KEY=${OPENAI_API_KEY:+(set, ${#OPENAI_API_KEY} chars)}" \
+    "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:+(set, ${#ANTHROPIC_API_KEY} chars)}" \
     "PWD=$(pwd)" \
     "section=$CURRENT_SECTION"
 }
 
 # --- Environment checks (Section 2) ---
-# Sections that need no provider key: a focused SMOKE_ONLY run made only of
-# these skips the OPENAI_API_KEY prerequisite (TALON_SECRETS_KEY, talon and
-# the tools are still required). Everything else is unchanged; the full suite
-# still requires the key.
+# Provider keys are prerequisites of the sections that use them, never
+# silently skipped: the full suite needs OPENAI_API_KEY and ANTHROPIC_API_KEY
+# (or the corresponding vault secret in an existing TALON_DATA_DIR). A focused
+# SMOKE_ONLY run needs only the keys of its sections: offline sections need
+# none, the Anthropic section needs the Anthropic key, every other section
+# needs the OpenAI key. TALON_SECRETS_KEY, talon and the tools are always
+# required.
 readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance 38_openshell 39_budget 40_webhook_triggers 41_action_gateway "
-smoke_only_is_offline() {
-  [[ -n "${SMOKE_ONLY:-}" ]] || return 1
-  local s
+readonly SMOKE_ANTHROPIC_SECTIONS=" 42_anthropic "
+# smoke_run_needs_provider openai|anthropic: does this run (full, or the
+# SMOKE_ONLY selection) exercise the provider?
+smoke_run_needs_provider() {
+  local provider="$1" s
+  [[ -n "${SMOKE_ONLY:-}" ]] || return 0
   for s in ${SMOKE_ONLY}; do
-    case "$SMOKE_OFFLINE_SECTIONS" in
-      *" ${s} "*) ;;
-      *) return 1 ;;
+    case "$SMOKE_OFFLINE_SECTIONS" in *" ${s} "*) continue ;; esac
+    case "$SMOKE_ANTHROPIC_SECTIONS" in
+      *" ${s} "*) [[ "$provider" == "anthropic" ]] && return 0 ;;
+      *) [[ "$provider" == "openai" ]] && return 0 ;;
     esac
   done
-  return 0
+  return 1
 }
 
 check_prereqs() {
@@ -323,20 +346,29 @@ check_prereqs() {
   if [[ -n "${TALON_DATA_DIR:-}" ]] && [[ -d "$TALON_DATA_DIR" ]] && [[ -w "$TALON_DATA_DIR" ]]; then
     SMOKE_CREATED_DATA_DIR=0
     export TALON_DATA_DIR
-    # Check if openai-api-key is already in vault (so OPENAI_API_KEY not required)
-    if TALON_DATA_DIR="$TALON_DATA_DIR" talon secrets list 2>/dev/null | grep -q openai-api-key; then
-      VAULT_HAS_OPENAI_KEY=1
-    else
-      [[ -n "${OPENAI_API_KEY:-}" ]] || smoke_only_is_offline || missing+=("OPENAI_API_KEY set (vault has no openai-api-key; set it with: talon secrets set openai-api-key \$OPENAI_API_KEY)")
+    # Keys already in the vault satisfy the prerequisite without the env var.
+    local vault_list
+    vault_list="$(TALON_DATA_DIR="$TALON_DATA_DIR" talon secrets list 2>/dev/null)"
+    grep -q openai-api-key <<< "$vault_list" && VAULT_HAS_OPENAI_KEY=1
+    grep -q anthropic-api-key <<< "$vault_list" && VAULT_HAS_ANTHROPIC_KEY=1
+    if [[ $VAULT_HAS_OPENAI_KEY -eq 0 ]] && [[ -z "${OPENAI_API_KEY:-}" ]] && smoke_run_needs_provider openai; then
+      missing+=("OPENAI_API_KEY set (real OpenAI requests; vault has no openai-api-key — set it with: talon secrets set openai-api-key \$OPENAI_API_KEY)")
+    fi
+    if [[ $VAULT_HAS_ANTHROPIC_KEY -eq 0 ]] && [[ -z "${ANTHROPIC_API_KEY:-}" ]] && smoke_run_needs_provider anthropic; then
+      missing+=("ANTHROPIC_API_KEY set (real Anthropic requests in section 42_anthropic; vault has no anthropic-api-key — set it with: talon secrets set anthropic-api-key \$ANTHROPIC_API_KEY)")
     fi
   else
     TALON_DATA_DIR="$(mktemp -d)"
     export TALON_DATA_DIR
     SMOKE_CREATED_DATA_DIR=1
-    [[ -n "${OPENAI_API_KEY:-}" ]] || smoke_only_is_offline || missing+=("OPENAI_API_KEY set (used to set openai-api-key in vault for this run)")
+    [[ -n "${OPENAI_API_KEY:-}" ]] || ! smoke_run_needs_provider openai || missing+=("OPENAI_API_KEY set (real OpenAI requests; stored as openai-api-key in this run's vault)")
+    [[ -n "${ANTHROPIC_API_KEY:-}" ]] || ! smoke_run_needs_provider anthropic || missing+=("ANTHROPIC_API_KEY set (real Anthropic requests in section 42_anthropic; stored as anthropic-api-key in this run's vault)")
   fi
   if [[ ${#missing[@]} -gt 0 ]]; then
-    echo "Missing: ${missing[*]}"
+    echo "Missing provider prerequisite(s) — a real-provider smoke run is not skipped silently:"
+    printf '  - %s\n' "${missing[@]}"
+    echo "Export the keys from your secret store (never paste them into a command line), or select"
+    echo "offline sections only, e.g. SMOKE_ONLY=\"37_mcp_governance 38_openshell 39_budget 40_webhook_triggers 41_action_gateway\"."
     exit 2
   fi
   # Optional: default signing key, admin key, and tenant API keys for smoke run
@@ -352,6 +384,10 @@ check_prereqs() {
   : > "$SMOKE_BG_PIDS_FILE"
   echo "Prerequisites OK. TALON_DATA_DIR=$TALON_DATA_DIR"
   [[ $VAULT_HAS_OPENAI_KEY -eq 1 ]] && echo "Using existing vault (openai-api-key already set)."
+  [[ $VAULT_HAS_ANTHROPIC_KEY -eq 1 ]] && echo "Using existing vault (anthropic-api-key already set)."
+  smoke_run_needs_provider openai && echo "Real OpenAI requests: yes"
+  smoke_run_needs_provider anthropic && echo "Real Anthropic requests: yes (section 42_anthropic, model ${SMOKE_ANTHROPIC_MODEL}, upstream ${SMOKE_ANTHROPIC_BASE_URL})"
+  return 0
 }
 
 # --- Teardown (Section 3.4) ---
@@ -734,7 +770,7 @@ for _section_file in \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
   33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh \
   36_external_scanner.sh 37_mcp_governance.sh 38_openshell.sh 39_budget.sh \
-  40_webhook_triggers.sh 41_action_gateway.sh; do
+  40_webhook_triggers.sh 41_action_gateway.sh 42_anthropic.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -750,7 +786,7 @@ main() {
     smoke_lifecycle_selftest "${SMOKE_LIFECYCLE_SELFTEST}"
     exit $?
   fi
-  echo "Dativo Talon Smoke Test — OpenAI only, black-box E2E"
+  echo "Dativo Talon Smoke Test — real OpenAI + Anthropic, black-box E2E"
   check_prereqs
 
   # Consolidated log: all output + [SMOKE] CMD/RESULT/CONSISTENCY for sourcing back
@@ -832,6 +868,7 @@ main() {
   run_section "39_budget" test_section_39_budget
   run_section "40_webhook_triggers" test_section_40_webhook_triggers
   run_section "41_action_gateway" test_section_41_action_gateway
+  run_section "42_anthropic" test_section_42_anthropic
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency
@@ -868,6 +905,7 @@ main() {
     echo "  TALON_ADMIN_KEY=${TALON_ADMIN_KEY:+(set, ${#TALON_ADMIN_KEY} chars)}"
     echo "  TALON_SIGNING_KEY=${TALON_SIGNING_KEY:+(set)}"
     echo "  OPENAI_API_KEY=${OPENAI_API_KEY:+(set, ${#OPENAI_API_KEY} chars)}"
+    echo "  ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:+(set, ${#ANTHROPIC_API_KEY} chars)}"
     echo "  evidence.db size: $(du -h "$TALON_DATA_DIR/evidence.db" 2>/dev/null | cut -f1 || echo 'N/A')"
     echo "  evidence count: $(sqlite3 "$TALON_DATA_DIR/evidence.db" 'SELECT COUNT(*) FROM evidence' 2>/dev/null || echo 'N/A')"
     echo "  talon version: $(talon version 2>/dev/null || echo 'N/A')"
