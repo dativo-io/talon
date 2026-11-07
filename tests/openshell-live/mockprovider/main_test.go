@@ -435,13 +435,14 @@ func TestMockProvider_AnthropicMessages(t *testing.T) {
 // The model is echoed from the request body (untrusted): every Anthropic
 // body is marshalled, so a model carrying quotes or backslashes stays
 // valid JSON on both wires (CodeQL "potentially unsafe quoting", PR #531).
-// The smoke suite's provider-error case (section 42) sends max_tokens 0 and
-// expects the provider's 400 invalid_request_error envelope, not a message.
-func TestMockProvider_AnthropicRejectsMaxTokensBelowOne(t *testing.T) {
+// The smoke suite's provider-error case (section 42) sends a temperature
+// outside 0..1 and expects the provider's 400 invalid_request_error
+// envelope, not a message. max_tokens 0 stays accepted, as on the live API.
+func TestMockProvider_AnthropicRejectsTemperatureOutOfRange(t *testing.T) {
 	srv := httptest.NewServer(newHandler(&state{}, "", 1<<20))
 	defer srv.Close()
 	c := &providerClient{client: srv.Client()}
-	status, ct, body := anthropicCall(t, c, srv.URL, "/v1/messages", `{"model":"claude-haiku-4-5","max_tokens":0,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	status, ct, body := anthropicCall(t, c, srv.URL, "/v1/messages", `{"model":"claude-haiku-4-5","max_tokens":24,"temperature":2.0,"messages":[{"role":"user","content":"hi"}]}`, nil)
 	var env struct {
 		Type  string `json:"type"`
 		Error struct {
@@ -452,17 +453,20 @@ func TestMockProvider_AnthropicRejectsMaxTokensBelowOne(t *testing.T) {
 	if err := json.Unmarshal(body, &env); err != nil {
 		t.Fatalf("error body is not JSON: %v: %s", err, body)
 	}
-	expect(t, "max_tokens 0", map[string]bool{
-		"status 400":               status == http.StatusBadRequest,
-		"json content type":        strings.HasPrefix(ct, "application/json"),
-		"type=error":               env.Type == "error",
-		"invalid_request_error":    env.Error.Type == "invalid_request_error",
-		"message names max_tokens": strings.Contains(env.Error.Message, "max_tokens"),
+	expect(t, "temperature 2.0", map[string]bool{
+		"status 400":                status == http.StatusBadRequest,
+		"json content type":         strings.HasPrefix(ct, "application/json"),
+		"type=error":                env.Type == "error",
+		"invalid_request_error":     env.Error.Type == "invalid_request_error",
+		"message names temperature": strings.Contains(env.Error.Message, "temperature"),
 	})
-	// A valid max_tokens still answers normally.
-	status, _, _ = anthropicCall(t, c, srv.URL, "/v1/messages", `{"model":"claude-haiku-4-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, nil)
-	if status != http.StatusOK {
-		t.Fatalf("valid request: status %d", status)
+	for name, req := range map[string]string{
+		"in-range temperature": `{"model":"claude-haiku-4-5","max_tokens":8,"temperature":0.5,"messages":[{"role":"user","content":"hi"}]}`,
+		"max_tokens 0":         `{"model":"claude-haiku-4-5","max_tokens":0,"messages":[{"role":"user","content":"hi"}]}`,
+	} {
+		if status, _, _ = anthropicCall(t, c, srv.URL, "/v1/messages", req, nil); status != http.StatusOK {
+			t.Fatalf("%s: status %d, want 200", name, status)
+		}
 	}
 }
 
