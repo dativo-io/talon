@@ -27,7 +27,7 @@ type SessionSource interface {
 
 // Project turns per-agent identity/config inputs (AgentStatus) into
 // attention-queue rows. This is the ONE code path both the server's
-// /v1/agents/fleet handler and the `talon agents` CLI use, so the dashboard and
+// /v1/agents/fleet handler and the `talon agents` CLI use, so API consumers and
 // the CLI can never compute health, budget, or session state independently
 // (#270 parity criterion). It performs all time-window math here and hands
 // pre-windowed Signals to the pure Evaluate, so health decisions stay

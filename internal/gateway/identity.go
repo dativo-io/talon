@@ -53,7 +53,7 @@ type LoadedAgent struct {
 	// recorded in signed evidence so a decision names the exact agent-policy
 	// version it was made against (#266 review round 4).
 	PolicyDigest string
-	// Tags classify telemetry (e.g. "copaw" drives OTel/dashboard views).
+	// Tags classify telemetry (e.g. "copaw" drives OTel attributes and /v1/copaw/*).
 	Tags []string
 	// AcceptClientMetadata gates recording of client-asserted orchestration
 	// identity (#194). nil = true.
@@ -557,7 +557,7 @@ func (r *IdentityRegistry) TenantIDs() []string {
 	return out
 }
 
-// MetricsTenantScope returns the tenant_id filter for dashboard SQL
+// MetricsTenantScope returns the tenant_id filter for metrics snapshot SQL
 // aggregates: single-tenant installations scope to that tenant, multi-tenant
 // ones use "" (all tenants).
 func (r *IdentityRegistry) MetricsTenantScope() string {

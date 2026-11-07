@@ -27,7 +27,7 @@ import (
 // WHY. It is server-first — the RUNNING gateway is the source of truth — with an
 // honestly-labeled offline config view when no Talon server is reachable. The
 // health/budget/session math is fleet.Project, the SAME code path the server
-// uses, so the CLI and dashboard can never disagree (#270 parity).
+// uses, so the CLI and the API can never disagree (#270 parity).
 
 var (
 	agentsQueueURL    string

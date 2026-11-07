@@ -26,7 +26,7 @@ type PlanReviewStore struct {
 	db *sql.DB
 }
 
-// PlanStats aggregates plan lifecycle counters for dashboards/CLI summaries.
+// PlanStats aggregates plan lifecycle counters for API/CLI summaries.
 type PlanStats struct {
 	Pending          int `json:"pending"`
 	Approved         int `json:"approved"`
@@ -182,7 +182,7 @@ func (s *PlanReviewStore) GetPending(ctx context.Context, tenantID, agentID stri
 	return plans, nil
 }
 
-// ReviewHistoryEntry is a minimal record for the dashboard review history.
+// ReviewHistoryEntry is a minimal reviewed-plan record (store projection; no HTTP route serves it since the dashboards were removed, #533).
 type ReviewHistoryEntry struct {
 	PlanID     string     `json:"plan_id"`
 	TenantID   string     `json:"tenant_id"`
@@ -192,7 +192,7 @@ type ReviewHistoryEntry struct {
 	ReviewedAt *time.Time `json:"reviewed_at"`
 }
 
-// ListReviewed returns recently reviewed plans (approved/rejected/modified) for the dashboard review history.
+// ListReviewed returns recently reviewed plans (approved/rejected/modified), newest first.
 func (s *PlanReviewStore) ListReviewed(ctx context.Context, tenantID string, limit int) ([]ReviewHistoryEntry, error) {
 	if limit <= 0 {
 		limit = 20

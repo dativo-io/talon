@@ -68,7 +68,7 @@ func mapToGatewayEvent(input interface{}) (GatewayEvent, bool) {
 }
 
 // GatewayEventFromOperationalEvent converts the canonical operational projection into
-// dashboard metrics event shape.
+// metrics event shape.
 func GatewayEventFromOperationalEvent(ev events.OperationalEvent) GatewayEvent {
 	return GatewayEvent{
 		EvidenceID:    ev.EvidenceID,
@@ -117,7 +117,7 @@ func gatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
 		ev.OrchClient = e.Orchestration.Client
 	}
 	if ev.Blocked {
-		// One classifier for deny reason codes across the dashboard event
+		// One classifier for deny reason codes across the metrics event
 		// projection and the session summary (#271): evidence.DenyReasonCode.
 		ev.DenyReasonCode = evidence.DenyReasonCode(e.PolicyDecision.Reasons)
 	}

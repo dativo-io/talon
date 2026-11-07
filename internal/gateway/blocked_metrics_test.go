@@ -132,7 +132,7 @@ func TestBlockedPath_ProviderNotAllowed_EmitsMetrics(t *testing.T) {
 
 	require.Equal(t, http.StatusForbidden, w.Code)
 
-	assert.Equal(t, 1, spy.count(), "provider-not-allowed should emit a dashboard event")
+	assert.Equal(t, 1, spy.count(), "provider-not-allowed should emit a metrics event")
 	ev := spy.lastEvent()
 	assert.True(t, ev["blocked"].(bool), "event should mark request as blocked")
 
@@ -219,7 +219,7 @@ func TestBlockedPath_PolicyEvalError_EmitsMetrics(t *testing.T) {
 
 	require.Equal(t, http.StatusInternalServerError, w.Code)
 
-	assert.Equal(t, 1, spy.count(), "policy-eval-error should emit a dashboard event")
+	assert.Equal(t, 1, spy.count(), "policy-eval-error should emit a metrics event")
 	ev := spy.lastEvent()
 	assert.True(t, ev["blocked"].(bool))
 	assert.True(t, ev["has_error"].(bool))
@@ -262,7 +262,7 @@ func TestBlockedPath_SecretFailure_EmitsMetrics(t *testing.T) {
 
 	require.Equal(t, http.StatusInternalServerError, w.Code)
 
-	assert.Equal(t, 1, spy.count(), "secret-failure should emit a dashboard event")
+	assert.Equal(t, 1, spy.count(), "secret-failure should emit a metrics event")
 	ev := spy.lastEvent()
 	assert.True(t, ev["blocked"].(bool))
 	assert.True(t, ev["has_error"].(bool))
@@ -319,9 +319,9 @@ func TestBlockedPath_AuthFailure_EmitsErrorCounter(t *testing.T) {
 	assert.Equal(t, int64(1), authErrors, "should record exactly 1 auth error")
 }
 
-// TestBlockedPath_PIIBlock_EmitsDashboardEvent verifies the pre-existing PII block
-// path (which already had emitMetrics) fires a dashboard event.
-func TestBlockedPath_PIIBlock_EmitsDashboardEvent(t *testing.T) {
+// TestBlockedPath_PIIBlock_EmitsMetricsEvent verifies the pre-existing PII block
+// path (which already had emitMetrics) fires a metrics event.
+func TestBlockedPath_PIIBlock_EmitsMetricsEvent(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
@@ -338,14 +338,14 @@ func TestBlockedPath_PIIBlock_EmitsDashboardEvent(t *testing.T) {
 		`{"model":"llama2","messages":[{"role":"user","content":"Email me at user@example.com"}]}`)
 
 	require.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Equal(t, 1, spy.count(), "PII block should emit a dashboard event")
+	assert.Equal(t, 1, spy.count(), "PII block should emit a metrics event")
 	ev := spy.lastEvent()
 	assert.True(t, ev["blocked"].(bool))
 }
 
-// TestBlockedPath_PolicyDeny_EmitsDashboardEvent verifies the pre-existing policy deny
-// path fires a dashboard event.
-func TestBlockedPath_PolicyDeny_EmitsDashboardEvent(t *testing.T) {
+// TestBlockedPath_PolicyDeny_EmitsMetricsEvent verifies the pre-existing policy deny
+// path fires a metrics event.
+func TestBlockedPath_PolicyDeny_EmitsMetricsEvent(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
@@ -362,7 +362,7 @@ func TestBlockedPath_PolicyDeny_EmitsDashboardEvent(t *testing.T) {
 		`{"model":"llama2","messages":[{"role":"user","content":"Hello"}]}`)
 
 	require.Equal(t, http.StatusForbidden, w.Code)
-	assert.Equal(t, 1, spy.count(), "policy deny should emit a dashboard event")
+	assert.Equal(t, 1, spy.count(), "policy deny should emit a metrics event")
 	ev := spy.lastEvent()
 	assert.True(t, ev["blocked"].(bool))
 }
@@ -431,11 +431,11 @@ func TestBlockedPath_RateLimitWritesEvidenceBeforeMetrics(t *testing.T) {
 		}
 	}
 	assert.True(t, foundRateLimitEvidence, "rate-limit block must persist evidence")
-	assert.Equal(t, 2, spy.count(), "both blocked requests should emit dashboard metrics after evidence write")
+	assert.Equal(t, 2, spy.count(), "both blocked requests should emit metrics after evidence write")
 }
 
 // TestBlockedPath_AllBlockedPathsConsistent verifies that every blocked path type
-// produces a dashboard event with blocked=true, preventing dashboard drift after restart.
+// produces a metrics event with blocked=true, preventing metrics drift after restart.
 func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -498,7 +498,7 @@ func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 			w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001", tt.body)
 
 			assert.Equal(t, tt.wantStatus, w.Code)
-			require.Equal(t, 1, spy.count(), "blocked path %q should emit exactly 1 dashboard event", tt.name)
+			require.Equal(t, 1, spy.count(), "blocked path %q should emit exactly 1 metrics event", tt.name)
 			ev := spy.lastEvent()
 			assert.True(t, ev["blocked"].(bool), "blocked path %q should set blocked=true", tt.name)
 			assert.Equal(t, "test-agent", ev["caller_id"], "blocked path %q should include caller_id", tt.name)

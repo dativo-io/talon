@@ -30,27 +30,25 @@ const defaultTimeout = 60 * time.Second
 
 // Server holds all dependencies for the HTTP API and MCP endpoints.
 type Server struct {
-	router               *chi.Mux
-	runner               *agent.Runner
-	evidenceStore        *evidence.Store
-	mcpServer            http.Handler // native MCP at POST /mcp
-	mcpProxy             http.Handler // optional MCP proxy at POST /mcp/proxy
-	gateway              http.Handler // optional LLM API gateway at /v1/proxy/*
-	actionServices       ActionServiceResolver
-	approvalOwners       ApprovalOwnerResolver
-	approvers            ApproverResolver
-	tenantManager        *tenant.Manager
-	webhookHandler       *trigger.WebhookHandler
-	planReviewStore      *agent.PlanReviewStore
-	memoryStore          *memory.Store
-	sessionStore         *session.Store
-	policyEngine         *policy.Engine
-	secretsStore         *secrets.SecretStore
-	policy               *policy.Policy
-	dashboardHTML        string
-	gatewayDashboardHTML string
-	metricsCollector     *metrics.Collector
-	adminKey             string
+	router           *chi.Mux
+	runner           *agent.Runner
+	evidenceStore    *evidence.Store
+	mcpServer        http.Handler // native MCP at POST /mcp
+	mcpProxy         http.Handler // optional MCP proxy at POST /mcp/proxy
+	gateway          http.Handler // optional LLM API gateway at /v1/proxy/*
+	actionServices   ActionServiceResolver
+	approvalOwners   ApprovalOwnerResolver
+	approvers        ApproverResolver
+	tenantManager    *tenant.Manager
+	webhookHandler   *trigger.WebhookHandler
+	planReviewStore  *agent.PlanReviewStore
+	memoryStore      *memory.Store
+	sessionStore     *session.Store
+	policyEngine     *policy.Engine
+	secretsStore     *secrets.SecretStore
+	policy           *policy.Policy
+	metricsCollector *metrics.Collector
+	adminKey         string
 	// agentKeys resolves presented agent keys against the CURRENT identity
 	// snapshot (#289) — serve injects a registry-holder-backed resolver so a
 	// reload propagates to server auth; static maps serve tests and the
@@ -83,7 +81,7 @@ type Server struct {
 	sovereigntyMode string
 	// agentCapsLookup returns the effective daily/monthly caps for one agent,
 	// computed by the shared ResolveEffectivePolicy over the identity registry
-	// and injected by serve — the dashboard never re-derives caps (#266).
+	// and injected by serve — no read surface re-derives caps (#266).
 	agentCapsLookup func(tenantID, agentID string) (daily, monthly float64, ok bool)
 	// fleetView backs GET /v1/agents/fleet (#269): ONE coherent read of the
 	// active runtime generation and the reloader's accept/reject state.
@@ -140,11 +138,6 @@ func WithMemoryStore(m *memory.Store) Option {
 	return func(s *Server) { s.memoryStore = m }
 }
 
-// WithDashboard sets the embedded dashboard HTML.
-func WithDashboard(html string) Option {
-	return func(s *Server) { s.dashboardHTML = html }
-}
-
 // WithCORSOrigins sets allowed CORS origins (e.g. ["*"] for MVP).
 func WithCORSOrigins(origins []string) Option {
 	return func(s *Server) { s.corsOrigins = origins }
@@ -155,7 +148,7 @@ func WithSessionStore(ss *session.Store) Option {
 	return func(s *Server) { s.sessionStore = ss }
 }
 
-// WithActiveRunTracker sets the in-flight run tracker for status/dashboard active_runs.
+// WithActiveRunTracker sets the in-flight run tracker behind /v1/status active_runs.
 func WithActiveRunTracker(tracker *agent.ActiveRunTracker) Option {
 	return func(s *Server) { s.activeRunTracker = tracker }
 }
@@ -201,7 +194,7 @@ func WithProxyQuickstart(h http.Handler) Option {
 }
 
 // WithAgentCapsLookup injects the per-agent effective-cap lookup (identity
-// registry + ResolveEffectivePolicy), keeping the dashboard budget view on the
+// registry + ResolveEffectivePolicy), keeping the /v1/costs/budget view on the
 // same calculation path as enforcement (#266).
 func WithAgentCapsLookup(fn func(tenantID, agentID string) (daily, monthly float64, ok bool)) Option {
 	return func(s *Server) { s.agentCapsLookup = fn }
@@ -248,12 +241,8 @@ func WithQuickstartEnabled(enabled bool) Option {
 	return func(s *Server) { s.quickstartEnabled = enabled }
 }
 
-// WithGatewayDashboard sets the embedded gateway dashboard HTML.
-func WithGatewayDashboard(html string) Option {
-	return func(s *Server) { s.gatewayDashboardHTML = html }
-}
-
-// WithMetricsCollector sets the metrics collector for the gateway dashboard API.
+// WithMetricsCollector sets the metrics collector behind the gateway metrics
+// API (GET /api/v1/metrics and its SSE stream).
 func WithMetricsCollector(c *metrics.Collector) Option {
 	return func(s *Server) { s.metricsCollector = c }
 }
@@ -499,15 +488,7 @@ func (s *Server) Routes() http.Handler {
 		// source of truth — generation, membership, reload accept/reject.
 		r.Get("/v1/agents/fleet", s.handleAgentsFleet)
 
-		r.Get("/v1/dashboard/tenants-summary", s.handleTenantsSummary)
-		r.Get("/v1/dashboard/agent-health", s.handleAgentHealth)
-		r.Get("/v1/dashboard/drift-signals", s.handleDriftSignals)
-		r.Get("/v1/dashboard/denials-by-reason", s.handleDenialsByReason)
-		r.Get("/v1/dashboard/governance-alerts", s.handleGovernanceAlerts)
-		r.Get("/v1/dashboard/audit-pack", s.handleAuditPack)
-		r.Get("/v1/dashboard/review-history", s.handleReviewHistory)
-
-		// CoPaw dashboard: stats and alerts for CoPaw-tagged gateway agents.
+		// CoPaw: stats and alerts for CoPaw-tagged gateway agents.
 		r.Get("/v1/copaw/stats", s.handleCoPawStats)
 		r.Get("/v1/copaw/alerts", s.handleCoPawAlerts)
 
@@ -519,18 +500,12 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/v1/compliance/report", s.handleComplianceReport)
 	})
 
-	// Dashboard (no auth for same-origin MVP; optional to protect later).
-	// HEAD supported so curl -I and health checks get 200 + Content-Type without body.
-	r.Get("/", s.handleDashboard)
-	r.Get("/dashboard", s.handleDashboard)
-	r.Head("/", s.handleDashboard)
-	r.Head("/dashboard", s.handleDashboard)
-
-	// Gateway dashboard and metrics.
-	if s.metricsCollector != nil && s.gatewayDashboardHTML != "" {
+	// Gateway metrics API (admin key). No browser UI is served by this
+	// process: the legacy dashboards at /, /dashboard and /gateway/dashboard
+	// were removed (#533); the replacement console is a separate listener.
+	if s.metricsCollector != nil {
 		r.Group(func(r chi.Router) {
 			r.Use(AdminKeyMiddleware(s.adminKey))
-			r.Get("/gateway/dashboard", s.handleGatewayDashboard)
 			r.Get("/api/v1/metrics", s.handleMetricsJSON)
 			r.Get("/api/v1/metrics/stream", s.handleMetricsStream)
 		})

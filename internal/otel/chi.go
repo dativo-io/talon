@@ -51,7 +51,7 @@ func (s *statusRecorder) WriteHeader(code int) {
 // Flush propagates streaming flushes. Embedding the http.ResponseWriter
 // interface promotes only Header/Write/WriteHeader, so without this method
 // every handler behind the middleware lost http.Flusher and each SSE
-// response (gateway streams, dashboard event feeds) was silently held in
+// response (gateway streams, SSE event feeds) was silently held in
 // the net/http buffer until it filled or the response ended (#476).
 func (s *statusRecorder) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {

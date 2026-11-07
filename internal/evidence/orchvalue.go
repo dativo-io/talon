@@ -10,7 +10,7 @@ const OrchHeaderMaxLen = 128
 // values: length-capped and restricted to the RFC 7230 token charset, and
 // rejected — never truncated — on violation. This blocks header/HTML
 // injection at ingestion so hostile client-asserted strings never reach
-// signed evidence or operator dashboards. Shared by the LLM gateway
+// signed evidence or operator read surfaces. Shared by the LLM gateway
 // (orchestration metadata) and the MCP proxy (#350) so the two ingestion
 // surfaces cannot diverge.
 func ValidateOrchValue(name, v string) (string, error) {

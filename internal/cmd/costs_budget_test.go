@@ -28,7 +28,7 @@ func disableServerBudgetProbe(t *testing.T) {
 	t.Cleanup(func() { costsServerURL = prev })
 }
 
-// TestAgentCapsLookupFor_ParityWithEnforcement (#288): the dashboard/attention-
+// TestAgentCapsLookupFor_ParityWithEnforcement (#288): the budget API/attention-
 // queue budget denominator is EXACTLY the cap enforcement gates on — the same
 // ResolveEffectivePolicy over the agent's own policy override, including the org
 // budget ceilings (#287) via the binding-cap rule. The resolver now reads the

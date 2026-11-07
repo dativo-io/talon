@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -215,7 +217,6 @@ func TestRouteAuthBehavior_GatewayMetricsRequireAdminKey(t *testing.T) {
 	srv := NewServer(
 		nil, nil, nil, engine, pol, "", nil, "admin-secret", map[string]string{"tenant-secret": "default"},
 		WithMetricsCollector(collector),
-		WithGatewayDashboard("<html>gw</html>"),
 	)
 	r := srv.Routes()
 
@@ -1306,31 +1307,63 @@ func TestPlanCrossTenantAccess(t *testing.T) {
 	assert.Equal(t, "pending", string(got.Status))
 }
 
-func TestDashboardEndpoint(t *testing.T) {
+// TestRoutes_NoLegacyDashboardRoutes is the static route guard for the
+// legacy dashboard cutover (#533/#534): the embedded governance dashboard
+// (/, /dashboard), the gateway dashboard page (/gateway/dashboard) and every
+// dashboard-only /v1/dashboard/* endpoint are gone from the route table, and
+// a request to any of them is a plain 404 — never HTML, never a redirect to a
+// console that does not exist yet.
+func TestRoutes_NoLegacyDashboardRoutes(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)
-	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", map[string]string{},
-		WithDashboard("<html></html>"))
+	collector := metrics.NewCollector(nil)
+	t.Cleanup(collector.Close)
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "admin-secret", map[string]string{"k": "default"},
+		WithMetricsCollector(collector))
 	r := srv.Routes()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/dashboard", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "text/html; charset=utf-8", rec.Header().Get("Content-Type"))
-	assert.Equal(t, "<html></html>", rec.Body.String())
-}
 
-func TestDashboardNotConfigured(t *testing.T) {
-	pol := minimalPolicy()
-	engine, err := policy.NewEngine(context.Background(), pol)
-	require.NoError(t, err)
-	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", map[string]string{})
-	r := srv.Routes()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/dashboard", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusNotFound, rec.Code)
+	legacyPattern := regexp.MustCompile(`(^/$)|(^/dashboard)|(^/gateway/dashboard)|(^/v1/dashboard/)`)
+	routes, ok := r.(chi.Routes)
+	require.True(t, ok, "Routes() must return the chi router so the route table can be walked")
+	var registered []string
+	require.NoError(t, chi.Walk(routes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		registered = append(registered, method+" "+route)
+		if legacyPattern.MatchString(route) {
+			t.Errorf("legacy dashboard route still registered: %s %s", method, route)
+		}
+		return nil
+	}))
+	require.NotEmpty(t, registered)
+	assert.Contains(t, registered, "GET /api/v1/metrics", "the machine-readable metrics API must stay mounted")
+
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/"},
+		{http.MethodHead, "/"},
+		{http.MethodGet, "/dashboard"},
+		{http.MethodHead, "/dashboard"},
+		{http.MethodGet, "/gateway/dashboard"},
+		{http.MethodGet, "/v1/dashboard/tenants-summary"},
+		{http.MethodGet, "/v1/dashboard/denials-by-reason"},
+		{http.MethodGet, "/v1/dashboard/governance-alerts"},
+		{http.MethodGet, "/v1/dashboard/audit-pack"},
+		{http.MethodGet, "/v1/dashboard/review-history"},
+		{http.MethodGet, "/v1/dashboard/agent-health"},
+		{http.MethodGet, "/v1/dashboard/drift-signals"},
+	} {
+		for _, withKey := range []bool{false, true} {
+			req := httptest.NewRequestWithContext(context.Background(), tc.method, tc.path, nil)
+			if withKey {
+				req.Header.Set("X-Talon-Admin-Key", "admin-secret")
+			}
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusNotFound, rec.Code, "%s %s (admin key: %v)", tc.method, tc.path, withKey)
+			assert.NotContains(t, rec.Header().Get("Content-Type"), "text/html", "%s %s must not serve HTML", tc.method, tc.path)
+			assert.Empty(t, rec.Header().Get("Location"), "%s %s must not redirect", tc.method, tc.path)
+			assert.NotContains(t, rec.Body.String(), "<html", "%s %s must not serve a page", tc.method, tc.path)
+		}
+	}
 }
 
 func TestEvidenceGetAndVerify(t *testing.T) {
@@ -2055,45 +2088,6 @@ func TestCoPawStatsWithStore(t *testing.T) {
 	assert.NotNil(t, out["requests_today"])
 	assert.NotNil(t, out["cost_today"])
 	assert.NotNil(t, out["cost_month"])
-}
-
-func TestHandleTenantsSummary(t *testing.T) {
-	pol := minimalPolicy()
-	engine, err := policy.NewEngine(context.Background(), pol)
-	require.NoError(t, err)
-	dir := t.TempDir()
-	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
-	gen := evidence.NewGenerator(store)
-	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
-		CorrelationID:  "corr_ts",
-		TenantID:       "default",
-		AgentID:        "agent-1",
-		InvocationType: "manual",
-		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
-		Cost:           0.1,
-		InputPrompt:    "x",
-		OutputResponse: "y",
-	})
-	require.NoError(t, err)
-
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
-	r := srv.Routes()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/dashboard/tenants-summary", nil)
-	req.Header.Set("Authorization", "Bearer k")
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-	var out map[string]interface{}
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
-	tenants, _ := out["tenants"].([]interface{})
-	agents, _ := out["agents"].([]interface{})
-	require.NotNil(t, tenants)
-	require.NotNil(t, agents)
-	assert.GreaterOrEqual(t, len(tenants), 1)
-	assert.GreaterOrEqual(t, len(agents), 1)
 }
 
 func TestCoPawAlertsNoStore(t *testing.T) {

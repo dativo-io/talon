@@ -278,7 +278,7 @@ func TestBuildSessionSummary_LastFailureNewestWins(t *testing.T) {
 }
 
 // Moved with the classifier from internal/metrics (#271): one deny-reason
-// vocabulary for the dashboard event projection and the session summary.
+// vocabulary for the metrics event projection and the session summary.
 func TestDenyReasonCode(t *testing.T) {
 	assert.Equal(t, "policy_deny", DenyReasonCode(nil))
 	assert.Equal(t, "policy_deny", DenyReasonCode([]string{"Data tier 2 exceeds caller restriction (max 1)"}))

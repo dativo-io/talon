@@ -12,7 +12,7 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 )
 
-// Dashboard orchestration sessions panel (#199, epic #192 PR-H).
+// Metrics snapshot orchestration sessions block (#199, epic #192 PR-H).
 
 const sessionsTestKey = "test-signing-key-1234567890123456"
 
@@ -81,7 +81,7 @@ func TestFillSessions_MixedProviderIsOneSession(t *testing.T) {
 	assert.Equal(t, "generator", sess.Subagents[0].AgentID, "agents sorted by descending cost")
 }
 
-// TestFillSessions_EqualsAuditSummary: the dashboard number and the
+// TestFillSessions_EqualsAuditSummary: the metrics snapshot number and the
 // `talon audit --session` number come from the same function over the same
 // records — assert the wiring preserves that.
 func TestFillSessions_EqualsAuditSummary(t *testing.T) {
@@ -92,7 +92,7 @@ func TestFillSessions_EqualsAuditSummary(t *testing.T) {
 	require.NoError(t, store.Store(ctx, sessEvidence("ev2", "sess-eq", "coder", "openai", "gpt-5.3-codex", "judge", 0.02, false, now.Add(-1*time.Minute))))
 	// Operational-contract records (#271): a failed failover attempt, a
 	// retried fallback dispatch, and a blocked MCP tool call — the full-struct
-	// equality below proves the dashboard carries every new field.
+	// equality below proves the snapshot carries every new field.
 	attempt := sessEvidence("ev3", "sess-eq", "coder", "anthropic", "claude-sonnet-5", "generator", 0, true, now.Add(-2*time.Minute))
 	attempt.InvocationType = "gateway_failover_attempt"
 	attempt.Execution.Error = "upstream status 529"
@@ -119,7 +119,7 @@ func TestFillSessions_EqualsAuditSummary(t *testing.T) {
 	require.NoError(t, err)
 	audit := evidence.BuildSessionSummary("sess-eq", records)
 
-	assert.Equal(t, audit, snap.Sessions[0], "dashboard and talon audit must be byte-identical for the same session")
+	assert.Equal(t, audit, snap.Sessions[0], "metrics snapshot and talon audit must be byte-identical for the same session")
 	// The fixture must actually exercise the operational fields, or the
 	// equality above proves nothing about them.
 	assert.Equal(t, 3, audit.Requests)
@@ -175,16 +175,16 @@ func TestFillSessions_BoundedByRecency(t *testing.T) {
 	store := newSessionsEvidenceStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
-	for i := 0; i < maxDashboardSessions+5; i++ {
+	for i := 0; i < maxSnapshotSessions+5; i++ {
 		id := string(rune('a'+i%26)) + "-sess-" + time.Duration(i).String()
 		ev := sessEvidence("ev-"+id, "sess-"+id, "coder", "openai", "gpt-5.3-codex", "agent", 0.01, true,
-			now.Add(-time.Duration(maxDashboardSessions+5-i)*time.Minute))
+			now.Add(-time.Duration(maxSnapshotSessions+5-i)*time.Minute))
 		require.NoError(t, store.Store(ctx, ev))
 	}
 	c := NewCollector(nil, WithSessionQuerier(store))
 	defer c.Close()
 	snap := c.Snapshot(ctx)
-	require.Len(t, snap.Sessions, maxDashboardSessions)
+	require.Len(t, snap.Sessions, maxSnapshotSessions)
 	// Newest-first ordering: first session's LastSeen >= last session's.
 	first := snap.Sessions[0].LastSeen
 	last := snap.Sessions[len(snap.Sessions)-1].LastSeen

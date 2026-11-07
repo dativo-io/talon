@@ -2,7 +2,7 @@
 // (#270): the ONE projection that turns runtime membership + evidence/session
 // signals into per-agent STATE/HEALTH/COST/WHY rows. Both the server's
 // GET /v1/agents/fleet handler and the `talon agents` CLI call Project — the
-// dashboard and the CLI never compute health, budget, or session state
+// API consumers and the CLI never compute health, budget, or session state
 // independently (the #270 parity acceptance criterion).
 //
 // Two output concepts are kept as DISTINCT types and never conflated:
@@ -184,7 +184,7 @@ type AgentStatus struct {
 }
 
 // AgentRow is one projected attention-queue row: the STATE/HEALTH/COST/WHY the
-// CLI and dashboard both render. STATE and HEALTH are DISTINCT types (#270): a
+// CLI and API consumers both render. STATE and HEALTH are DISTINCT types (#270): a
 // configured State and an evaluated Health — never conflated.
 type AgentRow struct {
 	Name     string  `json:"name"`
@@ -216,7 +216,7 @@ type AgentRow struct {
 }
 
 // UseCase is the AI use-case operating record (#382) as projected to the CLI
-// and dashboard: flat strings mirroring policy.UseCaseConfig so internal/fleet
+// and API: flat strings mirroring policy.UseCaseConfig so internal/fleet
 // stays a leaf read model (no policy import). Owner values are attribution
 // for humans reading the fleet — the Talon key authenticates the presenter of
 // traffic; nothing here authenticates the named owners, and none of it is a

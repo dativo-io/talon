@@ -262,7 +262,7 @@ func annexMonitoringSection(sys SystemDeclarations, stats annexIVStats) DocSecti
 		rows = append(rows, []string{"Records with egress decisions (destination control)", strconv.Itoa(stats.egressDecided)})
 	}
 	body := "Every governed request produces an HMAC-signed evidence record (policy decision, classification, model, cost, duration) " +
-		"exported via OpenTelemetry. Operators monitor via the dashboard and metrics endpoints; plan-review gates require human " +
+		"exported via OpenTelemetry. Operators monitor via the CLI and the metrics API; plan-review gates require human " +
 		"approval before agent tool execution where configured."
 	if sys.OversightDescription != "" {
 		body += " Declared oversight arrangements: " + sys.OversightDescription

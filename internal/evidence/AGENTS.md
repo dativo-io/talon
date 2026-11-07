@@ -12,6 +12,6 @@ These rules apply when changing `internal/evidence/**`.
 - Never place credentials, raw authorization tokens, signing/vault keys, or unnecessary raw configuration into evidence.
 - Evidence can prove what Talon observed or authorized at its boundary. Do not claim direct observation of external effects Talon did not see.
 - State mutation plus mandatory evidence should share a transaction where the architecture supports it. Where filesystem/runtime/external boundaries prevent one transaction, define and test an explicit recovery protocol.
-- CLI/API/dashboard summaries should consume shared evidence/projection semantics rather than independently reinterpret records.
+- CLI/API summaries should consume shared evidence/projection semantics rather than independently reinterpret records.
 
 When adding an evidence-producing feature, test both the record itself and the projections that depend on its classification.

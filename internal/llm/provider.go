@@ -60,7 +60,7 @@ type Provider interface {
 // ProviderMetadata carries static compliance and identity information.
 type ProviderMetadata struct {
 	ID               string   // canonical identifier, e.g. "azure-openai", "openai", "ollama"
-	DisplayName      string   // human-readable, shown in CLI and dashboard
+	DisplayName      string   // human-readable, shown in CLI and API output
 	Jurisdiction     string   // "EU", "US", "CN", "CA", "LOCAL"
 	DPAAvailable     bool     // Data Processing Agreement available
 	EURegions        []string // EU region identifiers; empty if no EU regions

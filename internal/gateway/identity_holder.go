@@ -6,7 +6,7 @@ import "sync/atomic"
 // In fleet mode (#267) the ONE implementation that matters is the view over
 // the agentcatalog RuntimeHolder: catalog, compiled bundles, and registry
 // publish as ONE generation behind ONE pointer, so gateway auth, server
-// agent-key auth, dashboard caps, and metrics scope can never observe a
+// agent-key auth, budget caps, and metrics scope can never observe a
 // different generation than native execution. RegistryHolder below is the
 // standalone implementation for gateway-internal tests.
 type RegistrySource interface {
