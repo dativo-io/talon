@@ -71,6 +71,9 @@ test-openshell-live: ## REAL OpenShell live smoke (#482/#457): pinned released g
 test-openshell-live-claude-code: ## REAL Claude Code (pinned executable, built into a local workload image) inside the REAL OpenShell sandbox through Talon's PRE_CREDENTIALS/PRE_RETURN middleware against an Anthropic-shaped mock provider (#528, C01–C03: allowed SSE turn, PII redaction, DENY = 0 provider calls, unbound sandbox, Talon down, bypass refused by OpenShell, credential isolation, truncated stream, evidence); needs Docker >= 28 on Linux, no keys
 	@TALON_OPENSHELL_LANE=claude-code bash scripts/openshell-live.sh
 
+test-openshell-live-claude-code-anthropic: ## Opt-in REAL-provider mode of the claude-code lane (#528 mode B): same sandbox, policy and client against api.anthropic.com; the key enters only through OpenShell's provider store (export ANTHROPIC_API_KEY); spends real money, never runs in CI; mock-only assertions are replaced by Talon's signed records
+	@TALON_OPENSHELL_LANE=claude-code TALON_CLAUDE_LIVE_ANTHROPIC=1 bash scripts/openshell-live.sh
+
 test-openshell-showcase-contract: build ## Offline contract test of the canonical OpenShell showcase runner (vocabulary, embedded contract, standalone prepare validated by doctor, release-manifest gate) and of the bundle + customer path (#507); no Docker
 	@TALON_SHOWCASE_TALON_BIN="$(CURDIR)/bin/talon" bash ./examples/openshell/showcase/test-contract.sh
 	@TALON_SHOWCASE_TALON_BIN="$(CURDIR)/bin/talon" bash ./scripts/test-showcase-bundle.sh
