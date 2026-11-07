@@ -362,8 +362,11 @@ func guardScanResult(in DelegatedResponseBody, action string) *ResponsePIIScanRe
 	result.PIIDetected, result.PIITypes, result.Tier = in.Guard.PIIDetected, in.Guard.PIITypes, in.Guard.Tier
 	if in.Guard.Blocked {
 		result.Blocked, result.BlockReason = true, in.Guard.Code
+		// A withhold for anything but a positive finding means the guard
+		// could not inspect: the scan did not cover the response and the
+		// signed status says so (same mapping as the held-whole path).
 		switch in.Guard.Code {
-		case "output_scanner_unavailable":
+		case "output_scanner_unavailable", CodeResponseContentUnsupported:
 			result.markIncomplete(evidence.ResponseScanIncompleteScannerUnavailable)
 		case CodeResponseScanIncomplete:
 			result.markIncomplete(evidence.ResponseScanIncompleteCaptureLimitExceeded)

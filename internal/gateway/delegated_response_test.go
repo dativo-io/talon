@@ -843,9 +843,10 @@ func TestDelegatedStreamGuard_InspectsEveryUnitAndFailsClosed(t *testing.T) {
 		return `event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"` + kind + `","` + field + `":` + strconv.Quote(value) + `}}`
 	}
 	for name, tc := range map[string]struct {
-		units []string
-		code  string // "" = every unit released
-		at    int
+		units      []string
+		code       string // "" = every unit released
+		at         int
+		incomplete string // expected response_scan.incomplete_reason ("" = status complete)
 	}{
 		"complete value in an unterminated frame": {
 			units: []string{delta("text_delta", "text", "mail "+email), "\n\n"}, code: "output_pii_blocked", at: 1,
@@ -875,10 +876,10 @@ func TestDelegatedStreamGuard_InspectsEveryUnitAndFailsClosed(t *testing.T) {
 			units: []string{`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"jane.doe@example.com`}, code: "output_pii_blocked", at: 1,
 		},
 		"unparseable content-bearing frame": {
-			units: []string{"data: {not json at all\n\n"}, code: CodeResponseContentUnsupported, at: 1,
+			units: []string{"data: {not json at all\n\n"}, code: CodeResponseContentUnsupported, at: 1, incomplete: evidence.ResponseScanIncompleteScannerUnavailable,
 		},
 		"carried fragment beyond the bound": {
-			units: []string{"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"" + strings.Repeat("x", streamGuardFrameCarryLimit)}, code: CodeResponseScanIncomplete, at: 1,
+			units: []string{"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"" + strings.Repeat("x", streamGuardFrameCarryLimit)}, code: CodeResponseScanIncomplete, at: 1, incomplete: evidence.ResponseScanIncompleteCaptureLimitExceeded,
 		},
 		"benign frames and a benign cut fragment": {
 			units: []string{": keep-alive\n\n", "event: ping\ndata: {\"type\":\"ping\"}\n\n", "data: [DONE]\n\n", delta("text_delta", "text", "all good") + "\n\n", "event: content_block_delta\ndata: {\"type\":\"content_block_de"}, code: "",
@@ -901,6 +902,18 @@ func TestDelegatedStreamGuard_InspectsEveryUnitAndFailsClosed(t *testing.T) {
 			if tc.code == "" {
 				assert.False(t, sg.Summary().Blocked)
 			}
+			// Third review of PR #531 (P2): the signed scan status must not
+			// claim complete coverage when the guard withheld because it
+			// could not inspect (unparseable frame, carry beyond the bound).
+			scan := guardScanResult(DelegatedResponseBody{Guard: sg.Summary()}, "redact")
+			assert.Equal(t, tc.code != "", scan.Blocked, "evidence blocked")
+			assert.Equal(t, tc.code, scan.BlockReason, "evidence block_reason")
+			assert.Equal(t, tc.incomplete, scan.IncompleteReason, "evidence incomplete_reason")
+			wantStatus := evidence.ResponseScanStatusComplete
+			if tc.incomplete != "" {
+				wantStatus = evidence.ResponseScanStatusIncomplete
+			}
+			assert.Equal(t, wantStatus, scan.Status, "evidence status")
 		})
 	}
 }
