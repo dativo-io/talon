@@ -127,12 +127,48 @@ func (v view) json() []byte {
 	return b
 }
 
-// newHandler builds the provider mux: the OpenAI-compatible route plus the
-// harness's state/reset routes. stateFile, when set, is rewritten after
-// every provider call with the snapshot taken in that call's critical
-// section (serialized by a dedicated mutex so writes never interleave).
+// recorder is the part of every provider route that is independent of the
+// wire: it reads the body within the bound, records the call under the
+// state lock, persists the snapshot (serialized by fileMu so writes never
+// interleave) and honours X-Mock-Delay-Ms before the route answers.
+type recorder struct {
+	st        *state
+	stateFile string
+	maxBody   int64
+	fileMu    sync.Mutex
+}
+
+// take returns false when the request was refused unrecorded (an oversized
+// body is not a provider call) or abandoned while delaying.
+func (rc *recorder) take(w http.ResponseWriter, r *http.Request) (record, []byte, bool) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, rc.maxBody+1))
+	if err != nil || int64(len(body)) > rc.maxBody {
+		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+		return record{}, nil, false
+	}
+	rec, snap := rc.st.record(r, body)
+	if rc.stateFile != "" {
+		rc.fileMu.Lock()
+		_ = os.WriteFile(rc.stateFile, snap.json(), 0o600) //nolint:gosec // operator-provided --state-file path of the test harness
+		rc.fileMu.Unlock()
+	}
+	log.Printf("provider call %d: %s %s body=%d bytes auth=%s x-api-key=%s stream=%t scenario=%q ua=%q", rec.Seq, rec.Method, rec.Path, len(body), describeAuth(rec.Authorization), describeKey(rec.XAPIKey), rec.Stream, rec.Scenario, rec.UserAgent)
+	if ms := delayMs(r.Header.Get("X-Mock-Delay-Ms")); ms > 0 {
+		select {
+		case <-time.After(time.Duration(ms) * time.Millisecond):
+		case <-r.Context().Done():
+			return record{}, nil, false
+		}
+	}
+	return rec, body, true
+}
+
+// newHandler builds the provider mux: the OpenAI-compatible route, the
+// Anthropic Messages routes and the harness's state/reset routes.
+// stateFile, when set, is rewritten after every provider call with the
+// snapshot taken in that call's critical section.
 func newHandler(st *state, stateFile string, maxBody int64) http.Handler {
-	var fileMu sync.Mutex
+	rc := &recorder{st: st, stateFile: stateFile, maxBody: maxBody}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/__state", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -146,108 +182,96 @@ func newHandler(st *state, stateFile string, maxBody int64) http.Handler {
 		st.reset()
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// recorded reads the body within the bound, records the call under the
-	// lock, persists the snapshot, honours X-Mock-Delay-Ms and then lets the
-	// route answer. A false return means the request was refused unrecorded
-	// (an oversized body is not a provider call) or abandoned.
-	recorded := func(w http.ResponseWriter, r *http.Request) (record, []byte, bool) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
-		if err != nil || int64(len(body)) > maxBody {
-			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
-			return record{}, nil, false
-		}
-		rec, snap := st.record(r, body)
-		if stateFile != "" {
-			fileMu.Lock()
-			_ = os.WriteFile(stateFile, snap.json(), 0o600) //nolint:gosec // operator-provided --state-file path of the test harness
-			fileMu.Unlock()
-		}
-		log.Printf("provider call %d: %s %s body=%d bytes auth=%s x-api-key=%s stream=%t scenario=%q ua=%q", rec.Seq, rec.Method, rec.Path, len(body), describeAuth(rec.Authorization), describeKey(rec.XAPIKey), rec.Stream, rec.Scenario, rec.UserAgent)
-		if ms := delayMs(r.Header.Get("X-Mock-Delay-Ms")); ms > 0 {
-			select {
-			case <-time.After(time.Duration(ms) * time.Millisecond):
-			case <-r.Context().Done():
-				return record{}, nil, false
-			}
-		}
-		return rec, body, true
-	}
-	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		// Tool-calling conversations (the SDK agent) get the scripted tool
-		// choices; plain prompts (the curl cases) get the fixed completion.
-		// Decided before recording so the record carries the scenario.
-		if scenario := r.Header.Get("X-Mock-Scenario"); scenario == "" && r.ContentLength != 0 {
-			peek, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
-			if err != nil {
-				http.Error(w, "read error", http.StatusBadRequest)
-				return
-			}
-			r.Body = io.NopCloser(bytes.NewReader(peek))
-			if int64(len(peek)) <= maxBody && bytes.Contains(peek, []byte(`"tools"`)) {
-				r.Header.Set("X-Mock-Scenario", scenarioTools)
-			}
-		}
-		rec, body, ok := recorded(w, r)
-		if !ok {
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		var status int
-		var answer []byte
-		if rec.Scenario == scenarioTools {
-			status, answer = toolsResponse(body, rec.Seq)
-		} else {
-			status, answer = scenarioResponse(rec.Scenario, rec.Seq)
-		}
-		w.WriteHeader(status)
-		_, _ = w.Write(answer)
-	})
+	mux.HandleFunc("/v1/chat/completions", rc.chatCompletions)
 	// Anthropic Messages API — what the real Claude Code executable speaks.
 	// count_tokens is answered with a fixed count and never a completion;
 	// /v1/messages answers JSON or, when the request says "stream": true,
 	// the SSE event sequence a client needs to terminate cleanly
 	// (message_start … message_delta with usage … message_stop).
-	mux.HandleFunc("/v1/messages/count_tokens", func(w http.ResponseWriter, r *http.Request) {
-		if _, _, ok := recorded(w, r); !ok {
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"input_tokens":42}`))
-	})
-	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
-		rec, body, ok := recorded(w, r)
-		if !ok {
-			return
-		}
-		status, contentType, answer := anthropicResponse(rec.Scenario, rec.Seq, requestModel(body), rec.Stream)
-		w.Header().Set("Content-Type", contentType)
-		w.WriteHeader(status)
-		if rec.Scenario == scenarioTruncatedStream && rec.Stream {
-			// The provider dies mid-stream: the head and the first events go
-			// out, then the connection is closed without message_delta /
-			// message_stop. Hijack so no framing is completed for the client.
-			cut := bytes.Index(answer, []byte("event: content_block_stop"))
-			if cut < 0 {
-				cut = len(answer) / 2
-			}
-			_, _ = w.Write(answer[:cut])
-			if f, ok := w.(http.Flusher); ok {
-				f.Flush() // the partial events must reach the wire before the connection is dropped
-			}
-			if hj, ok := w.(http.Hijacker); ok {
-				if conn, buf, err := hj.Hijack(); err == nil {
-					_ = buf.Flush()
-					_ = conn.Close()
-				}
-			}
-			return
-		}
-		_, _ = w.Write(answer)
-	})
+	mux.HandleFunc("/v1/messages/count_tokens", rc.countTokens)
+	mux.HandleFunc("/v1/messages", rc.messages)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mock provider: unknown route "+r.URL.Path, http.StatusNotFound)
 	})
 	return mux
+}
+
+// chatCompletions is the OpenAI-compatible route. Tool-calling conversations
+// (the SDK agent) get the scripted tool choices; plain prompts (the curl
+// cases) get the fixed completion. Decided before recording so the record
+// carries the scenario.
+func (rc *recorder) chatCompletions(w http.ResponseWriter, r *http.Request) {
+	if scenario := r.Header.Get("X-Mock-Scenario"); scenario == "" && r.ContentLength != 0 {
+		peek, err := io.ReadAll(io.LimitReader(r.Body, rc.maxBody+1))
+		if err != nil {
+			http.Error(w, "read error", http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(peek))
+		if int64(len(peek)) <= rc.maxBody && bytes.Contains(peek, []byte(`"tools"`)) {
+			r.Header.Set("X-Mock-Scenario", scenarioTools)
+		}
+	}
+	rec, body, ok := rc.take(w, r)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	var status int
+	var answer []byte
+	if rec.Scenario == scenarioTools {
+		status, answer = toolsResponse(body, rec.Seq)
+	} else {
+		status, answer = scenarioResponse(rec.Scenario, rec.Seq)
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(answer)
+}
+
+func (rc *recorder) countTokens(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := rc.take(w, r); !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"input_tokens":42}`))
+}
+
+func (rc *recorder) messages(w http.ResponseWriter, r *http.Request) {
+	rec, body, ok := rc.take(w, r)
+	if !ok {
+		return
+	}
+	status, contentType, answer := anthropicResponse(rec.Scenario, rec.Seq, requestModel(body), rec.Stream)
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(status)
+	if rec.Scenario == scenarioTruncatedStream && rec.Stream {
+		writeTruncatedStream(w, answer)
+		return
+	}
+	_, _ = w.Write(answer)
+}
+
+// writeTruncatedStream is the provider dying mid-stream: the head and the
+// first events go out, then the connection is closed without
+// message_delta / message_stop. Hijack so no framing is completed for the
+// client.
+func writeTruncatedStream(w http.ResponseWriter, answer []byte) {
+	cut := bytes.Index(answer, []byte("event: content_block_stop"))
+	if cut < 0 {
+		cut = len(answer) / 2
+	}
+	_, _ = w.Write(answer[:cut])
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush() // the partial events must reach the wire before the connection is dropped
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		return
+	}
+	if conn, buf, err := hj.Hijack(); err == nil {
+		_ = buf.Flush()
+		_ = conn.Close()
+	}
 }
 
 func main() {
