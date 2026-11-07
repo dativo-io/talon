@@ -18,8 +18,8 @@
 #      back with the requested model identity and usage; no provider key leaks.
 #   B) provider-native compatibility: streaming SSE (message_start … message_stop)
 #      with usage parsed from the stream; count_tokens governed at cost 0; an
-#      upstream 4xx (provider validation error) is returned as an error, never
-#      as a success, and evidenced as a failed execution.
+#      upstream 4xx (the provider's own request validation) is returned as an
+#      error, never as a success, and evidenced as a failed execution.
 #   C) policy enforcement: a wrong agent key → 401; a priced model outside the
 #      provider allow list → 403 model_not_allowed, attributed to Talon's
 #      policy in evidence (allowed=false, reason), with no failover; an unpriced
@@ -199,12 +199,16 @@ GWEOF
     log_failure "B: count_tokens should be evidenced as gateway_count_tokens at cost 0" "evidence=$(jq -c '{invocation_type, cost:.execution.cost, allowed:.policy_decision.allowed}' <<< "$ev_c" 2>/dev/null)"
   fi
 
-  # Provider error: max_tokens 0 is rejected by Anthropic's request validation
-  # (400 invalid_request_error). Talon must relay the error status, not report
-  # a success, and evidence the failed execution without usage.
+  # Provider error: a temperature outside the documented 0..1 range fails
+  # Anthropic's request validation (400 invalid_request_error) before any
+  # generation. (max_tokens 0 is NOT a validation error: the live API answers
+  # it with an empty message and stop_reason max_tokens — observed 2026-11-07.)
+  # Talon must relay the error status, not report a success, and evidence
+  # the failed execution without usage.
   local ehdr="$dir/err_headers.txt" ebody="$dir/err_body.json"
-  code="$(smoke_gw_post_anthropic "$base" x-api-key "$agent_key" "$(smoke_body_anthropic false "$model" 0)" "$ehdr" "$ebody")"
-  if ! assert_pass "B: provider validation error (max_tokens 0) is relayed as HTTP 400, never 200" test "$code" = "400"; then
+  local err_req; err_req="$(printf '{"model":"%s","max_tokens":24,"temperature":2.0,"messages":[{"role":"user","content":"Reply with the single word PONG"}]}' "$model")"
+  code="$(smoke_gw_post_anthropic "$base" x-api-key "$agent_key" "$err_req" "$ehdr" "$ebody")"
+  if ! assert_pass "B: provider validation error (temperature out of range) is relayed as HTTP 400, never 200" test "$code" = "400"; then
     dump_diag_kv "section 42 provider error" "http_code=$code"
     dump_diag_json "provider error body" "$(cat "$ebody" 2>/dev/null || echo '(missing)')"
   fi

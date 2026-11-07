@@ -426,18 +426,20 @@ func requestModel(body []byte) string {
 }
 
 // anthropicRequestValidation mirrors the one Messages API validation the
-// smoke suite exercises as a provider error: max_tokens must be >= 1. The
-// message is the provider's wording; an empty result means the request is
-// accepted.
+// smoke suite exercises as a provider error: temperature must be within
+// 0..1. (max_tokens 0 is accepted by the live API — it answers an empty
+// message with stop_reason max_tokens — so it is deliberately not rejected
+// here.) The message follows the provider's wording; an empty result means
+// the request is accepted.
 func anthropicRequestValidation(body []byte) string {
 	var req struct {
-		MaxTokens *int `json:"max_tokens"`
+		Temperature *float64 `json:"temperature"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil || req.MaxTokens == nil {
+	if err := json.Unmarshal(body, &req); err != nil || req.Temperature == nil {
 		return ""
 	}
-	if *req.MaxTokens < 1 {
-		return "max_tokens: Input should be greater than or equal to 1"
+	if *req.Temperature < 0 || *req.Temperature > 1 {
+		return "temperature: Input should be less than or equal to 1"
 	}
 	return ""
 }
