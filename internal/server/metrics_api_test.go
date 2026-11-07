@@ -13,19 +13,17 @@ import (
 
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/requestctx"
-	"github.com/dativo-io/talon/web"
 )
 
-func newTestServerWithDashboard(t *testing.T, token string) (*Server, *metrics.Collector) {
+func newTestServerWithMetrics(t *testing.T, token string) (*Server, *metrics.Collector) {
 	t.Helper()
 	collector := metrics.NewCollector(nil)
 	t.Cleanup(collector.Close)
 
 	s := &Server{
-		metricsCollector:     collector,
-		gatewayDashboardHTML: "<html>test dashboard</html>",
-		adminKey:             token,
-		agentKeys:            StaticAgentKeys(nil),
+		metricsCollector: collector,
+		adminKey:         token,
+		agentKeys:        StaticAgentKeys(nil),
 	}
 	return s, collector
 }
@@ -34,35 +32,8 @@ func newTestRequest(method, target string) *http.Request {
 	return httptest.NewRequestWithContext(context.Background(), method, target, nil)
 }
 
-func TestHandleGatewayDashboard(t *testing.T) {
-	s, _ := newTestServerWithDashboard(t, "")
-	req := newTestRequest("GET", "/gateway/dashboard")
-	rec := httptest.NewRecorder()
-
-	s.handleGatewayDashboard(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Header().Get("Content-Type"), "text/html")
-	assert.Contains(t, rec.Body.String(), "test dashboard")
-}
-
-func TestEmbeddedDashboardsContainUnifiedMissionControlMarkers(t *testing.T) {
-	assert.Contains(t, web.DashboardHTML, "Talon Mission Control")
-	assert.Contains(t, web.DashboardHTML, "Session timeline (lifecycle)")
-	assert.Contains(t, web.DashboardHTML, "Compliance report preview")
-	assert.Contains(t, web.DashboardHTML, "runtime-warning-banner")
-	assert.Contains(t, web.DashboardHTML, "renderEventSignalChips")
-
-	assert.Contains(t, web.GatewayDashboardHTML, "Talon <span>Mission Control</span>")
-	// Renamed from "Session Timeline (Lifecycle)" — that name now belongs to
-	// the orchestration sessions panel (#199 naming-collision requirement).
-	assert.Contains(t, web.GatewayDashboardHTML, "Gateway Activity Feed")
-	assert.Contains(t, web.GatewayDashboardHTML, "Compliance Report Preview")
-	assert.Contains(t, web.GatewayDashboardHTML, "reliability-badge")
-}
-
 func TestHandleMetricsJSON(t *testing.T) {
-	s, collector := newTestServerWithDashboard(t, "")
+	s, collector := newTestServerWithMetrics(t, "")
 	collector.Record(metrics.GatewayEvent{
 		Timestamp: time.Now(),
 		AgentName: "app-1",
@@ -87,7 +58,7 @@ func TestHandleMetricsJSON(t *testing.T) {
 }
 
 func TestMetricsEndpoint_ContainsNewFields(t *testing.T) {
-	s, collector := newTestServerWithDashboard(t, "")
+	s, collector := newTestServerWithMetrics(t, "")
 	now := time.Now().UTC()
 	collector.Record(metrics.GatewayEvent{Timestamp: now, AgentName: "agent-a", CostEUR: 0.02})
 	collector.Record(metrics.GatewayEvent{Timestamp: now, AgentName: "agent-a", Blocked: true})
@@ -123,7 +94,7 @@ func TestMetricsEndpoint_ContainsNewFields(t *testing.T) {
 }
 
 func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
-	s, collector := newTestServerWithDashboard(t, "")
+	s, collector := newTestServerWithMetrics(t, "")
 
 	now := time.Now()
 	collector.Record(metrics.GatewayEvent{
@@ -222,9 +193,8 @@ func TestHandleMetricsJSON_IncludesPlanStats(t *testing.T) {
 	t.Cleanup(collector.Close)
 
 	s := &Server{
-		metricsCollector:     collector,
-		gatewayDashboardHTML: "<html>test dashboard</html>",
-		agentKeys:            StaticAgentKeys(nil),
+		metricsCollector: collector,
+		agentKeys:        StaticAgentKeys(nil),
 	}
 
 	req := newTestRequest("GET", "/api/v1/metrics")
@@ -250,7 +220,7 @@ func TestHandleMetricsJSON_IncludesPlanStats(t *testing.T) {
 // fetches /api/v1/metrics, and asserts cross-checks between summary and breakdowns
 // (same invariants as unit TestSnapshotCrossChecks and smoke test section 23).
 func TestHandleMetricsJSON_MetricsCrossChecks(t *testing.T) {
-	s, collector := newTestServerWithDashboard(t, "")
+	s, collector := newTestServerWithMetrics(t, "")
 
 	now := time.Now()
 	// 20 events: 12 caller "app-a", 8 caller "app-b"; 2 blocked, 4 errors; mixed PII and cost
@@ -330,7 +300,7 @@ func TestHandleMetricsJSON_MetricsCrossChecks(t *testing.T) {
 }
 
 func TestHandleMetricsStreamSSE(t *testing.T) {
-	s, _ := newTestServerWithDashboard(t, "")
+	s, _ := newTestServerWithMetrics(t, "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -371,46 +341,6 @@ func TestAdminKeyMiddleware_ValidAdminHeader(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestAdminKeyMiddleware_ValidSessionCookie(t *testing.T) {
-	mw := AdminKeyMiddleware("s3cr3t")
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := newTestRequest("GET", "/gateway/dashboard")
-	req.AddCookie(&http.Cookie{Name: adminSessionCookieName, Value: "s3cr3t"})
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
-func TestAdminKeyMiddleware_SetsSessionCookieOnHeaderAuth(t *testing.T) {
-	mw := AdminKeyMiddleware("s3cr3t")
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := newTestRequest("GET", "/")
-	req.Header.Set("X-Talon-Admin-Key", "s3cr3t")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-	cookies := rec.Result().Cookies()
-	found := false
-	for _, c := range cookies {
-		if c.Name == adminSessionCookieName {
-			found = true
-			assert.Equal(t, "s3cr3t", c.Value)
-			assert.True(t, c.HttpOnly)
-			assert.Equal(t, http.SameSiteLaxMode, c.SameSite)
-			assert.Equal(t, "/", c.Path)
-		}
-	}
-	assert.True(t, found, "expected admin session cookie to be set")
-}
-
 func TestAdminKeyMiddleware_BearerFallback(t *testing.T) {
 	mw := AdminKeyMiddleware("s3cr3t")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -439,57 +369,46 @@ func TestAdminKeyMiddleware_InvalidKey(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
-func TestAdminKeyMiddleware_ValidTalonAdminKeyQueryParam(t *testing.T) {
-	mw := AdminKeyMiddleware("s3cr3t")
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+// TestAdminKey_QueryAndCookieNoLongerAuthenticate pins the browser-carrier
+// removal (#533): the retired dashboards read TALON_ADMIN_KEY from
+// `?talon_admin_key=`, the legacy `?token=` and the `talon_admin_session`
+// cookie. None of those authenticates any more, on either admin middleware, and
+// a header-authenticated request no longer receives a cookie copy of the key.
+func TestAdminKey_QueryAndCookieNoLongerAuthenticate(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	agentKeys := StaticAgentKeys(map[string]requestctx.AgentIdentity{"tenant-key-1": {AgentID: "agent-td", TenantID: "tenant-default"}})
+	middlewares := map[string]http.Handler{
+		"AdminKeyMiddleware":        AdminKeyMiddleware("s3cr3t")(ok),
+		"RequireAdminKeyMiddleware": RequireAdminKeyMiddleware("s3cr3t")(ok),
+		"TenantOrAdminMiddleware":   TenantOrAdminMiddleware(agentKeys, "s3cr3t")(ok),
+	}
+	for name, handler := range middlewares {
+		t.Run(name, func(t *testing.T) {
+			for _, target := range []string{
+				"/api/v1/metrics?talon_admin_key=s3cr3t",
+				"/api/v1/metrics?token=s3cr3t",
+				"/v1/evidence?talon_admin_key=s3cr3t",
+			} {
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, newTestRequest("GET", target))
+				assert.Equal(t, http.StatusUnauthorized, rec.Code, "query-string admin key must not authenticate: %s", target)
+			}
 
-	req := newTestRequest("GET", "/gateway/dashboard?talon_admin_key=s3cr3t")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+			req := newTestRequest("GET", "/api/v1/metrics")
+			req.AddCookie(&http.Cookie{Name: "talon_admin_session", Value: "s3cr3t"})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusUnauthorized, rec.Code, "session cookie must not authenticate")
 
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
-func TestAdminKeyMiddleware_InvalidTalonAdminKeyQueryParam(t *testing.T) {
-	mw := AdminKeyMiddleware("s3cr3t")
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := newTestRequest("GET", "/gateway/dashboard?talon_admin_key=wrong")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-}
-
-func TestAdminKeyMiddleware_ValidLegacyTokenQueryParam(t *testing.T) {
-	mw := AdminKeyMiddleware("s3cr3t")
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := newTestRequest("GET", "/gateway/dashboard?token=s3cr3t")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
-func TestAdminKeyMiddleware_TalonAdminKeyQueryParamIgnoredForPost(t *testing.T) {
-	mw := AdminKeyMiddleware("s3cr3t")
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := newTestRequest("POST", "/api/v1/something?talon_admin_key=s3cr3t")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	// POST must not use query param for auth (avoid leaking key in logs)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+			req = newTestRequest("GET", "/api/v1/metrics")
+			req.Header.Set("X-Talon-Admin-Key", "s3cr3t")
+			rec = httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code, "header auth must still work")
+			assert.Empty(t, rec.Result().Cookies(), "no cookie copy of the admin key may be issued")
+			assert.Empty(t, rec.Header().Get("Set-Cookie"))
+		})
+	}
 }
 
 func TestTenantOrAdminMiddleware_AllowsTenantBearer(t *testing.T) {
@@ -518,29 +437,6 @@ func TestTenantOrAdminMiddleware_AllowsAdminKey(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
-func TestTenantOrAdminMiddleware_SetsSessionCookieForAdmin(t *testing.T) {
-	mw := TenantOrAdminMiddleware(StaticAgentKeys(map[string]requestctx.AgentIdentity{"tenant-key-1": {AgentID: "agent-td", TenantID: "tenant-default"}}), "admin-secret")
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := newTestRequest("GET", "/api/v1/metrics")
-	req.Header.Set("X-Talon-Admin-Key", "admin-secret")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-	cookies := rec.Result().Cookies()
-	found := false
-	for _, c := range cookies {
-		if c.Name == adminSessionCookieName {
-			found = true
-			break
-		}
-	}
-	assert.True(t, found, "expected admin session cookie to be set")
 }
 
 func TestTenantOrAdminMiddleware_RejectsMissingAuth(t *testing.T) {

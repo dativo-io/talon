@@ -26,6 +26,6 @@ For work implementing #401, preserve these target invariants:
 - `source` remains identity provenance and is not a second ownership concept;
 - failures/attention are derived from evidence/run/operation facts, not invented session failure states.
 
-Session summaries, fleet health, API, CLI, and dashboard projections should share one semantic source rather than recompute independently.
+Session summaries, fleet health, API and CLI projections should share one semantic source rather than recompute independently.
 
 Concurrency tests are required where completion races with reservation/settlement or other session mutation.

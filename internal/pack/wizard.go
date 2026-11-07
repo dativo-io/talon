@@ -65,7 +65,7 @@ Talon initialized for CrewAI! Next steps:
 
   6. Verify and monitor:
      talon doctor
-     open http://localhost:8080/dashboard
+     talon audit list
 
   7. Review what was enforced:
      talon audit list
@@ -108,7 +108,7 @@ Coding-agents pack scaffolded. Next steps:
 
   6. Watch a session:
      talon audit list --session <id>       # per-subagent rollup
-     open http://localhost:8080/gateway/dashboard   # Coding Sessions panel
+     talon metrics --json                  # sessions block of /api/v1/metrics
 
   7. Review what was enforced (active policy is always enforced):
      talon audit list --session <id>

@@ -16,10 +16,10 @@ import (
 	"github.com/dativo-io/talon/internal/metrics"
 )
 
-// TestDashboardIntegration_EvidenceToAPI is an integration test that proves
+// TestMetricsIntegration_EvidenceToAPI is an integration test that proves
 // the full pipeline: evidence records in SQLite → backfill → Collector →
 // GET /api/v1/metrics → correct JSON aggregates.
-func TestDashboardIntegration_EvidenceToAPI(t *testing.T) {
+func TestMetricsIntegration_EvidenceToAPI(t *testing.T) {
 	dir := t.TempDir()
 	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-hmac-key-that-is-at-least-32-bytes-long")
 	require.NoError(t, err)
@@ -96,12 +96,11 @@ func TestDashboardIntegration_EvidenceToAPI(t *testing.T) {
 	require.NoError(t, collector.BackfillFromStore(ctx, store))
 
 	srv := &Server{
-		metricsCollector:     collector,
-		gatewayDashboardHTML: "<html></html>",
-		agentKeys:            StaticAgentKeys(nil),
+		metricsCollector: collector,
+		agentKeys:        StaticAgentKeys(nil),
 	}
 
-	// Call dashboard API
+	// Call the metrics API
 	req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/metrics", nil)
 	rec := httptest.NewRecorder()
 	srv.handleMetricsJSON(rec, req)

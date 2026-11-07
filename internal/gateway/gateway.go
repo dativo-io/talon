@@ -68,7 +68,7 @@ const (
 // max-across-providers guess.
 type CostEstimator func(provider, model string, usage Usage) CostResult
 
-// MetricsRecorder receives gateway events for dashboard aggregation.
+// MetricsRecorder receives gateway events for metrics aggregation.
 // Implemented by *metrics.Collector via an adapter to avoid import cycles.
 type MetricsRecorder interface {
 	RecordGatewayEvent(event interface{})
@@ -164,7 +164,7 @@ func (g *Gateway) canonicalTenantIDForCache(reg *IdentityRegistry, fromAgent str
 	return fromAgent
 }
 
-// SetMetricsRecorder attaches a dashboard metrics collector. Call after NewGateway.
+// SetMetricsRecorder attaches a metrics collector. Call after NewGateway.
 func (g *Gateway) SetMetricsRecorder(mr MetricsRecorder) {
 	g.metricsRecorder = mr
 }
@@ -1066,7 +1066,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Emit OTel + dashboard metrics
+	// Emit OTel + collector metrics
 	g.emitMetrics(ctx, agent, selectedProvider, selectedModel, classification, toolResult,
 		&tokenUsage, cost, durationMS, forwardErr != nil, responseBlocked, piiAction, false, 0, ttftMS, tpotMS, persisted)
 	if forwardErr != nil {
@@ -1601,7 +1601,7 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 // emitBudgetPolicyInput adds the budget keys to the shared policy input.
 // Effective caps: organization baseline overlaid by the agent's override —
 // the same resolution feeds budget-utilization metrics/alerts so the
-// dashboard and the enforcement decision agree on the denominator (#216).
+// metrics API and the enforcement decision agree on the denominator (#216).
 // The session cap rides the same builder so the primary request and every
 // fallback candidate see it identically (#198). Org budget ceilings
 // (constraints.max_*, #287/#283) ride separate keys with their own deny
@@ -1761,7 +1761,7 @@ func extractContentFromOpenAIResponse(body []byte) string {
 	return v.Choices[0].Message.Content
 }
 
-// emitMetrics records OTel counters and optionally fires a dashboard event.
+// emitMetrics records OTel counters and optionally fires a collector event.
 //
 //nolint:gocyclo // sequential metric recording
 func (g *Gateway) emitMetrics(ctx context.Context, agent *ResolvedIdentity, provider, model string,

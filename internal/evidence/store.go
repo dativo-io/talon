@@ -621,7 +621,7 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	addColumnIfNotExists(db, "step_evidence", "graph_run_id", "TEXT")
 
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_session ON evidence(session_id)")
-	// Partial index for the dashboard sessions panel (#199): only rows with an
+	// Partial index for the metrics sessions block (#199): only rows with an
 	// orchestration block qualify, so the recent-sessions query scans asserted
 	// traffic only instead of json_extract-ing every evidence row.
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_orch_session ON evidence(session_id, timestamp) WHERE json_extract(evidence_json, '$.orchestration') IS NOT NULL")
@@ -970,7 +970,7 @@ func (s *Store) ListStepsByCorrelationID(ctx context.Context, correlationID stri
 // ListRecentOrchestrationSessionIDs returns session ids of the most recently
 // active sessions whose records carry an orchestration block (client- or
 // vendor-asserted identity, #194) — synthetic per-request session ids never
-// have one, so they never reach the dashboard sessions panel (#199). Newest
+// have one, so they never reach the metrics sessions block (#199). Newest
 // activity first, capped at limit.
 func (s *Store) ListRecentOrchestrationSessionIDs(ctx context.Context, limit int) ([]string, error) {
 	if limit <= 0 {
@@ -1437,7 +1437,7 @@ func (s *Store) DenialsByReason(ctx context.Context, tenantID string, from, to t
 	return total, byReason, nil
 }
 
-// GovernanceAlert is a minimal record for the dashboard "risky tool / attachment injection" widget.
+// GovernanceAlert is a minimal "risky tool / attachment injection" record (store projection; no HTTP route serves it since the dashboards were removed, #533).
 type GovernanceAlert struct {
 	ID        string    `json:"id"`
 	Timestamp time.Time `json:"timestamp"`
@@ -1537,7 +1537,7 @@ func (s *Store) TenantsSummary(ctx context.Context, dayStart, dayEnd, monthStart
 	return out, rows.Err()
 }
 
-// AgentSummary is a per-tenant-per-agent aggregate for the dashboard tenants-summary API.
+// AgentSummary is a per-tenant-per-agent aggregate (fleet projection input).
 type AgentSummary struct {
 	TenantID string    `json:"tenant_id"`
 	AgentID  string    `json:"agent_id"`

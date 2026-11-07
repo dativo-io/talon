@@ -1,7 +1,7 @@
 # Advisory policy: suggests graceful degradation when daily budget usage
 # meets the configured threshold. Used by the router to decide whether to
 # switch to fallback_model; this Rego file exposes the same logic for
-# policy-in-the-loop or dashboard queries.
+# policy-in-the-loop or API queries.
 package talon.policy.cost_degradation
 
 import rego.v1

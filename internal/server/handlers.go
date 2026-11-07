@@ -20,7 +20,6 @@ import (
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/approver"
 	"github.com/dativo-io/talon/internal/config"
-	"github.com/dativo-io/talon/internal/drift"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/health"
 	"github.com/dativo-io/talon/internal/memory"
@@ -1193,7 +1192,7 @@ func (s *Server) handleTriggerHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Tenant scope: authenticated tenant first; the query parameter serves
-	// the admin view (same pattern as the dashboard aggregates), then the
+	// the admin view (same pattern as the evidence aggregates), then the
 	// default tenant.
 	tenantID := TenantIDFromContext(r.Context())
 	if tenantID == "" {
@@ -1223,7 +1222,7 @@ func (s *Server) handlePlansPending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Tenant scope: authenticated tenant first; the query parameter serves
-	// the admin view (same pattern as the dashboard aggregates).
+	// the admin view (same pattern as the evidence aggregates).
 	tenantID := TenantIDFromContext(r.Context())
 	if tenantID == "" {
 		tenantID = r.URL.Query().Get("tenant_id")
@@ -1240,247 +1239,6 @@ func (s *Server) handlePlansPending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"plans": plans})
-}
-
-// handleDenialsByReason returns denial counts by reason (policy_deny, attachment_block, tool_filtered, pii_block) for the dashboard Governance widget.
-func (s *Server) handleDenialsByReason(w http.ResponseWriter, r *http.Request) {
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = r.URL.Query().Get("tenant_id")
-	}
-	var from, to time.Time
-	if f := r.URL.Query().Get("from"); f != "" {
-		from, _ = time.Parse(time.RFC3339, f)
-	}
-	if t := r.URL.Query().Get("to"); t != "" {
-		to, _ = time.Parse(time.RFC3339, t)
-	}
-	if s.evidenceStore == nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"total": 0, "by_reason": map[string]int{}})
-		return
-	}
-	total, byReason, err := s.evidenceStore.DenialsByReason(r.Context(), tenantID, from, to)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"total": total, "by_reason": byReason})
-}
-
-// handleGovernanceAlerts returns recent tool_filtered and attachment_injection events for the Governance widget.
-//
-//nolint:dupl // similar to handleReviewHistory but different store and response
-func (s *Server) handleGovernanceAlerts(w http.ResponseWriter, r *http.Request) {
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = r.URL.Query().Get("tenant_id")
-	}
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 {
-		limit = 20
-	}
-	if s.evidenceStore == nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"alerts": []interface{}{}})
-		return
-	}
-	alerts, err := s.evidenceStore.ListGovernanceAlerts(r.Context(), tenantID, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if alerts == nil {
-		alerts = []evidence.GovernanceAlert{}
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"alerts": alerts})
-}
-
-// handleAuditPack returns a JSON audit pack (date range, evidence summary, plan stats, memory reviews, cost) for one-click export.
-func (s *Server) handleAuditPack(w http.ResponseWriter, r *http.Request) {
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = r.URL.Query().Get("tenant_id")
-	}
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	now := time.Now().UTC()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	dayEnd := dayStart.Add(24 * time.Hour)
-	from, to := dayStart, dayEnd
-	if f := r.URL.Query().Get("from"); f != "" {
-		from, _ = time.Parse(time.RFC3339, f)
-	}
-	if t := r.URL.Query().Get("to"); t != "" {
-		to, _ = time.Parse(time.RFC3339, t)
-	}
-	out := map[string]interface{}{
-		"tenant_id":              tenantID,
-		"from":                   from.Format(time.RFC3339),
-		"to":                     to.Format(time.RFC3339),
-		"generated_at":           time.Now().UTC().Format(time.RFC3339),
-		"evidence_count":         0,
-		"cost_eur":               0.0,
-		"pending_plans":          0,
-		"pending_memory_reviews": 0,
-	}
-	if s.evidenceStore != nil {
-		n, _ := s.evidenceStore.CountInRange(r.Context(), tenantID, "", from, to)
-		out["evidence_count"] = n
-		cost, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, "", from, to)
-		out["cost_eur"] = cost
-	}
-	if s.planReviewStore != nil {
-		pending, _ := s.planReviewStore.GetPending(r.Context(), tenantID, "")
-		out["pending_plans"] = len(pending)
-	}
-	if s.memoryStore != nil {
-		n, _ := s.memoryStore.CountPendingReviewForTenant(r.Context(), tenantID)
-		out["pending_memory_reviews"] = n
-	}
-	w.Header().Set("Content-Disposition", `attachment; filename="talon-audit-pack.json"`)
-	writeJSON(w, http.StatusOK, out)
-}
-
-// handleReviewHistory returns recent plan review history (who, when, approve/reject) for the dashboard.
-//
-//nolint:dupl // similar to handleGovernanceAlerts but different store and response
-func (s *Server) handleReviewHistory(w http.ResponseWriter, r *http.Request) {
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = r.URL.Query().Get("tenant_id")
-	}
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 {
-		limit = 20
-	}
-	if s.planReviewStore == nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"reviews": []interface{}{}})
-		return
-	}
-	reviews, err := s.planReviewStore.ListReviewed(r.Context(), tenantID, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if reviews == nil {
-		reviews = []agent.ReviewHistoryEntry{}
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"reviews": reviews})
-}
-
-// handleTenantsSummary returns tenant and agent aggregates for the unified dashboard Tenants & Agents tab.
-// Response: { tenants: [{ tenant_id, request_volume, spend_today, spend_month, denials, pending_plans }], agents: [{ tenant_id, agent_id, requests, cost_eur, blocked, last_run }] }.
-func (s *Server) handleTenantsSummary(w http.ResponseWriter, r *http.Request) {
-	tenantID := TenantIDFromContext(r.Context())
-	now := time.Now().UTC()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	dayEnd := dayStart.Add(24 * time.Hour)
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	monthEnd := monthStart.AddDate(0, 1, 0)
-
-	var tenants []evidence.TenantSummary
-	if s.evidenceStore != nil {
-		var err error
-		tenants, err = s.evidenceStore.TenantsSummary(r.Context(), dayStart, dayEnd, monthStart, monthEnd, tenantID)
-		if err != nil {
-			log.Warn().Err(err).Msg("tenants summary")
-			writeError(w, http.StatusInternalServerError, "internal", err.Error())
-			return
-		}
-	}
-
-	pendingByTenant := make(map[string]int)
-	if s.planReviewStore != nil {
-		pending, err := s.planReviewStore.GetPending(r.Context(), "", "")
-		if err == nil {
-			for _, p := range pending {
-				if p != nil {
-					pendingByTenant[p.TenantID]++
-				}
-			}
-		}
-	}
-
-	tenantResp := make([]map[string]interface{}, 0, len(tenants))
-	for _, t := range tenants {
-		tenantResp = append(tenantResp, map[string]interface{}{
-			"tenant_id":      t.TenantID,
-			"request_volume": t.RequestVolume,
-			"spend_today":    t.SpendToday,
-			"spend_month":    t.SpendMonth,
-			"denials":        t.Denials,
-			"pending_plans":  pendingByTenant[t.TenantID],
-		})
-	}
-
-	var agents []evidence.AgentSummary
-	if s.evidenceStore != nil {
-		var err error
-		agents, err = s.evidenceStore.AgentsSummary(r.Context(), monthStart, monthEnd, tenantID)
-		if err != nil {
-			log.Warn().Err(err).Msg("agents summary")
-		}
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"tenants": tenantResp,
-		"agents":  agents,
-	})
-}
-
-// handleAgentHealth returns per-agent risk-oriented health rows for fleet operations.
-func (s *Server) handleAgentHealth(w http.ResponseWriter, r *http.Request) {
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = r.URL.Query().Get("tenant_id")
-	}
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	if s.evidenceStore == nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"agents": []interface{}{}})
-		return
-	}
-	now := time.Now().UTC()
-	from := now.Add(-24 * time.Hour)
-	rows, err := s.evidenceStore.AgentHealthSummary(r.Context(), from, now, tenantID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": rows})
-}
-
-func (s *Server) handleDriftSignals(w http.ResponseWriter, r *http.Request) {
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = r.URL.Query().Get("tenant_id")
-	}
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	if s.evidenceStore == nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"agents": []interface{}{}})
-		return
-	}
-	analyzer := drift.NewAnalyzer(s.evidenceStore)
-	rows, err := analyzer.ComputeSignals(r.Context(), tenantID, time.Now().UTC())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	for _, row := range rows {
-		for _, sig := range row.Signals {
-			drift.RecordSignal(r.Context(), row.AgentID, sig)
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": rows})
 }
 
 func (s *Server) handlePlanGet(w http.ResponseWriter, r *http.Request) {
@@ -1748,17 +1506,6 @@ func (s *Server) handlePoliciesEvaluate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, decision)
-}
-
-func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	if s.dashboardHTML == "" {
-		writeError(w, http.StatusNotFound, "not_found", "dashboard not configured")
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	//nolint:gosec // G705: dashboard HTML is embedded at build time (web.DashboardHTML), not user-controlled
-	_, _ = w.Write([]byte(s.dashboardHTML))
 }
 
 // sessionTenantScope returns the tenant filter for session reads/mutations:

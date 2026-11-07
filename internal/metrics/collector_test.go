@@ -321,7 +321,7 @@ func TestMetricsQuerierCache(t *testing.T) {
 	require.NotNil(t, snap.CacheStats)
 	assert.Equal(t, 15, snap.CacheStats.Hits)
 	assert.InDelta(t, 0.75, snap.CacheStats.CostSaved, 0.001)
-	// Semantic cache metrics cross-checks (same invariants as dashboard docs and smoke tests)
+	// Semantic cache metrics cross-checks (same invariants as the metrics API docs and smoke tests)
 	assertSnapshotCrossChecks(t, snap)
 }
 

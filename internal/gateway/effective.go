@@ -330,7 +330,7 @@ func providerInList(provider string, list []string) bool {
 
 // BindingDailyCap returns the tightest positive daily cap across the
 // per-agent resolved cap and the org ceiling — the number a budget display
-// must denominate against so the dashboard/CLI can never show more headroom
+// must denominate against so the API/CLI can never show more headroom
 // than enforcement grants (#287/#288). 0 = uncapped.
 func (e *EffectivePolicy) BindingDailyCap() float64 {
 	return tightestPositive(e.MaxDailyCost, e.OrgMaxDailyCost)

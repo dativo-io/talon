@@ -6,7 +6,7 @@ import (
 )
 
 // MetricsQuerier provides read-only aggregate metrics from the evidence store.
-// Implemented by *Store. Used by CLI commands (costs, report) and the dashboard
+// Implemented by *Store. Used by CLI commands (costs, report) and the HTTP API
 // metrics Collector to ensure both produce identical numbers for shared metrics
 // (cost by model, budget utilization, cache savings).
 type MetricsQuerier interface {
@@ -22,8 +22,8 @@ type MetricsQuerier interface {
 	AvgTPOT(ctx context.Context, tenantID, agentID string, from, to time.Time) (float64, error)
 }
 
-// SessionQuerier provides the two reads the dashboard sessions panel needs
-// (#199). Implemented by *Store. The dashboard derives session stats by
+// SessionQuerier provides the two reads the metrics sessions block needs
+// (#199). Implemented by *Store. The metrics snapshot derives session stats by
 // feeding ListBySessionID output through BuildSessionSummary — the same pure
 // function behind `talon audit --session` — so the two surfaces are incapable
 // of disagreeing. No collector-side session state exists: everything is

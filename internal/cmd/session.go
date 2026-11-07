@@ -96,7 +96,7 @@ func sessionList(cmd *cobra.Command, args []string) error {
 
 // sessionDetail is the `session show` contract: the session-store row (when
 // one exists) plus the evidence-derived summary. The summary is built by
-// evidence.BuildSessionSummary — the same pure function behind the dashboard
+// evidence.BuildSessionSummary — the same pure function behind the metrics API
 // session drill-down, so the two views cannot disagree (#271).
 type sessionDetail struct {
 	Session   *talonsession.Session   `json:"session,omitempty"`

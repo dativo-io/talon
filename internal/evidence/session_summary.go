@@ -10,7 +10,7 @@ import (
 // session-level totals plus a per-subagent breakdown. It is pure aggregation
 // over already-signed records — no database access, no new tables (#197). The
 // same function backs `talon audit --session` / `talon costs --session` and the
-// dashboard sessions panel (#199) so the CLI and the dashboard can never drift.
+// metrics sessions block (#199) so the CLI and the API can never drift.
 //
 // Scoping is the caller's responsibility: pass only the records a reader is
 // entitled to see (filter by tenant/agent before calling). Agents lists the
@@ -42,7 +42,7 @@ type SessionSummary struct {
 	Subagents        []SessionAgentRollup `json:"subagents,omitempty"`
 
 	// Operational contract (#271). Everything below is derived from the same
-	// records as the totals above, so the CLI and dashboard cannot disagree.
+	// records as the totals above, so the CLI and the API cannot disagree.
 
 	// Requests counts request-class records that are LLM traffic units —
 	// provider sub-attempts (RecordClassOf) and intercepted tool actions
@@ -417,7 +417,7 @@ func orderedPath(hops []pathHop) []string {
 // ("session_budget_exceeded: ...", "budget_exceeded: ...", bare egress codes)
 // so denials bucket by cause instead of lumping under a generic policy_deny
 // (#199). Unrecognized shapes fall back to "policy_deny". Shared by the
-// session summary and the dashboard metrics projection — one classifier.
+// session summary and the metrics projection — one classifier.
 func DenyReasonCode(reasons []string) string {
 	if len(reasons) == 0 {
 		return "policy_deny"

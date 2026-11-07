@@ -91,7 +91,7 @@ type frameworkCoverage struct {
 }
 
 // handleComplianceCoverage returns per-framework control coverage for the
-// dashboard compliance mode: built-in control mappings, evidence counts per
+// compliance coverage view: built-in control mappings, evidence counts per
 // framework, and declaration warnings for the auditor exports.
 func (s *Server) handleComplianceCoverage(w http.ResponseWriter, r *http.Request) {
 	scope, err := parseComplianceScope(r)

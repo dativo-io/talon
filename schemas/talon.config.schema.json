@@ -447,10 +447,6 @@
           "type": "string",
           "default": "/v1/proxy"
         },
-        "dashboard_listen": {
-          "type": "string",
-          "description": "Optional separate bind address for the gateway dashboard (e.g. 127.0.0.1:9091). When empty, dashboard routes are served on the main API server."
-        },
         "response_scanning": {
           "type": "object",
           "properties": {

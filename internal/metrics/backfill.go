@@ -19,7 +19,7 @@ const (
 )
 
 // BackfillFromStore replays the last 24 hours of evidence into the collector
-// so that the dashboard has data immediately after a restart.
+// so that the metrics API has data immediately after a restart.
 func (c *Collector) BackfillFromStore(ctx context.Context, store EvidenceLister) error {
 	_, err := c.ReconcileFromStore(ctx, store, defaultReconcileWindow, defaultReconcileLimit)
 	if err != nil {

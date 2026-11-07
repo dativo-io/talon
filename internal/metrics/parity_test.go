@@ -13,14 +13,14 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 )
 
-// TestCLIDashboardParity proves that the CLI path (calling MetricsQuerier
-// directly) and the dashboard path (Collector.Snapshot delegating to the
+// TestCLIMetricsAPIParity proves that the CLI path (calling MetricsQuerier
+// directly) and the API path (Collector.Snapshot delegating to the
 // same MetricsQuerier) produce identical numbers for the same evidence data.
 //
 // This is the architectural guarantee that matters: both consumers of
 // evidence.MetricsQuerier get the same cost totals, model breakdowns,
 // budget utilization, and cache savings.
-func TestCLIDashboardParity(t *testing.T) {
+func TestCLIMetricsAPIParity(t *testing.T) {
 	dir := t.TempDir()
 	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-hmac-key-that-is-at-least-32-bytes-long")
 	require.NoError(t, err)
@@ -110,7 +110,7 @@ func TestCLIDashboardParity(t *testing.T) {
 	cliCount, err := store.CountInRange(ctx, tenantID, "", dayStart, dayEnd)
 	require.NoError(t, err)
 
-	// === Dashboard path: Collector with same store as MetricsQuerier ===
+	// === API path: Collector with same store as MetricsQuerier ===
 
 	collector := NewCollector(store,
 		WithBudgetLimits(10.0, 100.0),
@@ -123,27 +123,27 @@ func TestCLIDashboardParity(t *testing.T) {
 
 	snap := collector.Snapshot(ctx)
 
-	// === PARITY ASSERTIONS: dashboard must match CLI exactly ===
+	// === PARITY ASSERTIONS: API snapshot must match CLI exactly ===
 
 	// 1. Model breakdown cost must equal CLI CostByModel
-	dashboardModelCost := map[string]float64{}
+	apiModelCost := map[string]float64{}
 	for _, ms := range snap.ModelBreakdown {
-		dashboardModelCost[ms.Model] = ms.CostEUR
+		apiModelCost[ms.Model] = ms.CostEUR
 	}
-	assert.Equal(t, len(cliCostByModel), len(dashboardModelCost),
-		"dashboard and CLI must report same number of models")
+	assert.Equal(t, len(cliCostByModel), len(apiModelCost),
+		"API snapshot and CLI must report same number of models")
 	for model, cliCost := range cliCostByModel {
-		assert.InDelta(t, cliCost, dashboardModelCost[model], 0.0001,
-			"model %s: CLI cost %.6f != dashboard cost %.6f", model, cliCost, dashboardModelCost[model])
+		assert.InDelta(t, cliCost, apiModelCost[model], 0.0001,
+			"model %s: CLI cost %.6f != API snapshot cost %.6f", model, cliCost, apiModelCost[model])
 	}
 
 	// 2. Budget utilization must use same cost total
 	require.NotNil(t, snap.BudgetStatus)
 	assert.InDelta(t, cliCostTotal, snap.BudgetStatus.DailyUsed, 0.0001,
-		"dashboard daily used must equal CLI CostTotal")
+		"snapshot daily used must equal CLI CostTotal")
 	expectedDailyPct := (cliCostTotal / 10.0) * 100
 	assert.InDelta(t, expectedDailyPct, snap.BudgetStatus.DailyPercent, 0.1,
-		"dashboard daily percent must equal CLI calculation")
+		"snapshot daily percent must equal CLI calculation")
 
 	// 3. Cache savings must match
 	if cliCacheHits > 0 {
@@ -197,10 +197,10 @@ func TestCLIDashboardParity(t *testing.T) {
 	assert.LessOrEqual(t, snap.Summary.ErrorRate, 1.0)
 }
 
-// TestDashboardCountMayLeadPersistedEvidence verifies the known semantic gap:
-// dashboard total_requests is event-based in memory, while CLI report counts
+// TestSnapshotCountMayLeadPersistedEvidence verifies the known semantic gap:
+// snapshot total_requests is event-based in memory, while CLI report counts
 // persisted evidence rows. A small positive drift is expected and acceptable.
-func TestDashboardCountMayLeadPersistedEvidence(t *testing.T) {
+func TestSnapshotCountMayLeadPersistedEvidence(t *testing.T) {
 	dir := t.TempDir()
 	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-hmac-key-that-is-at-least-32-bytes-long")
 	require.NoError(t, err)
@@ -235,7 +235,7 @@ func TestDashboardCountMayLeadPersistedEvidence(t *testing.T) {
 	collector := NewCollector(store, WithTenantID(tenantID))
 	defer collector.Close()
 
-	// Backfill makes dashboard start from persisted evidence (=32).
+	// Backfill makes the snapshot start from persisted evidence (=32).
 	require.NoError(t, collector.BackfillFromStore(ctx, store))
 
 	// Emit extra in-memory events that are not persisted yet.
@@ -255,13 +255,13 @@ func TestDashboardCountMayLeadPersistedEvidence(t *testing.T) {
 	reportCount, err := store.CountInRange(ctx, tenantID, "", dayStart, dayEnd)
 	require.NoError(t, err)
 	snap := collector.Snapshot(ctx)
-	dashboardCount := snap.Summary.TotalRequests
+	snapshotCount := snap.Summary.TotalRequests
 
 	require.Equal(t, 32, reportCount, "CLI report source should only include persisted evidence")
-	require.Equal(t, 36, dashboardCount, "dashboard should include in-memory events")
+	require.Equal(t, 36, snapshotCount, "snapshot should include in-memory events")
 
-	// Mirrors smoke-test tolerance: dashboard can lead by up to 5 events.
-	drift := dashboardCount - reportCount
+	// Mirrors smoke-test tolerance: the snapshot can lead by up to 5 events.
+	drift := snapshotCount - reportCount
 	require.GreaterOrEqual(t, drift, 0)
 	require.LessOrEqual(t, drift, 5)
 }

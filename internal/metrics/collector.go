@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Snapshot is the complete dashboard state returned by GET /api/v1/metrics.
+// Snapshot is the complete metrics state returned by GET /api/v1/metrics.
 type Snapshot struct {
 	GeneratedAt time.Time `json:"generated_at"`
 	// Currency is the ISO-4217 unit of every cost figure in this snapshot,
@@ -37,7 +37,7 @@ type Snapshot struct {
 	// Sessions is the orchestration session drill-down (#199): the most
 	// recently active client/vendor-asserted sessions, each aggregated by the
 	// SAME pure function behind `talon audit --session`
-	// (evidence.BuildSessionSummary) over the store's records — the dashboard
+	// (evidence.BuildSessionSummary) over the store's records — the metrics API
 	// and the CLI are structurally incapable of disagreeing, and a destructive
 	// ReconcileFromStore rebuild cannot change these numbers. Empty (omitted)
 	// when no orchestration data exists.
@@ -188,7 +188,7 @@ type PlanStats struct {
 	DispatchFailures int `json:"dispatch_failures"`
 }
 
-// GatewayEvent is the input from the gateway for real-time dashboard aggregation.
+// GatewayEvent is the input from the gateway for real-time metrics aggregation.
 type GatewayEvent struct {
 	EvidenceID     string
 	Timestamp      time.Time
@@ -260,7 +260,7 @@ type riskLevelAccum struct {
 
 const maxLatencySamples = 10000
 
-// Collector aggregates gateway events in memory for dashboard display.
+// Collector aggregates gateway events in memory for the metrics API.
 // Real-time metrics (sparklines, PII, tools, latency) are maintained in-memory.
 // Aggregate metrics (model breakdown, budget, cache) are delegated to
 // MetricsQuerier at Snapshot() time for consistency with CLI commands.
@@ -307,7 +307,7 @@ type Collector struct {
 	tenantID       string
 	// tenantScopeFn, when set, is consulted on EVERY aggregate query instead
 	// of the static tenantID (#289): serve wires it to the identity-registry
-	// holder so a reload re-scopes dashboard SQL without a new collector.
+	// holder so a reload re-scopes the snapshot SQL without a new collector.
 	tenantScopeFn func() string
 	// budgetLimitsFn, when set, is consulted on every snapshot instead of
 	// the static budgetDaily/budgetMonthly (#291 review, P2) — the budget
@@ -343,7 +343,7 @@ func (c *Collector) tenantScope() string {
 	return c.tenantID
 }
 
-// budgetLimits returns the dashboard budget denominators: the live function
+// budgetLimits returns the snapshot budget denominators: the live function
 // when configured (#291 review, P2), else the static values.
 func (c *Collector) budgetLimits() (daily, monthly float64) {
 	if c.budgetLimitsFn != nil {
@@ -393,7 +393,7 @@ func WithTenantID(tenantID string) CollectorOption {
 
 // WithTenantScope scopes aggregate queries through a live function read on
 // every snapshot (#289): serve derives it from the identity-registry holder
-// so a registry reload (#269) re-scopes the dashboard without collector
+// so a registry reload (#269) re-scopes the snapshot without collector
 // reconstruction. Takes precedence over WithTenantID.
 func WithTenantScope(fn func() string) CollectorOption {
 	return func(c *Collector) { c.tenantScopeFn = fn }
@@ -655,7 +655,7 @@ func (c *Collector) updateIntentClassification(e GatewayEvent) {
 	}
 }
 
-// Snapshot builds the complete dashboard state. In-memory data is read under
+// Snapshot builds the complete metrics state. In-memory data is read under
 // RLock; aggregate metrics (model breakdown, budget, cache) are queried from
 // the evidence store via MetricsQuerier after releasing the lock.
 func (c *Collector) Snapshot(ctx context.Context) Snapshot {
@@ -964,9 +964,9 @@ func (c *Collector) fillAggregateMetrics(ctx context.Context, snap *Snapshot) {
 	c.fillCacheStats(ctx, snap, scope, last24h, now)
 }
 
-// maxDashboardSessions bounds the sessions panel to the most recently active
+// maxSnapshotSessions bounds the sessions block to the most recently active
 // orchestration sessions (#199).
-const maxDashboardSessions = 20
+const maxSnapshotSessions = 20
 
 // fillSessions re-derives the orchestration session drill-down from persisted
 // evidence on every snapshot: recent asserted session ids, each aggregated by
@@ -978,11 +978,11 @@ func (c *Collector) fillSessions(ctx context.Context, snap *Snapshot) {
 	if c.sessionQuerier == nil {
 		return
 	}
-	ids, err := c.sessionQuerier.ListRecentOrchestrationSessionIDs(ctx, maxDashboardSessions)
+	ids, err := c.sessionQuerier.ListRecentOrchestrationSessionIDs(ctx, maxSnapshotSessions)
 	if err != nil {
 		// A store failure must be distinguishable from "no orchestration
 		// data" in logs, even though the panel hides either way.
-		log.Warn().Err(err).Msg("dashboard_sessions_query_failed")
+		log.Warn().Err(err).Msg("metrics_sessions_query_failed")
 		return
 	}
 	if len(ids) == 0 {
@@ -992,7 +992,7 @@ func (c *Collector) fillSessions(ctx context.Context, snap *Snapshot) {
 	for _, id := range ids {
 		records, err := c.sessionQuerier.ListBySessionID(ctx, id)
 		if err != nil {
-			log.Warn().Err(err).Str("session_id", id).Msg("dashboard_session_load_failed")
+			log.Warn().Err(err).Str("session_id", id).Msg("metrics_session_load_failed")
 			continue
 		}
 		if len(records) == 0 {

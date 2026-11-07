@@ -1,4 +1,4 @@
-// Package server provides HTTP API handlers; this file adds CoPaw-specific dashboard and stats.
+// Package server provides HTTP API handlers; this file adds the CoPaw-specific stats and alerts API.
 package server
 
 import (

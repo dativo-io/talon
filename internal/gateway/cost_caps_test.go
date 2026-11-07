@@ -8,7 +8,7 @@ import (
 
 // TestResolveEffectivePolicy_CostCaps guards the single source of truth for
 // effective budget caps (#216). Both budget enforcement (via the policy input)
-// and budget-utilization metrics/alerts read this, so the dashboard denominator
+// and budget-utilization metrics/alerts read this, so the metrics denominator
 // and the enforced cap can never drift: a per-agent override replaces the
 // organization baseline only when set (> 0).
 func TestResolveEffectivePolicy_CostCaps(t *testing.T) {

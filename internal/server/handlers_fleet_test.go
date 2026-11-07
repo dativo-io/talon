@@ -123,7 +123,7 @@ func seedFleetEvidence(t *testing.T, ev *evidence.Store, id, tenant, agent, invT
 
 // TestHandleAgentsFleet_ParityWithDirectProjection is the #270 acceptance
 // criterion: the endpoint's per-agent rows must equal a direct fleet.Project
-// over the SAME inputs — the dashboard and the CLI can never compute health,
+// over the SAME inputs — API consumers and the CLI can never compute health,
 // budget, or session state independently.
 func TestHandleAgentsFleet_ParityWithDirectProjection(t *testing.T) {
 	snap := fleetTestSnapshotCaps(t, 100000, 100) // non-binding daily; monthly 100 drives the warning

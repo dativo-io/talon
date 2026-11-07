@@ -43,14 +43,12 @@ import (
 	"github.com/dativo-io/talon/internal/sovereignty"
 	"github.com/dativo-io/talon/internal/trigger"
 	"github.com/dativo-io/talon/internal/workload"
-	"github.com/dativo-io/talon/web"
 )
 
 var (
 	servePort            int
 	serveHost            string
 	serveProxyConfig     string
-	serveDashboard       bool
 	serveGateway         bool
 	serveGatewayConfig   string
 	serveProxyQuickstart bool
@@ -67,7 +65,6 @@ func init() {
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "HTTP server port")
 	serveCmd.Flags().StringVar(&serveHost, "host", "", "HTTP server host (empty means default bind behavior)")
 	serveCmd.Flags().StringVar(&serveProxyConfig, "proxy-config", "", "Path to MCP proxy config YAML (optional)")
-	serveCmd.Flags().BoolVar(&serveDashboard, "dashboard", true, "Serve embedded dashboard at / and /dashboard")
 	serveCmd.Flags().BoolVar(&serveGateway, "gateway", false, "Enable LLM API gateway at /v1/proxy/*")
 	serveCmd.Flags().StringVar(&serveGatewayConfig, "gateway-config", "talon.config.yaml", "Path to config file with gateway block (used when --gateway is set)")
 	serveCmd.Flags().BoolVar(&serveProxyQuickstart, "proxy-quickstart", false, "Enable local/dev OpenAI-compatible quickstart proxy at host-root /v1/*")
@@ -220,7 +217,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// ONE fleet generation (#267): catalog + compiled per-agent bundles +
 	// identity registry, published together behind ONE atomic pointer.
 	// Every consumer — native execution, gateway auth, server agent-key
-	// auth, dashboard caps, metrics scope — derives its view from this
+	// auth, budget caps, metrics scope — derives its view from this
 	// holder, so a reload swap can never split authentication and execution
 	// across two generations. Both membership modes run the IDENTICAL
 	// catalog pipeline (same Source scanner, same digest algorithm — a
@@ -625,9 +622,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return loadComplianceDeclarations(ctx, policyPath, io.Discard)
 		}),
 	}...)
-	if serveDashboard {
-		opts = append(opts, server.WithDashboard(web.DashboardHTML))
-	}
 
 	mcpHandler := mcp.NewHandler(toolRegistry, policyEngine, evidenceStore, cls)
 	// MCP Origin validation (DNS rebinding): loopback and same-origin are
@@ -774,7 +768,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 					return fmt.Errorf("initializing openshell listener: %w", err)
 				}
 			}
-			// Dashboard budget view reads per-agent caps through the same
+			// The /v1/costs/budget view reads per-agent caps through the same
 			// effective-policy computation enforcement uses (#266), against
 			// the CURRENT registry snapshot (#289).
 			opts = append(opts, server.WithAgentCapsLookup(agentCapsLookupFor(runtimeHolder, gatewayCfg.OrganizationPolicy)))
@@ -829,12 +823,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 		// with `talon serve --gateway` (#285).
 	}
 
-	// Gateway dashboard metrics collector
+	// Gateway metrics collector (GET /api/v1/metrics, `talon metrics`)
 	var metricsCollector *metrics.Collector
 	if gatewayHandler != nil {
 		// Metrics scope derives from the identity registry — the same source
 		// as gateway auth and cache scoping — read through the holder on
-		// every snapshot so a reload re-scopes the dashboard (#289).
+		// every snapshot so a reload re-scopes the metrics snapshot (#289).
 		// Quickstart mode (nil registry) scopes to its synthetic tenant.
 		// ONE scope function for the aggregate fills (#291 review round 2):
 		// tenant filter AND budget denominators derive from a SINGLE
@@ -913,7 +907,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		})
 
 		if err := metricsCollector.BackfillFromStore(ctx, evidenceStore); err != nil {
-			log.Warn().Err(err).Msg("dashboard backfill failed")
+			log.Warn().Err(err).Msg("metrics backfill failed")
 		}
 		reconcileCfg := metrics.DefaultReconcileLoopConfig()
 		if raw := strings.TrimSpace(os.Getenv("TALON_METRICS_RECONCILE_INTERVAL")); raw != "" {
@@ -933,10 +927,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			gw.SetSessionStore(sessionStore)
 		}
 
-		opts = append(opts,
-			server.WithMetricsCollector(metricsCollector),
-			server.WithGatewayDashboard(web.GatewayDashboardHTML),
-		)
+		opts = append(opts, server.WithMetricsCollector(metricsCollector))
 	}
 
 	srv := server.NewServer(
@@ -979,8 +970,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Str("addr", addr).
 		Int("cron_entries", scheduler.Entries()).
 		Str("agent", pol.Agent.Name).
-		Bool("dashboard", serveDashboard).
-		Bool("gateway_dashboard", metricsCollector != nil).
+		Bool("metrics_api", metricsCollector != nil).
 		Bool("mcp_proxy", proxyHandler != nil).
 		Bool("gateway", gatewayHandler != nil).
 		Bool("openshell_middleware", openshellServer != nil).
@@ -1021,7 +1011,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// agentCapsLookupFor builds the per-agent effective-cap lookup the dashboard
+// agentCapsLookupFor builds the per-agent effective-cap lookup the budget API
 // budget endpoint AND the attention queue consume: the ACTIVE runtime bundles
 // (through the shared holder, #289) + ResolveEffectivePolicy — the same path
 // enforcement uses, so the displayed denominator can never disagree with the

@@ -14,11 +14,6 @@ import (
 	"github.com/dativo-io/talon/internal/tenant"
 )
 
-const (
-	adminSessionCookieName   = "talon_admin_session"
-	adminSessionCookieMaxAge = 8 * 60 * 60 // 8 hours
-)
-
 // SetTenantID stores tenant_id in the request context.
 func SetTenantID(ctx context.Context, tenantID string) context.Context {
 	return requestctx.SetTenantID(ctx, tenantID)
@@ -198,13 +193,9 @@ func AdminKeyMiddleware(adminKey string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			provided, source := adminKeyFromRequestWithSource(r)
-			if !isValidAdminKeyValue(provided, adminKey) {
-				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing admin key. Provide X-Talon-Admin-Key header or ?talon_admin_key=YOUR_TALON_ADMIN_KEY")
+			if !isValidAdminKeyValue(adminKeyFromRequest(r), adminKey) {
+				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing admin key. Provide the X-Talon-Admin-Key header (or Authorization: Bearer <admin key>)")
 				return
-			}
-			if source != "cookie" {
-				setAdminSessionCookie(w, r, provided)
 			}
 			r = r.WithContext(requestctx.SetIsAdmin(r.Context(), true))
 			next.ServeHTTP(w, r)
@@ -250,10 +241,7 @@ func TenantOrAdminMiddleware(agentKeys AgentKeyResolver, adminKey string) func(h
 				next.ServeHTTP(w, r)
 				return
 			}
-			if provided, source := adminKeyFromRequestWithSource(r); isValidAdminKeyValue(provided, adminKey) {
-				if source != "cookie" {
-					setAdminSessionCookie(w, r, provided)
-				}
+			if isValidAdminKeyValue(adminKeyFromRequest(r), adminKey) {
 				r = r.WithContext(requestctx.SetIsAdmin(r.Context(), true))
 				next.ServeHTTP(w, r)
 				return
@@ -262,7 +250,7 @@ func TenantOrAdminMiddleware(agentKeys AgentKeyResolver, adminKey string) func(h
 				next.ServeHTTP(w, r.WithContext(withAgentAuth(r.Context(), auth.Identity)))
 				return
 			}
-			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent/admin key. Use Authorization: Bearer <agent key> or ?talon_admin_key=YOUR_TALON_ADMIN_KEY for admin GET endpoints")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent/admin key. Use Authorization: Bearer <agent key> or the X-Talon-Admin-Key header")
 		})
 	}
 }
@@ -378,41 +366,15 @@ func isValidAdminKeyValue(provided, adminKey string) bool {
 	return provided != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(adminKey)) == 1
 }
 
-// adminKeyFromRequestWithSource returns admin key and source from X-Talon-Admin-Key,
-// Authorization: Bearer, GET query (`talon_admin_key` or legacy `token`), or
-// an HTTP-only session cookie.
-func adminKeyFromRequestWithSource(r *http.Request) (key string, source string) {
+// adminKeyFromRequest returns the admin key presented in the X-Talon-Admin-Key
+// header or as an Authorization: Bearer token. Those are the only carriers:
+// the query-string (`talon_admin_key`, `token`) and HTTP-only session-cookie
+// forms existed for the retired browser dashboards and were removed with them
+// (#533) — a key in a URL lands in logs, history and referrers, and a cookie
+// copy of TALON_ADMIN_KEY turned every same-site page load into an admin call.
+func adminKeyFromRequest(r *http.Request) string {
 	if k := r.Header.Get("X-Talon-Admin-Key"); k != "" {
-		return k, "header"
+		return k
 	}
-	if k := bearerToken(r); k != "" {
-		return k, "bearer"
-	}
-	if r.Method == http.MethodGet && r.URL != nil {
-		if k := r.URL.Query().Get("talon_admin_key"); k != "" {
-			return k, "query"
-		}
-		if k := r.URL.Query().Get("token"); k != "" {
-			return k, "query"
-		}
-	}
-	if c, err := r.Cookie(adminSessionCookieName); err == nil && c != nil && c.Value != "" {
-		return c.Value, "cookie"
-	}
-	return "", ""
-}
-
-func setAdminSessionCookie(w http.ResponseWriter, r *http.Request, key string) {
-	if key == "" {
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     adminSessionCookieName,
-		Value:    key,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   adminSessionCookieMaxAge,
-	})
+	return bearerToken(r)
 }

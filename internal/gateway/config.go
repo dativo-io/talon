@@ -43,10 +43,6 @@ type GatewayConfig struct {
 	// sandbox supervisor admits, before OpenShell injects the provider
 	// credential. Off when absent.
 	OpenShell *OpenShellConfig `yaml:"openshell,omitempty" json:"openshell,omitempty"`
-	// DashboardListen is the optional separate bind address for the gateway
-	// dashboard (e.g. "127.0.0.1:9091"). When empty, routes are served on the
-	// main API server. Binding to localhost prevents accidental exposure.
-	DashboardListen string `yaml:"dashboard_listen,omitempty" json:"dashboard_listen,omitempty"`
 	// QuickstartUnsafeListen marks that the serving process bound the
 	// OpenAI-compatible quickstart facade to a non-loopback address with
 	// --unsafe-listen. Set by QuickstartConfig only; never populated from YAML.
@@ -447,7 +443,7 @@ func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 	for _, key := range []string{
 		"providers", "organization_policy", "listen_prefix",
 		"rate_limits", "timeouts", "network_interception",
-		"response_scanning", "dashboard_listen", "enabled", "mode",
+		"response_scanning", "enabled", "mode",
 	} {
 		if _, present := raw[key]; present {
 			return nil, fmt.Errorf("gateway config %s places %q at the file root — wrap all gateway settings in a top-level 'gateway:' block (the root layout was removed so unknown keys inside the gateway surface always fail loudly, #266)", path, key)

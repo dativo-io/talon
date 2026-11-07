@@ -37,7 +37,7 @@
     },
     {
       "heading": "3. Monitoring, functioning and control (Annex IV s.3, Art. 14 human oversight)",
-      "body": "Every governed request produces an HMAC-signed evidence record (policy decision, classification, model, cost, duration) exported via OpenTelemetry. Operators monitor via the dashboard and metrics endpoints; plan-review gates require human approval before agent tool execution where configured. Declared oversight arrangements: Support lead reviews flagged tickets daily",
+      "body": "Every governed request produces an HMAC-signed evidence record (policy decision, classification, model, cost, duration) exported via OpenTelemetry. Operators monitor via the CLI and the metrics API; plan-review gates require human approval before agent tool execution where configured. Declared oversight arrangements: Support lead reviews flagged tickets daily",
       "table": {
         "headers": [
           "Runtime control indicator",

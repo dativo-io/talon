@@ -168,7 +168,7 @@ func TestRenderSessionSummary_FailureLineNoDoubledCode(t *testing.T) {
 		"the machine code must not print twice (#415)")
 }
 
-// --json must be the same structure the dashboard drill-down serves: the
+// --json must be the same structure the metrics API `sessions` block serves: the
 // summary equals evidence.BuildSessionSummary over the session's records
 // (shared code path — the parity contract of #271).
 func TestSessionShow_JSONMatchesSharedProjection(t *testing.T) {
