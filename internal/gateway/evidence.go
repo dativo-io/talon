@@ -309,6 +309,7 @@ func sanitizeGatewayAnnotations(in []string) []string {
 		// #482 response side: settlement vocabulary (see delegated_response.go).
 		annotationSettlementPending: {}, // decision record: cost is carried by a later settlement
 		annotationResponseObserved:  {}, // settlement: the provider response was observed at the runtime's response hook
+		annotationStreamUnitGuarded: {}, // settlement: the stream was inspected unit by unit while the runtime held each unit (preventive_per_unit)
 		annotationResponseUnseen:    {}, // settlement: no response within the settlement window; estimate stands
 		annotationDecisionUnmatched: {}, // settlement: no request half (Talon restarted or window elapsed)
 		annotationBodyUninspectable: {}, // settlement: body not inspectable (compressed/partial/none); usage unobserved

@@ -109,11 +109,28 @@ func (s *Service) serveResponse(ctx context.Context, authorization string, strea
 		return drain(stream)
 	}
 	bodyMode := middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES
+	var guard gateway.StreamUnitInspector
 	switch plan.Mode {
 	case gateway.ResponseModeHeadersOnly:
 		bodyMode = middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_HEADERS_ONLY
 	case gateway.ResponseModeStream:
 		bodyMode = middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_STREAM_BYTES
+	case gateway.ResponseModeStreamGuarded:
+		// The runtime holds each unit until the result: Talon scans every
+		// unit before release and withholds the stream from the first unit
+		// that carries PII (or cannot be scanned).
+		bodyMode = middlewarev1.HttpResponseBodyMode_HTTP_RESPONSE_BODY_MODE_STREAM_BYTES
+		var refused *gateway.DelegatedResponsePlan
+		if guard, refused = s.decider.GuardDelegatedStream(ctx, preflight); refused != nil {
+			meta["talon_decision"] = "block"
+			if err := stream.Send(&middlewarev1.HttpResponseEventResult{Result: &middlewarev1.HttpResponseEventResult_PreflightResult{PreflightResult: &middlewarev1.HttpResponsePreflightResult{
+				Action: &middlewarev1.HttpResponsePreflightResult_BlockDelivery{BlockDelivery: &middlewarev1.HttpResponseBlockDelivery{}},
+				Reason: refused.Message, ReasonCode: reasonCode(refused.Code), Metadata: meta,
+			}}}); err != nil {
+				return err
+			}
+			return drain(stream)
+		}
 	}
 	meta["talon_decision"] = "inspect"
 	if err := stream.Send(&middlewarev1.HttpResponseEventResult{Result: &middlewarev1.HttpResponseEventResult_PreflightResult{PreflightResult: &middlewarev1.HttpResponsePreflightResult{
@@ -133,6 +150,16 @@ func (s *Service) serveResponse(ctx context.Context, authorization string, strea
 
 	var capture []byte
 	settled := false
+	// settle commits the exchange exactly once, with the guard's facts when
+	// the stream was guarded.
+	settle := func(body []byte, incomplete string) gateway.DelegatedSettlement {
+		settled = true
+		in.Body, in.Incomplete = body, incomplete
+		if guard != nil {
+			in.Guard = guard.Summary()
+		}
+		return s.decider.SettleDelegatedResponse(ctx, in)
+	}
 	for {
 		ev, err := stream.Receive()
 		if err != nil {
@@ -142,8 +169,7 @@ func (s *Service) serveResponse(ctx context.Context, authorization string, strea
 			// The runtime went away mid-body: settle what was seen as an
 			// incomplete observation so usage and cost are not lost.
 			if !settled {
-				in.Body, in.Incomplete = capture, evidence.ResponseScanIncompleteClientCancelled
-				s.decider.SettleDelegatedResponse(ctx, in)
+				settle(capture, evidence.ResponseScanIncompleteClientCancelled)
 			}
 			return nil
 		}
@@ -169,17 +195,36 @@ func (s *Service) serveResponse(ctx context.Context, authorization string, strea
 				}
 				continue
 			}
+			if guard != nil {
+				// Guarded: the runtime still holds this unit.
+				if v := guard.Inspect(ctx, data); v.Block {
+					st := settle(capture, "")
+					bm := map[string]string{"talon_kind": "response", "talon_decision": "block"}
+					if st.EvidenceID != "" {
+						bm["talon_evidence_id"] = st.EvidenceID
+					}
+					if err := stream.Send(bodyResult(unit.GetSequence(), &middlewarev1.HttpResponseBodyResult_BlockDelivery{BlockDelivery: &middlewarev1.HttpResponseBlockDelivery{}}, reasonCode(v.Code), bm)); err != nil {
+						return err
+					}
+					return drain(stream)
+				}
+				if !unit.GetEndOfStream() {
+					if err := stream.Send(bodyResult(unit.GetSequence(), &middlewarev1.HttpResponseBodyResult_PassThrough{PassThrough: &middlewarev1.HttpResponseBodyPassThrough{}}, "", nil)); err != nil {
+						return err
+					}
+					continue
+				}
+			}
 			if !unit.GetEndOfStream() && plan.Mode == gateway.ResponseModeWholeBody {
 				// WHOLE_BODY delivers exactly one unit; a continuation is a
 				// protocol violation — fail closed.
 				return connect.NewError(connect.CodeInvalidArgument, errors.New("whole-body inspection received more than one body unit"))
 			}
-			in.Body = capture
+			incomplete := ""
 			if in.Truncated && plan.Mode == gateway.ResponseModeWholeBody {
-				in.Incomplete = evidence.ResponseScanIncompleteCaptureLimitExceeded
+				incomplete = evidence.ResponseScanIncompleteCaptureLimitExceeded
 			}
-			st := s.decider.SettleDelegatedResponse(ctx, in)
-			settled = true
+			st := settle(capture, incomplete)
 			res := settlementBodyResult(unit.GetSequence(), plan.Mode, in.Truncated, st)
 			if err := stream.Send(res); err != nil {
 				return err
@@ -190,8 +235,7 @@ func (s *Service) serveResponse(ctx context.Context, authorization string, strea
 			}
 		case *middlewarev1.HttpResponseEvent_SessionEnd:
 			if !settled {
-				in.Body, in.Incomplete = capture, sessionEndIncompleteReason(e.SessionEnd.GetReason())
-				s.decider.SettleDelegatedResponse(ctx, in)
+				settle(capture, sessionEndIncompleteReason(e.SessionEnd.GetReason()))
 			}
 			return nil
 		case *middlewarev1.HttpResponseEvent_Preflight:
@@ -199,8 +243,7 @@ func (s *Service) serveResponse(ctx context.Context, authorization string, strea
 		}
 	}
 	if !settled {
-		in.Body, in.Incomplete = capture, evidence.ResponseScanIncompleteClientCancelled
-		s.decider.SettleDelegatedResponse(ctx, in)
+		settle(capture, evidence.ResponseScanIncompleteClientCancelled)
 	}
 	return nil
 }
@@ -220,11 +263,14 @@ func settlementBodyResult(seq uint64, mode string, truncated bool, st gateway.De
 	if st.Replayed {
 		meta["talon_replayed"] = "true"
 	}
+	if st.Block && (mode == gateway.ResponseModeWholeBody || mode == gateway.ResponseModeStreamGuarded) {
+		// The runtime still holds this unit (the whole body, or the final
+		// guarded unit): a blocked settlement withholds it.
+		meta["talon_decision"] = "block"
+		return bodyResult(seq, &middlewarev1.HttpResponseBodyResult_BlockDelivery{BlockDelivery: &middlewarev1.HttpResponseBlockDelivery{}}, reasonCode(st.Code), meta)
+	}
 	if mode == gateway.ResponseModeWholeBody {
 		switch {
-		case st.Block:
-			meta["talon_decision"] = "block"
-			return bodyResult(seq, &middlewarev1.HttpResponseBodyResult_BlockDelivery{BlockDelivery: &middlewarev1.HttpResponseBlockDelivery{}}, reasonCode(st.Code), meta)
 		case truncated:
 			// The bound was hit on a whole body: the gateway settled with
 			// what it saw; a preventive policy already blocked above, so
