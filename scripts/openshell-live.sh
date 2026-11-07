@@ -67,6 +67,18 @@
 #                               as well — its middleware proto differs from
 #                               v0.1.3 by a comment only — and is exercised by
 #                               the live workflow's experimental matrix entry)
+#   TALON_OPENSHELL_LANE        default (cases above) or claude-code: the REAL
+#                               pinned Claude Code executable inside the real
+#                               sandbox against an Anthropic-shaped mock
+#                               provider (#528, C01–C03; cases CC0–CC9 in
+#                               scripts/openshell-live-claude-code.sh); the
+#                               shared setup is identical, the provider the
+#                               sandbox dials and the workload image differ
+#   TALON_CLAUDE_CODE_VERSION / TALON_CLAUDE_CODE_SHA256
+#                               claude-code lane: the pinned release and the
+#                               sha256 of its linux-x64 binary from that
+#                               version's release manifest (both required
+#                               together; defaults are the validated pin)
 #   TALON_OPENSHELL_PREFLIGHT_ONLY=1
 #                               stop before starting the gateway: verifies the
 #                               pinned artifacts, builds talon, generates the
@@ -105,9 +117,53 @@ RELEASE_BASE="https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_
 WORKLOAD_IMAGE_REPO="docker.io/curlimages/curl"
 WORKLOAD_IMAGE_TAG="8.22.0"
 WORKLOAD_IMAGE_DIGEST="sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777"
-WORKLOAD_IMAGE="${TALON_OPENSHELL_WORKLOAD_IMAGE:-$WORKLOAD_IMAGE_REPO:$WORKLOAD_IMAGE_TAG@$WORKLOAD_IMAGE_DIGEST}"
-[[ "$WORKLOAD_IMAGE" == *@sha256:* ]] || { echo "FAIL live workload image must be digest pinned (got $WORKLOAD_IMAGE)" >&2; exit 1; }
-WORKLOAD_IMAGE_DIGEST="${WORKLOAD_IMAGE##*@}"
+LANE="${TALON_OPENSHELL_LANE:-default}"
+case "$LANE" in default|claude-code) ;; *) echo "FAIL unknown TALON_OPENSHELL_LANE=$LANE (default|claude-code)" >&2; exit 2 ;; esac
+# claude-code lane (#528): the workload is the REAL Claude Code executable at
+# an exact version, installed from Anthropic's release bucket and verified
+# against that version's manifest sha256 while the image is built
+# (tests/openshell-live/claude-code/Dockerfile) and again inside the real
+# sandbox (case CC0). The image is built locally by the harness, so it is
+# pinned by the content it must carry (version + binary sha256), not by a
+# registry digest. Claude Code keeps its config under HOME, which must be
+# writable by the sandbox user (uid 1000): OpenShell's workspace /sandbox is
+# root-owned in v0.1.3 (observed on the lane's first real run, PR #531), so
+# the default candidates are the image's own home first and the workspace
+# second; CC0 probes them in order and the run facts name the one in use.
+# Nothing under it is a credential.
+CLAUDE_CODE_VERSION="${TALON_CLAUDE_CODE_VERSION:-2.1.319}"
+CLAUDE_CODE_SHA256="${TALON_CLAUDE_CODE_SHA256:-dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed}"
+if [[ -n "${TALON_CLAUDE_CODE_VERSION:-}" && -z "${TALON_CLAUDE_CODE_SHA256:-}" || -z "${TALON_CLAUDE_CODE_VERSION:-}" && -n "${TALON_CLAUDE_CODE_SHA256:-}" ]]; then
+  echo "FAIL TALON_CLAUDE_CODE_VERSION and TALON_CLAUDE_CODE_SHA256 must be set together (a version is pinned by its manifest checksum)" >&2; exit 2
+fi
+[[ "$CLAUDE_CODE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "FAIL TALON_CLAUDE_CODE_SHA256 is not a sha256 hex digest" >&2; exit 2; }
+CLAUDE_BIN="/usr/local/bin/claude"
+CLAUDE_MODEL="${TALON_CLAUDE_MODEL:-claude-sonnet-4-5}"          # priced in pricing/models.yaml; allowed
+CLAUDE_BLOCKED_MODEL="claude-opus-4-8"                           # priced; denied by the organization policy below
+CLAUDE_HOME_CANDIDATES="${TALON_OPENSHELL_CLAUDE_HOME:-/home/agent /sandbox}"   # CC0 selects CLAUDE_HOME from these
+CLAUDE_HOME=""
+# Opt-in REAL provider mode of the claude-code lane (#528 mode B): the same
+# sandbox, policy, middleware and client, but the provider is
+# api.anthropic.com and the credential is a real Anthropic key that enters
+# ONLY through OpenShell's provider store (`provider create --from-existing`
+# reads ANTHROPIC_API_KEY from this shell's environment; the harness never
+# prints it, never passes it on a command line and Talon never holds it).
+# Spends real money (a few short turns); never runs in CI. Assertions that
+# need the mock's records are replaced by Talon's signed records.
+LIVE_ANTHROPIC="${TALON_CLAUDE_LIVE_ANTHROPIC:-0}"
+if [[ "$LIVE_ANTHROPIC" == "1" ]]; then
+  [[ "$LANE" == "claude-code" ]] || { echo "FAIL TALON_CLAUDE_LIVE_ANTHROPIC=1 needs TALON_OPENSHELL_LANE=claude-code" >&2; exit 2; }
+  [[ -n "${ANTHROPIC_API_KEY:-}" ]] || { echo "MISSING ANTHROPIC_API_KEY: the real-provider mode takes the key from the environment and hands it to OpenShell's provider store only" >&2; exit 2; }
+fi
+if [[ "$LANE" == "claude-code" ]]; then
+  WORKLOAD_IMAGE="${TALON_OPENSHELL_WORKLOAD_IMAGE:-talon-openshell-claude-code:$CLAUDE_CODE_VERSION}"
+  WORKLOAD_IMAGE_DIGEST="(local build: pinned by claude $CLAUDE_CODE_VERSION sha256 $CLAUDE_CODE_SHA256)"
+else
+  WORKLOAD_IMAGE="${TALON_OPENSHELL_WORKLOAD_IMAGE:-$WORKLOAD_IMAGE_REPO:$WORKLOAD_IMAGE_TAG@$WORKLOAD_IMAGE_DIGEST}"
+  [[ "$WORKLOAD_IMAGE" == *@sha256:* ]] || { echo "FAIL live workload image must be digest pinned (got $WORKLOAD_IMAGE)" >&2; exit 1; }
+  WORKLOAD_IMAGE_DIGEST="${WORKLOAD_IMAGE##*@}"
+fi
+WORKLOAD_IMAGE_ID=""
 CURL_BIN="${TALON_OPENSHELL_CURL_BIN:-/usr/bin/curl}"
 SH_BIN="/bin/sh"
 SLEEP_BIN="/bin/sleep"
@@ -204,9 +260,9 @@ TALON_HTTP_PORT="$(free_port)"; TALON_GRPC_PORT="$(free_port)"; MOCK_PORT="$(fre
 GW_ENDPOINT="http://127.0.0.1:$GW_PORT"
 CLI=(env -u OPENSHELL_SANDBOX_POLICY "$CLI_BIN" --gateway-endpoint "$GW_ENDPOINT")
 
-TALON_PID=""; GW_PID=""; MOCK_PID=""; PROTECTED_PID=""; SANDBOXES=()
+TALON_PID=""; GW_PID=""; MOCK_PID=""; PROTECTED_PID=""; SHADOW_PID=""; SANDBOXES=()
 dump_logs() {
-  for f in talon-serve gateway mockprovider protectedservice setup; do
+  for f in talon-serve gateway mockprovider shadowprovider protectedservice setup; do
     printf '\n--- %s log ---\n' "$f" >&2
     [[ -f "$LOGS/$f.log" ]] && tail -n 120 "$LOGS/$f.log" >&2 || printf '(missing)\n' >&2
   done
@@ -215,7 +271,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   for sb in "${SANDBOXES[@]:-}"; do [[ -n "$sb" ]] && "${CLI[@]}" sandbox delete "$sb" >>"$LOGS/setup.log" 2>&1 || true; done
-  for pid in "$GW_PID" "$TALON_PID" "$MOCK_PID" "$PROTECTED_PID"; do [[ -n "$pid" ]] && { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }; done
+  for pid in "$GW_PID" "$TALON_PID" "$MOCK_PID" "$PROTECTED_PID" "${SHADOW_PID:-}"; do [[ -n "$pid" ]] && { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }; done
   # Secret-bearing material (tls/, jwt/, talon-home/, provider-state.json)
   # stays in $WORK and is never part of the collected logs; CI uploads $LOGS only.
   if [[ "$status" -eq 0 && "${TALON_OPENSHELL_KEEP:-0}" != "1" ]]; then rm -rf "$WORK"; else echo "work dir retained: $WORK (logs: $LOGS)" >&2; fi
@@ -233,6 +289,15 @@ go build -o "$WORK/talon" ./cmd/talon >>"$LOGS/setup.log" 2>&1 || die "go build 
 go build -o "$WORK/mockprovider" ./tests/openshell-live/mockprovider >>"$LOGS/setup.log" 2>&1 || die "go build mockprovider"
 go build -o "$WORK/protectedservice" ./tests/openshell-live/protectedservice >>"$LOGS/setup.log" 2>&1 || die "go build protectedservice"
 TALON="$WORK/talon"
+if [[ "$LANE" == "claude-code" && "$PREFLIGHT_ONLY" != "1" ]]; then
+  if [[ -z "${TALON_OPENSHELL_WORKLOAD_IMAGE:-}" ]]; then
+    log "building the Claude Code workload image $WORKLOAD_IMAGE (claude $CLAUDE_CODE_VERSION, linux-x64 sha256 $CLAUDE_CODE_SHA256)"
+    docker build -q -t "$WORKLOAD_IMAGE" --build-arg "CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION" --build-arg "CLAUDE_CODE_SHA256=$CLAUDE_CODE_SHA256" \
+      "$ROOT/tests/openshell-live/claude-code" >>"$LOGS/setup.log" 2>&1 || die "docker build of the Claude Code workload image failed (see $LOGS/setup.log; the download is verified against the release manifest sha256)"
+  fi
+  WORKLOAD_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$WORKLOAD_IMAGE" 2>>"$LOGS/setup.log")" || die "workload image $WORKLOAD_IMAGE is not visible to the Docker daemon"
+  log "claude-code workload image $WORKLOAD_IMAGE ($WORKLOAD_IMAGE_ID)"
+fi
 
 # ---------------------------------------------------------------- keys and certs
 JWT_DIR="$WORK/jwt"; mkdir -p "$JWT_DIR"
@@ -298,6 +363,18 @@ wait_http "http://127.0.0.1:$MOCK_PORT/__state" 10 || die "mock provider did not
 provider_state() { curl -fsS "http://127.0.0.1:$MOCK_PORT/__state"; }
 provider_calls() { provider_state | jq -r '.calls'; }
 provider_record() { provider_state | jq -r ".records[$1].$2"; }
+# claude-code lane: a second, identical provider on a port the sandbox policy
+# does NOT admit — the "ungoverned endpoint" of the bypass case. OpenShell,
+# not Talon, is what keeps the sandbox from reaching it; its counter must
+# stay at zero.
+SHADOW_PID=""; SHADOW_PORT=""
+if [[ "$LANE" == "claude-code" ]]; then
+  SHADOW_PORT="$(free_port)"
+  "$WORK/mockprovider" -listen "$MOCK_BIND:$SHADOW_PORT" >"$LOGS/shadowprovider.log" 2>&1 &
+  SHADOW_PID=$!
+  wait_http "http://127.0.0.1:$SHADOW_PORT/__state" 10 || die "shadow provider did not start"
+fi
+shadow_calls() { curl -fsS "http://127.0.0.1:$SHADOW_PORT/__state" | jq -r '.calls'; }
 # The protected action target. It listens on every interface so CASE L can
 # prove that OpenShell's network policy — not Talon — is what keeps the
 # sandbox from reaching it directly; Talon dispatches to it over loopback.
@@ -312,22 +389,40 @@ AGENT="sandboxed-support"
 ( cd "$TALON_HOME" && "$TALON" init --scaffold --name "$AGENT" >>"$LOGS/setup.log" 2>&1 ) || die "talon init"
 AGENT_FILE="$TALON_HOME/agent.talon.yaml"
 grep -q "secret_name: \"$AGENT-talon-key\"" "$AGENT_FILE" || die "scaffold shape changed (agent key block)"
+# The provider the sandbox dials. Talon maps a delegated request to a provider
+# by destination HOST (providerForHost), so one lane configures exactly one
+# provider on host.openshell.internal: the OpenAI-compatible mock for the
+# default lane, the Anthropic Messages mock (what Claude Code speaks) for the
+# claude-code lane. The provider name selects Talon's wire format
+# (api_family: anthropic → x-api-key, /v1/messages, count_tokens, SSE usage).
+PROVIDER_HOST="host.openshell.internal"; PROVIDER_PORT="$MOCK_PORT"; PROVIDER_BASE_URL="http://host.openshell.internal:$MOCK_PORT"
+if [[ "$LIVE_ANTHROPIC" == "1" ]]; then
+  PROVIDER_HOST="api.anthropic.com"; PROVIDER_PORT="443"; PROVIDER_BASE_URL="https://api.anthropic.com"
+fi
+if [[ "$LANE" == "claude-code" ]]; then
+  PROVIDER_YAML="    anthropic:
+      enabled: true
+      secret_name: \"anthropic-api-key\"       # /v1/proxy only; never read on the delegated path
+      base_url: \"$PROVIDER_BASE_URL\"   # the HOST maps delegated requests to this provider"
+else
+  PROVIDER_YAML="    openai:
+      enabled: true
+      secret_name: \"openai-api-key\"          # /v1/proxy only; never read on the delegated path
+      base_url: \"http://host.openshell.internal:$MOCK_PORT\"   # the HOST maps delegated requests to this provider"
+fi
 cat >>"$TALON_HOME/talon.config.yaml" <<EOT
 
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
   providers:
-    openai:
-      enabled: true
-      secret_name: "openai-api-key"          # /v1/proxy only; never read on the delegated path
-      base_url: "http://host.openshell.internal:$MOCK_PORT"   # the HOST maps delegated requests to this provider
+$PROVIDER_YAML
   organization_policy:
     defaults:
       pii_action: "redact"
       daily_cost: 100.00
     constraints:
-      blocked_models: ["gpt-4o"]
+      blocked_models: ["gpt-4o", "$CLAUDE_BLOCKED_MODEL"]
   openshell:
     enabled: true
     listen: "$HOST_IP:$TALON_GRPC_PORT"
@@ -408,7 +503,7 @@ policies:
 open(p, "w").write(s)
 PY
 ( cd "$TALON_HOME" && "$TALON" validate >>"$LOGS/setup.log" 2>&1 ) || die "talon validate rejected the agent catalog"
-( cd "$TALON_HOME" && "$TALON" secrets set openai-api-key "$TALON_VAULT_DECOY" >>"$LOGS/setup.log" 2>&1 && "$TALON" secrets set "$AGENT-talon-key" "talon-gw-live-$(openssl rand -hex 6)" >>"$LOGS/setup.log" 2>&1 ) || die "talon secrets set"
+( cd "$TALON_HOME" && "$TALON" secrets set openai-api-key "$TALON_VAULT_DECOY" >>"$LOGS/setup.log" 2>&1 && "$TALON" secrets set anthropic-api-key "$TALON_VAULT_DECOY" >>"$LOGS/setup.log" 2>&1 && "$TALON" secrets set "$AGENT-talon-key" "talon-gw-live-$(openssl rand -hex 6)" >>"$LOGS/setup.log" 2>&1 ) || die "talon secrets set"
 # One human reviewer credential (host-side only; the sandbox never holds it,
 # and CASE M proves it could not use it through the hop anyway).
 LEAD_KEY="$( (cd "$TALON_HOME" && "$TALON" approver add --name lead-1 --tenant default --groups support-leads 2>>"$LOGS/setup.log") | grep -oE 'talon_appr_cred_[0-9a-f]+\.[A-Za-z0-9_-]+' | head -n1)"
@@ -493,29 +588,52 @@ curl -fsS --max-time 1 "http://127.0.0.1:$GW_HEALTH_PORT/healthz" >/dev/null 2>&
 pass "gateway $OPENSHELL_VERSION started with talon registered (Describe + protocol negotiation succeeded)"
 
 # ---------------------------------------------------------------- provider profile, provider, policy, sandboxes
+# Provider profile: how OpenShell binds the credential to the endpoint and to
+# the binary allowed to use it. The claude-code lane mirrors OpenShell's own
+# providers/claude-code.yaml example (ANTHROPIC_API_KEY sent as x-api-key
+# from /usr/local/bin/claude) with the endpoint replaced by the mock.
+if [[ "$LANE" == "claude-code" ]]; then
+  PROFILE_ID="talon-live-anthropic"; PROVIDER_NAME="mock-anthropic"; PROVIDER_ENV="ANTHROPIC_API_KEY"
+  PROVIDER_AUTH_STYLE="header"; PROVIDER_HEADER="x-api-key"; PROVIDER_BINARY="$CLAUDE_BIN"
+  PROFILE_DESCRIPTION="Anthropic Messages API mock provider used by the Talon live smoke (real Claude Code lane)"
+else
+  PROFILE_ID="talon-live-openai"; PROVIDER_NAME="mock-openai"; PROVIDER_ENV="OPENAI_API_KEY"
+  PROVIDER_AUTH_STYLE="bearer"; PROVIDER_HEADER="authorization"; PROVIDER_BINARY="$CURL_BIN"
+  PROFILE_DESCRIPTION="OpenAI-compatible mock provider used by the Talon live smoke"
+fi
 cat >"$WORK/profile.yaml" <<EOT
-id: talon-live-openai
+id: $PROFILE_ID
 display_name: Talon live mock provider
-description: OpenAI-compatible mock provider used by the Talon live smoke
+description: $PROFILE_DESCRIPTION
 category: inference
 inference_capable: true
 credentials:
   - name: api_key
-    description: mock provider key (injected by OpenShell, never seen by Talon)
-    env_vars: [OPENAI_API_KEY]
+    description: provider key (injected by OpenShell after Talon's decision, never seen by Talon)
+    env_vars: [$PROVIDER_ENV]
     required: true
-    auth_style: bearer
-    header_name: authorization
+    auth_style: $PROVIDER_AUTH_STYLE
+    header_name: $PROVIDER_HEADER
+discovery:
+  credentials: [api_key]
 endpoints:
-  - host: host.openshell.internal
-    port: $MOCK_PORT
+  - host: $PROVIDER_HOST
+    port: $PROVIDER_PORT
     protocol: rest
     access: read-write
     enforcement: enforce
-binaries: [$CURL_BIN]
+binaries: [$PROVIDER_BINARY]
 EOT
 "${CLI[@]}" profile import -f "$WORK/profile.yaml" --global >>"$LOGS/setup.log" 2>&1 || die "profile import"
-"${CLI[@]}" provider create --name mock-openai --type talon-live-openai --global-profile --credential "OPENAI_API_KEY=$PROVIDER_SECRET" >>"$LOGS/setup.log" 2>&1 || die "provider create"
+if [[ "$LIVE_ANTHROPIC" == "1" ]]; then
+  # The real key goes from this environment into OpenShell's provider store
+  # and nowhere else (not on a command line, not into $WORK, not to Talon).
+  "${CLI[@]}" provider create --name "$PROVIDER_NAME" --type "$PROFILE_ID" --global-profile --from-existing >>"$LOGS/setup.log" 2>&1 || die "provider create --from-existing (is ANTHROPIC_API_KEY exported?)"
+  PROVIDER_SECRET="$ANTHROPIC_API_KEY"   # only ever used as a grep needle against Talon's state, logs and the sandbox env
+  unset ANTHROPIC_API_KEY
+else
+  "${CLI[@]}" provider create --name "$PROVIDER_NAME" --type "$PROFILE_ID" --global-profile --credential "$PROVIDER_ENV=$PROVIDER_SECRET" >>"$LOGS/setup.log" 2>&1 || die "provider create"
+fi
 # filesystem_policy is a FIXTURE need, not a governance statement: OpenShell's
 # proxy-mode baseline grants read/execute under /usr, /lib, /etc, /app,
 # /var/log and /proc only. The Alpine-based fixture keeps busybox (sh, sleep)
@@ -523,6 +641,10 @@ EOT
 # ("failed to spawn sandbox entrypoint process '/bin/sleep': Permission
 # denied", OpenShell Live run 38270547122). include_workdir stays true, the
 # default an omitted block would have.
+# The talon middleware is selected by host: Talon's own API host always, and
+# the provider host when it is not the same one (real-provider mode).
+MW_INCLUDE='"host.openshell.internal"'
+[[ "$PROVIDER_HOST" == "host.openshell.internal" ]] || MW_INCLUDE="$MW_INCLUDE, \"$PROVIDER_HOST\""
 cat >"$WORK/policy.yaml" <<EOT
 version: 1
 filesystem_policy:
@@ -534,17 +656,17 @@ network_middlewares:
     order: 10
     on_error: fail_closed
     endpoints:
-      include: ["host.openshell.internal"]
+      include: [$MW_INCLUDE]
 network_policies:
-  mock-openai:
+  $PROVIDER_NAME:
     endpoints:
-      - host: host.openshell.internal
-        port: $MOCK_PORT
+      - host: $PROVIDER_HOST
+        port: $PROVIDER_PORT
         protocol: rest
         access: read-write
         enforcement: enforce
     binaries:
-      - path: $CURL_BIN
+      - path: $PROVIDER_BINARY
   # Talon's own Action Gateway, reached through the same talon middleware
   # (selected by host). The protected service's port is deliberately NOT
   # listed: CASE L proves OpenShell blocks the direct path.
@@ -560,13 +682,36 @@ network_policies:
 EOT
 create_sandbox() { # name — ALWAYS from the pinned fixture; never OpenShell's default image.
   # busybox sleep has no "infinity"; the largest 32-bit second count is ~68 years.
-  "${CLI[@]}" sandbox create --name "$1" --from "$WORKLOAD_IMAGE" --policy "$WORK/policy.yaml" --provider mock-openai --no-tty --detach -- "$SLEEP_BIN" 2147483647 >>"$LOGS/setup.log" 2>&1 || die "sandbox create $1 from $WORKLOAD_IMAGE"
+  "${CLI[@]}" sandbox create --name "$1" --from "$WORKLOAD_IMAGE" --policy "$WORK/policy.yaml" --provider "$PROVIDER_NAME" --no-tty --detach -- "$SLEEP_BIN" 2147483647 >>"$LOGS/setup.log" 2>&1 || die "sandbox create $1 from $WORKLOAD_IMAGE"
   SANDBOXES+=("$1")
 }
 create_sandbox "$SANDBOX_A"
 SANDBOX_A_ID="$("${CLI[@]}" sandbox list --ids 2>>"$LOGS/setup.log" | head -n 1)"
 [[ -n "$SANDBOX_A_ID" ]] || die "could not read the sandbox id"
 log "sandbox $SANDBOX_A id=$SANDBOX_A_ID from $WORKLOAD_IMAGE"
+sandbox_sh() { # sandbox script
+  "${CLI[@]}" sandbox exec --name "$1" --no-tty --no-login-shell --timeout 60 -- "$SH_BIN" -c "$2" 2>>"$LOGS/setup.log"
+}
+# Only $LOGS is ever collected by CI. hygiene_check proves it carries no
+# secret material: provider key, Talon keys, the gateway's or Talon's private
+# keys, or any bearer token value. Both lanes run it before ALL PASS.
+hygiene_check() {
+  local leak=0 needle
+  for needle in "$PROVIDER_SECRET" "$TALON_SECRETS_KEY" "$TALON_SIGNING_KEY" "$TALON_ADMIN_KEY" "$LEAD_KEY" "PRIVATE KEY-----" "Bearer ey"; do
+    if grep -rqF -- "$needle" "$LOGS" 2>/dev/null; then echo "HYGIENE secret-shaped material found in logs: $(printf '%s' "$needle" | cut -c1-12)…" >&2; leak=1; fi
+  done
+  return $leak
+}
+
+# ---------------------------------------------------------------- claude-code lane (#528)
+# The real Claude Code executable drives the same composition; its cases
+# (CC0–CC9, evidence, run facts) live beside this harness and end with the
+# same ALL PASS line the workflow requires.
+if [[ "$LANE" == "claude-code" ]]; then
+  # shellcheck source=openshell-live-claude-code.sh
+  source "$ROOT/scripts/openshell-live-claude-code.sh"
+  exit 0
+fi
 
 # ---------------------------------------------------------------- workload fixture precondition
 # Prove the fixture before any governance case, inside the REAL sandbox: the
@@ -575,9 +720,6 @@ log "sandbox $SANDBOX_A id=$SANDBOX_A_ID from $WORKLOAD_IMAGE"
 # resolved carries the pinned digest. A mismatch here is a fixture failure,
 # not a Talon or OpenShell governance failure, and must not surface later as
 # an empty HTTP code.
-sandbox_sh() { # sandbox script
-  "${CLI[@]}" sandbox exec --name "$1" --no-tty --no-login-shell --timeout 60 -- "$SH_BIN" -c "$2" 2>>"$LOGS/setup.log"
-}
 FIXTURE="$(sandbox_sh "$SANDBOX_A" 'printf "curl=%s\nsh=%s\nsleep=%s\nuser=%s\n" "$(command -v curl || echo missing)" "$(command -v sh || echo missing)" "$(command -v sleep || echo missing)" "$(id -u 2>/dev/null || echo unknown)"; curl --version 2>/dev/null | head -n1' || true)"
 printf '%s\n' "$FIXTURE" >>"$LOGS/setup.log"
 DETECTED_CURL="$(sed -n 's/^curl=//p' <<<"$FIXTURE" | head -n1)"
@@ -901,16 +1043,6 @@ if grep -qE '"X-Talon-Workload-Assertion"|v1\.eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_
 pass "evidence: $ACTION_IDENTIFIED action records carry the verified sandbox identity (talon_enforced, runtime ref $SANDBOX_A_ID); session $SESSION joins $SESSION_MODEL model and $SESSION_ACTIONS action records; lifecycle verification VALID; no reviewer credential or assertion material in Talon's export or logs"
 
 # ---------------------------------------------------------------- log hygiene
-# Only $LOGS is ever collected by CI. Prove it carries no secret material:
-# provider key, Talon keys, the gateway's or Talon's private keys, or any
-# bearer token value.
-hygiene_check() {
-  local leak=0 needle
-  for needle in "$PROVIDER_SECRET" "$TALON_SECRETS_KEY" "$TALON_SIGNING_KEY" "$TALON_ADMIN_KEY" "$LEAD_KEY" "PRIVATE KEY-----" "Bearer ey"; do
-    if grep -rqF -- "$needle" "$LOGS" 2>/dev/null; then echo "HYGIENE secret-shaped material found in logs: $(printf '%s' "$needle" | cut -c1-12)…" >&2; leak=1; fi
-  done
-  return $leak
-}
 hygiene_check || die "log hygiene check failed"
 pass "log hygiene: collected logs carry no provider secret, Talon key, private key or bearer token"
 

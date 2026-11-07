@@ -251,6 +251,84 @@ func TestDelegatedResponse_StreamObservation(t *testing.T) {
 	assert.Equal(t, ResponseModeWholeBody, gw2.PlanDelegatedResponse(context.Background(), preflightFor(200, "text/event-stream")).Mode)
 }
 
+// count_tokens on the delegated Anthropic path is settled like any other
+// exchange — the runtime presents its response to PRE_RETURN too — at cost 0
+// on both records, with no session consumption, and never as a
+// decision_unmatched settlement. Regression for #528: the allow path parked
+// no ledger row for count_tokens, so every count_tokens response was
+// recorded as a response Talon had no request half for.
+func TestDelegatedResponse_CountTokensSettlesAtZero(t *testing.T) {
+	gw, store := setupDelegatedGatewayWith(t, "redact", nil, func(c *GatewayConfig) {
+		responseGoverned(c)
+		c.Providers["anthropic"] = ProviderConfig{Enabled: true, BaseURL: "https://api.anthropic.com", SecretName: "anthropic-api-key"}
+	})
+	req := delegatedReq(delegatedPrincipal(delegatedSubject), `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"count me"}]}`)
+	req.Host, req.Path, req.RequestID = "api.anthropic.com", "/v1/messages/count_tokens", "req-count-1"
+	dec := gw.EvaluateDelegated(context.Background(), req)
+	require.True(t, dec.Allowed, "%+v", dec)
+	require.Equal(t, 1, pendingSettlements(t, gw), "the count_tokens decision parks its settlement row")
+	pf := preflightFor(200, "application/json")
+	pf.Host, pf.RequestID = "api.anthropic.com", "req-count-1"
+	require.Equal(t, ResponseModeWholeBody, gw.PlanDelegatedResponse(context.Background(), pf).Mode)
+	st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf, Mode: ResponseModeWholeBody, Body: []byte(`{"input_tokens":42}`)})
+	assert.False(t, st.Block, "%+v", st)
+	assert.Equal(t, 0.0, st.Cost)
+	assert.Equal(t, 0, pendingSettlements(t, gw))
+	decisions := recordsOfType(t, store, "gateway_count_tokens")
+	require.Len(t, decisions, 1)
+	assert.Equal(t, 0.0, decisions[0].Execution.Cost)
+	settlements := recordsOfType(t, store, InvocationTypeGatewayResponse)
+	require.Len(t, settlements, 1)
+	assert.Equal(t, decisions[0].CorrelationID, settlements[0].CorrelationID, "the settlement joins its count_tokens decision")
+	assert.Equal(t, 0.0, settlements[0].Execution.Cost)
+	assert.NotContains(t, settlements[0].GatewayAnnotations, "decision_unmatched")
+	assert.Contains(t, settlements[0].GatewayAnnotations, "response_observed")
+	assert.Equal(t, 0.0, settlementCostTotal(t, store), "count_tokens never bills")
+}
+
+// A streamed response HELD whole under a preventive policy (every streaming
+// client — Claude Code streams always — under redact/block) is settled from
+// the held SSE bytes: usage from the final chunk, PII redacted into an SSE
+// replacement, a clean stream delivered unchanged. Regression for #528: the
+// held-SSE path built its capture without a writer and panicked on the
+// first streamed response, which OpenShell then failed closed on.
+func TestDelegatedResponse_StreamHeldWholeUnderPreventivePolicy(t *testing.T) {
+	gw, store := setupDelegatedGatewayWith(t, "redact", nil, responseGoverned)
+	pf := preflightFor(200, "text/event-stream")
+	clean := "data: {\"id\":\"c1\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"delta\":{\"content\":\"all good\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4}}\n\n" +
+		"data: [DONE]\n\n"
+	require.True(t, gw.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)).Allowed)
+	require.Equal(t, ResponseModeWholeBody, gw.PlanDelegatedResponse(context.Background(), pf).Mode)
+	st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf, Mode: ResponseModeWholeBody, Body: []byte(clean)})
+	assert.False(t, st.Block, "%+v", st)
+	assert.False(t, st.BodyChanged)
+	assert.Equal(t, TokenUsage{Input: 7, Output: 4}, st.Tokens)
+
+	pii := "data: {\"id\":\"c2\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"delta\":{\"content\":\"mail jane.doe@example.com\"}}]}\n\n" +
+		"data: {\"id\":\"c2\",\"choices\":[{\"delta\":{\"content\":\" now\"}}]}\n\n" +
+		"data: {\"id\":\"c2\",\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":5}}\n\n" +
+		"data: [DONE]\n\n"
+	pf2 := pf
+	pf2.RequestID = "req-2"
+	req2 := delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)
+	req2.RequestID = "req-2"
+	require.True(t, gw.EvaluateDelegated(context.Background(), req2).Allowed)
+	st = gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf2, Mode: ResponseModeWholeBody, Body: []byte(pii)})
+	assert.False(t, st.Block, "%+v", st)
+	assert.True(t, st.BodyChanged, "a held stream with PII is replaced, not passed")
+	assert.NotContains(t, string(st.Body), "jane.doe@example.com")
+	assert.Contains(t, string(st.Body), "data: ", "the replacement is still an SSE body")
+	assert.Equal(t, TokenUsage{Input: 9, Output: 5}, st.Tokens)
+	recs := recordsOfType(t, store, InvocationTypeGatewayResponse)
+	require.Len(t, recs, 2)
+	for _, r := range recs {
+		require.NotNil(t, r.Classification.ResponseScan)
+		assert.Equal(t, evidence.ResponseScanEnforcementPreventive, r.Classification.ResponseScan.Enforcement)
+		assert.NotContains(t, mustJSON(t, r), "jane.doe@example.com")
+	}
+}
+
 // The plan: identity failures block; provider errors and non-model bodies
 // settle from headers; an uninspectable body blocks under a preventive
 // policy and is observed-only otherwise.
@@ -263,6 +341,12 @@ func TestDelegatedResponse_PlanMatrix(t *testing.T) {
 	gz.ContentEncoding = "gzip"
 	noBody := preflightFor(200, "application/json")
 	noBody.BodyInspectable = false
+	sseStreamOnly := preflightFor(200, "text/event-stream")
+	sseStreamOnly.BodyInspectable = false
+	sseHeadersOnly := sseStreamOnly
+	sseHeadersOnly.StreamPermitted = false
+	sseStreamOnlyGz := sseStreamOnly
+	sseStreamOnlyGz.ContentEncoding = "gzip"
 	for name, tc := range map[string]struct {
 		pf    DelegatedResponsePreflight
 		mode  string
@@ -278,6 +362,13 @@ func TestDelegatedResponse_PlanMatrix(t *testing.T) {
 		"compressed + redact":    {gz, "", true, CodeResponseScanUnavailable},
 		"uninspectable + redact": {noBody, "", true, CodeResponseScanUnavailable},
 		"json":                   {preflightFor(200, "application/json"), ResponseModeWholeBody, false, ""},
+		// SSE: a runtime that offers WHOLE_BODY gets the held body; OpenShell
+		// v0.1.3 never offers it for text/event-stream (open-ended), only
+		// STREAM_BYTES — the guarded per-unit mode; neither → fail closed.
+		"sse + redact, whole offered":           {preflightFor(200, "text/event-stream"), ResponseModeWholeBody, false, ""},
+		"sse + redact, stream only (v0.1.3)":    {sseStreamOnly, ResponseModeStreamGuarded, false, ""},
+		"sse + redact, headers only":            {sseHeadersOnly, "", true, CodeResponseScanUnavailable},
+		"sse + redact, stream only, compressed": {sseStreamOnlyGz, "", true, CodeResponseScanUnavailable},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := gw.PlanDelegatedResponse(context.Background(), tc.pf)
@@ -296,6 +387,9 @@ func TestDelegatedResponse_PlanMatrix(t *testing.T) {
 	p := gw2.PlanDelegatedResponse(context.Background(), gz)
 	assert.False(t, p.Block)
 	assert.Equal(t, ResponseModeHeadersOnly, p.Mode)
+	// Observational policy + stream-only SSE: post-delivery observation,
+	// never the guard (nothing to withhold under warn).
+	assert.Equal(t, ResponseModeStream, gw2.PlanDelegatedResponse(context.Background(), sseStreamOnly).Mode)
 	// Compressed provider ERROR body under a preventive policy: blocked.
 	gzErr := preflightFor(502, "application/json")
 	gzErr.ContentEncoding = "gzip"
@@ -579,5 +673,234 @@ func TestOpenShellResponseGovernanceConfig_MaxPendingBounds(t *testing.T) {
 		} else {
 			require.Error(t, err, "max_pending=%d", tc.in)
 		}
+	}
+}
+
+// anthropicSSEUnits is the Anthropic Messages stream as OpenShell hands it
+// to the guard: one unit per provider flush (one event each), usage split
+// across message_start and message_delta.
+func anthropicSSEUnits(deltas ...string) []string {
+	quote := strconv.Quote
+	units := []string{
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+	}
+	for _, d := range deltas {
+		units = append(units, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":"+quote(d)+"}}\n\n")
+	}
+	return append(units,
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}\n\n",
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+	)
+}
+
+// The guarded stream (OpenShell v0.1.3 offers only STREAM_BYTES for SSE): a
+// clean Anthropic stream is released unit by unit and settled with the
+// usage the guard parsed; a unit carrying PII is withheld together with
+// everything after it, under redact and under block alike; a value split
+// across units is caught at the unit completing it; a frame cut between
+// units is parsed whole; the evidence says preventive_per_unit, never
+// preventive or redacted. Without the guarded mode every one of these
+// exchanges was blocked at preflight with output_scan_unavailable (#528).
+func TestDelegatedResponse_GuardedStreamWithholdsFromPIIUnit(t *testing.T) {
+	const email = "jane.doe@example.com"
+	for _, action := range []string{"redact", "block"} {
+		t.Run(action, func(t *testing.T) {
+			gw, store := setupDelegatedGatewayWith(t, action, nil, responseGoverned)
+			pf := preflightFor(200, "text/event-stream")
+			pf.BodyInspectable = false // the real v0.1.3 offer for text/event-stream
+			exchange := func(reqID string, units []string) (DelegatedSettlement, *StreamGuardSummary, int) {
+				req := delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)
+				req.RequestID = reqID
+				require.True(t, gw.EvaluateDelegated(context.Background(), req).Allowed)
+				p := pf
+				p.RequestID = reqID
+				require.Equal(t, ResponseModeStreamGuarded, gw.PlanDelegatedResponse(context.Background(), p).Mode)
+				guard, refused := gw.GuardDelegatedStream(context.Background(), p)
+				require.Nil(t, refused)
+				var capture []byte
+				released := 0
+				for _, u := range units {
+					capture = append(capture, u...)
+					if v := guard.Inspect(context.Background(), []byte(u)); v.Block {
+						break
+					}
+					released++
+				}
+				sum := guard.Summary()
+				st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: p, Mode: ResponseModeStreamGuarded, Body: capture, BytesSeen: int64(len(capture)), CaptureCap: 1 << 20, Guard: sum})
+				return st, sum, released
+			}
+
+			clean := anthropicSSEUnits("all ", "good")
+			st, sum, released := exchange("req-clean", clean)
+			assert.False(t, st.Block, "%+v", st)
+			assert.Equal(t, len(clean), released, "every unit of a clean stream is released")
+			assert.False(t, sum.Blocked)
+			assert.Equal(t, TokenUsage{Input: 12, Output: 3}, st.Tokens, "usage parsed by the guard from message_start/message_delta")
+			assert.Greater(t, st.Cost, 0.0)
+
+			pii := anthropicSSEUnits("please mail ", email, " today")
+			st, sum, released = exchange("req-pii", pii)
+			assert.True(t, st.Block, "%+v", st)
+			assert.Equal(t, "output_pii_blocked", st.Code)
+			assert.Equal(t, 3, released, "units before the e-mail delta were released; the e-mail unit and everything after it were not")
+			assert.True(t, sum.Blocked)
+			assert.Equal(t, 4, sum.BlockedAt)
+			assert.Contains(t, sum.PIITypes, "email")
+
+			split := anthropicSSEUnits("write to jane.doe@exa", "mple.com please")
+			st, sum, released = exchange("req-split", split)
+			assert.True(t, st.Block, "a value split across two deltas is caught at the unit completing it: %+v", st)
+			assert.Equal(t, 3, released, "the first half was already released (documented per-unit limit)")
+			assert.Equal(t, 4, sum.BlockedAt)
+
+			// One SSE frame cut by the transport between two units: nothing to
+			// scan in the first half, the whole frame in the second.
+			frame := anthropicSSEUnits("contact " + email)[2]
+			cut := len(frame) / 2
+			cutUnits := append(append(anthropicSSEUnits()[:2], frame[:cut], frame[cut:]), anthropicSSEUnits()[2:]...)
+			st, sum, released = exchange("req-cut", cutUnits)
+			assert.True(t, st.Block, "%+v", st)
+			assert.Equal(t, 3, released)
+			assert.Equal(t, 4, sum.BlockedAt, "the frame is complete in the second half; that unit is withheld")
+
+			recs := recordsOfType(t, store, InvocationTypeGatewayResponse)
+			require.Len(t, recs, 4)
+			for _, r := range recs {
+				require.NotNil(t, r.Classification.ResponseScan, r.ID)
+				assert.Equal(t, evidence.ResponseScanEnforcementPreventivePerUnit, r.Classification.ResponseScan.Enforcement)
+				assert.True(t, r.Classification.ResponseScan.Streamed)
+				assert.Contains(t, r.GatewayAnnotations, annotationStreamUnitGuarded)
+				assert.NotContains(t, mustJSON(t, r), email)
+				assert.False(t, r.Classification.ResponsePIIRedacted(r.DataFlow), "withheld is not redacted")
+				assert.False(t, r.Classification.ResponsePIIObserved(r.DataFlow), "withheld is not observed-only")
+				if r.Classification.OutputPIIDetected {
+					assert.False(t, r.PolicyDecision.Allowed, "a withheld stream settles as blocked: %s", r.ID)
+					assert.Equal(t, "output_pii_blocked", r.PolicyDecision.Reasons[0])
+				} else {
+					assert.True(t, r.PolicyDecision.Allowed)
+				}
+			}
+		})
+	}
+	// No scanner at all: the guard withholds every unit that carries text.
+	sg := &DelegatedStreamGuard{action: "redact"}
+	assert.False(t, sg.Inspect(context.Background(), []byte(anthropicSSEUnits("x")[0])).Block, "a unit without content text has nothing to scan")
+	v := sg.Inspect(context.Background(), []byte(anthropicSSEUnits("x")[2]))
+	assert.True(t, v.Block)
+	assert.Equal(t, "output_scanner_unavailable", v.Code)
+	assert.Equal(t, "output_scanner_unavailable", sg.Summary().Code)
+}
+
+// A guarded stream the provider cut before OpenShell delivered any unit
+// (observed on v0.1.3, PR #531 run 42388578162: the exchange ends with no
+// body at all) still settles under its decision and says so: nothing
+// released or withheld, no usage (the estimate stands), the scan recorded as
+// incomplete with the abnormal-end reason — never a silent "observed".
+func TestDelegatedResponse_GuardedStreamCutBeforeFirstUnit(t *testing.T) {
+	gw, store := setupDelegatedGatewayWith(t, "redact", nil, responseGoverned)
+	require.True(t, gw.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)).Allowed)
+	pf := preflightFor(200, "text/event-stream")
+	pf.BodyInspectable = false
+	require.Equal(t, ResponseModeStreamGuarded, gw.PlanDelegatedResponse(context.Background(), pf).Mode)
+	guard, refused := gw.GuardDelegatedStream(context.Background(), pf)
+	require.Nil(t, refused)
+	st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf, Mode: ResponseModeStreamGuarded, Incomplete: evidence.ResponseScanIncompleteUpstreamError, CaptureCap: 1 << 20, Guard: guard.Summary()})
+	assert.False(t, st.Block, "%+v", st)
+	assert.Equal(t, TokenUsage{}, st.Tokens)
+	assert.Equal(t, PricingBasisEstimateNoUsage, st.Basis)
+	recs := recordsOfType(t, store, InvocationTypeGatewayResponse)
+	require.Len(t, recs, 1)
+	r := recs[0]
+	require.NotNil(t, r.Classification.ResponseScan, "the abnormal end must be in the signed record")
+	assert.Equal(t, evidence.ResponseScanEnforcementPreventivePerUnit, r.Classification.ResponseScan.Enforcement)
+	assert.Equal(t, evidence.ResponseScanStatusIncomplete, r.Classification.ResponseScan.Status)
+	assert.Equal(t, evidence.ResponseScanIncompleteUpstreamError, r.Classification.ResponseScan.IncompleteReason)
+	assert.Contains(t, r.GatewayAnnotations, annotationStreamUnitGuarded)
+	assert.True(t, r.PolicyDecision.Allowed)
+	assert.False(t, r.Classification.OutputPIIDetected)
+}
+
+// Review of PR #531 (P1): a preventive per-unit mode must never release a
+// unit it did not inspect. The guard scans every unit in full — complete
+// frames by every string value of the event (text, thinking, tool-use
+// input JSON, populated content_block_start fields), a trailing cut
+// fragment as raw text with JSON escapes decoded — recognises CR/CRLF
+// line endings, and fails closed on a content-bearing frame it cannot
+// parse or a carried fragment beyond the bound.
+func TestDelegatedStreamGuard_InspectsEveryUnitAndFailsClosed(t *testing.T) {
+	gw, _ := setupDelegatedGatewayWith(t, "redact", nil, responseGoverned)
+	const email = "jane.doe@example.com"
+	newGuard := func() *DelegatedStreamGuard { return &DelegatedStreamGuard{action: "redact", scanner: gw.classifier} }
+	// cutInside splits a frame n bytes into the first occurrence of marker.
+	cutInside := func(frame, marker string, n int) []string {
+		i := strings.Index(frame, marker) + n
+		return []string{frame[:i], frame[i:]}
+	}
+	delta := func(kind, field, value string) string {
+		return `event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"` + kind + `","` + field + `":` + strconv.Quote(value) + `}}`
+	}
+	for name, tc := range map[string]struct {
+		units []string
+		code  string // "" = every unit released
+		at    int
+	}{
+		"complete value in an unterminated frame": {
+			units: []string{delta("text_delta", "text", "mail "+email), "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"unterminated frame cut inside the value": {
+			units: cutInside(delta("text_delta", "text", "mail "+email)+"\n\n", "example.com", 3), code: "output_pii_blocked", at: 2,
+		},
+		"CRLF frame": {
+			units: []string{strings.ReplaceAll(delta("text_delta", "text", email), "\n", "\r\n") + "\r\n\r\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"CR-only frame": {
+			units: []string{strings.ReplaceAll(delta("text_delta", "text", email), "\n", "\r") + "\r\r"}, code: "output_pii_blocked", at: 1,
+		},
+		"tool-use input (input_json_delta.partial_json)": {
+			units: []string{delta("input_json_delta", "partial_json", `{"email":"`+email+`"}`) + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"thinking delta": {
+			units: []string{delta("thinking_delta", "thinking", "the user is "+email) + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"populated content_block_start text": {
+			units: []string{`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"` + email + `"}}` + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"populated content_block_start tool_use input": {
+			units: []string{`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"send","input":{"to":"` + email + `"}}}` + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+		"JSON-escaped value in a cut fragment": {
+			units: []string{`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"jane.doe@example.com`}, code: "output_pii_blocked", at: 1,
+		},
+		"unparseable content-bearing frame": {
+			units: []string{"data: {not json at all\n\n"}, code: CodeResponseContentUnsupported, at: 1,
+		},
+		"carried fragment beyond the bound": {
+			units: []string{"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"" + strings.Repeat("x", streamGuardFrameCarryLimit)}, code: CodeResponseScanIncomplete, at: 1,
+		},
+		"benign frames and a benign cut fragment": {
+			units: []string{": keep-alive\n\n", "event: ping\ndata: {\"type\":\"ping\"}\n\n", "data: [DONE]\n\n", delta("text_delta", "text", "all good") + "\n\n", "event: content_block_delta\ndata: {\"type\":\"content_block_de"}, code: "",
+		},
+		"OpenAI tool call arguments": {
+			units: []string{`data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"send","arguments":"{\"to\":\"` + email + `\"}"}}]}}]}` + "\n\n"}, code: "output_pii_blocked", at: 1,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sg := newGuard()
+			blockedAt, code := 0, ""
+			for i, u := range tc.units {
+				if v := sg.Inspect(context.Background(), []byte(u)); v.Block {
+					blockedAt, code = i+1, v.Code
+					break
+				}
+			}
+			assert.Equal(t, tc.code, code, "verdict code")
+			assert.Equal(t, tc.at, blockedAt, "unit withheld (0 = none)")
+			if tc.code == "" {
+				assert.False(t, sg.Summary().Blocked)
+			}
+		})
 	}
 }

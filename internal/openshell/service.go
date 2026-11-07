@@ -90,6 +90,9 @@ type Decider interface {
 	// hook (HTTP_RESPONSE / PRE_RETURN): how to inspect, then the settlement.
 	PlanDelegatedResponse(ctx context.Context, pf gateway.DelegatedResponsePreflight) gateway.DelegatedResponsePlan
 	SettleDelegatedResponse(ctx context.Context, in gateway.DelegatedResponseBody) gateway.DelegatedSettlement
+	// GuardDelegatedStream is the per-unit inspector of a guarded stream
+	// (ResponseModeStreamGuarded): STREAM_BYTES under a preventive policy.
+	GuardDelegatedStream(ctx context.Context, pf gateway.DelegatedResponsePreflight) (gateway.StreamUnitInspector, *gateway.DelegatedResponsePlan)
 }
 
 // Service implements the pinned SupervisorMiddleware contract over Talon.

@@ -97,6 +97,9 @@ const (
 	annotationErrorBodyScanned  = "provider_error_body_scanned"
 	annotationProviderError     = "provider_error"
 	annotationRawTextScanned    = "response_text_body_scanned"
+	// annotationStreamUnitGuarded: the stream was inspected unit by unit
+	// while the runtime held each unit (see delegated_stream_guard.go).
+	annotationStreamUnitGuarded = "stream_unit_guarded"
 
 	// FailureReasonResponseUnobserved marks an unobserved settlement.
 	FailureReasonResponseUnobserved = "response_unobserved"
@@ -106,6 +109,9 @@ const (
 	ResponseModeHeadersOnly = "headers_only"
 	ResponseModeWholeBody   = "whole_body"
 	ResponseModeStream      = "stream"
+	// ResponseModeStreamGuarded: STREAM_BYTES under a preventive policy —
+	// each unit is scanned before the runtime releases it.
+	ResponseModeStreamGuarded = "stream_guarded"
 
 	// Codes specific to the response hop.
 	// CodeResponseScanUnavailable: the body cannot be inspected (compressed,
@@ -611,7 +617,11 @@ func (g *Gateway) PlanDelegatedResponse(ctx context.Context, pf DelegatedRespons
 // responseShape classifies the response from its headers.
 type responseShape struct {
 	isSSE, isJSON, isText bool
-	uninspectable         bool
+	// encoded: a content coding Talon cannot undo (the runtime offers no body
+	// mode for it either). wholeBodyOffered mirrors the runtime's
+	// WHOLE_BODY_BYTES offer; uninspectable is "cannot be held whole".
+	encoded, wholeBodyOffered bool
+	uninspectable             bool
 }
 
 func shapeOf(pf DelegatedResponsePreflight) responseShape {
@@ -619,11 +629,14 @@ func shapeOf(pf DelegatedResponsePreflight) responseShape {
 	if i := strings.Index(mt, ";"); i >= 0 {
 		mt = strings.TrimSpace(mt[:i])
 	}
+	encoded := pf.ContentEncoding != "" && !strings.EqualFold(pf.ContentEncoding, "identity")
 	return responseShape{
-		isSSE:         mt == "text/event-stream",
-		isJSON:        mt == "application/json" || strings.HasSuffix(mt, "+json"),
-		isText:        strings.HasPrefix(mt, "text/") && mt != "text/event-stream",
-		uninspectable: !pf.BodyInspectable || (pf.ContentEncoding != "" && !strings.EqualFold(pf.ContentEncoding, "identity")),
+		isSSE:            mt == "text/event-stream",
+		isJSON:           mt == "application/json" || strings.HasSuffix(mt, "+json"),
+		isText:           strings.HasPrefix(mt, "text/") && mt != "text/event-stream",
+		encoded:          encoded,
+		wholeBodyOffered: pf.BodyInspectable,
+		uninspectable:    !pf.BodyInspectable || encoded,
 	}
 }
 
@@ -646,6 +659,9 @@ func planResponseMode(action string, pf DelegatedResponsePreflight) DelegatedRes
 
 // planSuccessResponseMode is the plan for a 2xx/3xx response.
 func planSuccessResponseMode(observing, prevent, streamPermitted bool, sh responseShape) DelegatedResponsePlan {
+	if p, ok := planStreamedResponseMode(prevent, streamPermitted, sh); ok {
+		return p
+	}
 	switch {
 	case sh.uninspectable && prevent:
 		// The policy promises prevention and the body cannot be seen: fail
@@ -653,10 +669,6 @@ func planSuccessResponseMode(observing, prevent, streamPermitted bool, sh respon
 		return DelegatedResponsePlan{Block: true, Code: CodeResponseScanUnavailable, Message: "response body cannot be inspected and the response PII policy is preventive"}
 	case sh.uninspectable:
 		return DelegatedResponsePlan{Mode: ResponseModeHeadersOnly, Code: annotationBodyUninspectable}
-	case sh.isSSE && !prevent && streamPermitted:
-		// Observation: the sandbox streams while Talon watches; the record
-		// says post-delivery.
-		return DelegatedResponsePlan{Mode: ResponseModeStream}
 	case sh.isSSE || sh.isJSON:
 		// Preventive (block/redact) or non-streaming: the runtime holds the
 		// whole body until Talon answers.
@@ -672,6 +684,28 @@ func planSuccessResponseMode(observing, prevent, streamPermitted bool, sh respon
 	default:
 		return DelegatedResponsePlan{Mode: ResponseModeHeadersOnly}
 	}
+}
+
+// planStreamedResponseMode decides an SSE body the runtime can stream to
+// Talon unit by unit. Decided before the "cannot be held whole" cases: a
+// runtime that offers only STREAM_BYTES for SSE (OpenShell v0.1.3 treats it
+// as open-ended) still lets Talon observe the stream under warn and, under
+// a preventive policy, inspect each unit while the runtime holds it
+// (delegated_stream_guard.go). A runtime that offers WHOLE_BODY keeps the
+// held-whole preventive path; an encoded body is not streamable to Talon.
+func planStreamedResponseMode(prevent, streamPermitted bool, sh responseShape) (DelegatedResponsePlan, bool) {
+	if !sh.isSSE || sh.encoded || !streamPermitted {
+		return DelegatedResponsePlan{}, false
+	}
+	switch {
+	case prevent && !sh.wholeBodyOffered:
+		return DelegatedResponsePlan{Mode: ResponseModeStreamGuarded}, true
+	case !prevent:
+		// Observation: the sandbox streams while Talon watches; the record
+		// says post-delivery.
+		return DelegatedResponsePlan{Mode: ResponseModeStream}, true
+	}
+	return DelegatedResponsePlan{}, false
 }
 
 // planErrorResponseMode is the plan for a provider 4xx/5xx: nothing to
@@ -695,6 +729,8 @@ func planErrorResponseMode(observing, prevent, uninspectable, textual bool) Dele
 func modeRank(mode string) int {
 	switch mode {
 	case ResponseModeWholeBody:
+		return 4
+	case ResponseModeStreamGuarded:
 		return 3
 	case ResponseModeStream:
 		return 2
@@ -718,6 +754,9 @@ type DelegatedResponseBody struct {
 	Incomplete string
 	BytesSeen  int64
 	CaptureCap int64
+	// Guard is the per-unit inspector's summary (ResponseModeStreamGuarded
+	// only): what was withheld, what was detected, the usage it parsed.
+	Guard *StreamGuardSummary
 }
 
 // DelegatedSettlement is the hook's answer for the body: deliver as is,
@@ -990,7 +1029,14 @@ func (g *Gateway) observe(ctx context.Context, in DelegatedResponseBody, rc *res
 
 	// Usage and cost.
 	var usage TokenUsage
-	if len(in.Body) > 0 && !providerError && (sh.isJSON || sh.isSSE) {
+	if in.Mode == ResponseModeStreamGuarded && in.Guard != nil {
+		// The guard parsed every complete frame it released or withheld;
+		// the capture below is only a bounded copy of the same bytes.
+		usage = in.Guard.Usage
+		if model == "" {
+			model = responseModel(in.Body, true)
+		}
+	} else if len(in.Body) > 0 && !providerError && (sh.isJSON || sh.isSSE) {
 		if sh.isSSE {
 			for _, block := range bytes.Split(in.Body, []byte("\n\n")) {
 				extractUsageFromSSELine(block, &usage)
@@ -1033,7 +1079,15 @@ func (g *Gateway) observe(ctx context.Context, in DelegatedResponseBody, rc *res
 	bodyChanged := false
 	scanCtx := classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse)
 	switch {
-	case forced != "" || !observing || len(in.Body) == 0:
+	case forced != "" || !observing:
+	case in.Mode == ResponseModeStreamGuarded:
+		// Also when no unit ever arrived: the guard's facts (nothing
+		// released, nothing withheld) and, below, the abnormal end are what
+		// the record must say — OpenShell v0.1.3 ends a stream the provider
+		// cut before its first unit without delivering any (observed, #528).
+		scan = guardScanResult(in, action)
+		annotations = append(annotations, annotationStreamUnitGuarded)
+	case len(in.Body) == 0:
 	case in.Mode == ResponseModeWholeBody && (providerError || (!sh.isJSON && !sh.isSSE)):
 		// Error envelopes and plain text: scan the whole text; a preventive
 		// policy blocks on PII rather than rewrite an envelope it does not
@@ -1113,6 +1167,12 @@ func (g *Gateway) observe(ctx context.Context, in DelegatedResponseBody, rc *res
 		result.PIITypes, result.Redacted = scan.PIITypes, scan.Redacted && !blocked
 	}
 	tokens := usage.Input + usage.Output
+	if row != nil && row.isCountTokens {
+		// A count is not consumption: the record keeps the provider's figure,
+		// the session accumulates neither cost nor tokens for it (as on the
+		// proxy path).
+		tokens = 0
+	}
 	out := settlementOutcome{cost: cost, block: blocked, sessionState: sessionStateNone, sessionCost: cost, sessionTokens: tokens}
 	if blocked {
 		out.code = reasons[0]
@@ -1127,7 +1187,12 @@ func (g *Gateway) observe(ctx context.Context, in DelegatedResponseBody, rc *res
 // held body and returns the body to deliver (possibly a replacement).
 func (g *Gateway) applyResponsePolicy(ctx context.Context, in DelegatedResponseBody, action, wire string) ([]byte, *ResponsePIIScanResult) {
 	if strings.Contains(strings.ToLower(in.Preflight.ContentType), "text/event-stream") {
-		capture := &responseCapture{statusCode: in.Preflight.Status}
+		// The capture needs a header-bearing writer behind it: the proxy path
+		// wraps the real ResponseWriter, the delegated path has none (the
+		// body is held by the runtime), so an in-memory one stands in. A nil
+		// embedded writer made every held SSE body (any streaming client
+		// under a preventive response policy) panic here (#528).
+		capture := &responseCapture{ResponseWriter: &bufferResponseWriter{header: http.Header{}}, statusCode: in.Preflight.Status}
 		capture.body.Write(in.Body)
 		capture.Header().Set("Content-Type", in.Preflight.ContentType)
 		sink := &bufferResponseWriter{header: http.Header{}}

@@ -268,3 +268,193 @@ func TestMockProvider_ToolCallingScript(t *testing.T) {
 		t.Fatalf("state: %+v", st)
 	}
 }
+
+// anthropicCall posts an Anthropic-shaped request with the headers the real
+// client sends and returns status, content type and body.
+func anthropicCall(t *testing.T, c *providerClient, base, path, body string, headers map[string]string) (status int, contentType string, respBody []byte) {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, base+path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "sk-ant-injected-by-openshell")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("User-Agent", "claude-cli/2.1.319 (external, sdk-cli)")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body) // a truncated stream ends in a read error by design; the body read so far is the assertion
+	return resp.StatusCode, resp.Header.Get("Content-Type"), b
+}
+
+// sseEvents returns the event names of a well-formed SSE body (every block
+// an `event:` line followed by a `data:` line carrying valid JSON).
+func sseEvents(t *testing.T, body []byte) []string {
+	t.Helper()
+	events := []string{}
+	for _, block := range strings.Split(strings.TrimSpace(string(body)), "\n\n") {
+		lines := strings.SplitN(block, "\n", 2)
+		if len(lines) != 2 || !strings.HasPrefix(lines[0], "event: ") || !strings.HasPrefix(lines[1], "data: ") || !json.Valid([]byte(strings.TrimPrefix(lines[1], "data: "))) {
+			t.Fatalf("malformed SSE block %q", block)
+		}
+		events = append(events, strings.TrimPrefix(lines[0], "event: "))
+	}
+	return events
+}
+
+// expect reports every named check that is false.
+func expect(t *testing.T, where string, checks map[string]bool) {
+	t.Helper()
+	for name, ok := range checks {
+		if !ok {
+			t.Errorf("%s: %s", where, name)
+		}
+	}
+}
+
+// The Anthropic Messages API the real Claude Code executable speaks (#528):
+// /v1/messages answers JSON, or the complete SSE event sequence (message_start
+// with input usage … message_delta with output usage … message_stop) when the
+// request streams; /v1/messages/count_tokens answers a count and is recorded
+// as its own call; the x-api-key credential, the query string and the user
+// agent are recorded so the live lane can assert which binary called and
+// with whose credential. Usage is 12/3 on both wires. The subtests share one
+// provider and run in order: the record assertions at the end read the
+// sequence the earlier subtests produced.
+func TestMockProvider_AnthropicMessages(t *testing.T) {
+	srv := httptest.NewServer(newHandler(&state{}, "", 1<<20))
+	t.Cleanup(srv.Close)
+	c := newProviderClient(t, srv.URL)
+	call := func(path, body string) (int, string, []byte) {
+		return anthropicCall(t, c, srv.URL, path, body, nil)
+	}
+	t.Run("json", func(t *testing.T) {
+		code, ct, b := call("/v1/messages", `{"model":"claude-sonnet-4-5","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`)
+		if code != 200 || ct != "application/json" {
+			t.Fatalf("messages json: %d %s %s", code, ct, b)
+		}
+		var msg struct {
+			ID         string `json:"id"`
+			Type       string `json:"type"`
+			Model      string `json:"model"`
+			StopReason string `json:"stop_reason"`
+			Content    []struct {
+				Type, Text string
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(b, &msg); err != nil {
+			t.Fatalf("messages json: %v %s", err, b)
+		}
+		expect(t, string(b), map[string]bool{
+			"id":          msg.ID == "msg_mock_1",
+			"type":        msg.Type == "message",
+			"model":       msg.Model == "claude-sonnet-4-5",
+			"stop_reason": msg.StopReason == "end_turn",
+			"content":     len(msg.Content) == 1 && msg.Content[0].Text == "mock anthropic completion 1",
+			"usage 12/3":  strings.Contains(string(b), `"usage":{"input_tokens":12,"output_tokens":3}`),
+		})
+	})
+	t.Run("sse", func(t *testing.T) {
+		// The event order a client needs to terminate, usage split between
+		// message_start (input) and message_delta (output).
+		code, ct, b := call("/v1/messages?beta=true", `{"model":"claude-sonnet-4-5","max_tokens":32,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+		if code != 200 || ct != "text/event-stream" {
+			t.Fatalf("messages sse: %d %s %s", code, ct, b)
+		}
+		expect(t, string(b), map[string]bool{
+			"event order":   strings.Join(sseEvents(t, b), ",") == "message_start,content_block_start,content_block_delta,content_block_stop,message_delta,message_stop",
+			"input usage":   strings.Contains(string(b), `"usage":{"input_tokens":12,"output_tokens":1}`),
+			"output usage":  strings.Contains(string(b), `"usage":{"output_tokens":3}`),
+			"text sequence": strings.Contains(string(b), `"text":"mock anthropic completion 2"`),
+		})
+	})
+	t.Run("count_tokens", func(t *testing.T) {
+		// Its own recorded call and never a completion.
+		code, _, b := call("/v1/messages/count_tokens", `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`)
+		if code != 200 || string(b) != `{"input_tokens":42}` {
+			t.Fatalf("count_tokens: %d %s", code, b)
+		}
+	})
+	t.Run("error_envelope", func(t *testing.T) {
+		code, _, b := anthropicCall(t, c, srv.URL, "/v1/messages", `{"model":"m","messages":[]}`, map[string]string{"X-Mock-Scenario": scenarioErrorPII})
+		expect(t, string(b), map[string]bool{
+			"status 400":     code == http.StatusBadRequest,
+			"error envelope": strings.Contains(string(b), `"type":"error"`),
+			"carries PII":    strings.Contains(string(b), mockPII),
+		})
+	})
+	t.Run("truncated_stream", func(t *testing.T) {
+		// The head and the first events arrive, then the connection closes
+		// before message_delta/message_stop.
+		code, ct, b := anthropicCall(t, c, srv.URL, "/v1/messages", `{"model":"m","stream":true,"messages":[]}`, map[string]string{"X-Mock-Scenario": scenarioTruncatedStream})
+		expect(t, string(b), map[string]bool{
+			"status 200":       code == 200,
+			"content type":     ct == "text/event-stream",
+			"starts":           strings.Contains(string(b), "event: message_start"),
+			"no message_stop":  !strings.Contains(string(b), "message_stop"),
+			"no message_delta": !strings.Contains(string(b), "message_delta"),
+		})
+	})
+	t.Run("records", func(t *testing.T) {
+		st := c.state()
+		if st.Calls != 5 || len(st.Records) != 5 {
+			t.Fatalf("calls: %+v", st)
+		}
+		r0, r1, r2 := st.Records[0], st.Records[1], st.Records[2]
+		expect(t, "record 0 (json)", map[string]bool{
+			"path":              r0.Path == "/v1/messages",
+			"x-api-key":         r0.XAPIKey == "sk-ant-injected-by-openshell",
+			"no Authorization":  r0.Authorization == "",
+			"not streamed":      !r0.Stream,
+			"user agent":        strings.Contains(r0.UserAgent, "claude-cli/2.1.319"),
+			"anthropic-version": r0.AnthropicVersion == "2023-06-01",
+		})
+		expect(t, "record 1 (streamed, with query)", map[string]bool{
+			"path":     r1.Path == "/v1/messages",
+			"query":    r1.Query == "beta=true",
+			"streamed": r1.Stream,
+		})
+		expect(t, "record 2 (count_tokens)", map[string]bool{
+			"path":         r2.Path == "/v1/messages/count_tokens",
+			"not streamed": !r2.Stream,
+		})
+		if got := describeKey("sk-ant-secret"); got != "key(13 chars)" {
+			t.Fatalf("describeKey = %q", got)
+		}
+	})
+	t.Run("chat_completions_unchanged", func(t *testing.T) {
+		if code, id := c.completion("still here", "Bearer x"); code != 200 || id != "chatcmpl-mock-6" {
+			t.Fatalf("chat completions after anthropic calls: %d %q", code, id)
+		}
+	})
+}
+
+// The model is echoed from the request body (untrusted): every Anthropic
+// body is marshalled, so a model carrying quotes or backslashes stays
+// valid JSON on both wires (CodeQL "potentially unsafe quoting", PR #531).
+func TestMockProvider_AnthropicModelIsJSONEscaped(t *testing.T) {
+	hostile := `claude"-\x` + " "
+	_, _, b := anthropicResponse("", 1, hostile, false)
+	var msg struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(b, &msg); err != nil || msg.Model != hostile {
+		t.Fatalf("json body: err=%v model=%q body=%s", err, msg.Model, b)
+	}
+	_, _, sse := anthropicResponse("", 2, hostile, true)
+	var start struct {
+		Message struct {
+			Model string `json:"model"`
+		} `json:"message"`
+	}
+	first := strings.SplitN(strings.TrimPrefix(string(sse), "event: message_start\ndata: "), "\n", 2)[0]
+	if err := json.Unmarshal([]byte(first), &start); err != nil || start.Message.Model != hostile {
+		t.Fatalf("sse message_start: err=%v model=%q data=%s", err, start.Message.Model, first)
+	}
+	if got := len(sseEvents(t, sse)); got != 6 {
+		t.Fatalf("sse events with hostile model: %d", got)
+	}
+}

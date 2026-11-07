@@ -14,6 +14,13 @@ const (
 	// ResponseScanEnforcementPreventive: the response was held until the
 	// scan verdict and could be redacted or withheld (redact/block).
 	ResponseScanEnforcementPreventive = "preventive"
+	// ResponseScanEnforcementPreventivePerUnit: the response was streamed
+	// through a runtime that holds each unit until the verdict (OpenShell
+	// STREAM_BYTES); every unit was scanned before release and the stream
+	// was withheld from the first unit carrying PII on. Prevention is per
+	// unit: a value split across units is caught at the unit completing it,
+	// after the earlier part was released. Never a redaction.
+	ResponseScanEnforcementPreventivePerUnit = "preventive_per_unit"
 )
 
 // Response-scan status values.
@@ -89,7 +96,7 @@ func (c *Classification) ResponsePIIObserved(df *DataFlow) bool {
 		return false
 	}
 	if rs := c.ResponseScan; rs != nil {
-		return rs.Enforcement != ResponseScanEnforcementPreventive
+		return rs.Enforcement != ResponseScanEnforcementPreventive && rs.Enforcement != ResponseScanEnforcementPreventivePerUnit
 	}
 	if df != nil {
 		for i := range df.Items {
