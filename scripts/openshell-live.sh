@@ -125,8 +125,12 @@ case "$LANE" in default|claude-code) ;; *) echo "FAIL unknown TALON_OPENSHELL_LA
 # (tests/openshell-live/claude-code/Dockerfile) and again inside the real
 # sandbox (case CC0). The image is built locally by the harness, so it is
 # pinned by the content it must carry (version + binary sha256), not by a
-# registry digest. Claude Code's HOME is the sandbox workspace (the only
-# writable tree); nothing in it is a credential.
+# registry digest. Claude Code keeps its config under HOME, which must be
+# writable by the sandbox user (uid 1000): OpenShell's workspace /sandbox is
+# root-owned in v0.1.3 (observed on the lane's first real run, PR #531), so
+# the default candidates are the image's own home first and the workspace
+# second; CC0 probes them in order and the run facts name the one in use.
+# Nothing under it is a credential.
 CLAUDE_CODE_VERSION="${TALON_CLAUDE_CODE_VERSION:-2.1.319}"
 CLAUDE_CODE_SHA256="${TALON_CLAUDE_CODE_SHA256:-dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed}"
 if [[ -n "${TALON_CLAUDE_CODE_VERSION:-}" && -z "${TALON_CLAUDE_CODE_SHA256:-}" || -z "${TALON_CLAUDE_CODE_VERSION:-}" && -n "${TALON_CLAUDE_CODE_SHA256:-}" ]]; then
@@ -136,7 +140,8 @@ fi
 CLAUDE_BIN="/usr/local/bin/claude"
 CLAUDE_MODEL="${TALON_CLAUDE_MODEL:-claude-sonnet-4-5}"          # priced in pricing/models.yaml; allowed
 CLAUDE_BLOCKED_MODEL="claude-opus-4-8"                           # priced; denied by the organization policy below
-CLAUDE_HOME="${TALON_OPENSHELL_CLAUDE_HOME:-/sandbox}"
+CLAUDE_HOME_CANDIDATES="${TALON_OPENSHELL_CLAUDE_HOME:-/home/agent /sandbox}"   # CC0 selects CLAUDE_HOME from these
+CLAUDE_HOME=""
 # Opt-in REAL provider mode of the claude-code lane (#528 mode B): the same
 # sandbox, policy, middleware and client, but the provider is
 # api.anthropic.com and the credential is a real Anthropic key that enters

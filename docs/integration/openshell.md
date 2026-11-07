@@ -260,7 +260,7 @@ It is the "Claude Code … inside OpenShell …" job of the `OpenShell Live` wor
 
 | Case | What the real runtime shows |
 |---|---|
-| CC0 fixture | `claude` at the policy's path, version and sha256 equal to the pin, HOME writable |
+| CC0 fixture | `claude` at the policy's path, version and sha256 equal to the pin; a HOME the sandbox user can write (the image's `/home/agent` — OpenShell's `/sandbox` workspace is root-owned in v0.1.3, observed on the lane's first run; `TALON_OPENSHELL_CLAUDE_HOME` overrides the candidates) |
 | CC1 allowed (C01) | exactly one provider call: `POST /v1/messages` (query `beta=true`), `stream: true`, user agent `claude-cli/2.1.319`, `x-api-key` = the OpenShell-injected secret, no `Authorization`; claude printed the mock's streamed answer; Talon's record is `delegated_expected`, identity verified for the real gateway and sandbox |
 | CC2 PII | the prompt's e-mail address never reaches the provider; the forwarded Anthropic body is Talon's transformed one |
 | CC3 denied model (C02) | `claude-opus-4-8` is in the company `blocked_models`: Talon DENY at PRE_CREDENTIALS, claude exits non-zero with an API error, provider count unchanged across whatever the client retried (a 403 is not retried by this client) |
