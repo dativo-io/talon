@@ -174,3 +174,58 @@ smoke_run_response_text() {
     started { print }
   ' <<< "$1" | sed -e '/./,$!d' | sed -e ':a' -e '/^\n*$/{$d;N;ba' -e '}'
 }
+
+# --- Anthropic Messages API through the gateway (section 42) -----------------
+# One provider path, one model, one request builder: the section asserts
+# Talon's governance of the real Anthropic wire, not provider prose.
+SMOKE_PATH_GW_ANTHROPIC_MESSAGES="/v1/proxy/anthropic/v1/messages"
+SMOKE_PATH_GW_ANTHROPIC_COUNT_TOKENS="/v1/proxy/anthropic/v1/messages/count_tokens"
+# The smoke model must be priced in pricing/models.yaml (an unpriced model is
+# denied pricing_unavailable under the agent's cap) and cheap: Haiku 4.5 is
+# the least expensive priced Claude model. TALON_SMOKE_ANTHROPIC_MODEL
+# overrides it; the override must be priced too.
+SMOKE_ANTHROPIC_MODEL="${TALON_SMOKE_ANTHROPIC_MODEL:-claude-haiku-4-5}"
+# A priced model that is deliberately outside the provider allow list, so the
+# denial below is a policy decision (model_not_allowed), not a pricing gap.
+SMOKE_ANTHROPIC_DENIED_MODEL="claude-sonnet-4-6"
+# Upstream base URL. The default is the real provider; a development override
+# may point at an Anthropic-shaped stand-in to validate the section's logic
+# offline. An override never counts as real-provider verification.
+SMOKE_ANTHROPIC_BASE_URL="${TALON_SMOKE_ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+SMOKE_ANTHROPIC_VERSION="2023-06-01"
+
+# smoke_body_anthropic <stream:true|false> [model] [max_tokens]
+# A minimal Messages request: one short user turn, a tiny output budget.
+smoke_body_anthropic() {
+  local stream="${1:-false}" model="${2:-$SMOKE_ANTHROPIC_MODEL}" max_tokens="${3:-24}"
+  printf '{"model":"%s","max_tokens":%s,"stream":%s,"messages":[{"role":"user","content":"Reply with the single word PONG"}]}' \
+    "$model" "$max_tokens" "$stream"
+}
+
+# smoke_gw_post_anthropic base auth_scheme auth_value body headers_out body_out [path] [extra curl args...]
+#   auth_scheme: x-api-key  → "x-api-key: <agent key>"      (Anthropic SDK convention)
+#                bearer     → "Authorization: Bearer <key>" (Claude Code's ANTHROPIC_AUTH_TOKEN)
+# Sends anthropic-version like a real client would. Returns the HTTP status
+# code on stdout; headers and body land in the given files.
+smoke_gw_post_anthropic() {
+  local base="$1" scheme="$2" value="$3" body="$4" headers_out="$5" body_out="$6"
+  local path="${7:-$SMOKE_PATH_GW_ANTHROPIC_MESSAGES}"
+  shift 7 2>/dev/null || shift $#
+  local auth_header
+  case "$scheme" in
+    bearer) auth_header="Authorization: Bearer ${value}" ;;
+    *) auth_header="x-api-key: ${value}" ;;
+  esac
+  curl -s -D "$headers_out" -o "$body_out" -w '%{http_code}' -X POST "${base}${path}" \
+    -H "$auth_header" -H "anthropic-version: ${SMOKE_ANTHROPIC_VERSION}" \
+    -H "Content-Type: application/json" "$@" -d "$body" 2>/dev/null
+}
+
+# smoke_header_value <headers_file> <header-name>: first value, CR stripped,
+# case-insensitive name match.
+smoke_header_value() {
+  local file="$1" name="$2"
+  awk -v n="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" '
+    { h = tolower($1) } h == n ":" { sub(/^[^:]*:[[:space:]]*/, ""); gsub("\r", ""); print; exit }
+  ' "$file" 2>/dev/null
+}

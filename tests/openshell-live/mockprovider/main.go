@@ -241,6 +241,14 @@ func (rc *recorder) messages(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if msg := anthropicRequestValidation(body); msg != "" {
+		// The real API rejects an invalid request before any generation; the
+		// smoke suite's provider-error case relies on this shape offline.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(mustJSON(map[string]any{"type": "error", "error": map[string]string{"type": "invalid_request_error", "message": msg}}))
+		return
+	}
 	status, contentType, answer := anthropicResponse(rec.Scenario, rec.Seq, requestModel(body), rec.Stream)
 	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(status)
@@ -415,6 +423,23 @@ func requestModel(body []byte) string {
 		return "mock-model"
 	}
 	return req.Model
+}
+
+// anthropicRequestValidation mirrors the one Messages API validation the
+// smoke suite exercises as a provider error: max_tokens must be >= 1. The
+// message is the provider's wording; an empty result means the request is
+// accepted.
+func anthropicRequestValidation(body []byte) string {
+	var req struct {
+		MaxTokens *int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.MaxTokens == nil {
+		return ""
+	}
+	if *req.MaxTokens < 1 {
+		return "max_tokens: Input should be greater than or equal to 1"
+	}
+	return ""
 }
 
 // wantsStream reports a JSON request body carrying "stream": true.
