@@ -316,15 +316,28 @@ if mock_mode; then
   # body for SSE), settled allowed with the usage the guard parsed.
   SETTLED_SSE="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .execution.tokens.input==12 and .execution.tokens.output==3 and .execution.cost>0 and .classification.response_scan.enforcement=="preventive_per_unit" and (.gateway_annotations|index("response_observed")!=null) and (.gateway_annotations|index("stream_unit_guarded")!=null))] | length' "$EXPORT")"
   [[ "${SETTLED_SSE:-0}" -ge 2 ]] || die "expected >=2 released guarded-stream settlements carrying the SSE usage 12/3 priced from the table, found ${SETTLED_SSE:-0}: $(jq -c '[.records[] | select(.invocation_type=="gateway_response")] | map({allowed: .policy_decision.allowed, pricing_basis: .execution.pricing_basis, tokens: .execution.tokens, scan: .classification.response_scan.enforcement, annotations: .gateway_annotations})' "$EXPORT" | head -c 1500)"
-  # The truncated stream (CC9) never settles as the full answer: a guarded
-  # stream that settled allowed with the full output usage is one of the
-  # released complete streams, and the client's truncated attempts settle
-  # with less. (The client's non-streaming fallbacks are JSON bodies held
-  # whole — not guarded — and legitimately carry the full usage.)
+  # The truncated stream (CC9) never settles as the full answer. Pinned from
+  # the provider side, where the counts are exact: every allowed settlement
+  # carrying the full output usage is either one of the clean complete
+  # streams (CC1, CC2 — guarded, released unit by unit) or one of the
+  # client's non-streaming fallbacks (JSON, held whole); the attempts the
+  # provider cut (streamed truncated-stream calls) account for none of them.
+  CLEAN_STREAMED="$(provider_state | jq '[.records[] | select(.stream==true and .scenario=="")] | length')"
+  NONSTREAM_CALLS="$(provider_state | jq '[.records[] | select(.stream==false)] | length')"
+  TRUNC_ATTEMPTS="$(provider_state | jq '[.records[] | select(.stream==true and .scenario=="truncated-stream")] | length')"
+  ALLOWED_FULL="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .execution.tokens.output==3)] | length' "$EXPORT")"
   GUARDED_FULL="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .execution.tokens.output==3 and (.gateway_annotations|index("stream_unit_guarded")!=null))] | length' "$EXPORT")"
-  [[ "$GUARDED_FULL" == "$SETTLED_SSE" ]] || die "a guarded stream settled allowed with the full output usage outside the released complete streams (guarded full=$GUARDED_FULL, released complete=$SETTLED_SSE)"
+  [[ "${TRUNC_ATTEMPTS:-0}" -ge 1 ]] || die "CC9 produced no streamed truncated-stream call at the provider"
+  [[ "$GUARDED_FULL" == "$CLEAN_STREAMED" && "$SETTLED_SSE" == "$CLEAN_STREAMED" ]] || die "guarded streams settled with the full output usage ($GUARDED_FULL, released complete $SETTLED_SSE) do not match the clean complete streamed calls the provider answered ($CLEAN_STREAMED): a cut attempt settled as the full answer. gateway_response records: $(jq -c '.records[] | select(.invocation_type=="gateway_response") | {allowed: .policy_decision.allowed, tokens: .execution.tokens, basis: .execution.pricing_basis, status: .status, failure: .failure_reason, scan: .classification.response_scan.status, annotations: .gateway_annotations}' "$EXPORT")"
+  [[ "$ALLOWED_FULL" == "$((CLEAN_STREAMED + NONSTREAM_CALLS))" ]] || die "allowed settlements with the full output usage ($ALLOWED_FULL) must be the clean complete streams ($CLEAN_STREAMED) plus the client's non-streaming fallbacks ($NONSTREAM_CALLS). gateway_response records: $(jq -c '.records[] | select(.invocation_type=="gateway_response") | {allowed: .policy_decision.allowed, tokens: .execution.tokens, basis: .execution.pricing_basis, status: .status, failure: .failure_reason, scan: .classification.response_scan.status, annotations: .gateway_annotations}' "$EXPORT")"
+  # How the cut attempts were settled is recorded, not assumed: as guarded
+  # partial streams (the exchange ended with a final unit or session_end)
+  # or as unobserved estimates (OpenShell ended the exchange without either;
+  # the sweeper booked the estimate after settlement_timeout).
   GUARDED_PARTIAL="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .policy_decision.allowed==true and .execution.tokens.output!=3 and (.gateway_annotations|index("stream_unit_guarded")!=null))] | length' "$EXPORT")"
-  [[ "${GUARDED_PARTIAL:-0}" -ge 1 ]] || die "expected the truncated-stream attempts to settle as guarded streams with less than the full output usage, found none: $(jq -c '[.records[] | select(.invocation_type=="gateway_response")] | map({allowed: .policy_decision.allowed, tokens: .execution.tokens, annotations: .gateway_annotations})' "$EXPORT" | head -c 1500)"
+  UNOBSERVED="$(jq '[.records[] | select(.invocation_type=="gateway_response" and (.failure_reason=="response_unobserved" or .execution.pricing_basis=="estimate_unsettled"))] | length' "$EXPORT")"
+  log "CC9 settlements of the $TRUNC_ATTEMPTS cut attempts: $GUARDED_PARTIAL guarded partial (output usage < full), $UNOBSERVED unobserved estimates (exchange ended without a final unit; swept after settlement_timeout); none as the full answer"
+  jq -c '.records[] | select(.invocation_type=="gateway_response") | {id: .id, allowed: .policy_decision.allowed, tokens: .execution.tokens, basis: .execution.pricing_basis, status: .status, failure: .failure_reason, scan: .classification.response_scan, annotations: .gateway_annotations}' "$EXPORT" >"$LOGS/gateway-response-settlements.jsonl"
 else
   SETTLED_SSE="$(jq '[.records[] | select(.invocation_type=="gateway_response" and .execution.tokens.input>0 and .execution.tokens.output>0 and .execution.cost>0 and (.gateway_annotations|index("response_observed")!=null))] | length' "$EXPORT")"
   [[ "${SETTLED_SSE:-0}" -ge 2 ]] || die "expected >=2 settlements carrying the real provider's observed usage priced from the table, found ${SETTLED_SSE:-0}: $(jq -c '[.records[] | select(.invocation_type=="gateway_response")] | map({pricing_basis: .execution.pricing_basis, tokens: .execution.tokens, annotations: .gateway_annotations})' "$EXPORT" | head -c 1200)"
@@ -358,7 +371,7 @@ ALL PASS openshell live smoke
   model / profile:    $CLAUDE_MODEL allowed, $CLAUDE_BLOCKED_MODEL denied by company policy; OpenShell provider profile $PROFILE_ID → $PROVIDER_HOST:$PROVIDER_PORT (x-api-key injected after talon PRE_CREDENTIALS)
   client wire:        $CLIENT_WIRE; count_tokens calls $COUNT_TOKENS_CALLS
   provider calls:     $(mock_mode && echo "$(provider_calls) governed (mock)" || echo "real provider (count not observable; $ALLOWED allowed decisions)"), shadow (ungoverned endpoint) $(shadow_calls), truncated-stream probe $CALLS_AFTER_TRUNCATED
-  response path:      SSE guarded unit by unit (OpenShell v0.1.3 offers no WHOLE_BODY_BYTES for text/event-stream); $SETTLED_SSE released complete settlements, $(mock_mode && echo "$GUARDED_PARTIAL" || echo "n/a") partial (truncated) ones; streamed response PII: $CC10_RESULT
+  response path:      SSE guarded unit by unit (OpenShell v0.1.3 offers no WHOLE_BODY_BYTES for text/event-stream); $SETTLED_SSE released complete settlements; cut attempts: $(mock_mode && echo "$GUARDED_PARTIAL guarded partial, $UNOBSERVED unobserved estimates" || echo "n/a"); streamed response PII: $CC10_RESULT
   client behaviour:   on a cut or withheld stream claude-cli/$CLAUDE_CODE_VERSION retries the stream with backoff, then falls back to a non-streaming request$(mock_mode && echo " (CC9: ${CC9_STREAM_RETRIES:-?} stream attempts, ${CC9_FALLBACK:-?} fallback; each attempt a fresh Talon decision and provider call)")
   driver:             docker $(docker version --format '{{.Server.Version}}') on $(uname -r) ($ARCH)
   openshell images:   $(docker ps -a --format '{{.Image}}' | grep -i openshell | sort -u | tr '\n' ' ')
