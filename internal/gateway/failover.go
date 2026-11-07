@@ -224,6 +224,13 @@ type failoverOutcome struct {
 	// Engaged is true when the primary attempt failed transiently and a
 	// fallback chain was configured (i.e. failover logic actually ran).
 	Engaged bool
+	// UpstreamStatus and UpstreamClass describe the attempt whose response
+	// the agent received (the primary when no failover engaged, otherwise
+	// the final attempt). A status >= 400 means the provider refused the
+	// request: the terminal evidence record must say so even though no
+	// transport error occurred and no failover chain exists.
+	UpstreamStatus int
+	UpstreamClass  failover.Classification
 }
 
 // failedAttemptIDs returns the evidence IDs of all recorded failed attempts.
@@ -453,6 +460,7 @@ func (g *Gateway) forwardWithFailover(
 			rec.EvidenceID = recordAttempt(ctx, rec)
 			out.FailedAttempts = append(out.FailedAttempts, rec)
 		}
+		out.UpstreamStatus, out.UpstreamClass = fw.status, class
 		fw.flushTo()
 		return out, err
 	}
@@ -586,6 +594,7 @@ func (g *Gateway) forwardWithFailover(
 			out.SelectedModel = model
 			out.ChainPosition = i + 1
 			out.RuleID = ruleID
+			out.UpstreamStatus, out.UpstreamClass = fw.status, class
 			fw.flushTo()
 			return out, err
 		}
