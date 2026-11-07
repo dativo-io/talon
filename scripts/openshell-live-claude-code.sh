@@ -99,7 +99,9 @@ talon_export() { ( cd "$TALON_HOME" && "$TALON" audit export --format signed-jso
 talon_count() { talon_export | jq "[.records[] | select($1)] | length"; }
 
 # ---------------------------------------------------------------- CC0 — fixture: the pinned executable, in the real sandbox
-FIXTURE="$(sandbox_sh "$SANDBOX_A" "printf 'claude=%s\nsh=%s\ncurl=%s\nuser=%s\nhome_writable=%s\n' \"\$(command -v claude || echo missing)\" \"\$(command -v sh || echo missing)\" \"\$(command -v curl || echo missing)\" \"\$(id -u 2>/dev/null || echo unknown)\" \"\$(mkdir -p $CLAUDE_HOME/.claude 2>/dev/null && touch $CLAUDE_HOME/.claude/.probe 2>/dev/null && echo yes || echo no)\"; $CLAUDE_BIN --version 2>/dev/null | head -n1; sha256sum $CLAUDE_BIN | cut -d' ' -f1" || true)"
+# home_writable is the first candidate the sandbox user can create
+# $HOME/.claude in (none otherwise); claude_turn uses exactly that one.
+FIXTURE="$(sandbox_sh "$SANDBOX_A" "home=none; for d in $CLAUDE_HOME_CANDIDATES; do if mkdir -p \"\$d/.claude\" 2>/dev/null && touch \"\$d/.claude/.probe\" 2>/dev/null; then home=\"\$d\"; break; fi; done; printf 'claude=%s\nsh=%s\ncurl=%s\nuser=%s\nhome_writable=%s\n' \"\$(command -v claude || echo missing)\" \"\$(command -v sh || echo missing)\" \"\$(command -v curl || echo missing)\" \"\$(id -u 2>/dev/null || echo unknown)\" \"\$home\"; $CLAUDE_BIN --version 2>/dev/null | head -n1; sha256sum $CLAUDE_BIN | cut -d' ' -f1" || true)"
 printf '%s\n' "$FIXTURE" >>"$LOGS/setup.log"
 DETECTED_CLAUDE="$(sed -n 's/^claude=//p' <<<"$FIXTURE" | head -n1)"
 DETECTED_CURL="$(sed -n 's/^curl=//p' <<<"$FIXTURE" | head -n1)"
@@ -110,8 +112,9 @@ CLAUDE_SHA_IN_SANDBOX="$(grep -E '^[0-9a-f]{64}$' <<<"$FIXTURE" | head -n1 || tr
 [[ "$CLAUDE_VERSION_LINE" == "$CLAUDE_CODE_VERSION"* ]] || die "CC0 workload fixture: claude --version in the sandbox is '${CLAUDE_VERSION_LINE:-empty}', want $CLAUDE_CODE_VERSION"
 [[ "$CLAUDE_SHA_IN_SANDBOX" == "$CLAUDE_CODE_SHA256" ]] || die "CC0 workload fixture: sha256 of $CLAUDE_BIN in the sandbox is '${CLAUDE_SHA_IN_SANDBOX:-empty}', want the release manifest's $CLAUDE_CODE_SHA256"
 [[ "$DETECTED_CURL" == "$CURL_BIN" ]] || die "CC0 workload fixture: expected curl at $CURL_BIN for the bypass probe, image reported '${DETECTED_CURL:-missing}'"
-[[ "$HOME_WRITABLE" == "yes" ]] || die "CC0 workload fixture: $CLAUDE_HOME is not writable in the sandbox (Claude Code keeps its config under HOME); set TALON_OPENSHELL_CLAUDE_HOME to the sandbox's writable workspace (sandbox output: $FIXTURE)"
-pass "CC0 fixture: real Claude Code $CLAUDE_VERSION_LINE at $CLAUDE_BIN in the real sandbox, sha256 = release manifest pin, HOME $CLAUDE_HOME writable"
+[[ -n "$HOME_WRITABLE" && "$HOME_WRITABLE" != "none" ]] || die "CC0 workload fixture: none of [$CLAUDE_HOME_CANDIDATES] is writable by the sandbox user (Claude Code keeps its config under HOME); set TALON_OPENSHELL_CLAUDE_HOME to a tree the sandbox user may write (sandbox output: $FIXTURE)"
+CLAUDE_HOME="$HOME_WRITABLE"
+pass "CC0 fixture: real Claude Code $CLAUDE_VERSION_LINE at $CLAUDE_BIN in the real sandbox, sha256 = release manifest pin, HOME $CLAUDE_HOME writable (candidates: $CLAUDE_HOME_CANDIDATES)"
 
 # Bind the REAL sandbox identity to the Talon use case (agent reload, no restart).
 python3 - "$AGENT_FILE" "$AGENT" "$SANDBOX_A_ID" <<'PY' || die "binding edit"
@@ -309,6 +312,7 @@ ALL PASS openshell live smoke
   openshell gateway:  $("$GW_BIN" --version)   sha256 ${GW_SHA[$ARCH]}
   talon commit:       $(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo untracked)
   claude code:        $CLAUDE_VERSION_LINE at $CLAUDE_BIN, sha256 $CLAUDE_SHA_IN_SANDBOX (release manifest linux-x64 pin)
+  claude home:        $CLAUDE_HOME (first writable of: $CLAUDE_HOME_CANDIDATES; /sandbox is root-owned in OpenShell v0.1.3)
   workload image:     $WORKLOAD_IMAGE (image id $WORKLOAD_IMAGE_ID)
   model / profile:    $CLAUDE_MODEL allowed, $CLAUDE_BLOCKED_MODEL denied by company policy; OpenShell provider profile $PROFILE_ID → $PROVIDER_HOST:$PROVIDER_PORT (x-api-key injected after talon PRE_CREDENTIALS)
   client wire:        $CLIENT_WIRE; count_tokens calls $COUNT_TOKENS_CALLS
