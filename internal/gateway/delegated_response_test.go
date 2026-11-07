@@ -251,6 +251,84 @@ func TestDelegatedResponse_StreamObservation(t *testing.T) {
 	assert.Equal(t, ResponseModeWholeBody, gw2.PlanDelegatedResponse(context.Background(), preflightFor(200, "text/event-stream")).Mode)
 }
 
+// count_tokens on the delegated Anthropic path is settled like any other
+// exchange — the runtime presents its response to PRE_RETURN too — at cost 0
+// on both records, with no session consumption, and never as a
+// decision_unmatched settlement. Regression for #528: the allow path parked
+// no ledger row for count_tokens, so every count_tokens response was
+// recorded as a response Talon had no request half for.
+func TestDelegatedResponse_CountTokensSettlesAtZero(t *testing.T) {
+	gw, store := setupDelegatedGatewayWith(t, "redact", nil, func(c *GatewayConfig) {
+		responseGoverned(c)
+		c.Providers["anthropic"] = ProviderConfig{Enabled: true, BaseURL: "https://api.anthropic.com", SecretName: "anthropic-api-key"}
+	})
+	req := delegatedReq(delegatedPrincipal(delegatedSubject), `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"count me"}]}`)
+	req.Host, req.Path, req.RequestID = "api.anthropic.com", "/v1/messages/count_tokens", "req-count-1"
+	dec := gw.EvaluateDelegated(context.Background(), req)
+	require.True(t, dec.Allowed, "%+v", dec)
+	require.Equal(t, 1, pendingSettlements(t, gw), "the count_tokens decision parks its settlement row")
+	pf := preflightFor(200, "application/json")
+	pf.Host, pf.RequestID = "api.anthropic.com", "req-count-1"
+	require.Equal(t, ResponseModeWholeBody, gw.PlanDelegatedResponse(context.Background(), pf).Mode)
+	st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf, Mode: ResponseModeWholeBody, Body: []byte(`{"input_tokens":42}`)})
+	assert.False(t, st.Block, "%+v", st)
+	assert.Equal(t, 0.0, st.Cost)
+	assert.Equal(t, 0, pendingSettlements(t, gw))
+	decisions := recordsOfType(t, store, "gateway_count_tokens")
+	require.Len(t, decisions, 1)
+	assert.Equal(t, 0.0, decisions[0].Execution.Cost)
+	settlements := recordsOfType(t, store, InvocationTypeGatewayResponse)
+	require.Len(t, settlements, 1)
+	assert.Equal(t, decisions[0].CorrelationID, settlements[0].CorrelationID, "the settlement joins its count_tokens decision")
+	assert.Equal(t, 0.0, settlements[0].Execution.Cost)
+	assert.NotContains(t, settlements[0].GatewayAnnotations, "decision_unmatched")
+	assert.Contains(t, settlements[0].GatewayAnnotations, "response_observed")
+	assert.Equal(t, 0.0, settlementCostTotal(t, store), "count_tokens never bills")
+}
+
+// A streamed response HELD whole under a preventive policy (every streaming
+// client — Claude Code streams always — under redact/block) is settled from
+// the held SSE bytes: usage from the final chunk, PII redacted into an SSE
+// replacement, a clean stream delivered unchanged. Regression for #528: the
+// held-SSE path built its capture without a writer and panicked on the
+// first streamed response, which OpenShell then failed closed on.
+func TestDelegatedResponse_StreamHeldWholeUnderPreventivePolicy(t *testing.T) {
+	gw, store := setupDelegatedGatewayWith(t, "redact", nil, responseGoverned)
+	pf := preflightFor(200, "text/event-stream")
+	clean := "data: {\"id\":\"c1\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"delta\":{\"content\":\"all good\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4}}\n\n" +
+		"data: [DONE]\n\n"
+	require.True(t, gw.EvaluateDelegated(context.Background(), delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)).Allowed)
+	require.Equal(t, ResponseModeWholeBody, gw.PlanDelegatedResponse(context.Background(), pf).Mode)
+	st := gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf, Mode: ResponseModeWholeBody, Body: []byte(clean)})
+	assert.False(t, st.Block, "%+v", st)
+	assert.False(t, st.BodyChanged)
+	assert.Equal(t, TokenUsage{Input: 7, Output: 4}, st.Tokens)
+
+	pii := "data: {\"id\":\"c2\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"delta\":{\"content\":\"mail jane.doe@example.com\"}}]}\n\n" +
+		"data: {\"id\":\"c2\",\"choices\":[{\"delta\":{\"content\":\" now\"}}]}\n\n" +
+		"data: {\"id\":\"c2\",\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":5}}\n\n" +
+		"data: [DONE]\n\n"
+	pf2 := pf
+	pf2.RequestID = "req-2"
+	req2 := delegatedReq(delegatedPrincipal(delegatedSubject), chatBody)
+	req2.RequestID = "req-2"
+	require.True(t, gw.EvaluateDelegated(context.Background(), req2).Allowed)
+	st = gw.SettleDelegatedResponse(context.Background(), DelegatedResponseBody{Preflight: pf2, Mode: ResponseModeWholeBody, Body: []byte(pii)})
+	assert.False(t, st.Block, "%+v", st)
+	assert.True(t, st.BodyChanged, "a held stream with PII is replaced, not passed")
+	assert.NotContains(t, string(st.Body), "jane.doe@example.com")
+	assert.Contains(t, string(st.Body), "data: ", "the replacement is still an SSE body")
+	assert.Equal(t, TokenUsage{Input: 9, Output: 5}, st.Tokens)
+	recs := recordsOfType(t, store, InvocationTypeGatewayResponse)
+	require.Len(t, recs, 2)
+	for _, r := range recs {
+		require.NotNil(t, r.Classification.ResponseScan)
+		assert.Equal(t, evidence.ResponseScanEnforcementPreventive, r.Classification.ResponseScan.Enforcement)
+		assert.NotContains(t, mustJSON(t, r), "jane.doe@example.com")
+	}
+}
+
 // The plan: identity failures block; provider errors and non-model bodies
 // settle from headers; an uninspectable body blocks under a preventive
 // policy and is observed-only otherwise.
