@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -40,4 +41,23 @@ func (s *Store) Detail(ctx context.Context, id string) (*RecordDetail, error) {
 		state = "valid"
 	}
 	return &RecordDetail{Record: ev, Verification: Verification{State: state, CheckedAt: time.Now().UTC()}}, nil
+}
+
+// Stats reports the store-wide record count and the newest record timestamp
+// (zero when empty): the file-level facts the console's System page shows
+// about the shared store, independent of any writer process's in-memory
+// health. Both read the timestamp index.
+func (s *Store) Stats(ctx context.Context) (count int, newest time.Time, err error) {
+	if err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM evidence`).Scan(&count); err != nil {
+		return 0, time.Time{}, fmt.Errorf("counting evidence: %w", err)
+	}
+	if count == 0 {
+		return 0, time.Time{}, nil
+	}
+	// The declared TIMESTAMP column decodes to time.Time; an aggregate over
+	// it would not, so read the newest row instead (timestamp index).
+	if err = s.db.QueryRowContext(ctx, `SELECT timestamp FROM evidence ORDER BY timestamp DESC LIMIT 1`).Scan(&newest); err != nil {
+		return 0, time.Time{}, fmt.Errorf("reading newest evidence timestamp: %w", err)
+	}
+	return count, newest.UTC(), nil
 }

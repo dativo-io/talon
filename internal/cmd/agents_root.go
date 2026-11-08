@@ -13,11 +13,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/fleet"
+	"github.com/dativo-io/talon/internal/fleetview"
 	"github.com/dativo-io/talon/internal/gateway"
 	talonsession "github.com/dativo-io/talon/internal/session"
 )
@@ -196,57 +196,19 @@ func fetchServerFleet(ctx context.Context, baseURL, tenant string) (*fleetRespon
 // org baseline, and run the SAME fleet.Project over the local evidence/session
 // stores. Runtime state (active generation, last-known-good divergence) is
 // unavailable offline — the caller labels the output accordingly.
+// offlineFleet is the config-file view of the attention queue: the shared
+// fleetview.ProjectOffline over the local scan, gateway baseline and stores
+// (#535) — the same function the operations console uses, so `talon agents`
+// offline and the console cannot disagree.
 func offlineFleet(ctx context.Context, cfg *config.Config, tenant string) ([]fleet.AgentRow, []agentcatalog.FleetIssue, error) {
-	var scan *agentcatalog.ScanResult
-	if cfg.AgentsDir != "" {
-		scan, _ = agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
-	} else {
-		scan, _ = agentcatalog.Source{File: cfg.DefaultPolicy}.Scan(ctx)
+	scan, err := fleetview.Scan(ctx, cfg.AgentsDir, cfg.DefaultPolicy)
+	if err != nil {
+		return nil, nil, err
 	}
-	if scan == nil {
-		return nil, nil, fmt.Errorf("no agent config found (set agents_dir or %s)", cfg.DefaultPolicy)
-	}
-
-	// The org baseline + configured providers come from the gateway config when
-	// present; an EXISTING-but-invalid config is surfaced, never silently
-	// replaced with an empty policy (#270 review round 1, P2).
 	org, providers, err := loadOfflineGatewayContext()
 	if err != nil {
 		return nil, nil, err
 	}
-
-	members := make([]fleet.Membership, 0, len(scan.Agents))
-	capsByName := make(map[string][2]float64, len(scan.Agents))
-	for i := range scan.Agents {
-		a := &scan.Agents[i]
-		t := a.TenantID
-		if t == "" {
-			t = "default"
-		}
-		if tenant != "" && t != tenant {
-			continue
-		}
-		override := agentbridge.LoadedAgentFromPolicy(a.Policy, a.Path).Override
-		eff := gateway.ResolveEffectivePolicy(org, gateway.ProviderConfig{}, override)
-		capsByName[a.Name] = [2]float64{eff.BindingDailyCap(), eff.BindingMonthlyCap()}
-		members = append(members, fleet.Membership{
-			Name: a.Name, TenantID: t, Enabled: a.Enabled,
-			ConfigPath: a.Path, PolicyDigest: a.PolicyDigest,
-			// BLOCKED (#270): the same effective-policy deny-all test the server
-			// uses. Offline has the gateway providers when a gateway config is
-			// present; without one, only a categorical model block is detectable.
-			PolicyDenyAll: !gateway.AgentCanAcceptWork(org, override, providers),
-			UseCase:       agentbridge.FleetUseCase(a.Policy),
-		})
-	}
-
-	caps := fleet.CapLookup(func(_, agentID string) (float64, float64, bool) {
-		c, ok := capsByName[agentID]
-		return c[0], c[1], ok && (c[0] > 0 || c[1] > 0)
-	})
-	currency := loadPricingTable(cfg, "").CurrencyCode()
-	statuses := fleet.AssembleStatuses(members, caps, currency)
-
 	ev, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening evidence store: %w", err)
@@ -258,20 +220,17 @@ func offlineFleet(ctx context.Context, cfg *config.Config, tenant string) ([]fle
 	}
 	defer ss.Close()
 
-	rows, err := fleet.Project(ctx, ev, ss, statuses, fleet.DefaultThresholds(), time.Now().UTC())
+	res, err := fleetview.ProjectOffline(ctx, fleetview.Inputs{
+		Scan: scan, Org: org, Providers: providers, Tenant: tenant,
+		Currency: loadPricingTable(cfg, "").CurrencyCode(),
+		Evidence: ev, Sessions: ss, Now: time.Now().UTC(),
+	})
 	if err != nil {
 		return nil, nil, err
 	}
-	return rows, append([]agentcatalog.FleetIssue(nil), scan.Issues...), nil
+	return res.Rows, res.Issues, nil
 }
 
-// loadOfflineGatewayContext returns the organization baseline and configured
-// providers for offline projection. A MISSING gateway config legitimately means
-// no organization baseline (native-only) → empty context, no error. But a
-// config that EXISTS and fails to load is surfaced as an error rather than
-// silently replaced with an empty policy — which would make offline `talon
-// agents` report agent-only caps and an unrestricted policy where the intended
-// organization baseline failed to load (#270 review round 1, P2).
 func loadOfflineGatewayContext() (org gateway.OrganizationPolicy, providers map[string]gateway.ProviderConfig, err error) {
 	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
 	if path == "" {

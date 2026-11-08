@@ -31,6 +31,8 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/evidence")
 // Store persists HMAC-signed evidence records in SQLite.
 type Store struct {
 	db *sql.DB
+	// readOnly is set by OpenReadOnly: the connection cannot write.
+	readOnly bool
 	// observer receives post-commit notifications for successfully stored evidence.
 	observerMu sync.RWMutex
 	observer   StoreObserver

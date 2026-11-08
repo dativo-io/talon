@@ -110,6 +110,8 @@ type StageCounts struct {
 
 type Store struct {
 	db *sql.DB
+	// readOnly is set by OpenReadOnly: the connection cannot write.
+	readOnly bool
 }
 
 func NewStore(dbPath string) (*Store, error) {
