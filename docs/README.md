@@ -132,6 +132,7 @@ Choose the shortest path for your situation:
 | [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs metrics). |
 | [Gateway metrics API](reference/gateway-metrics-api.md) | Metrics JSON/SSE endpoints, snapshot fields, CLI parity, and authentication. |
 | [Legacy dashboard migration map](reference/legacy-dashboard-migration-map.md) | What the removed dashboards showed, the Go projection or route that owns each number, the CLI surface today, and the recorded gaps for the console epic (#533). |
+| [Console read contract: concept map](reference/console-read-contract.md) | Target contract for the OSS operations console (#535): each operational concept, the Go projection that owns it, its CLI and HTTP surface today, the console DTO, known discrepancies and the parity test plan. |
 | [Operational control plane](reference/operational-control-plane.md) | Run management (list/kill/pause/resume), tenant lockdown, runtime overrides, tool approval gates. |
 
 ### Explanation (understanding-oriented)
