@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -354,7 +355,9 @@ func TestBuild_MixedCurrenciesAreNotSummed(t *testing.T) {
 
 	single, err := Build(ctx, store, Scope{TenantID: "default"}, w, "EUR", nil)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]int{"EUR": 4}, single.Currencies, "today_a, today_b, yesterday_a, eightdays_a carry a cost")
+	assert.Equal(t, map[string]int{"EUR": 4}, single.Currencies["month"], "today_a, today_b, yesterday_a, eightdays_a carry a cost")
+	assert.Equal(t, map[string]int{"EUR": 2}, single.Currencies["day"])
+	assert.Equal(t, map[string]int{"EUR": 3}, single.Currencies["seven_days"])
 	assert.Empty(t, single.UnavailableFields)
 
 	// A legacy record (no currency stamp) is rendered in the table currency: still one unit.
@@ -365,7 +368,7 @@ func TestBuild_MixedCurrenciesAreNotSummed(t *testing.T) {
 	}))
 	legacy, err := Build(ctx, store, Scope{TenantID: "default"}, w, "EUR", nil)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]int{"EUR": 4, "": 1}, legacy.Currencies)
+	assert.Equal(t, map[string]int{"EUR": 4, "": 1}, legacy.Currencies["month"])
 	assert.Empty(t, legacy.UnavailableFields, "legacy stamps are the table currency, not a second unit")
 
 	// A USD record in the month makes the sums incomparable.
@@ -376,16 +379,71 @@ func TestBuild_MixedCurrenciesAreNotSummed(t *testing.T) {
 	}))
 	mixed, err := Build(ctx, store, Scope{TenantID: "default"}, w, "EUR", nil)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]int{"EUR": 4, "": 1, "USD": 1}, mixed.Currencies)
+	assert.Equal(t, map[string]int{"EUR": 4, "": 1, "USD": 1}, mixed.Currencies["month"])
 	assert.Contains(t, mixed.UnavailableFields, "month_eur")
-	assert.Contains(t, mixed.UnavailableFields, "today_eur")
 	assert.Contains(t, mixed.UnavailableFields, "by_agent_month_eur")
+	assert.Contains(t, mixed.UnavailableFields, "seven_days_eur", "the USD record on 03-12 is inside the 7-day window too")
+	assert.NotContains(t, mixed.UnavailableFields, "today_eur", "today has only EUR records: still a measurement")
 	require.NotEmpty(t, mixed.Warnings)
-	assert.Contains(t, mixed.Warnings[0], "EUR, USD")
+	assert.Contains(t, mixed.Warnings[0], "USD")
 	assert.InDelta(t, 0.75+0.05+0.07, mixed.MonthEUR, eps, "the legacy figure is still computed as the CLI always did; it is labelled, not hidden")
 
 	// Scoped to agent a (EUR + legacy only) the amounts are measurements again.
 	onlyA, err := Build(ctx, store, Scope{TenantID: "default", AgentID: "a"}, w, "EUR", nil)
 	require.NoError(t, err)
 	assert.Empty(t, onlyA.UnavailableFields)
+}
+
+// TestBuild_SingleForeignCurrencyIsNotAMeasurement (#535 review round 4): the
+// table currency is USD but every priced record is EUR. One distinct
+// currency, yet labelling the sum "USD" would be false: every amount window
+// is unavailable and no budget utilization is derived from it.
+func TestBuild_SingleForeignCurrencyIsNotAMeasurement(t *testing.T) {
+	store := seedFixture(t) // priced records are all EUR
+	r, err := Build(context.Background(), store, Scope{TenantID: "default"}, WindowAt(fixtureNow), "USD", fixedCaps{daily: 1, monthly: 10})
+	require.NoError(t, err)
+	assert.Equal(t, "USD", r.Currency)
+	for _, f := range []string{"today_eur", "seven_days_eur", "month_eur", "by_agent_eur", "by_agent_month_eur", "daily_budget", "monthly_budget"} {
+		assert.Contains(t, r.UnavailableFields, f, f)
+	}
+	assert.Nil(t, r.DailyBudget, "no utilization from incomparable amounts")
+	assert.Nil(t, r.MonthlyBudget)
+	assert.InDelta(t, 0.75, r.MonthEUR, eps, "the legacy figure is still computed and labelled, not hidden")
+	joined := strings.Join(r.Warnings, " | ")
+	assert.Contains(t, joined, "priced records in EUR are not sums in USD")
+	assert.Contains(t, joined, "budget utilization not computed")
+
+	// The same store read with EUR configured is a measurement with budgets.
+	ok, err := Build(context.Background(), store, Scope{TenantID: "default"}, WindowAt(fixtureNow), "EUR", fixedCaps{daily: 1, monthly: 10})
+	require.NoError(t, err)
+	assert.Empty(t, ok.UnavailableFields)
+	require.NotNil(t, ok.DailyBudget)
+	assert.Equal(t, "OK", ok.DailyBudget.StatusWord)
+}
+
+// TestBuild_SevenDayWindowCrossesMonthBoundary (#535 review round 4): a
+// foreign-currency record in the previous month, inside the 7-day window,
+// contaminates seven_days_eur while the month figures stay measurements.
+func TestBuild_SevenDayWindowCrossesMonthBoundary(t *testing.T) {
+	store := seedFixture(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC) // 7d = [04-25, 05-03); month = May (no fixture records)
+	require.NoError(t, store.Store(ctx, &evidence.Evidence{
+		ID: "apr_usd", CorrelationID: "corr_apr_usd", TenantID: "default", AgentID: "a", Timestamp: time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC),
+		InvocationType: "gateway", PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		Execution: evidence.Execution{ModelUsed: "m1", Cost: 0.33, Currency: "USD", PricingKnown: true},
+	}))
+	require.NoError(t, store.Store(ctx, &evidence.Evidence{
+		ID: "may_eur", CorrelationID: "corr_may_eur", TenantID: "default", AgentID: "a", Timestamp: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		InvocationType: "gateway", PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		Execution: evidence.Execution{ModelUsed: "m1", Cost: 0.11, Currency: "EUR", PricingKnown: true},
+	}))
+	r, err := Build(ctx, store, Scope{TenantID: "default"}, WindowAt(now), "EUR", nil)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"USD": 1, "EUR": 1}, r.Currencies["seven_days"])
+	assert.Equal(t, map[string]int{"EUR": 1}, r.Currencies["month"])
+	assert.Contains(t, r.UnavailableFields, "seven_days_eur")
+	assert.NotContains(t, r.UnavailableFields, "month_eur")
+	assert.NotContains(t, r.UnavailableFields, "today_eur")
+	assert.InDelta(t, 0.11, r.MonthEUR, eps)
 }

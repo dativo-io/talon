@@ -128,14 +128,16 @@ type Report struct {
 	// calendar-month definition and is kept for compatibility.
 	CacheMonth *CacheUsage `json:"cache_30d,omitempty"`
 
-	// Currencies counts the priced records of the calendar month per stamped
-	// currency ("" = written before the currency field; rendered as the
-	// table currency, the unit the shipped tables always used). When more
-	// than one currency appears, the amounts above are NOT sums of
-	// comparable values: they are still computed as they always were, but
-	// listed in UnavailableFields with a warning, so no consumer presents
-	// them as a total.
-	Currencies map[string]int `json:"currencies,omitempty"`
+	// Currencies counts the priced records per amount window ("day",
+	// "seven_days", "month") and per stamped currency ("" = written before
+	// the currency field; rendered as the table currency, the unit the
+	// shipped tables always used). A window whose priced records are not all
+	// in Currency, because they span several currencies or because the one
+	// recorded currency is not the configured one, is NOT a sum of comparable
+	// values: its fields are still computed as they always were, but listed in
+	// UnavailableFields with a warning, so no consumer presents them as a
+	// total (#535 review rounds 3 and 4).
+	Currencies map[string]map[string]int `json:"currencies,omitempty"`
 
 	// UnpricedRecords counts allowed model calls in the calendar month whose
 	// cost was not derived from a pricing-table price (pricing_known absent
@@ -300,6 +302,7 @@ func buildBreakdown(ctx context.Context, src Source, scope Scope, w Window, r *R
 	r.TodayEUR, r.MonthEUR = sumValues(daily), sumValues(monthly)
 	weekTotal(ctx, src, tenant, agent, w, r)
 	unpriced(ctx, src, tenant, agent, w, r)
+	currencies(ctx, src, tenant, agent, w, r)
 	switch scope.Breakdown {
 	case BreakdownModel:
 		r.ByModelEUR, r.ByModelMonthEUR = daily, monthly
@@ -327,6 +330,7 @@ func buildAgents(ctx context.Context, src Source, scope Scope, w Window, budgets
 		r.TodayEUR, r.MonthEUR = daily, monthly
 		weekTotal(ctx, src, tenant, agent, w, r)
 		unpriced(ctx, src, tenant, agent, w, r)
+		currencies(ctx, src, tenant, agent, w, r)
 		return resolveBudgets(ctx, budgets, tenant, agent, r)
 	}
 
@@ -347,6 +351,7 @@ func buildAgents(ctx context.Context, src Source, scope Scope, w Window, budgets
 	}
 	weekTotal(ctx, src, tenant, "", w, r)
 	unpriced(ctx, src, tenant, "", w, r)
+	currencies(ctx, src, tenant, "", w, r)
 	if err := resolveBudgets(ctx, budgets, tenant, "", r); err != nil {
 		return err
 	}
@@ -360,44 +365,72 @@ func (r *Report) markUnavailable(field string, err error) {
 	r.UnavailableFields = append(r.UnavailableFields, field)
 }
 
-// unpriced fills UnpricedRecords and Currencies for the calendar month in
-// scope, and marks every amount as not a measurement when the priced records
-// span more than one currency: adding euros to dollars is not a total
-// (#535 review).
+// unpriced fills UnpricedRecords for the calendar month in scope.
 func unpriced(ctx context.Context, src Source, tenant, agent string, w Window, r *Report) {
 	n, err := src.CountUnpriced(ctx, tenant, agent, w.MonthStart, w.MonthEnd)
 	if err != nil {
 		r.markUnavailable("unpriced_records", err)
-	} else {
-		r.UnpricedRecords = n
-	}
-	counts, err := src.CurrenciesInRange(ctx, tenant, agent, w.MonthStart, w.MonthEnd)
-	if err != nil {
-		r.markUnavailable("currencies", err)
 		return
 	}
-	if len(counts) > 0 {
-		r.Currencies = counts
-	}
-	distinct := make([]string, 0, len(counts))
-	for cur := range counts {
-		if cur == "" {
-			cur = r.Currency // legacy records: the table currency, as the CLI has always rendered them
-		}
-		if !containsString(distinct, cur) {
-			distinct = append(distinct, cur)
-		}
-	}
-	if len(distinct) <= 1 {
-		return
-	}
-	sort.Strings(distinct)
-	r.Warnings = append(r.Warnings, "amounts span currencies "+strings.Join(distinct, ", ")+" and are not comparable sums; see currencies")
-	r.UnavailableFields = append(r.UnavailableFields, amountFields...)
+	r.UnpricedRecords = n
 }
 
-// amountFields are the report fields that add execution.cost across records.
-var amountFields = []string{"today_eur", "month_eur", "seven_days_eur", "by_agent_eur", "by_agent_month_eur", "by_model_eur", "by_model_month_eur", "by_provider_eur", "by_provider_month_eur", "by_team_eur", "by_team_month_eur"}
+// amountWindow is one time window over which the report adds execution.cost,
+// with the report fields that hold that sum.
+type amountWindow struct {
+	name     string
+	from, to time.Time
+	fields   []string
+}
+
+// amountWindows lists the three windows of a Window. seven_days spans two
+// calendar months around a month boundary, so it is checked on its own
+// bounds, never inferred from the month.
+func amountWindows(w Window) []amountWindow {
+	return []amountWindow{
+		{"day", w.DayStart, w.DayEnd, []string{"today_eur", "by_agent_eur", "by_model_eur", "by_provider_eur", "by_team_eur"}},
+		{"seven_days", w.WeekStart, w.DayEnd, []string{"seven_days_eur"}},
+		{"month", w.MonthStart, w.MonthEnd, []string{"month_eur", "by_agent_month_eur", "by_model_month_eur", "by_provider_month_eur", "by_team_month_eur"}},
+	}
+}
+
+// currencies fills Currencies per amount window and marks the fields of
+// every window whose priced records are not all in r.Currency as not a
+// measurement: adding euros to dollars is not a total, and a sum of dollars
+// labelled "EUR" is not one either (#535 review rounds 3 and 4). Unstamped
+// records count as r.Currency, the unit the shipped tables always used.
+// It reports whether every window is comparable.
+func currencies(ctx context.Context, src Source, tenant, agent string, w Window, r *Report) bool {
+	comparable := true
+	for _, win := range amountWindows(w) {
+		counts, err := src.CurrenciesInRange(ctx, tenant, agent, win.from, win.to)
+		if err != nil {
+			r.markUnavailable("currencies."+win.name, err)
+			comparable = false
+			continue
+		}
+		if len(counts) > 0 {
+			if r.Currencies == nil {
+				r.Currencies = map[string]map[string]int{}
+			}
+			r.Currencies[win.name] = counts
+		}
+		var foreign []string
+		for cur := range counts {
+			if cur != "" && cur != r.Currency && !containsString(foreign, cur) {
+				foreign = append(foreign, cur)
+			}
+		}
+		if len(foreign) == 0 {
+			continue
+		}
+		comparable = false
+		sort.Strings(foreign)
+		r.Warnings = append(r.Warnings, win.name+" window: priced records in "+strings.Join(foreign, ", ")+" are not sums in "+r.Currency+"; see currencies."+win.name)
+		r.UnavailableFields = append(r.UnavailableFields, win.fields...)
+	}
+	return comparable
+}
 
 func containsString(list []string, v string) bool {
 	for _, s := range list {
@@ -408,8 +441,17 @@ func containsString(list []string, v string) bool {
 	return false
 }
 
+// resolveBudgets derives utilization from TodayEUR and MonthEUR. When either
+// is not a measurement in r.Currency (see currencies), no utilization or
+// status word is derived from it: a percentage or BLOCKED computed from
+// incomparable amounts would be presented as fact (#535 review round 4).
 func resolveBudgets(ctx context.Context, budgets BudgetResolver, tenant, agent string, r *Report) error {
 	if budgets == nil {
+		return nil
+	}
+	if containsString(r.UnavailableFields, "today_eur") || containsString(r.UnavailableFields, "month_eur") {
+		r.Warnings = append(r.Warnings, "budget utilization not computed: the summed amounts are not comparable in "+r.Currency)
+		r.UnavailableFields = append(r.UnavailableFields, "daily_budget", "monthly_budget")
 		return nil
 	}
 	daily, monthly, err := budgets.Resolve(ctx, tenant, agent, r.TodayEUR, r.MonthEUR)

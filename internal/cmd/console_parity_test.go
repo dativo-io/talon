@@ -459,3 +459,30 @@ func TestConsoleParity_AgentScopedSessionShow(t *testing.T) {
 	assert.Equal(t, 3, cliAll.Summary.RecordCount, "unscoped evidence-only read shows every agent, so the collision is visible")
 	assert.Equal(t, []string{"hr-analytics-assistant", "scratch"}, cliAll.Summary.AgentIDs)
 }
+
+// TestConsoleParity_SessionCurrencyFlag (#535 review round 4): the CLI's
+// summary carries cost_comparable; the console turns the same flag into a
+// partial section. Both read the same mixed-currency session.
+func TestConsoleParity_SessionCurrencyFlag(t *testing.T) {
+	f := newParityFixture(t)
+	ctx := context.Background()
+	for _, r := range []struct {
+		id, cur string
+		cost    float64
+	}{{"mx1", "USD", 0.10}, {"mx2", "EUR", 0.20}} {
+		require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+			ID: r.id, CorrelationID: "c_" + r.id, SessionID: "mixed-x", TenantID: "default", AgentID: "scratch", InvocationType: "gateway",
+			Timestamp: f.now.Add(-2 * time.Minute), PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+			Execution: evidence.Execution{Cost: r.cost, Currency: r.cur, ModelUsed: "gpt-4o-mini", PricingKnown: true},
+		}))
+	}
+	var cli talonsession.Detail
+	require.NoError(t, json.Unmarshal(f.cli(t, "session", "show", "mixed-x", "--json"), &cli))
+	assert.False(t, cli.Summary.CostComparable)
+	assert.Equal(t, map[string]int{"USD": 1, "EUR": 1}, cli.Summary.Currencies)
+	var dto console.SessionDetail
+	require.Equal(t, http.StatusOK, f.api(t, "/console/v1/sessions/mixed-x", &dto))
+	assert.False(t, dto.Detail.Summary.CostComparable)
+	assert.Equal(t, console.StatePartial, dto.Availability.State)
+	assert.Equal(t, []string{"detail.summary.total_cost"}, dto.Availability.Unavailable)
+}

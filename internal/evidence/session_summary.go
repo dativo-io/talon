@@ -32,7 +32,13 @@ type SessionSummary struct {
 	// Currency is the ISO-4217 unit of TotalCost, taken from the records'
 	// stamped currency (#216); empty when no record carries one (pre-field
 	// records — render as USD, the unit the shipped tables always used).
-	Currency         string               `json:"currency,omitempty"`
+	Currency string `json:"currency,omitempty"`
+	// Currencies counts the priced records (non-zero cost) per stamped
+	// currency ("" = no stamp). CostComparable is false when more than one
+	// non-empty currency appears: TotalCost is then not a sum in Currency
+	// (it is still computed as it always was) and consumers must say so.
+	Currencies       map[string]int       `json:"currencies,omitempty"`
+	CostComparable   bool                 `json:"cost_comparable"`
 	InputTokens      int                  `json:"input_tokens"`
 	OutputTokens     int                  `json:"output_tokens"`
 	CacheReadTokens  int                  `json:"cache_read_tokens,omitempty"`
@@ -247,6 +253,12 @@ func (a *sessionAgg) addTotals(ev *Evidence) {
 	if a.sum.Currency == "" && ev.Execution.Currency != "" {
 		a.sum.Currency = ev.Execution.Currency
 	}
+	if ev.Execution.Cost != 0 {
+		if a.sum.Currencies == nil {
+			a.sum.Currencies = map[string]int{}
+		}
+		a.sum.Currencies[ev.Execution.Currency]++
+	}
 	a.sum.TotalCost += ev.Execution.Cost
 	a.sum.InputTokens += ev.Execution.Tokens.Input
 	a.sum.OutputTokens += ev.Execution.Tokens.Output
@@ -418,10 +430,24 @@ func (a *sessionAgg) finish() SessionSummary {
 	a.sum.ToolsFiltered = sortedKeys(a.filtered)
 	a.sum.PIITypes = sortedKeys(a.piiTypes)
 	a.sum.ProviderPath = orderedPath(a.pathHops)
+	a.sum.CostComparable = costComparable(a.sum.Currencies)
 	if !a.sum.FirstSeen.IsZero() {
 		a.sum.DurationMS = a.sum.LastSeen.Sub(a.sum.FirstSeen).Milliseconds()
 	}
 	return a.sum
+}
+
+// costComparable reports whether the priced records share one stamped
+// currency (records without a stamp are the installation's table currency
+// and do not count as a second unit).
+func costComparable(counts map[string]int) bool {
+	distinct := 0
+	for cur, n := range counts {
+		if cur != "" && n > 0 {
+			distinct++
+		}
+	}
+	return distinct <= 1
 }
 
 // orderedPath orders the distinct labels by the time they first served
