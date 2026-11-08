@@ -15,6 +15,13 @@ import (
 type Timeline struct {
 	Summary evidence.SessionSummary `json:"summary"`
 	Records []evidence.Index        `json:"records"`
+	// Paging (LoadTimelinePage): Total is the number of records in scope,
+	// Limit the page bound, NextCursor the position to continue from (nil on
+	// the last page). A complete timeline (BuildTimeline) has Total ==
+	// len(Records) and no cursor.
+	Total      int                      `json:"total"`
+	Limit      int                      `json:"limit,omitempty"`
+	NextCursor *evidence.TimelineCursor `json:"next_cursor,omitempty"`
 }
 
 // BuildTimeline projects records (all sharing sessionID, already scoped to
@@ -34,5 +41,5 @@ func BuildTimeline(sessionID string, records []*evidence.Evidence) Timeline {
 		}
 		return rows[i].ID < rows[j].ID
 	})
-	return Timeline{Summary: evidence.BuildSessionSummary(sessionID, records), Records: rows}
+	return Timeline{Summary: evidence.BuildSessionSummary(sessionID, records), Records: rows, Total: len(rows)}
 }

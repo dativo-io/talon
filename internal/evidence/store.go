@@ -1127,7 +1127,7 @@ func (s *Store) Get(ctx context.Context, id string) (*Evidence, error) {
 	err := s.db.QueryRowContext(ctx, query, id).Scan(&evidenceJSON, &signature)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("evidence %s not found", id)
+		return nil, fmt.Errorf("evidence %s %w", id, ErrNotFound)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("querying evidence: %w", err)

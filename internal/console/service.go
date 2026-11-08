@@ -22,15 +22,19 @@ import (
 var (
 	ErrNotFound        = errors.New("not found")
 	ErrInvalidArgument = errors.New("invalid argument")
+	// ErrUnavailable: the store could not answer (not a missing record).
+	ErrUnavailable = errors.New("store unavailable")
 )
 
 // Bounds of the list endpoints.
 const (
-	DefaultSessionLimit = 50
-	MaxSessionLimit     = 200
-	DefaultEventsLimit  = 50
-	MaxEventsLimit      = 500
-	DefaultActivitySpan = 24 * time.Hour
+	DefaultSessionLimit  = 50
+	MaxSessionLimit      = 200
+	DefaultEventsLimit   = 50
+	MaxEventsLimit       = 500
+	DefaultTimelineLimit = 200
+	MaxTimelineLimit     = evidence.MaxTimelinePage
+	DefaultActivitySpan  = 24 * time.Hour
 )
 
 // FleetSource yields the attention queue for a tenant ("" = all) and names
@@ -43,8 +47,10 @@ type Config struct {
 	Evidence  *evidence.Store // read-only connection expected (evidence.OpenReadOnly)
 	Sessions  *session.Store  // read-only connection expected (session.OpenReadOnly)
 	StorePath string
-	Currency  string // the active pricing table's ISO-4217 code
-	Fleet     FleetSource
+	// Currency is the active pricing table's ISO-4217 code. Required: the
+	// console never assumes a unit for amounts.
+	Currency string
+	Fleet    FleetSource
 	// Budgets resolves effective caps for the Costs section; nil means no
 	// caps are reported (never a zero cap). See FleetCapsBudgets.
 	Budgets    costs.BudgetResolver
@@ -60,24 +66,31 @@ type Service struct{ cfg Config }
 
 // New returns a Service. Evidence and Sessions may be nil: every section then
 // reports unavailable with the reason, which is the console's first-run and
-// broken-store behaviour, not an error.
-func New(cfg Config) *Service {
+// broken-store behaviour, not an error. Currency is required.
+func New(cfg Config) (*Service, error) {
+	if strings.TrimSpace(cfg.Currency) == "" {
+		return nil, errors.New("console: Currency is required (the active pricing table's ISO-4217 code); amounts are never shown in an assumed unit")
+	}
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
 	if cfg.StartedAt.IsZero() {
 		cfg.StartedAt = cfg.Now()
 	}
-	if cfg.Currency == "" {
-		cfg.Currency = "USD"
-	}
-	return &Service{cfg: cfg}
+	return &Service{cfg: cfg}, nil
 }
 
 func (s *Service) now() time.Time { return s.cfg.Now().UTC() }
 
 func (s *Service) meta(tenant string) Meta {
-	return Meta{ContractVersion: ContractVersion, GeneratedAt: s.now(), TenantID: tenant}
+	return Meta{ContractVersion: ContractVersion, GeneratedAt: s.now(), TenantScope: scopeOf(tenant), TenantID: tenant}
+}
+
+func scopeOf(tenant string) string {
+	if tenant == "" {
+		return ScopeAllTenants
+	}
+	return ScopeTenant
 }
 
 func ok(source string, at time.Time) Availability {
@@ -99,24 +112,21 @@ const noStoreMsg = "evidence store is not open"
 
 // ---------------------------------------------------------------- overview
 
-// Overview builds the Overview page for tenant ("" = every tenant for the
-// use-case rows; "default" for the day totals and events, which are
-// tenant-scoped queries).
+// Overview builds the Overview page. tenant "" is the all-tenant view: the
+// use-case rows, the day totals and the event feed then all span every
+// tenant, and Meta.TenantScope says so. A named tenant scopes all three to
+// it. Nothing substitutes "default" for an omitted scope.
 func (s *Service) Overview(ctx context.Context, tenant string) *Overview {
-	scopeTenant := tenant
-	if scopeTenant == "" {
-		scopeTenant = "default"
-	}
 	return &Overview{
 		Meta:         s.meta(tenant),
 		UseCases:     s.useCases(ctx, tenant),
-		Today:        s.today(ctx, scopeTenant),
-		RecentEvents: s.recentEvents(ctx, scopeTenant, DefaultEventsLimit),
+		Today:        s.today(ctx, tenant),
+		RecentEvents: s.recentEvents(ctx, tenant, DefaultEventsLimit),
 	}
 }
 
 func (s *Service) useCases(ctx context.Context, tenant string) UseCases {
-	out := UseCases{Rows: []fleet.AgentRow{}, Attention: []fleet.AgentRow{}, Runtime: runtimeUnknown()}
+	out := UseCases{Rows: []fleet.AgentRow{}, Attention: []fleet.AgentRow{}, Issues: []agentcatalog.FleetIssue{}, Runtime: runtimeUnknown(), HealthBasis: HealthBasisProjected}
 	if s.cfg.Fleet == nil {
 		out.Availability = Availability{State: StateUnavailable, Source: SourceNone, Error: "no fleet source configured"}
 		return out
@@ -128,14 +138,15 @@ func (s *Service) useCases(ctx context.Context, tenant string) UseCases {
 	}
 	out.Availability = ok(source, s.now())
 	if source == SourceConfigFiles {
-		out.Availability.Note = "projected from the agent configuration on disk and the shared stores; the running process's generation is unknown until the runtime probe exists (#538)"
+		out.Availability.Note = "health is projected from the agent configuration on disk and the shared stores; it is not a liveness verdict for any process and the running process's generation is unknown until the runtime probe exists (#538)"
+	} else {
+		out.HealthBasis = HealthBasisRuntime
 	}
 	if res.Rows != nil {
 		out.Rows = res.Rows
 	}
-	out.Issues = res.Issues
-	if out.Issues == nil {
-		out.Issues = []agentcatalog.FleetIssue{}
+	if res.Issues != nil {
+		out.Issues = res.Issues
 	}
 	for i := range res.Rows {
 		if res.Rows[i].Health != fleet.HealthHealthy {
@@ -151,14 +162,16 @@ func (s *Service) useCases(ctx context.Context, tenant string) UseCases {
 func (s *Service) today(ctx context.Context, tenant string) Today {
 	w := costs.WindowAt(s.now())
 	out := Today{
-		Window:   costs.WindowBounds{DayStart: w.DayStart, DayEnd: w.DayEnd, MonthStart: w.MonthStart, MonthEnd: w.MonthEnd, WeekStart: w.WeekStart, WeekEnd: w.DayEnd},
-		Currency: s.cfg.Currency,
-		Scope:    "requests: request_class; cost: all_record_classes",
+		TenantScope: scopeOf(tenant),
+		Window:      costs.WindowBounds{DayStart: w.DayStart, DayEnd: w.DayEnd, MonthStart: w.MonthStart, MonthEnd: w.MonthEnd, WeekStart: w.WeekStart, WeekEnd: w.DayEnd},
+		Currency:    s.cfg.Currency,
+		Scope:       "requests: request_class; cost: all_record_classes",
 	}
 	if s.cfg.Evidence == nil {
 		out.Availability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}
 		return out
 	}
+	// Both store queries treat tenant "" as every tenant.
 	traffic, err := s.cfg.Evidence.AgentTrafficStats(ctx, tenant, w.DayStart, w.DayEnd)
 	if err != nil {
 		out.Availability = unavailable(SourceEvidenceStore, err)
@@ -183,13 +196,13 @@ func (s *Service) today(ctx context.Context, tenant string) Today {
 
 func (s *Service) recentEvents(ctx context.Context, tenant string, limit int) RecentEvents {
 	limit = clampLimit(limit, DefaultEventsLimit, MaxEventsLimit)
-	out := RecentEvents{Events: []events.OperationalEvent{}, Limit: limit}
+	out := RecentEvents{TenantScope: scopeOf(tenant), Events: []events.OperationalEvent{}, Limit: limit}
 	if s.cfg.Evidence == nil {
 		out.Availability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}
 		return out
 	}
 	// Same recipe as GET /api/v1/events/recent: over-fetch, project, sort
-	// newest first, cut to the limit.
+	// newest first, cut to the limit. tenant "" lists every tenant.
 	records, err := s.cfg.Evidence.List(ctx, tenant, "", time.Time{}, s.now(), max(limit*4, 200))
 	if err != nil {
 		out.Availability = unavailable(SourceEvidenceStore, err)
@@ -220,7 +233,8 @@ func (s *Service) UseCases(ctx context.Context, tenant string) (Meta, UseCases) 
 	return s.meta(tenant), s.useCases(ctx, tenant)
 }
 
-// UseCase is one use case with its recent sessions, costs and activity.
+// UseCase is one use case with its recent sessions, costs and activity, all
+// scoped to the use case's own tenant.
 func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDetail, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("%w: use case name is required", ErrInvalidArgument)
@@ -229,6 +243,7 @@ func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDet
 	out := &UseCaseDetail{
 		Meta:         s.meta(tenant),
 		Availability: uc.Availability,
+		HealthBasis:  uc.HealthBasis,
 		Runtime:      uc.Runtime,
 		EffectivePolicy: Availability{
 			State:  StateUnknown,
@@ -252,7 +267,8 @@ func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDet
 	}
 	out.Row = row
 	scope := row.TenantID
-	out.RecentSessions = s.Sessions(ctx, scope, name, "", time.Time{}, 10)
+	out.Meta = s.meta(scope)
+	out.RecentSessions = s.Sessions(ctx, scope, name, "", session.Cursor{}, evidence.ObservedCursor{}, 10)
 	out.Costs = s.Costs(ctx, scope, name, costs.BreakdownAgents)
 	now := s.now()
 	out.Activity = s.Activity(ctx, scope, name, now.Add(-DefaultActivitySpan), now, time.Hour)
@@ -261,57 +277,104 @@ func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDet
 
 // ---------------------------------------------------------------- sessions
 
-// Sessions is a bounded page of session rows.
-func (s *Service) Sessions(ctx context.Context, tenant, agent string, status session.Status, before time.Time, limit int) SessionList {
+// Sessions is a bounded page of session-store rows plus a bounded page of
+// evidence-observed session ids that have no row, each with its own keyset
+// cursor. The underlying queries need one tenant; "" means the
+// installation's "default" tenant and Meta names it.
+func (s *Service) Sessions(ctx context.Context, tenant, agent string, status session.Status, after session.Cursor, observedAfter evidence.ObservedCursor, limit int) SessionList {
 	limit = clampLimit(limit, DefaultSessionLimit, MaxSessionLimit)
 	if tenant == "" {
 		tenant = "default"
 	}
-	out := SessionList{Meta: s.meta(tenant), Sessions: []*session.Session{}, Limit: limit}
+	out := SessionList{Meta: s.meta(tenant), Sessions: []*session.Session{}, Observed: []evidence.ObservedSession{}, Limit: limit}
 	if s.cfg.Sessions == nil {
 		out.Availability = Availability{State: StateUnavailable, Source: SourceSessionStore, Error: "session store is not open"}
-		return out
+	} else {
+		rows, err := s.cfg.Sessions.ListRecent(ctx, tenant, agent, status, after, limit)
+		switch {
+		case err != nil:
+			out.Availability = unavailable(SourceSessionStore, err)
+		default:
+			if rows != nil {
+				out.Sessions = rows
+			}
+			out.Availability = ok(SourceSessionStore, s.now())
+			if len(rows) == 0 {
+				out.Availability.State = StateEmpty
+			} else if len(rows) == limit {
+				c := session.CursorOf(rows[len(rows)-1])
+				out.NextCursor = &c
+			}
+		}
 	}
-	rows, err := s.cfg.Sessions.ListRecent(ctx, tenant, agent, status, before, limit)
-	if err != nil {
-		out.Availability = unavailable(SourceSessionStore, err)
-		return out
-	}
-	if rows != nil {
-		out.Sessions = rows
-	}
-	out.Availability = ok(SourceSessionStore, s.now())
-	if len(rows) == 0 {
-		out.Availability.State = StateEmpty
-	} else if len(rows) == limit {
-		last := rows[len(rows)-1].CreatedAt
-		out.NextBefore = &last
-	}
+	s.observedSessions(ctx, tenant, agent, observedAfter, limit, &out)
 	return out
 }
 
-// Session is one session's detail and timeline. tenant "" is the unscoped
-// operator read, as `talon session show` without --tenant.
-func (s *Service) Session(ctx context.Context, id, tenant string) (*SessionDetail, error) {
+// observedSessions fills the evidence-only part of a SessionList: session ids
+// seen in evidence whose id or external id has no session-store row.
+func (s *Service) observedSessions(ctx context.Context, tenant, agent string, after evidence.ObservedCursor, limit int, out *SessionList) {
+	if s.cfg.Evidence == nil {
+		out.ObservedAvailability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}
+		return
+	}
+	observed, err := s.cfg.Evidence.ListObservedSessions(ctx, tenant, agent, after, limit)
+	if err != nil {
+		out.ObservedAvailability = unavailable(SourceEvidenceStore, err)
+		return
+	}
+	kept := make([]evidence.ObservedSession, 0, len(observed))
+	for i := range observed {
+		if s.hasSessionRow(ctx, observed[i].SessionID, tenant) {
+			continue
+		}
+		kept = append(kept, observed[i])
+	}
+	out.Observed = kept
+	out.ObservedAvailability = ok(SourceEvidenceStore, s.now())
+	out.ObservedAvailability.Note = "session ids seen in evidence without a session-store row (for example asserted on the MCP proxy path); facts are the records' own, no lifecycle is inferred"
+	if len(kept) == 0 {
+		out.ObservedAvailability.State = StateEmpty
+	}
+	if len(observed) == limit {
+		last := observed[len(observed)-1]
+		out.ObservedNextCursor = &evidence.ObservedCursor{LastSeen: last.LastSeen, SessionID: last.SessionID}
+	}
+}
+
+// hasSessionRow reports whether a session-store row carries id as its
+// internal or external id (then the row page, not the observed list, owns it).
+func (s *Service) hasSessionRow(ctx context.Context, id, tenant string) bool {
+	if s.cfg.Sessions == nil {
+		return false
+	}
+	if _, err := s.cfg.Sessions.Get(ctx, id, tenant); err == nil {
+		return true
+	}
+	matches, err := s.cfg.Sessions.ListByExternalID(ctx, id, tenant)
+	return err == nil && len(matches) > 0
+}
+
+// Session is one session's complete summary plus one timeline page. tenant
+// "" is the unscoped operator read, as `talon session show` without
+// --tenant. A missing session is ErrNotFound; a failing store is
+// ErrUnavailable.
+func (s *Service) Session(ctx context.Context, id, tenant string, after evidence.TimelineCursor, limit int) (*SessionDetail, error) {
 	if strings.TrimSpace(id) == "" {
 		return nil, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
-	out := &SessionDetail{Meta: s.meta(tenant)}
+	limit = clampLimit(limit, DefaultTimelineLimit, MaxTimelineLimit)
 	if s.cfg.Sessions == nil || s.cfg.Evidence == nil {
-		out.Availability = Availability{State: StateUnavailable, Source: SourceSessionStore, Error: "session or evidence store is not open"}
-		return out, nil
+		return nil, fmt.Errorf("%w: session or evidence store is not open", ErrUnavailable)
 	}
-	detail, tl, err := session.LoadTimeline(ctx, s.cfg.Sessions, s.cfg.Evidence, id, tenant)
+	detail, tl, err := session.LoadTimelinePage(ctx, s.cfg.Sessions, s.cfg.Evidence, id, tenant, after, limit)
 	switch {
 	case errors.Is(err, session.ErrDetailNotFound):
 		return nil, fmt.Errorf("%w: session %q", ErrNotFound, id)
 	case err != nil:
-		out.Availability = unavailable(SourceSessionStore, err)
-		return out, nil
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	out.Detail = detail
-	out.Timeline = tl
-	out.Availability = ok(SourceSessionStore, s.now())
+	out := &SessionDetail{Meta: s.meta(tenant), Detail: detail, Timeline: tl, Availability: ok(SourceSessionStore, s.now())}
 	if len(detail.Ambiguous) > 0 {
 		out.Availability.Note = fmt.Sprintf("external session id matches %d sessions; open one by its internal id", len(detail.Ambiguous))
 	}
@@ -321,31 +384,33 @@ func (s *Service) Session(ctx context.Context, id, tenant string) (*SessionDetai
 // ---------------------------------------------------------------- evidence
 
 // Evidence is one record with its verification. A record outside tenant is
-// not found, never partially shown.
+// not found, never partially shown. A failing store is ErrUnavailable, not
+// a missing record.
 func (s *Service) Evidence(ctx context.Context, id, tenant string) (*EvidenceDetail, error) {
 	if strings.TrimSpace(id) == "" {
 		return nil, fmt.Errorf("%w: evidence id is required", ErrInvalidArgument)
 	}
-	out := &EvidenceDetail{Meta: s.meta(tenant)}
 	if s.cfg.Evidence == nil {
-		out.Availability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}
-		return out, nil
+		return nil, fmt.Errorf("%w: %s", ErrUnavailable, noStoreMsg)
 	}
 	d, err := s.cfg.Evidence.Detail(ctx, id)
-	if err != nil {
+	switch {
+	case errors.Is(err, evidence.ErrNotFound):
 		return nil, fmt.Errorf("%w: evidence %q", ErrNotFound, id)
+	case err != nil:
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	if tenant != "" && d.Record.TenantID != tenant {
 		return nil, fmt.Errorf("%w: evidence %q", ErrNotFound, id)
 	}
-	out.Detail = d
-	out.Availability = ok(SourceEvidenceStore, s.now())
-	return out, nil
+	return &EvidenceDetail{Meta: s.meta(tenant), Availability: ok(SourceEvidenceStore, s.now()), Detail: d}, nil
 }
 
 // ------------------------------------------------------------------- costs
 
-// Costs is the shared cost report for the scope.
+// Costs is the shared cost report for the scope. tenant "" is the
+// installation's "default" tenant and Meta names it. The section is partial
+// when the report names unavailable fields.
 func (s *Service) Costs(ctx context.Context, tenant, agent string, breakdown costs.Breakdown) Costs {
 	if tenant == "" {
 		tenant = "default"
@@ -365,12 +430,25 @@ func (s *Service) Costs(ctx context.Context, tenant, agent string, breakdown cos
 	}
 	out.Report = report
 	out.Availability = ok(SourceEvidenceStore, s.now())
+	labelPartial(&out)
 	return out
+}
+
+// labelPartial turns an ok Costs section into a partial one when its report
+// names fields that hold no measurement.
+func labelPartial(c *Costs) {
+	if c.Report == nil || len(c.Report.UnavailableFields) == 0 {
+		return
+	}
+	c.Availability.State = StatePartial
+	c.Availability.Unavailable = append([]string(nil), c.Report.UnavailableFields...)
+	c.Availability.Note = strings.Join(c.Report.Warnings, "; ")
 }
 
 // ---------------------------------------------------------------- activity
 
-// Activity is the request-class series for the window at bucket.
+// Activity is the request-class series for the window at bucket. tenant ""
+// is the installation's "default" tenant and Meta names it.
 func (s *Service) Activity(ctx context.Context, tenant, agent string, from, to time.Time, bucket time.Duration) Activity {
 	if tenant == "" {
 		tenant = "default"

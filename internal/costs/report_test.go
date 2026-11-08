@@ -299,3 +299,45 @@ func roundMap(m map[string]float64) map[string]float64 {
 	}
 	return out
 }
+
+// TestBuild_StatusSerializedAndUnpricedCounted (#535 review): the budget
+// status word travels in the JSON, and allowed model calls without a
+// pricing-table price are counted next to the amounts.
+func TestBuild_StatusSerializedAndUnpricedCounted(t *testing.T) {
+	store := seedFixture(t)
+	ctx := context.Background()
+	// An ALLOWED call to an unpriced model inside the month: cost 0, pricing_known false.
+	require.NoError(t, store.Store(ctx, &evidence.Evidence{
+		ID: "unpriced_allowed", CorrelationID: "corr_unpriced_allowed", TenantID: "default", AgentID: "b",
+		Timestamp: time.Date(2026, 3, 14, 12, 0, 0, 0, time.UTC), InvocationType: "gateway",
+		PolicyDecision:  evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		RoutingDecision: &evidence.RoutingDecision{SelectedProvider: "p2"},
+		Execution:       evidence.Execution{ModelUsed: "mystery", Cost: 0, Currency: "EUR", PricingKnown: false},
+	}))
+	r, err := Build(ctx, store, Scope{TenantID: "default"}, WindowAt(fixtureNow), "EUR", fixedCaps{daily: 0.16, monthly: 1})
+	require.NoError(t, err)
+	assert.Equal(t, 1, r.UnpricedRecords, "the denied unpriced_b never reached a provider; unpriced_allowed did")
+	require.NotNil(t, r.DailyBudget)
+	assert.InDelta(t, 93.75, r.DailyBudget.Percent, eps)
+	assert.Equal(t, "WARNING", r.DailyBudget.StatusWord)
+	assert.Equal(t, r.DailyBudget.Status(), r.DailyBudget.StatusWord)
+	assert.Equal(t, "OK", r.MonthlyBudget.StatusWord)
+	assert.Empty(t, r.UnavailableFields)
+
+	byAgent, err := Build(ctx, store, Scope{TenantID: "default", AgentID: "a"}, WindowAt(fixtureNow), "EUR", nil)
+	require.NoError(t, err)
+	assert.Zero(t, byAgent.UnpricedRecords, "agent a has only priced calls")
+	byModel, err := Build(ctx, store, Scope{TenantID: "default", AgentID: "b", Breakdown: BreakdownModel}, WindowAt(fixtureNow), "EUR", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, byModel.UnpricedRecords)
+	assert.Contains(t, byModel.ByModelMonthEUR, "mystery", "the unpriced model appears with cost 0, visibly, next to the count")
+}
+
+func TestBuild_UnavailableFieldsAreMachineReadable(t *testing.T) {
+	store := seedFixture(t)
+	src := failingSource{Source: store, failWeek: true, failCache: true}
+	r, err := Build(context.Background(), src, Scope{TenantID: "default"}, WindowAt(fixtureNow), "EUR", nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"seven_days_eur", "cache_7d"}, r.UnavailableFields)
+	assert.Len(t, r.Warnings, 2)
+}

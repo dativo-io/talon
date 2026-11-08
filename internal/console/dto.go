@@ -1,15 +1,17 @@
 // Package console is the read model of the OSS operations console (#533,
 // #535): typed, versioned, bounded DTOs built from the shared Go projections
 // the CLI already uses — fleet.Project (via fleetview), costs.Build,
-// session.LoadDetail / BuildTimeline, evidence.Store.Detail, ActivityBuckets
-// and events.FromEvidence. Nothing here computes health, budgets, decisions
-// or session facts; it selects, scopes, bounds and labels.
+// session.LoadDetail / LoadTimelinePage, evidence.Store.Detail,
+// ActivityBuckets, ListObservedSessions and events.FromEvidence. Nothing here
+// computes health, budgets, decisions or session facts; it selects, scopes,
+// bounds and labels.
 //
 // Every section carries an Availability so a consumer can tell a real zero
-// from an unavailable or unknown source. Live runtime facts (active catalog
-// generation, reload state, collector freshness, process versions) are not
-// readable from the shared store; until the runtime probe (#538) exists they
-// are reported as unknown, never inferred from evidence or from files on disk.
+// from a partial, unavailable or unknown source. Live runtime facts (active
+// catalog generation, reload state, collector freshness, process versions)
+// are not readable from the shared store; until the runtime probe (#538)
+// exists they are reported as unknown, never inferred from evidence or from
+// files on disk.
 package console
 
 import (
@@ -30,6 +32,7 @@ const ContractVersion = "1"
 // Availability states.
 const (
 	StateOK          = "ok"          // the section was read from its source now
+	StatePartial     = "partial"     // read, but some fields hold no measurement (see Availability.Unavailable)
 	StateUnavailable = "unavailable" // the source exists but could not be read; Error says why
 	StateUnknown     = "unknown"     // no source can answer yet (for example no runtime probe, #538)
 	StateEmpty       = "empty"       // the source answered and holds nothing in scope (a real zero)
@@ -44,6 +47,12 @@ const (
 	SourceNone          = "none"
 )
 
+// Tenant scopes of a DTO.
+const (
+	ScopeTenant     = "tenant"      // one tenant, named in Meta.TenantID
+	ScopeAllTenants = "all_tenants" // every tenant of the installation
+)
+
 // Availability labels one DTO section.
 type Availability struct {
 	State  string    `json:"state"`
@@ -53,12 +62,17 @@ type Availability struct {
 	// Note explains a limitation of an ok/unknown section, for example that
 	// the active generation needs the runtime probe.
 	Note string `json:"note,omitempty"`
+	// Unavailable names the fields of a partial section that hold no
+	// measurement (machine-readable; the human reasons are in the section).
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
-// Meta heads every top-level DTO.
+// Meta heads every top-level DTO. TenantScope says whether the whole DTO
+// describes one tenant (TenantID) or every tenant; it is never implied.
 type Meta struct {
 	ContractVersion string    `json:"contract_version"`
 	GeneratedAt     time.Time `json:"generated_at"`
+	TenantScope     string    `json:"tenant_scope"`
 	TenantID        string    `json:"tenant_id,omitempty"`
 }
 
@@ -70,10 +84,22 @@ type Runtime struct {
 	ActivatedAt      *time.Time   `json:"activated_at,omitempty"`
 }
 
+// Health bases of the attention queue.
+const (
+	// HealthBasisProjected: health was evaluated from persisted evidence and
+	// the configuration on disk (fleet.Project). It is not a liveness verdict
+	// for any process and can read HEALTHY while the data plane is down; the
+	// Runtime section says what is known about the process.
+	HealthBasisProjected = "projected_from_store"
+	// HealthBasisRuntime: health came from the running process (#538).
+	HealthBasisRuntime = "runtime"
+)
+
 // UseCases is the attention queue: fleet.AgentRow unchanged, in the CLI's
 // order (health rank, then name).
 type UseCases struct {
 	Availability Availability              `json:"availability"`
+	HealthBasis  string                    `json:"health_basis"`
 	Rows         []fleet.AgentRow          `json:"rows"`
 	Issues       []agentcatalog.FleetIssue `json:"issues"`
 	// Attention is the subset of Rows whose health is not healthy, same order.
@@ -81,9 +107,10 @@ type UseCases struct {
 	Runtime   Runtime          `json:"runtime"`
 }
 
-// Today is the UTC-day traffic and spend of the tenant.
+// Today is the UTC-day traffic and spend of the DTO's tenant scope.
 type Today struct {
 	Availability Availability       `json:"availability"`
+	TenantScope  string             `json:"tenant_scope"`
 	Window       costs.WindowBounds `json:"window"`
 	// Requests/Denied count request-class records (the fleet denominator).
 	Requests int `json:"requests"`
@@ -99,12 +126,13 @@ type Today struct {
 // newest first, with the cursor of the newest event.
 type RecentEvents struct {
 	Availability Availability              `json:"availability"`
+	TenantScope  string                    `json:"tenant_scope"`
 	Events       []events.OperationalEvent `json:"events"`
 	Cursor       string                    `json:"cursor,omitempty"`
 	Limit        int                       `json:"limit"`
 }
 
-// Overview is the Overview page.
+// Overview is the Overview page. Every section shares Meta's tenant scope.
 type Overview struct {
 	Meta         Meta         `json:"meta"`
 	UseCases     UseCases     `json:"use_cases"`
@@ -117,6 +145,7 @@ type UseCaseDetail struct {
 	Meta           Meta            `json:"meta"`
 	Row            *fleet.AgentRow `json:"row"`
 	Availability   Availability    `json:"availability"`
+	HealthBasis    string          `json:"health_basis"`
 	Runtime        Runtime         `json:"runtime"`
 	RecentSessions SessionList     `json:"recent_sessions"`
 	Costs          Costs           `json:"costs"`
@@ -127,18 +156,26 @@ type UseCaseDetail struct {
 	EffectivePolicy Availability `json:"effective_policy"`
 }
 
-// SessionList is a bounded page of session rows (session.Store.ListRecent):
-// newest first by created_at; NextBefore pages further back.
+// SessionList is a bounded page of sessions from two sources, each with its
+// own keyset cursor: session-store rows (lifecycle state Talon tracks) and
+// evidence-observed session ids that have no row (for example asserted on
+// the MCP proxy path). Observed entries carry only what their records say;
+// no lifecycle is fabricated for them.
 type SessionList struct {
 	Meta         Meta               `json:"meta"`
 	Availability Availability       `json:"availability"`
 	Sessions     []*session.Session `json:"sessions"`
 	Limit        int                `json:"limit"`
-	NextBefore   *time.Time         `json:"next_before,omitempty"`
+	NextCursor   *session.Cursor    `json:"next_cursor,omitempty"`
+
+	ObservedAvailability Availability               `json:"observed_availability"`
+	Observed             []evidence.ObservedSession `json:"observed"`
+	ObservedNextCursor   *evidence.ObservedCursor   `json:"observed_next_cursor,omitempty"`
 }
 
-// SessionDetail is session.Detail plus the timeline, as `talon session show
-// --json` and `talon audit list --session --json` emit them.
+// SessionDetail is session.Detail (complete summary) plus ONE page of the
+// timeline (session.LoadTimelinePage), as `talon session show --json` and
+// `talon audit list --session --json` emit them.
 type SessionDetail struct {
 	Meta         Meta              `json:"meta"`
 	Availability Availability      `json:"availability"`
@@ -154,9 +191,9 @@ type EvidenceDetail struct {
 	Detail       *evidence.RecordDetail `json:"detail,omitempty"`
 }
 
-// Costs is costs.Report with its availability. Budgets inside the report
-// are resolved by the Service's BudgetResolver; BudgetNote states what
-// resolved them (or that nothing could).
+// Costs is costs.Report with its availability: partial when the report names
+// unavailable fields. Budgets inside the report are resolved by the
+// Service's BudgetResolver; BudgetNote states what resolved them.
 type Costs struct {
 	Meta         Meta          `json:"meta"`
 	Availability Availability  `json:"availability"`
