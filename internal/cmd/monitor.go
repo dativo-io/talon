@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -10,7 +11,10 @@ import (
 	"github.com/dativo-io/talon/internal/drift"
 )
 
-var monitorTenant string
+var (
+	monitorTenant string
+	monitorJSON   bool
+)
 
 var monitorCmd = &cobra.Command{
 	Use:   "monitor",
@@ -29,6 +33,14 @@ var monitorCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if monitorJSON {
+			if rows == nil {
+				rows = []drift.AgentDrift{}
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(rows)
+		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Agent Drift Signals (24h vs previous 7d)")
 		fmt.Fprintln(cmd.OutOrStdout(), "AGENT\tSIGNAL\tCURRENT\tBASELINE\tZSCORE\tALERT")
 		for _, r := range rows {
@@ -43,5 +55,6 @@ var monitorCmd = &cobra.Command{
 
 func init() {
 	monitorCmd.Flags().StringVar(&monitorTenant, "tenant", "", "Tenant ID filter")
+	monitorCmd.Flags().BoolVar(&monitorJSON, "json", false, "Emit the drift rows as JSON (sorted by agent)")
 	rootCmd.AddCommand(monitorCmd)
 }

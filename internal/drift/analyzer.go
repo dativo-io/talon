@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/dativo-io/talon/internal/evidence"
@@ -71,6 +72,8 @@ func (a *Analyzer) ComputeSignals(ctx context.Context, tenantID string, now time
 			},
 		})
 	}
+	// Deterministic order: the rows feed CLI/JSON output and parity tests.
+	sort.Slice(out, func(i, j int) bool { return out[i].AgentID < out[j].AgentID })
 	return out, nil
 }
 

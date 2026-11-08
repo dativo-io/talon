@@ -197,6 +197,8 @@ Projection: `Evidence → OperationalEvent → Metrics / CLI`. Metrics emit only
 | Events API | `/api/v1/events/recent`, `/api/v1/events/stream` | `terminal_plus_lifecycle_subset` (evidence-backed only) | same ordering and evidence-linked fields |
 | Metrics snapshot | `/api/v1/metrics` | `all_activity` collector projection | consistent summary/breakdown invariants and reconciliation health |
 | Status | `/v1/status` | reliability contract fields | exposes `metrics_events_dropped`, `events_stream_gaps`, `events_replay_misses`, `events_backlog_drops`, reconcile status |
+| Status counters | `/v1/status` `evidence_count_today`, `blocked_count`, `cost_today`, `monthly` | `all_record_classes` (declared in the response as `counts_scope`): every persisted record in the tenant's UTC day/month, including provider sub-attempts, tool actions and control-plane records | a different denominator from the fleet projection below; the two are not expected to agree |
+| Fleet attention queue | `/v1/agents/fleet`, `talon agents` | request-class records only (`RequestClassSQLPredicate`): every record that is not a provider sub-attempt, an operator/config/cache event, an external runtime event or an action-lifecycle record; intercepted tool actions (`proxy_tool_call`, `proxy_tool_blocked`, …) are included | `requests` / `denied` match `evidence.Store.AgentTrafficStats`; charts built from `evidence.Store.ActivityBuckets` use the same class. The session summary's `requests` additionally splits tool actions out into `tool_calls` |
 
 ---
 

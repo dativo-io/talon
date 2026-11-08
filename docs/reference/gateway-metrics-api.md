@@ -353,7 +353,7 @@ descending count; omitted when there are no denials.
 
 ## CLI ↔ API parity
 
-`talon metrics` reads this snapshot from a running server (`--url`, default `http://localhost:8080`; `TALON_ADMIN_KEY` authenticates) and prints the same numbers. The snapshot and the CLI commands that read the evidence store directly (`talon costs`, `talon audit list`, `talon report`) share the same underlying `MetricsQuerier` interface, which ensures:
+`talon metrics` reads this snapshot from a running server (`--url`, default `http://localhost:8080`; `TALON_ADMIN_KEY` authenticates) and prints the same numbers. The outcome of that read is never silent (#535): a server that rejects the request (`401`/`403`) or fails it is an error naming the cause, an explicit `--url` that cannot be reached is an error, and only the default URL with no server behind it falls back, with a warning on stderr, to the **offline projection** built from the local evidence store (last 24 hours, no budget, session, cache or model breakdown, no live counters). `--url ""` selects that offline projection explicitly. The snapshot and the CLI commands that read the evidence store directly (`talon costs`, `talon audit list`, `talon report`) share the same underlying `MetricsQuerier` interface, which ensures:
 
 - `talon costs --tenant default` reports the same daily/monthly totals as `budget_status`.
 - `talon costs --by-provider` aligns with `provider_breakdown` in `/api/v1/metrics`.
