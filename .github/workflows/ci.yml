@@ -337,6 +337,13 @@ jobs:
           docker run --rm talon:ci version
           docker run --rm talon:ci --help
 
+      # The supported no-key Compose stack starts the read-only console as
+      # its own service (#536, #537): loopback-only publication, pairing from
+      # the container log, no privileged route through the console, reissue
+      # from inside the container, restart independence.
+      - name: Console Compose smoke (examples/docker-compose + talon-ui)
+        run: bash scripts/console-compose-smoke.sh
+
       # The RELEASE image is a different Dockerfile: goreleaser-cross links
       # talon against glibc (CGO, go-sqlite3) and Dockerfile.goreleaser copies
       # that prebuilt binary onto its base. v1.16.0-rc.1 put it on alpine and

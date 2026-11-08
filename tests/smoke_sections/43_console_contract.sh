@@ -14,6 +14,11 @@
 # the data plane, keep serving the store after the data plane stops, report
 # the runtime as unknown without a probe, and `talon metrics` must fail
 # loudly (never a silent local fallback) when the server rejects or is gone.
+# The same run exercises the console PROCESS (#536, #537): `talon ui serve`
+# from the built binary refuses to start without an installation, a store or
+# a loopback address; pairs a browser-like client with the one-time code it
+# printed; serves the paired reads and nothing privileged; reissues via
+# `talon ui pair`; and its restart or stop never touches the data plane.
 # One assertion: the Go smoke's exit status.
 # -----------------------------------------------------------------------------
 test_section_43_console_contract() {
@@ -23,6 +28,6 @@ test_section_43_console_contract() {
   # Build-and-run inside the e2e harness: the Go test builds its own binary
   # (TestMain) and uses isolated temp data dirs and ports, so this section
   # needs no port, provider key or shared state from the other sections.
-  assert_pass "TestE2E_Console_*: console read model == CLI JSON on a live store, restart, stopped data plane, metrics fail-loud (scripts/console-smoke.sh)" \
+  assert_pass "TestE2E_Console*: read model == CLI JSON on a live store, restart, stopped data plane, metrics fail-loud; talon ui serve pairing + read-only boundary (scripts/console-smoke.sh)" \
     bash scripts/console-smoke.sh
 }

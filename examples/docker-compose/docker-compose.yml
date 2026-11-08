@@ -11,6 +11,10 @@
 #
 #   # Check the audit trail:
 #   docker compose exec talon /usr/local/bin/talon audit list
+#
+#   # Read-only console in the browser: open http://127.0.0.1:8787/ and enter
+#   # the one-time pairing code from:
+#   docker compose logs talon-ui
 
 services:
   mock-openai:
@@ -47,6 +51,34 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Read-only operations console (#536, #537): same image, own process,
+  # store opened read-only, published to the host loopback only. No provider
+  # or secrets key is passed to it. TALON_SIGNING_KEY is unset on both
+  # services here, so both derive the same default key and the console can
+  # verify the evidence it shows; set the same explicit key on both in a
+  # real deployment.
+  talon-ui:
+    build:
+      context: ../../
+    command: ui serve --listen 0.0.0.0:8787 --allow-non-loopback
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      - TALON_LOG_LEVEL=info
+      - TALON_LOG_FORMAT=json
+    volumes:
+      - ./talon.config.yaml:/etc/talon/talon.config.yaml:ro
+      - ./agent.talon.yaml:/home/talon/.talon/agent.talon.yaml:ro
+      - talon-data:/home/talon/.talon
+    depends_on:
+      talon:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8787/healthz || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 10
