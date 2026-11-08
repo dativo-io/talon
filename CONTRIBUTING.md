@@ -161,6 +161,8 @@ docker pull ghcr.io/dativo-io/talon:latest
 gh workflow run release.yml -f tag="$LATEST"
 ```
 
+OPA for the Rego policy tests comes from `make install-opa` (`scripts/install-opa.sh`: pinned version, the release's SHA-256, HTTP status validated, bounded retries, reported version checked, atomic install); `make test-rego` runs `opa test internal/policy/rego/ -v` with it, and `make test-install-opa` is the installer's own failure-injection test (HTML 504 page, truncated download, checksum mismatch, wrong version — nothing installed). Bump the version and digest together in the script, copying the digest from the release's `opa_linux_amd64_static.sha256` asset.
+
 The offline failure-injection test behind these scripts is `make test-release-verify`
 (`scripts/test-verify-release.sh`, a PR CI step): a fake release built like the real one is
 served from 127.0.0.1 and an altered binary (with and without regenerated checksums), a
