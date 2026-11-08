@@ -49,6 +49,24 @@ var ErrDetailNotFound = errors.New("session not found (no session row, no eviden
 // matches are returned with an empty summary and no error; the caller decides
 // how to present that.
 func LoadDetail(ctx context.Context, store *Store, ev EvidenceSource, idOrExternal, tenant string) (*Detail, error) {
+	detail, _, err := resolveDetail(ctx, store, ev, idOrExternal, tenant)
+	return detail, err
+}
+
+// LoadTimeline is LoadDetail plus the session's records as a Timeline (the
+// `talon audit list --session --json` shape), built from the same resolved
+// evidence key and the same scoped records. The timeline is nil when the
+// external id is ambiguous.
+func LoadTimeline(ctx context.Context, store *Store, ev EvidenceSource, idOrExternal, tenant string) (*Detail, *Timeline, error) {
+	detail, records, err := resolveDetail(ctx, store, ev, idOrExternal, tenant)
+	if err != nil || len(detail.Ambiguous) > 0 {
+		return detail, nil, err
+	}
+	tl := BuildTimeline(detail.EvidenceKey(idOrExternal), records)
+	return detail, &tl, nil
+}
+
+func resolveDetail(ctx context.Context, store *Store, ev EvidenceSource, idOrExternal, tenant string) (*Detail, []*evidence.Evidence, error) {
 	detail := &Detail{}
 	sess, err := store.Get(ctx, idOrExternal, tenant)
 	switch {
@@ -57,7 +75,7 @@ func LoadDetail(ctx context.Context, store *Store, ev EvidenceSource, idOrExtern
 	case errors.Is(err, ErrSessionNotFound):
 		matches, listErr := store.ListByExternalID(ctx, idOrExternal, tenant)
 		if listErr != nil {
-			return nil, listErr
+			return nil, nil, listErr
 		}
 		switch len(matches) {
 		case 0: // evidence-only session, or unknown id — decided below
@@ -65,23 +83,23 @@ func LoadDetail(ctx context.Context, store *Store, ev EvidenceSource, idOrExtern
 			detail.Session = matches[0]
 		default:
 			detail.Ambiguous = matches
-			return detail, nil
+			return detail, nil, nil
 		}
 	default:
-		return nil, fmt.Errorf("getting session %s: %w", idOrExternal, err)
+		return nil, nil, fmt.Errorf("getting session %s: %w", idOrExternal, err)
 	}
 
 	key := detail.EvidenceKey(idOrExternal)
 	records, err := ev.ListBySessionID(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("querying session %s: %w", key, err)
+		return nil, nil, fmt.Errorf("querying session %s: %w", key, err)
 	}
 	records = ScopeRecords(records, tenant, "")
 	if detail.Session == nil && len(records) == 0 {
-		return nil, fmt.Errorf("session %s: %w", idOrExternal, ErrDetailNotFound)
+		return nil, nil, fmt.Errorf("session %s: %w", idOrExternal, ErrDetailNotFound)
 	}
 	detail.Summary = evidence.BuildSessionSummary(key, records)
-	return detail, nil
+	return detail, records, nil
 }
 
 // ScopeRecords drops records that do not match the tenant/agent filters.

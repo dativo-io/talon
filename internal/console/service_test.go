@@ -1,0 +1,330 @@
+package console
+
+import (
+	"context"
+	"database/sql"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/dativo-io/talon/internal/costs"
+	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/fleet"
+	"github.com/dativo-io/talon/internal/session"
+)
+
+const testKey = "console-test-signing-key-00000001"
+
+// fixture is one seeded installation: two agents on disk (hr-analytics-
+// assistant capped at 10/day, scratch uncapped), a gateway config, and a
+// store with the People Analytics shape of traffic:
+//
+//	id         agent                   type                 session       allowed cost  when
+//	e_agg      hr-analytics-assistant  proxy_tool_call      hr-demo-s1    yes     0     now-30m   (allowed aggregate, dispatched)
+//	e_export   hr-analytics-assistant  proxy_tool_blocked   hr-demo-s1    no      0     now-25m   (hr_employee_export denied, not dispatched)
+//	e_llm      hr-analytics-assistant  gateway              hr-demo-s1    yes     0.20  now-20m   (LIVE model call)
+//	e_other    scratch                 gateway              (none)        yes     0.05  now-10m
+//	e_acme     hr-analytics-assistant  gateway              (none, acme)  yes     9.00  now-5m    (other tenant)
+type fixture struct {
+	dir, dbPath string
+	writer      *evidence.Store
+	sessions    *session.Store
+	now         time.Time
+}
+
+func seed(t *testing.T) *fixture {
+	t.Helper()
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	for _, a := range []struct {
+		name string
+		caps bool
+	}{{"hr-analytics-assistant", true}, {"scratch", false}} {
+		d := filepath.Join(agentsDir, a.name)
+		require.NoError(t, os.MkdirAll(d, 0o755))
+		y := "agent:\n  name: " + a.name + "\n  version: \"1.0.0\"\n"
+		if a.caps {
+			y += "policies:\n  cost_limits:\n    daily: 10\n    monthly: 100\n"
+		} else {
+			y += "policies:\n  cost_limits:\n    monthly: 50\n" // schema requires policies; no daily cap
+		}
+		require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte(y), 0o600))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "talon.config.yaml"), []byte("gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      base_url: \"https://api.openai.com\"\n      secret_name: openai-api-key\n"), 0o600))
+
+	dbPath := filepath.Join(dir, "evidence.db")
+	writer, err := evidence.NewStore(dbPath, testKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = writer.Close() })
+	sessions, err := session.NewStore(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sessions.Close() })
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if now.Sub(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)) < 45*time.Minute {
+		t.Skip("fixture places records up to 30 minutes ago inside today's UTC day")
+	}
+	put := func(id, tenant, agent, typ, sess string, allowed bool, cost float64, minutesAgo int) {
+		ev := &evidence.Evidence{
+			ID: id, CorrelationID: "corr_" + id, TenantID: tenant, AgentID: agent, SessionID: sess, InvocationType: typ,
+			Timestamp:      now.Add(-time.Duration(minutesAgo) * time.Minute),
+			PolicyDecision: evidence.PolicyDecision{Allowed: allowed, Action: map[bool]string{true: "allow", false: "deny"}[allowed]},
+			Execution:      evidence.Execution{Cost: cost, Currency: "USD", ModelUsed: map[bool]string{true: "gpt-4o-mini", false: ""}[typ == "gateway"]},
+		}
+		if !allowed {
+			ev.PolicyDecision.Reasons = []string{"tool_forbidden: hr_employee_export"}
+		}
+		require.NoError(t, writer.Store(ctx, ev))
+	}
+	put("e_agg", "default", "hr-analytics-assistant", "proxy_tool_call", "hr-demo-s1", true, 0, 30)
+	put("e_export", "default", "hr-analytics-assistant", "proxy_tool_blocked", "hr-demo-s1", false, 0, 25)
+	put("e_llm", "default", "hr-analytics-assistant", "gateway", "hr-demo-s1", true, 0.20, 20)
+	put("e_other", "default", "scratch", "gateway", "", true, 0.05, 10)
+	put("e_acme", "acme", "hr-analytics-assistant", "gateway", "", true, 9.00, 5)
+	return &fixture{dir: dir, dbPath: dbPath, writer: writer, sessions: sessions, now: now}
+}
+
+func (f *fixture) service(t *testing.T) *Service {
+	t.Helper()
+	ro, err := evidence.OpenReadOnly(f.dbPath, testKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ro.Close() })
+	ss, err := session.OpenReadOnly(f.dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ss.Close() })
+	fleetSrc := OfflineFleetSource(filepath.Join(f.dir, "agents"), "", filepath.Join(f.dir, "talon.config.yaml"), "USD", ro, ss, nil)
+	return New(Config{
+		Evidence: ro, Sessions: ss, StorePath: f.dbPath, Currency: "USD",
+		Fleet: fleetSrc, Budgets: FleetCapsBudgets{Fleet: fleetSrc}, BudgetNote: "caps from the agent configuration on disk (offline)",
+		Version: "test", StartedAt: f.now,
+	})
+}
+
+const eps = 1e-9
+
+func TestOverview_HandExpectations(t *testing.T) {
+	f := seed(t)
+	svc := f.service(t)
+	ov := svc.Overview(context.Background(), "")
+
+	assert.Equal(t, ContractVersion, ov.Meta.ContractVersion)
+
+	uc := ov.UseCases
+	assert.Equal(t, StateOK, uc.Availability.State)
+	assert.Equal(t, SourceConfigFiles, uc.Availability.Source)
+	assert.Contains(t, uc.Availability.Note, "#538")
+	assert.Equal(t, StateUnknown, uc.Runtime.Availability.State, "no probe: generation is unknown, never inferred")
+	require.Len(t, uc.Rows, 2)
+	byName := map[string]fleet.AgentRow{}
+	for _, r := range uc.Rows {
+		byName[r.Name] = r
+	}
+	hr := byName["hr-analytics-assistant"]
+	assert.Equal(t, fleet.HealthHealthy, hr.Health, "one denied tool action is a decision, not an attention cause")
+	assert.Equal(t, 3, hr.Requests, "request-class: the two tool actions and the model call")
+	assert.Equal(t, 1, hr.Denied)
+	assert.InDelta(t, 0.20, hr.SpendDay, eps)
+	assert.InDelta(t, 10, hr.DailyCap, eps)
+	assert.Equal(t, "USD", hr.Currency)
+	assert.Empty(t, uc.Attention)
+	assert.Empty(t, uc.Issues)
+
+	td := ov.Today
+	assert.Equal(t, StateOK, td.Availability.State)
+	assert.Equal(t, 4, td.Requests, "default tenant request-class today: e_agg, e_export, e_llm, e_other")
+	assert.Equal(t, 1, td.Denied)
+	assert.InDelta(t, 0.25, td.Cost, eps)
+	assert.Equal(t, "USD", td.Currency)
+
+	re := ov.RecentEvents
+	assert.Equal(t, StateOK, re.Availability.State)
+	require.Len(t, re.Events, 4, "other tenant excluded")
+	assert.Equal(t, "e_other", re.Events[0].EvidenceID, "newest first")
+	assert.Equal(t, re.Events[0].EventID, re.Cursor)
+	var denied int
+	for _, e := range re.Events {
+		if !e.Allowed {
+			denied++
+			assert.Equal(t, "e_export", e.EvidenceID)
+		}
+	}
+	assert.Equal(t, 1, denied)
+}
+
+func TestUseCaseDetail_SessionsCostsActivity(t *testing.T) {
+	f := seed(t)
+	svc := f.service(t)
+	ctx := context.Background()
+
+	d, err := svc.UseCase(ctx, "", "hr-analytics-assistant")
+	require.NoError(t, err)
+	require.NotNil(t, d.Row)
+	assert.Equal(t, StateUnknown, d.EffectivePolicy.State, "#305 owns provenance; nothing is inferred")
+	assert.Contains(t, d.EffectivePolicy.Note, "#305")
+
+	// Costs: the shared report for the agent, with caps from the same scan.
+	assert.Equal(t, StateOK, d.Costs.Availability.State)
+	require.NotNil(t, d.Costs.Report)
+	assert.InDelta(t, 0.20, d.Costs.Report.TodayEUR, eps)
+	require.NotNil(t, d.Costs.Report.DailyBudget)
+	assert.InDelta(t, 10, d.Costs.Report.DailyBudget.LimitEUR, eps)
+	assert.InDelta(t, 2, d.Costs.Report.DailyBudget.Percent, eps)
+	assert.Equal(t, "config_effective_cap_offline", d.Costs.Report.DailyBudget.Source)
+	assert.Equal(t, "OK", d.Costs.Report.DailyBudget.Status())
+	want, err := costs.Build(ctx, f.writer, costs.Scope{TenantID: "default", AgentID: "hr-analytics-assistant"}, costs.WindowAt(f.now), "USD", nil)
+	require.NoError(t, err)
+	assert.InDelta(t, want.MonthEUR, d.Costs.Report.MonthEUR, eps, "same shared builder as talon costs")
+
+	// Activity: 24 × 1h buckets, the three request-class records in the last hour.
+	assert.Equal(t, StateOK, d.Activity.Availability.State)
+	require.NotNil(t, d.Activity.Series)
+	assert.Equal(t, "1h", d.Activity.Series.Bucket)
+	assert.Equal(t, "request_class", d.Activity.Series.Scope)
+	var reqs, den int
+	for _, b := range d.Activity.Series.Buckets {
+		reqs += b.Requests
+		den += b.Denied
+	}
+	assert.Equal(t, 3, reqs)
+	assert.Equal(t, 1, den)
+
+	// No session rows exist (the demo asserts sessions only on MCP/gateway evidence): empty, not unavailable.
+	assert.Equal(t, StateEmpty, d.RecentSessions.Availability.State)
+	assert.Empty(t, d.RecentSessions.Sessions)
+
+	_, err = svc.UseCase(ctx, "", "nope")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = svc.UseCase(ctx, "", "")
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+func TestSessionDetail_EvidenceOnlySessionAndTenantScope(t *testing.T) {
+	f := seed(t)
+	svc := f.service(t)
+	ctx := context.Background()
+
+	sd, err := svc.Session(ctx, "hr-demo-s1", "")
+	require.NoError(t, err)
+	assert.Equal(t, StateOK, sd.Availability.State)
+	require.NotNil(t, sd.Detail)
+	assert.Nil(t, sd.Detail.Session, "no session row: observed in evidence only")
+	assert.Equal(t, 3, sd.Detail.Summary.RecordCount)
+	assert.Equal(t, 1, sd.Detail.Summary.Requests, "the model call; tool actions are split out")
+	assert.Equal(t, 2, sd.Detail.Summary.ToolCalls)
+	assert.Equal(t, 1, sd.Detail.Summary.ToolCallsDenied)
+	assert.InDelta(t, 0.20, sd.Detail.Summary.TotalCost, eps)
+	require.NotNil(t, sd.Timeline)
+	require.Len(t, sd.Timeline.Records, 3)
+	assert.Equal(t, "e_agg", sd.Timeline.Records[0].ID, "source-time order")
+	assert.Equal(t, "proxy_tool_blocked", sd.Timeline.Records[1].InvocationType)
+	assert.False(t, sd.Timeline.Records[1].Allowed)
+	assert.Equal(t, "e_llm", sd.Timeline.Records[2].ID)
+
+	_, err = svc.Session(ctx, "hr-demo-s1", "acme")
+	require.ErrorIs(t, err, ErrNotFound, "another tenant cannot see the session")
+	_, err = svc.Session(ctx, "missing", "")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestEvidenceDetail_VerificationAndTenantScope(t *testing.T) {
+	f := seed(t)
+	svc := f.service(t)
+	ctx := context.Background()
+
+	ed, err := svc.Evidence(ctx, "e_export", "default")
+	require.NoError(t, err)
+	assert.Equal(t, "valid", ed.Detail.Verification.State)
+	assert.False(t, ed.Detail.Record.PolicyDecision.Allowed)
+
+	_, err = svc.Evidence(ctx, "e_export", "acme")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = svc.Evidence(ctx, "e_acme", "default")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	// Tamper in place: the read-only service reports invalid, not an error.
+	raw, err := sql.Open("sqlite3", f.dbPath)
+	require.NoError(t, err)
+	defer raw.Close()
+	_, err = raw.ExecContext(ctx, `UPDATE evidence SET evidence_json = replace(evidence_json, '"cost":0.2', '"cost":0.02') WHERE id = 'e_llm'`)
+	require.NoError(t, err)
+	tampered, err := svc.Evidence(ctx, "e_llm", "")
+	require.NoError(t, err)
+	assert.Equal(t, "invalid", tampered.Detail.Verification.State)
+}
+
+func TestSessionsPaging(t *testing.T) {
+	f := seed(t)
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		_, err := f.sessions.Create(ctx, "default", "scratch", "", 0)
+		require.NoError(t, err)
+		time.Sleep(3 * time.Millisecond)
+	}
+	svc := f.service(t)
+	p1 := svc.Sessions(ctx, "default", "", "", time.Time{}, 2)
+	assert.Equal(t, StateOK, p1.Availability.State)
+	require.Len(t, p1.Sessions, 2)
+	require.NotNil(t, p1.NextBefore)
+	p2 := svc.Sessions(ctx, "default", "", "", *p1.NextBefore, 2)
+	require.Len(t, p2.Sessions, 2)
+	assert.NotEqual(t, p1.Sessions[0].ID, p2.Sessions[0].ID)
+	p3 := svc.Sessions(ctx, "default", "", "", *p2.NextBefore, 2)
+	require.Len(t, p3.Sessions, 1)
+	assert.Nil(t, p3.NextBefore, "last page")
+	big := svc.Sessions(ctx, "default", "", "", time.Time{}, 10_000)
+	assert.Equal(t, MaxSessionLimit, big.Limit, "limit is clamped")
+	none := svc.Sessions(ctx, "default", "hr-analytics-assistant", "", time.Time{}, 10)
+	assert.Equal(t, StateEmpty, none.Availability.State)
+}
+
+func TestSystem_StoreFactsAndUnknownRuntime(t *testing.T) {
+	f := seed(t)
+	svc := f.service(t)
+	sys := svc.System(context.Background())
+	assert.Equal(t, "test", sys.Console.Version)
+	assert.Equal(t, StateOK, sys.Store.Availability.State)
+	assert.True(t, sys.Store.ReadOnly)
+	assert.Equal(t, 5, sys.Store.RecordCount)
+	assert.Greater(t, sys.Store.SizeBytes, int64(0))
+	require.NotNil(t, sys.Store.NewestRecord)
+	assert.WithinDuration(t, f.now.Add(-5*time.Minute), *sys.Store.NewestRecord, time.Second)
+	assert.Equal(t, StateUnknown, sys.Runtime.Availability.State)
+}
+
+func TestNoStores_EverySectionIsUnavailableNotZero(t *testing.T) {
+	svc := New(Config{Currency: "EUR"})
+	ov := svc.Overview(context.Background(), "")
+	assert.Equal(t, StateUnavailable, ov.UseCases.Availability.State)
+	assert.Equal(t, StateUnavailable, ov.Today.Availability.State)
+	assert.Zero(t, ov.Today.Requests)
+	assert.Equal(t, StateUnavailable, ov.RecentEvents.Availability.State)
+	c := svc.Costs(context.Background(), "default", "", "")
+	assert.Equal(t, StateUnavailable, c.Availability.State)
+	assert.Nil(t, c.Report)
+	a := svc.Activity(context.Background(), "default", "", time.Now().Add(-time.Hour), time.Now(), time.Hour)
+	assert.Equal(t, StateUnavailable, a.Availability.State)
+	sys := svc.System(context.Background())
+	assert.Equal(t, StateUnavailable, sys.Store.Availability.State)
+	sl := svc.Sessions(context.Background(), "default", "", "", time.Time{}, 5)
+	assert.Equal(t, StateUnavailable, sl.Availability.State)
+	sd, err := svc.Session(context.Background(), "x", "")
+	require.NoError(t, err)
+	assert.Equal(t, StateUnavailable, sd.Availability.State)
+}
+
+func TestInvalidGatewayConfig_UseCasesUnavailable(t *testing.T) {
+	f := seed(t)
+	require.NoError(t, os.WriteFile(filepath.Join(f.dir, "talon.config.yaml"), []byte("gateway:\n  dashboard_listen: \"127.0.0.1:1\"\n"), 0o600))
+	svc := f.service(t)
+	uc := svc.Overview(context.Background(), "").UseCases
+	assert.Equal(t, StateUnavailable, uc.Availability.State)
+	assert.Contains(t, uc.Availability.Error, "invalid")
+	assert.Empty(t, uc.Rows, "no rows are shown from a configuration that would not load")
+}
