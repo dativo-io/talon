@@ -165,6 +165,14 @@ gateway:
 `)
 		assert.False(t, result.Valid(), "require_caller_id was removed (#266)")
 	})
+
+	t.Run("legacy dashboard_listen rejected", func(t *testing.T) {
+		result := validateAgainstConfigSchema(t, `
+gateway:
+  dashboard_listen: "127.0.0.1:9090"
+`)
+		assert.False(t, result.Valid(), "dashboard_listen was removed with the legacy dashboards (#533)")
+	})
 }
 
 // TestConfigSchema_RuntimeParity (#279 review): the published schema and the
