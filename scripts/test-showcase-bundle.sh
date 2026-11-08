@@ -18,7 +18,10 @@ pass() { echo "PASS $*"; }
 refused() { # rc output pattern message
   if [[ "$1" == 0 ]] || ! grep -q -- "$3" <<<"$2"; then fail "$4: $2"; fi
 }
-VERSION="$("$TALON" version | head -n1 | sed 's/^Talon //')"
+# sed reads the whole of `talon version` (four lines): a `head -n1` here closed the
+# pipe before talon finished writing and, under pipefail, surfaced as exit 141
+# (SIGPIPE) in CI — a flake unrelated to what the script tests.
+VERSION="$("$TALON" version | sed -n '1s/^Talon //p')"
 [[ -n "$VERSION" ]] || fail "cannot read the version of $TALON"
 TALON_SHA="$(sha256sum "$TALON" | cut -d' ' -f1)"
 
