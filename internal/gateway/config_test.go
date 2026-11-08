@@ -70,27 +70,33 @@ gateway:
 		name    string
 		snippet string
 		wantKey string
+		wantRef string // the issue the migration error must cite
 	}{
 		{"callers", `
   callers:
     - name: legacy
       tenant_key: "talon-gw-abc"
-`, `"callers"`},
+`, `"callers"`, "#266"},
 		{"default_policy", `
   default_policy:
     default_pii_action: warn
-`, `"default_policy"`},
+`, `"default_policy"`, "#266"},
 		{"trusted_proxy_cidrs", `
   trusted_proxy_cidrs: ["10.0.0.0/8"]
-`, `"trusted_proxy_cidrs"`},
+`, `"trusted_proxy_cidrs"`, "#266"},
 		{"require_caller_id", `
   organization_policy:
     require_caller_id: false
-`, `"organization_policy.require_caller_id"`},
+`, `"organization_policy.require_caller_id"`, "#266"},
 		{"per_caller_requests_per_min", `
   rate_limits:
     per_caller_requests_per_min: 60
-`, `"rate_limits.per_caller_requests_per_min"`},
+`, `"rate_limits.per_caller_requests_per_min"`, "#266"},
+		// The legacy dashboards' never-wired listener key (#533): a specific
+		// migration error, not the generic unknown-field failure.
+		{"dashboard_listen", `
+  dashboard_listen: "127.0.0.1:9090"
+`, `"gateway.dashboard_listen"`, "#533"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,8 +105,11 @@ gateway:
 			if err == nil {
 				t.Fatalf("expected legacy key %s to fail validation", tc.wantKey)
 			}
-			if !strings.Contains(err.Error(), tc.wantKey) || !strings.Contains(err.Error(), "#266") {
+			if !strings.Contains(err.Error(), tc.wantKey) || !strings.Contains(err.Error(), tc.wantRef) {
 				t.Errorf("error should name the removed key and the breaking change, got: %v", err)
+			}
+			if strings.Contains(err.Error(), "unknown keys are rejected") {
+				t.Errorf("removed key must get its migration error, not the generic unknown-field failure: %v", err)
 			}
 		})
 	}

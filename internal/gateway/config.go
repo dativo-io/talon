@@ -511,6 +511,12 @@ func rejectLegacyGatewayKeys(gatewayRaw map[string]interface{}, isGatewaySubtree
 		"callers":             "define one agent.talon.yaml per AI use case with agent.key.secret_name instead",
 		"trusted_proxy_cidrs": "source-IP identity was removed; every request authenticates with an agent key",
 	}
+	// gateway.dashboard_listen was declared but never bound a listener; the
+	// legacy dashboards it was meant for were removed with #533. Name the
+	// removal instead of failing on a generic unknown-field error.
+	if v, present := gatewayRaw["dashboard_listen"]; present {
+		return fmt.Errorf("gateway config uses removed key \"gateway.dashboard_listen\" (value %v) — the legacy browser dashboards were removed and the key never bound a listener; delete it. The gateway metrics API stays at /api/v1/metrics on the main listener (breaking change, see #533)", v)
+	}
 	if v, present := gatewayRaw["mode"]; present {
 		return fmt.Errorf("gateway config uses removed key \"gateway.mode\" (value %v) — %s", v, policy.LegacyPostureRemovedHint)
 	}

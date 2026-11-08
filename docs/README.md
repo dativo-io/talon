@@ -131,6 +131,7 @@ Choose the shortest path for your situation:
 | [Reproducible benchmarks](reference/benchmarks.md) | Gateway pipeline overhead, PII scan latency, and evidence write throughput (`make benchmarks`). |
 | [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs metrics). |
 | [Gateway metrics API](reference/gateway-metrics-api.md) | Metrics JSON/SSE endpoints, snapshot fields, CLI parity, and authentication. |
+| [Legacy dashboard migration map](reference/legacy-dashboard-migration-map.md) | What the removed dashboards showed, the Go projection or route that owns each number, the CLI surface today, and the recorded gaps for the console epic (#533). |
 | [Operational control plane](reference/operational-control-plane.md) | Run management (list/kill/pause/resume), tenant lockdown, runtime overrides, tool approval gates. |
 
 ### Explanation (understanding-oriented)
