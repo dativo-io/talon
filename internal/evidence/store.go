@@ -630,6 +630,10 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	// (session, tenant, agent, timestamp); both resolve from this index
 	// without touching evidence_json.
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_tenant_session_agent_ts ON evidence(tenant_id, session_id, agent_id, timestamp) WHERE session_id IS NOT NULL AND session_id <> ''")
+	// Timeline pages read a session in (timestamp, id) order with a keyset
+	// cursor and a LIMIT; this index makes each page an ordered range read
+	// instead of a sort of the whole session per page (#535 review).
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_session_ts_id ON evidence(session_id, timestamp, id) WHERE session_id IS NOT NULL AND session_id <> ''")
 	// Partial index for the metrics sessions block (#199): only rows with an
 	// orchestration block qualify, so the recent-sessions query scans asserted
 	// traffic only instead of json_extract-ing every evidence row.

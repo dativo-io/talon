@@ -201,6 +201,7 @@ func TestRoutes_ErrorsAndValidation(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions?limit=-1", &e))
 	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions?before=noon&before_id=x", &e))
 	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions?before=2026-01-01T00:00:00Z", &e), "a cursor needs both halves")
+	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions?observed_before=2026-01-01T00:00:00Z&observed_before_id=x", &e), "the observed cursor needs all three parts")
 	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions/hr-demo-s1?timeline_after_id=x", &e))
 	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions/hr-demo-s1?timeline_limit=0", &e))
 
@@ -223,4 +224,49 @@ func TestRoutes_ErrorsAndValidation(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+}
+
+// TestRoutes_ObservedCursorLosslessAcrossAgents (#535 review round 3): two
+// agents share one session id and one last_seen instant; paging the
+// observed list one entry at a time over HTTP must visit both.
+func TestRoutes_ObservedCursorLosslessAcrossAgents(t *testing.T) {
+	srv, writer, now := newServer(t)
+	ctx := context.Background()
+	at := now.Add(-5 * time.Minute)
+	for _, agent := range []string{"agent-a", "agent-b", "agent-c"} {
+		require.NoError(t, writer.Store(ctx, &evidence.Evidence{
+			ID: "tie-" + agent, CorrelationID: "c", SessionID: "tie-session", TenantID: "default", AgentID: agent, InvocationType: "proxy_tool_call",
+			Timestamp: at, PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		}))
+	}
+	var walked []string
+	query := "/console/v1/sessions?tenant=default&limit=1"
+	for i := 0; i < 10; i++ {
+		var page console.SessionList
+		require.Equal(t, http.StatusOK, get(t, srv, query, &page))
+		for _, o := range page.Observed {
+			walked = append(walked, o.SessionID+"/"+o.AgentID)
+		}
+		if page.ObservedNextCursor == nil {
+			break
+		}
+		c := page.ObservedNextCursor
+		query = "/console/v1/sessions?tenant=default&limit=1&observed_before=" + c.LastSeen.Format(time.RFC3339Nano) + "&observed_before_id=" + c.SessionID + "&observed_before_agent=" + c.AgentID
+	}
+	assert.ElementsMatch(t, []string{"hr-demo-s1/hr-analytics-assistant", "tie-session/agent-a", "tie-session/agent-b", "tie-session/agent-c"}, walked)
+	assert.Len(t, walked, 4, "no entry visited twice")
+
+	// Opening an observed entry with its agent shows that agent's share only; the
+	// summary-free timeline route follows the same scope.
+	var d console.SessionDetail
+	require.Equal(t, http.StatusOK, get(t, srv, "/console/v1/sessions/tie-session?tenant=default&agent=agent-b", &d))
+	assert.Equal(t, 1, d.Detail.Summary.RecordCount)
+	assert.Equal(t, []string{"agent-b"}, d.Detail.Summary.AgentIDs)
+	var tl console.SessionDetail
+	require.Equal(t, http.StatusOK, get(t, srv, "/console/v1/sessions/tie-session/timeline?tenant=default&agent=agent-b&timeline_limit=5", &tl))
+	assert.Nil(t, tl.Detail)
+	assert.Equal(t, 1, tl.Timeline.Total)
+	assert.Equal(t, "agent-b", tl.Timeline.Records[0].AgentID)
+	var e map[string]string
+	assert.Equal(t, http.StatusNotFound, get(t, srv, "/console/v1/sessions/tie-session/timeline?tenant=default&agent=nobody", &e))
 }

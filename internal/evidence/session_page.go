@@ -36,7 +36,9 @@ type querier interface {
 // sessionScopeSQL returns the WHERE tail and args that scope a session query
 // to the id, and to tenant and agent when given.
 func sessionScopeSQL(sessionID, tenantID, agentID string) (where string, args []interface{}) {
-	where = ` WHERE session_id = ?`
+	// The literal `session_id <> ''` lets the planner use the partial session
+	// indexes (a bound parameter alone cannot prove the index predicate).
+	where = ` WHERE session_id = ? AND session_id <> ''`
 	args = []interface{}{sessionID}
 	if tenantID != "" {
 		where += ` AND tenant_id = ?`
@@ -63,7 +65,11 @@ func listSessionPage(ctx context.Context, q querier, sessionID, tenantID, agentI
 		return nil, fmt.Errorf("session %s timeline page: limit must be in 1..%d, got %d", sessionID, MaxTimelinePage, limit)
 	}
 	where, args := sessionScopeSQL(sessionID, tenantID, agentID)
-	query := `SELECT evidence_json FROM evidence` + where
+	// The ordering columns are selected alongside the JSON: the keyset cursor
+	// a caller builds from the returned records must be the position the
+	// SQL ordered by, so a record whose JSON copy lacks id or timestamp can
+	// never make a walk stand still.
+	query := `SELECT id, timestamp, evidence_json FROM evidence` + where
 	if !after.IsZero() {
 		query += ` AND (timestamp > ? OR (timestamp = ? AND id > ?))`
 		args = append(args, after.Timestamp.UTC(), after.Timestamp.UTC(), after.ID)
@@ -77,14 +83,16 @@ func listSessionPage(ctx context.Context, q querier, sessionID, tenantID, agentI
 	defer rows.Close()
 	var out []*Evidence
 	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var id, raw string
+		var ts time.Time
+		if err := rows.Scan(&id, &ts, &raw); err != nil {
 			return nil, fmt.Errorf("scanning timeline row: %w", err)
 		}
 		var ev Evidence
 		if err := json.Unmarshal([]byte(raw), &ev); err != nil {
 			return nil, fmt.Errorf("unmarshaling timeline record: %w", err)
 		}
+		ev.ID, ev.Timestamp = id, ts.UTC()
 		out = append(out, &ev)
 	}
 	return out, rows.Err()
@@ -177,6 +185,81 @@ func (s *Store) SessionSnapshotRead(ctx context.Context, sessionID, tenantID, ag
 		return nil, err
 	}
 	return &SessionSnapshot{Summary: summary, Page: page, Total: total}, nil
+}
+
+// TimelinePage is one page of a session's records plus the total in scope,
+// read in one transaction without the summary: the form a client uses to
+// walk a long session after it has the summary from the first read, so each
+// further page costs one indexed range read, not a scan of the session.
+type TimelinePage struct {
+	Page  []*Evidence
+	Total int
+}
+
+// TimelinePageRead returns one page and the total under one read transaction
+// (see SessionSnapshotRead), without computing the summary.
+func (s *Store) TimelinePageRead(ctx context.Context, sessionID, tenantID, agentID string, after TimelineCursor, limit int) (*TimelinePage, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("timeline page: acquiring connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN DEFERRED`); err != nil {
+		return nil, fmt.Errorf("timeline page: begin: %w", err)
+	}
+	defer func() { _, _ = conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`) }()
+	page, err := listSessionPage(ctx, conn, sessionID, tenantID, agentID, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	total, err := countSession(ctx, conn, sessionID, tenantID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	return &TimelinePage{Page: page, Total: total}, nil
+}
+
+// CurrenciesInRange counts the records that carry a non-zero cost per
+// stamped currency ("" for records written before the currency field) in
+// scope and window. Cost aggregations over a scope whose records span more
+// than one currency are not sums of comparable amounts; callers must say so
+// instead of adding them (#535 review).
+func (s *Store) CurrenciesInRange(ctx context.Context, tenantID, agentID string, from, to time.Time) (map[string]int, error) {
+	query := `SELECT COALESCE(json_extract(evidence_json, '$.execution.currency'), ''), COUNT(*) FROM evidence
+		WHERE COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur'), 0) <> 0`
+	args := []interface{}{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from.UTC())
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to.UTC())
+	}
+	query += ` GROUP BY 1`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying cost currencies: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var cur string
+		var n int
+		if err := rows.Scan(&cur, &n); err != nil {
+			return nil, fmt.Errorf("scanning cost currency: %w", err)
+		}
+		out[cur] = n
+	}
+	return out, rows.Err()
 }
 
 // ObservedSession is one (session id, agent) pair seen in evidence: the facts

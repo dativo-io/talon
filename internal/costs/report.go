@@ -15,6 +15,8 @@ package costs
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -81,6 +83,7 @@ type Source interface {
 	CacheSavings(ctx context.Context, tenantID string, from, to time.Time) (hits int64, costSaved float64, err error)
 	CountInRange(ctx context.Context, tenantID, agentID string, from, to time.Time) (int, error)
 	CountUnpriced(ctx context.Context, tenantID, agentID string, from, to time.Time) (int, error)
+	CurrenciesInRange(ctx context.Context, tenantID, agentID string, from, to time.Time) (map[string]int, error)
 }
 
 // BudgetResolver supplies the effective daily/monthly caps for a scope. The
@@ -124,6 +127,15 @@ type Report struct {
 	// CacheMonth covers the UTC calendar month. Its JSON name predates the
 	// calendar-month definition and is kept for compatibility.
 	CacheMonth *CacheUsage `json:"cache_30d,omitempty"`
+
+	// Currencies counts the priced records of the calendar month per stamped
+	// currency ("" = written before the currency field; rendered as the
+	// table currency, the unit the shipped tables always used). When more
+	// than one currency appears, the amounts above are NOT sums of
+	// comparable values: they are still computed as they always were, but
+	// listed in UnavailableFields with a warning, so no consumer presents
+	// them as a total.
+	Currencies map[string]int `json:"currencies,omitempty"`
 
 	// UnpricedRecords counts allowed model calls in the calendar month whose
 	// cost was not derived from a pricing-table price (pricing_known absent
@@ -348,14 +360,52 @@ func (r *Report) markUnavailable(field string, err error) {
 	r.UnavailableFields = append(r.UnavailableFields, field)
 }
 
-// unpriced fills UnpricedRecords for the calendar month in scope.
+// unpriced fills UnpricedRecords and Currencies for the calendar month in
+// scope, and marks every amount as not a measurement when the priced records
+// span more than one currency: adding euros to dollars is not a total
+// (#535 review).
 func unpriced(ctx context.Context, src Source, tenant, agent string, w Window, r *Report) {
 	n, err := src.CountUnpriced(ctx, tenant, agent, w.MonthStart, w.MonthEnd)
 	if err != nil {
 		r.markUnavailable("unpriced_records", err)
+	} else {
+		r.UnpricedRecords = n
+	}
+	counts, err := src.CurrenciesInRange(ctx, tenant, agent, w.MonthStart, w.MonthEnd)
+	if err != nil {
+		r.markUnavailable("currencies", err)
 		return
 	}
-	r.UnpricedRecords = n
+	if len(counts) > 0 {
+		r.Currencies = counts
+	}
+	distinct := make([]string, 0, len(counts))
+	for cur := range counts {
+		if cur == "" {
+			cur = r.Currency // legacy records: the table currency, as the CLI has always rendered them
+		}
+		if !containsString(distinct, cur) {
+			distinct = append(distinct, cur)
+		}
+	}
+	if len(distinct) <= 1 {
+		return
+	}
+	sort.Strings(distinct)
+	r.Warnings = append(r.Warnings, "amounts span currencies "+strings.Join(distinct, ", ")+" and are not comparable sums; see currencies")
+	r.UnavailableFields = append(r.UnavailableFields, amountFields...)
+}
+
+// amountFields are the report fields that add execution.cost across records.
+var amountFields = []string{"today_eur", "month_eur", "seven_days_eur", "by_agent_eur", "by_agent_month_eur", "by_model_eur", "by_model_month_eur", "by_provider_eur", "by_provider_month_eur", "by_team_eur", "by_team_month_eur"}
+
+func containsString(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveBudgets(ctx context.Context, budgets BudgetResolver, tenant, agent string, r *Report) error {

@@ -370,7 +370,7 @@ func TestObservedSessions_PlanAndScale(t *testing.T) {
 	joined := strings.Join(plan, "\n")
 	assert.Contains(t, joined, "idx_evidence_tenant_session_agent_ts", "discovery uses the covering index: %s", joined)
 	assert.NotRegexp(t, `(?m)^SCAN evidence$`, joined, "no bare table scan: %s", joined)
-	pagePlan, err := store.ExplainQueryPlan(ctx, `SELECT evidence_json FROM evidence WHERE session_id = ? AND tenant_id = ? AND agent_id = ? AND (timestamp > ? OR (timestamp = ? AND id > ?)) ORDER BY timestamp ASC, id ASC LIMIT ?`, "s", "default", "a", time.Time{}, time.Time{}, "", 10)
+	pagePlan, err := store.ExplainQueryPlan(ctx, `SELECT evidence_json FROM evidence WHERE session_id = ? AND session_id <> '' AND tenant_id = ? AND agent_id = ? AND (timestamp > ? OR (timestamp = ? AND id > ?)) ORDER BY timestamp ASC, id ASC LIMIT ?`, "s", "default", "a", time.Time{}, time.Time{}, "", 10)
 	require.NoError(t, err)
 	assert.Contains(t, strings.Join(pagePlan, "\n"), "INDEX", "timeline page uses an index: %s", pagePlan)
 
@@ -388,7 +388,8 @@ func TestObservedSessions_PlanAndScale(t *testing.T) {
 		sess := fmt.Sprintf("sess-%04d", i%5000)
 		agent := fmt.Sprintf("agent-%02d", i%50)
 		ts := base.Add(time.Duration(i) * time.Second)
-		_, err := stmt.ExecContext(ctx, fmt.Sprintf("bulk%06d", i), "c", ts, agent, `{"id":"x","policy_decision":{"allowed":true},"execution":{"cost":0.001}}`, sess)
+		id := fmt.Sprintf("bulk%06d", i)
+		_, err := stmt.ExecContext(ctx, id, "c", ts, agent, fmt.Sprintf(`{"id":%q,"timestamp":%q,"policy_decision":{"allowed":true},"execution":{"cost":0.001}}`, id, ts.Format(time.RFC3339Nano)), sess)
 		require.NoError(t, err)
 	}
 	require.NoError(t, stmt.Close())
@@ -409,4 +410,97 @@ func TestObservedSessions_PlanAndScale(t *testing.T) {
 	assert.Equal(t, 20, snap.Total)
 	assert.Len(t, snap.Page, 10)
 	assert.Less(t, elapsed, 2*time.Second)
+}
+
+// TestTimelinePageRead_RepeatedPagingIsIndexedNotAScan (#535 review round
+// 3): walking a 20,000-record session in 20 pages through the summary-free
+// read costs one indexed range read per page; the whole walk stays well
+// under the time of a single full-session summary multiplied by the pages.
+func TestTimelinePageRead_RepeatedPagingIsIndexedNotAScan(t *testing.T) {
+	store := pageStore(t)
+	ctx := context.Background()
+	raw, err := sql.Open("sqlite3", store.dbPathForTest())
+	require.NoError(t, err)
+	defer raw.Close()
+	tx, err := raw.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO evidence (id, correlation_id, timestamp, tenant_id, agent_id, invocation_type, evidence_json, signature, session_id) VALUES (?, ?, ?, 'default', 'bot', 'gateway', ?, 'sig', 'walk')`)
+	require.NoError(t, err)
+	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	const n = 20000
+	for i := 0; i < n; i++ {
+		id, ts := fmt.Sprintf("w%06d", i), base.Add(time.Duration(i)*time.Second)
+		body := fmt.Sprintf(`{"id":%q,"timestamp":%q,"policy_decision":{"allowed":true},"execution":{"cost":0.001}}`, id, ts.Format(time.RFC3339Nano))
+		if i%1000 == 7 {
+			body = `{"policy_decision":{"allowed":true},"execution":{"cost":0.001}}` // JSON copy lacks id and timestamp: the columns must still drive the cursor
+		}
+		_, err := stmt.ExecContext(ctx, id, "c", ts, body)
+		require.NoError(t, err)
+	}
+	require.NoError(t, stmt.Close())
+	require.NoError(t, tx.Commit())
+
+	plan, err := store.ExplainQueryPlan(ctx, `SELECT COUNT(*) FROM evidence WHERE session_id = ? AND session_id <> '' AND tenant_id = ? AND agent_id = ?`, "walk", "default", "bot")
+	require.NoError(t, err)
+	assert.Contains(t, strings.Join(plan, "\n"), "INDEX", "the per-page count is indexed: %s", plan)
+	pagePlan, err := store.ExplainQueryPlan(ctx, `SELECT evidence_json FROM evidence WHERE session_id = ? AND session_id <> '' AND tenant_id = ? ORDER BY timestamp ASC, id ASC LIMIT ?`, "walk", "default", 1000)
+	require.NoError(t, err)
+	joined := strings.Join(pagePlan, "\n")
+	assert.Contains(t, joined, "idx_evidence_session_ts_id", "a page is an ordered range read of the session index: %s", joined)
+	assert.NotContains(t, joined, "TEMP B-TREE", "no per-page sort of the whole session: %s", joined)
+
+	summaryStart := time.Now()
+	_, err = store.SummarizeSession(ctx, "walk", "default", "")
+	require.NoError(t, err)
+	summaryCost := time.Since(summaryStart)
+
+	var cursor TimelineCursor
+	pages, seen := 0, 0
+	walkStart := time.Now()
+	for {
+		page, err := store.TimelinePageRead(ctx, "walk", "default", "", cursor, MaxTimelinePage)
+		require.NoError(t, err)
+		assert.Equal(t, n, page.Total)
+		if len(page.Page) == 0 {
+			break
+		}
+		pages++
+		seen += len(page.Page)
+		last := page.Page[len(page.Page)-1]
+		cursor = TimelineCursor{Timestamp: last.Timestamp, ID: last.ID}
+		if len(page.Page) < MaxTimelinePage {
+			break
+		}
+	}
+	walkCost := time.Since(walkStart)
+	assert.Equal(t, 20, pages)
+	assert.Equal(t, n, seen, "every record exactly once, including the rows whose JSON lacks id/timestamp")
+	t.Logf("one summary scan: %s; 20 summary-free pages: %s", summaryCost, walkCost)
+	// Each page decodes 1,000 records (the same work a summary does per 1,000), so
+	// the whole walk is about one summary's worth of decoding, not 20 of them.
+	assert.Less(t, walkCost, 4*summaryCost+500*time.Millisecond, "repeated paging must not rescan the session per page")
+}
+
+func TestCurrenciesInRange_HandExpectations(t *testing.T) {
+	store := pageStore(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	put := func(id, tenant, agent, cur string, cost float64) {
+		require.NoError(t, store.Store(ctx, &Evidence{
+			ID: id, CorrelationID: "c", TenantID: tenant, AgentID: agent, Timestamp: ts, InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"}, Execution: Execution{ModelUsed: "m", Cost: cost, Currency: cur},
+		}))
+	}
+	put("e1", "default", "a", "EUR", 0.1)
+	put("e2", "default", "a", "EUR", 0.2)
+	put("e3", "default", "b", "USD", 0.3)
+	put("e4", "default", "b", "", 0.4)  // legacy stamp
+	put("e5", "default", "b", "USD", 0) // zero cost: not a priced record
+	put("e6", "acme", "a", "GBP", 0.5)
+	got, err := store.CurrenciesInRange(ctx, "default", "", ts.Add(-time.Hour), ts.Add(time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"EUR": 2, "USD": 1, "": 1}, got)
+	onlyA, err := store.CurrenciesInRange(ctx, "default", "a", ts.Add(-time.Hour), ts.Add(time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"EUR": 2}, onlyA)
 }

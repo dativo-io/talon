@@ -334,3 +334,47 @@ func TestOwnersOf_OneQueryPerPage(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 }
+
+// TestLoadDetailFor_AgentScope (#535 review round 3): the (session, agent)
+// pair an observed entry names resolves to that agent's share: B's evidence
+// under A's external id, A's row when A is named, not-found for A's internal
+// id under B, and no ambiguity when the agent is named.
+func TestLoadDetailFor_AgentScope(t *testing.T) {
+	sessions, ev := detailStores(t)
+	ctx := context.Background()
+	at := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+	insertSessionRow(t, sessions, "sess_A", "default", "agent-a", "shared-123", at)
+	insertSessionRow(t, sessions, "sess_A2", "default", "agent-a", "shared-123", at.Add(time.Second)) // A asserted it twice
+	putEvidence(t, ev, "a1", "shared-123", "default", "agent-a", true, 1.00)
+	putEvidence(t, ev, "b1", "shared-123", "default", "agent-b", true, 0.10)
+	putEvidence(t, ev, "b2", "shared-123", "default", "agent-b", false, 0)
+
+	dB, err := LoadDetailFor(ctx, sessions, ev, "shared-123", "", "agent-b")
+	require.NoError(t, err)
+	assert.Nil(t, dB.Session)
+	assert.Equal(t, 2, dB.Summary.RecordCount)
+	assert.InDelta(t, 0.10, dB.Summary.TotalCost, 1e-9)
+	assert.Equal(t, 1, dB.Summary.Denied)
+
+	dA, err := LoadDetailFor(ctx, sessions, ev, "shared-123", "", "agent-a")
+	require.NoError(t, err)
+	assert.Len(t, dA.Ambiguous, 2, "A asserted the id twice: still ambiguous for A, with A's rows only")
+
+	_, err = LoadDetailFor(ctx, sessions, ev, "sess_A", "", "agent-b")
+	require.ErrorIs(t, err, ErrDetailNotFound)
+
+	_, err = LoadDetailFor(ctx, sessions, ev, "shared-123", "", "agent-c")
+	require.ErrorIs(t, err, ErrDetailNotFound, "no row and no evidence for C")
+
+	_, tl, err := LoadTimelinePageFor(ctx, sessions, ev, "shared-123", "", "agent-b", evidence.TimelineCursor{}, 10)
+	require.NoError(t, err)
+	assert.Equal(t, 2, tl.Total)
+
+	only, err := LoadTimelineOnly(ctx, sessions, ev, "shared-123", "", "agent-b", evidence.TimelineCursor{}, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 2, only.Total)
+	assert.Equal(t, "shared-123", only.Summary.SessionID)
+	assert.Zero(t, only.Summary.RecordCount, "no summary on the timeline-only read")
+	_, err = LoadTimelineOnly(ctx, sessions, ev, "shared-123", "", "agent-a", evidence.TimelineCursor{}, 1)
+	require.ErrorIs(t, err, ErrAmbiguousSession)
+}
