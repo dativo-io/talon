@@ -85,6 +85,16 @@ jobs:
         # against the built binary with a counting mock downstream.
         run: make test-action-smoke
 
+      - name: Operations-console read-contract smoke (#535, offline, no keys)
+        # Named PR gate for CLI/console parity on a live store: the console
+        # read model, opened read-only on the store a running
+        # `talon serve --gateway` writes, must show the same counters, spend,
+        # caps, session summary and timeline as the CLI's --json output,
+        # across a restart of the data plane and after it stops; `talon
+        # metrics` must fail loudly without the admin key or server instead
+        # of falling back to local numbers.
+        run: make test-console-smoke
+
       - name: OpenShell composition smoke (#482/#457, fixture supervisor, no keys, no Docker)
         # Named PR gate for the Talon ↔ OpenShell composition: the fixture
         # supervisor replays the pinned middleware contract against the built
