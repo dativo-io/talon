@@ -734,6 +734,65 @@ func (s *Store) ListRecent(ctx context.Context, tenantID, agentID string, status
 	return out, rows.Err()
 }
 
+// OwnersOf reports, for each id in ids (matched as internal id OR external
+// session id, within tenant), the set of agent ids that own a session row
+// for it — one query for a whole page, so a caller can tell a row-backed
+// (session, agent) pair from an evidence-only one without a lookup per row.
+// Ids with no row are absent from the result. An error means the store could
+// not answer and the caller must not treat the ids as evidence-only.
+func (s *Store) OwnersOf(ctx context.Context, tenantID string, ids []string) (map[string]map[string]bool, error) {
+	out := map[string]map[string]bool{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	const chunk = 400 // two placeholders per id, well under SQLite's default limit
+	for start := 0; start < len(ids); start += chunk {
+		end := start + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		part := ids[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")
+		//nolint:gosec // G202: placeholders is a generated list of "?" tokens; every value is bound
+		query := `SELECT id, external_session_id, agent_id FROM sessions WHERE tenant_id = ? AND (id IN (` + placeholders + `) OR external_session_id IN (` + placeholders + `))`
+		args := make([]any, 0, 1+2*len(part))
+		args = append(args, tenantID)
+		for _, id := range part {
+			args = append(args, id)
+		}
+		for _, id := range part {
+			args = append(args, id)
+		}
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("resolving session owners for tenant %s: %w", tenantID, err)
+		}
+		for rows.Next() {
+			var id, agent string
+			var external sql.NullString
+			if err := rows.Scan(&id, &external, &agent); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scanning session owner: %w", err)
+			}
+			for _, key := range []string{id, external.String} {
+				if key == "" {
+					continue
+				}
+				if out[key] == nil {
+					out[key] = map[string]bool{}
+				}
+				out[key][agent] = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		_ = rows.Close()
+	}
+	return out, nil
+}
+
 func (s *Store) ListByTenant(ctx context.Context, tenantID, agentID string, status Status) ([]*Session, error) {
 	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE tenant_id = ?`
 	args := []any{tenantID}

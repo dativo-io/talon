@@ -210,7 +210,7 @@ func TestUseCaseDetail_SessionsCostsActivity(t *testing.T) {
 	assert.Empty(t, d.RecentSessions.Sessions)
 	require.Len(t, d.RecentSessions.Observed, 1)
 	assert.Equal(t, "hr-demo-s1", d.RecentSessions.Observed[0].SessionID)
-	assert.Equal(t, []string{"hr-analytics-assistant"}, d.RecentSessions.Observed[0].AgentIDs)
+	assert.Equal(t, "hr-analytics-assistant", d.RecentSessions.Observed[0].AgentID)
 	assert.Equal(t, 3, d.RecentSessions.Observed[0].RecordCount)
 
 	_, err = svc.UseCase(ctx, "", "nope")
@@ -436,4 +436,58 @@ func TestInvalidGatewayConfig_UseCasesUnavailable(t *testing.T) {
 	assert.Equal(t, StateUnavailable, uc.Availability.State)
 	assert.Contains(t, uc.Availability.Error, "invalid")
 	assert.Empty(t, uc.Rows, "no rows are shown from a configuration that would not load")
+}
+
+// TestObserved_OwnershipAwareExclusion (#535 review round 2): agent A has a
+// session row for external id shared-123; agent B has MCP evidence under the
+// same id and no row. B's session must stay discoverable (also when the
+// operator filters to B); A's share is owned by the rows page.
+func TestObserved_OwnershipAwareExclusion(t *testing.T) {
+	f := seed(t)
+	ctx := context.Background()
+	_, err := f.sessions.GetOrCreateExternal(ctx, "default", "agent-a", "shared-123", "client_asserted")
+	require.NoError(t, err)
+	put := func(id, agent string) {
+		require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+			ID: id, CorrelationID: "c_" + id, SessionID: "shared-123", TenantID: "default", AgentID: agent, InvocationType: "proxy_tool_call",
+			Timestamp: f.now.Add(-time.Minute), PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		}))
+	}
+	put("sa1", "agent-a")
+	put("sb1", "agent-b")
+	svc := f.service(t)
+
+	all := svc.Sessions(ctx, "default", "", "", session.Cursor{}, evidence.ObservedCursor{}, 50)
+	var observedPairs []string
+	for _, o := range all.Observed {
+		observedPairs = append(observedPairs, o.SessionID+"/"+o.AgentID)
+	}
+	assert.Contains(t, observedPairs, "shared-123/agent-b", "B's evidence-only share is listed")
+	assert.NotContains(t, observedPairs, "shared-123/agent-a", "A's share has a row and is owned by the rows page")
+	require.Len(t, all.Sessions, 1)
+	assert.Equal(t, "agent-a", all.Sessions[0].AgentID)
+
+	onlyB := svc.Sessions(ctx, "default", "agent-b", "", session.Cursor{}, evidence.ObservedCursor{}, 50)
+	require.Len(t, onlyB.Observed, 1, "filtering to B must not let A's row hide B's session")
+	assert.Equal(t, "agent-b", onlyB.Observed[0].AgentID)
+	assert.Empty(t, onlyB.Sessions)
+}
+
+// TestObserved_SessionStoreUnavailableIsPartialNotEvidenceOnly (#535 review
+// round 2): without a session store the observed entries cannot be told from
+// row-backed ones, so the section is partial and says so instead of
+// classifying everything as evidence-only.
+func TestObserved_SessionStoreUnavailableIsPartialNotEvidenceOnly(t *testing.T) {
+	f := seed(t)
+	ro, err := evidence.OpenReadOnly(f.dbPath, testKey)
+	require.NoError(t, err)
+	defer ro.Close()
+	svc, err := New(Config{Evidence: ro, Currency: "USD"}) // no session store
+	require.NoError(t, err)
+	l := svc.Sessions(context.Background(), "default", "", "", session.Cursor{}, evidence.ObservedCursor{}, 50)
+	assert.Equal(t, StateUnavailable, l.Availability.State)
+	assert.Equal(t, StatePartial, l.ObservedAvailability.State)
+	assert.Equal(t, []string{"row_backed_exclusion"}, l.ObservedAvailability.Unavailable)
+	assert.Contains(t, l.ObservedAvailability.Note, "may also have a session-store row")
+	require.Len(t, l.Observed, 1, "entries are still listed, labelled partial")
 }

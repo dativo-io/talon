@@ -311,8 +311,12 @@ func (s *Service) Sessions(ctx context.Context, tenant, agent string, status ses
 	return out
 }
 
-// observedSessions fills the evidence-only part of a SessionList: session ids
-// seen in evidence whose id or external id has no session-store row.
+// observedSessions fills the evidence-only part of a SessionList: the
+// (session id, agent) pairs seen in evidence for which no session-store row
+// of THAT agent exists (ownership-aware: agent A's row for external id X
+// does not hide agent B's evidence under X). When the session store cannot
+// answer, the entries are still listed but the section is partial, because
+// a row-backed pair cannot be told from an evidence-only one.
 func (s *Service) observedSessions(ctx context.Context, tenant, agent string, after evidence.ObservedCursor, limit int, out *SessionList) {
 	if s.cfg.Evidence == nil {
 		out.ObservedAvailability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}
@@ -323,36 +327,44 @@ func (s *Service) observedSessions(ctx context.Context, tenant, agent string, af
 		out.ObservedAvailability = unavailable(SourceEvidenceStore, err)
 		return
 	}
+	ids := make([]string, 0, len(observed))
+	for i := range observed {
+		ids = append(ids, observed[i].SessionID)
+	}
+	owners, ownersErr := s.sessionOwners(ctx, tenant, ids)
 	kept := make([]evidence.ObservedSession, 0, len(observed))
 	for i := range observed {
-		if s.hasSessionRow(ctx, observed[i].SessionID, tenant) {
-			continue
+		o := &observed[i]
+		if ownersErr == nil && owners[o.SessionID][o.AgentID] {
+			continue // this agent's share of the session has a row: the rows page owns it
 		}
-		kept = append(kept, observed[i])
+		kept = append(kept, *o)
 	}
 	out.Observed = kept
 	out.ObservedAvailability = ok(SourceEvidenceStore, s.now())
-	out.ObservedAvailability.Note = "session ids seen in evidence without a session-store row (for example asserted on the MCP proxy path); facts are the records' own, no lifecycle is inferred"
-	if len(kept) == 0 {
+	out.ObservedAvailability.Note = "(session id, agent) pairs seen in evidence without a session-store row of that agent (for example asserted on the MCP proxy path); facts are the records' own, no lifecycle is inferred"
+	switch {
+	case ownersErr != nil:
+		out.ObservedAvailability.State = StatePartial
+		out.ObservedAvailability.Unavailable = []string{"row_backed_exclusion"}
+		out.ObservedAvailability.Error = ownersErr.Error()
+		out.ObservedAvailability.Note = "session store unavailable: entries may also have a session-store row; none was excluded"
+	case len(kept) == 0:
 		out.ObservedAvailability.State = StateEmpty
 	}
 	if len(observed) == limit {
 		last := observed[len(observed)-1]
-		out.ObservedNextCursor = &evidence.ObservedCursor{LastSeen: last.LastSeen, SessionID: last.SessionID}
+		out.ObservedNextCursor = &evidence.ObservedCursor{LastSeen: last.LastSeen, SessionID: last.SessionID, AgentID: last.AgentID}
 	}
 }
 
-// hasSessionRow reports whether a session-store row carries id as its
-// internal or external id (then the row page, not the observed list, owns it).
-func (s *Service) hasSessionRow(ctx context.Context, id, tenant string) bool {
+// sessionOwners resolves which agents own a session row for each id, in one
+// query. A nil session store is an error, not "no owners".
+func (s *Service) sessionOwners(ctx context.Context, tenant string, ids []string) (map[string]map[string]bool, error) {
 	if s.cfg.Sessions == nil {
-		return false
+		return nil, errors.New("session store is not open")
 	}
-	if _, err := s.cfg.Sessions.Get(ctx, id, tenant); err == nil {
-		return true
-	}
-	matches, err := s.cfg.Sessions.ListByExternalID(ctx, id, tenant)
-	return err == nil && len(matches) > 0
+	return s.cfg.Sessions.OwnersOf(ctx, tenant, ids)
 }
 
 // Session is one session's complete summary plus one timeline page. tenant

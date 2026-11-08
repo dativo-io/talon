@@ -36,7 +36,7 @@ func OpenReadOnly(dbPath, signingKey string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("creating signer: %w", err)
 	}
-	return &Store{db: db, signer: signer, readOnly: true}, nil
+	return &Store{db: db, signer: signer, readOnly: true, path: dbPath}, nil
 }
 
 // ReadOnly reports whether the store was opened with OpenReadOnly.
