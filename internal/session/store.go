@@ -677,15 +677,27 @@ func (s *Store) GetStageCounts(ctx context.Context, sessionID string) (*StageCou
 // (tenant, agent) tuple, so two agents asserting the same external id hold
 // separate rows and owner filtering IS participation filtering here. Empty
 // agentID is the tenant-wide (admin) view.
+// Cursor is a keyset position in the newest-first session list: the
+// (created_at, id) of the last row of a page. Paging on created_at alone
+// loses rows that share a timestamp with the boundary row (#535 review);
+// the id tie-break makes the walk deterministic and lossless.
+type Cursor struct {
+	CreatedAt time.Time `json:"created_at"`
+	ID        string    `json:"id"`
+}
+
+// IsZero reports an unset cursor (first page).
+func (c Cursor) IsZero() bool { return c.CreatedAt.IsZero() && c.ID == "" }
+
+// CursorOf returns the cursor that continues after sess.
+func CursorOf(sess *Session) Cursor { return Cursor{CreatedAt: sess.CreatedAt, ID: sess.ID} }
+
 // ListRecent is the bounded form of ListByTenant (#535): the same filters and
-// the same order (created_at DESC, then id DESC as a tie-break so pages are
-// stable), at most limit rows, optionally only rows created strictly before
-// the cursor. limit <= 0 is rejected: the point of this query is the bound.
-// Callers page by passing the last row's CreatedAt as before; rows created in
-// the same instant as the cursor are skipped, which the id tie-break keeps
-// deterministic but not lossless (sub-second collisions are not expected from
-// one installation).
-func (s *Store) ListRecent(ctx context.Context, tenantID, agentID string, status Status, before time.Time, limit int) ([]*Session, error) {
+// the same order (created_at DESC, then id DESC), at most limit rows, and
+// only rows strictly after the cursor in that order. limit <= 0 is rejected:
+// the point of this query is the bound. Walking pages with the last row's
+// CursorOf visits every row exactly once, timestamps collisions included.
+func (s *Store) ListRecent(ctx context.Context, tenantID, agentID string, status Status, after Cursor, limit int) ([]*Session, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("listing sessions for tenant %s: limit must be positive, got %d", tenantID, limit)
 	}
@@ -699,9 +711,9 @@ func (s *Store) ListRecent(ctx context.Context, tenantID, agentID string, status
 		query += ` AND status = ?`
 		args = append(args, string(status))
 	}
-	if !before.IsZero() {
-		query += ` AND created_at < ?`
-		args = append(args, before.UTC())
+	if !after.IsZero() {
+		query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+		args = append(args, after.CreatedAt.UTC(), after.CreatedAt.UTC(), after.ID)
 	}
 	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)

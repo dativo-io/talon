@@ -80,6 +80,7 @@ type Source interface {
 	CostByTeam(ctx context.Context, tenantID string, from, to time.Time) (map[string]float64, error)
 	CacheSavings(ctx context.Context, tenantID string, from, to time.Time) (hits int64, costSaved float64, err error)
 	CountInRange(ctx context.Context, tenantID, agentID string, from, to time.Time) (int, error)
+	CountUnpriced(ctx context.Context, tenantID, agentID string, from, to time.Time) (int, error)
 }
 
 // BudgetResolver supplies the effective daily/monthly caps for a scope. The
@@ -124,10 +125,21 @@ type Report struct {
 	// calendar-month definition and is kept for compatibility.
 	CacheMonth *CacheUsage `json:"cache_30d,omitempty"`
 
+	// UnpricedRecords counts allowed model calls in the calendar month whose
+	// cost was not derived from a pricing-table price (pricing_known absent
+	// or false). When positive, every amount above understates real spend by
+	// an unknown figure; consumers show the count next to the amounts
+	// instead of presenting them as complete.
+	UnpricedRecords int `json:"unpriced_records"`
+
 	// Warnings lists secondary queries that failed (7-day total, cache,
 	// tenant totals). The affected figure is left at 0 as it always was; the
 	// warning says so instead of letting the 0 pass for a measurement.
 	Warnings []string `json:"warnings,omitempty"`
+	// UnavailableFields names the JSON fields whose value is NOT a
+	// measurement because of a warning above (machine-readable form of the
+	// same fact): a consumer renders them as unavailable, never as 0.
+	UnavailableFields []string `json:"unavailable_fields,omitempty"`
 }
 
 // WindowBounds is the Window as it appears in the report (RFC 3339, UTC).
@@ -148,6 +160,9 @@ type BudgetUsage struct {
 	LimitEUR float64 `json:"limit_eur"`
 	Percent  float64 `json:"percent"`
 	Source   string  `json:"source"`
+	// StatusWord is the operator vocabulary (OK/WARNING/CRITICAL/BLOCKED)
+	// serialized so no consumer re-derives it from Percent.
+	StatusWord string `json:"status"`
 }
 
 // Status maps utilization to the operator status vocabulary of the
@@ -177,7 +192,8 @@ func NewBudgetUsage(used, limit float64, source string) *BudgetUsage {
 	if limit <= 0 {
 		return nil
 	}
-	return &BudgetUsage{UsedEUR: used, LimitEUR: limit, Percent: 100 * used / limit, Source: source}
+	pct := 100 * used / limit
+	return &BudgetUsage{UsedEUR: used, LimitEUR: limit, Percent: pct, Source: source, StatusWord: StatusWord(pct)}
 }
 
 // CacheUsage is cache-hit accounting over a window: hits and saved cost from
@@ -228,7 +244,7 @@ func Build(ctx context.Context, src Source, scope Scope, w Window, currency stri
 func weekTotal(ctx context.Context, src Source, tenant, agent string, w Window, r *Report) {
 	v, err := src.CostTotal(ctx, tenant, agent, w.WeekStart, w.DayEnd)
 	if err != nil {
-		r.Warnings = append(r.Warnings, "seven_days_eur unavailable: "+err.Error())
+		r.markUnavailable("seven_days_eur", err)
 		return
 	}
 	r.SevenDaysEUR = v
@@ -271,6 +287,7 @@ func buildBreakdown(ctx context.Context, src Source, scope Scope, w Window, r *R
 	}
 	r.TodayEUR, r.MonthEUR = sumValues(daily), sumValues(monthly)
 	weekTotal(ctx, src, tenant, agent, w, r)
+	unpriced(ctx, src, tenant, agent, w, r)
 	switch scope.Breakdown {
 	case BreakdownModel:
 		r.ByModelEUR, r.ByModelMonthEUR = daily, monthly
@@ -297,6 +314,7 @@ func buildAgents(ctx context.Context, src Source, scope Scope, w Window, budgets
 		}
 		r.TodayEUR, r.MonthEUR = daily, monthly
 		weekTotal(ctx, src, tenant, agent, w, r)
+		unpriced(ctx, src, tenant, agent, w, r)
 		return resolveBudgets(ctx, budgets, tenant, agent, r)
 	}
 
@@ -310,17 +328,34 @@ func buildAgents(ctx context.Context, src Source, scope Scope, w Window, budgets
 	}
 	r.ByAgentEUR, r.ByAgentMonthEUR = byAgentDaily, byAgentMonthly
 	if r.TodayEUR, err = src.CostTotal(ctx, tenant, "", w.DayStart, w.DayEnd); err != nil {
-		r.Warnings = append(r.Warnings, "today_eur unavailable: "+err.Error())
+		r.markUnavailable("today_eur", err)
 	}
 	if r.MonthEUR, err = src.CostTotal(ctx, tenant, "", w.MonthStart, w.MonthEnd); err != nil {
-		r.Warnings = append(r.Warnings, "month_eur unavailable: "+err.Error())
+		r.markUnavailable("month_eur", err)
 	}
 	weekTotal(ctx, src, tenant, "", w, r)
+	unpriced(ctx, src, tenant, "", w, r)
 	if err := resolveBudgets(ctx, budgets, tenant, "", r); err != nil {
 		return err
 	}
-	r.CacheSevenDays, r.CacheMonth = cacheUsage(ctx, src, tenant, w, &r.Warnings)
+	r.CacheSevenDays, r.CacheMonth = cacheUsage(ctx, src, tenant, w, r)
 	return nil
+}
+
+// markUnavailable records that field holds no measurement.
+func (r *Report) markUnavailable(field string, err error) {
+	r.Warnings = append(r.Warnings, field+" unavailable: "+err.Error())
+	r.UnavailableFields = append(r.UnavailableFields, field)
+}
+
+// unpriced fills UnpricedRecords for the calendar month in scope.
+func unpriced(ctx context.Context, src Source, tenant, agent string, w Window, r *Report) {
+	n, err := src.CountUnpriced(ctx, tenant, agent, w.MonthStart, w.MonthEnd)
+	if err != nil {
+		r.markUnavailable("unpriced_records", err)
+		return
+	}
+	r.UnpricedRecords = n
 }
 
 func resolveBudgets(ctx context.Context, budgets BudgetResolver, tenant, agent string, r *Report) error {
@@ -338,16 +373,16 @@ func resolveBudgets(ctx context.Context, budgets BudgetResolver, tenant, agent s
 // cacheUsage computes the 7-day and calendar-month cache figures. A failed
 // savings query leaves that period nil (as the CLI always did) and records a
 // warning; a failed count leaves TotalSeen at 0 with a warning.
-func cacheUsage(ctx context.Context, src Source, tenant string, w Window, warnings *[]string) (sevenDays, month *CacheUsage) {
+func cacheUsage(ctx context.Context, src Source, tenant string, w Window, r *Report) (sevenDays, month *CacheUsage) {
 	one := func(label string, from, to time.Time) *CacheUsage {
 		hits, saved, err := src.CacheSavings(ctx, tenant, from, to)
 		if err != nil {
-			*warnings = append(*warnings, label+" unavailable: "+err.Error())
+			r.markUnavailable(label, err)
 			return nil
 		}
 		total, err := src.CountInRange(ctx, tenant, "", from, to)
 		if err != nil {
-			*warnings = append(*warnings, label+" total_seen unavailable: "+err.Error())
+			r.markUnavailable(label+".total_seen", err)
 		}
 		return &CacheUsage{Hits: hits, SavedEUR: saved, HitRate: percentage(int(hits), total), TotalSeen: total}
 	}

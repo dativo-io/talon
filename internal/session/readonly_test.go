@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,7 +28,7 @@ func TestOpenReadOnly_SessionsConcurrentWithWriter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, s1.ID, got.ID)
 
-	rows, err := reader.ListRecent(ctx, "default", "", "", time.Time{}, 10)
+	rows, err := reader.ListRecent(ctx, "default", "", "", Cursor{}, 10)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 

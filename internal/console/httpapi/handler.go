@@ -30,8 +30,8 @@ const Prefix = "/console/v1"
 //	/console/v1/overview?tenant=
 //	/console/v1/use-cases?tenant=
 //	/console/v1/use-cases/{name}?tenant=
-//	/console/v1/sessions?tenant=&agent=&status=&before=<RFC3339>&limit=
-//	/console/v1/sessions/{id}?tenant=
+//	/console/v1/sessions?tenant=&agent=&status=&limit=&before=<RFC3339>&before_id=&observed_before=<RFC3339>&observed_before_id=
+//	/console/v1/sessions/{id}?tenant=&timeline_limit=&timeline_after=<RFC3339>&timeline_after_id=
 //	/console/v1/evidence/{id}?tenant=
 //	/console/v1/costs?tenant=&agent=&breakdown=agents|model|provider|team
 //	/console/v1/activity?tenant=&agent=&from=&to=&bucket=5m|1h|24h
@@ -57,27 +57,8 @@ func Handler(svc *console.Service) http.Handler {
 			}
 			writeJSON(w, http.StatusOK, d)
 		})
-		r.Get("/sessions", func(w http.ResponseWriter, req *http.Request) {
-			before, err := optionalTime(q(req, "before"))
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid_request", "before must be RFC 3339")
-				return
-			}
-			limit, err := optionalInt(q(req, "limit"))
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid_request", "limit must be a positive integer")
-				return
-			}
-			writeJSON(w, http.StatusOK, svc.Sessions(req.Context(), q(req, "tenant"), q(req, "agent"), session.Status(q(req, "status")), before, limit))
-		})
-		r.Get("/sessions/{id}", func(w http.ResponseWriter, req *http.Request) {
-			d, err := svc.Session(req.Context(), chi.URLParam(req, "id"), q(req, "tenant"))
-			if err != nil {
-				writeServiceError(w, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, d)
-		})
+		r.Get("/sessions", sessionsHandler(svc))
+		r.Get("/sessions/{id}", sessionDetailHandler(svc))
 		r.Get("/evidence/{id}", func(w http.ResponseWriter, req *http.Request) {
 			d, err := svc.Evidence(req.Context(), chi.URLParam(req, "id"), q(req, "tenant"))
 			if err != nil {
@@ -131,6 +112,56 @@ func Handler(svc *console.Service) http.Handler {
 	return r
 }
 
+// sessionsHandler serves GET /console/v1/sessions.
+func sessionsHandler(svc *console.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		// Two keyset cursors, one per source: (before, before_id) for
+		// session-store rows, (observed_before, observed_before_id) for
+		// evidence-observed ids. Both halves of a cursor travel together.
+		before, err := optionalTime(q(req, "before"))
+		if err != nil || (before.IsZero() != (q(req, "before_id") == "")) {
+			writeError(w, http.StatusBadRequest, "invalid_request", "before (RFC 3339) and before_id must be given together")
+			return
+		}
+		observedBefore, err := optionalTime(q(req, "observed_before"))
+		if err != nil || (observedBefore.IsZero() != (q(req, "observed_before_id") == "")) {
+			writeError(w, http.StatusBadRequest, "invalid_request", "observed_before (RFC 3339) and observed_before_id must be given together")
+			return
+		}
+		limit, err := optionalInt(q(req, "limit"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "limit must be a positive integer")
+			return
+		}
+		writeJSON(w, http.StatusOK, svc.Sessions(req.Context(), q(req, "tenant"), q(req, "agent"), session.Status(q(req, "status")),
+			session.Cursor{CreatedAt: before, ID: q(req, "before_id")},
+			evidence.ObservedCursor{LastSeen: observedBefore, SessionID: q(req, "observed_before_id")}, limit))
+	}
+}
+
+// sessionDetailHandler serves GET /console/v1/sessions/{id}: the complete
+// summary plus one timeline page (timeline_limit, timeline_after + timeline_after_id).
+func sessionDetailHandler(svc *console.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		after, err := optionalTime(q(req, "timeline_after"))
+		if err != nil || (after.IsZero() != (q(req, "timeline_after_id") == "")) {
+			writeError(w, http.StatusBadRequest, "invalid_request", "timeline_after (RFC 3339) and timeline_after_id must be given together")
+			return
+		}
+		limit, err := optionalInt(q(req, "timeline_limit"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "timeline_limit must be a positive integer")
+			return
+		}
+		d, err := svc.Session(req.Context(), chi.URLParam(req, "id"), q(req, "tenant"), evidence.TimelineCursor{Timestamp: after, ID: q(req, "timeline_after_id")}, limit)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, d)
+	}
+}
+
 func q(r *http.Request, name string) string { return strings.TrimSpace(r.URL.Query().Get(name)) }
 
 func optionalTime(v string) (time.Time, error) {
@@ -157,6 +188,9 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, console.ErrInvalidArgument):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, console.ErrUnavailable):
+		// A store that cannot answer is not a missing record.
+		writeError(w, http.StatusServiceUnavailable, "unavailable", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 	}

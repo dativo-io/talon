@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -20,6 +21,7 @@ var (
 	sessStatus     string
 	sessListJSON   bool
 	sessListLimit  int
+	sessListObs    bool
 	sessShowTenant string
 	sessShowJSON   bool
 )
@@ -55,6 +57,7 @@ func init() {
 	sessionListCmd.Flags().StringVar(&sessStatus, "status", "", "Filter by status")
 	sessionListCmd.Flags().BoolVar(&sessListJSON, "json", false, "Emit the session rows as JSON")
 	sessionListCmd.Flags().IntVar(&sessListLimit, "limit", 0, "Return at most N sessions, newest first (0 = all)")
+	sessionListCmd.Flags().BoolVar(&sessListObs, "observed", false, "List session ids seen in evidence that have no session row (for example asserted on the MCP proxy path): agents, record count, first/last seen; --limit bounds the page (default 50)")
 	sessionShowCmd.Flags().StringVar(&sessShowTenant, "tenant", "", "Scope to a tenant (default: unscoped operator read)")
 	sessionShowCmd.Flags().BoolVar(&sessShowJSON, "json", false, "Emit the session detail as JSON")
 	sessionCmd.AddCommand(sessionListCmd, sessionShowCmd)
@@ -72,12 +75,15 @@ func sessionList(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
+	if sessListObs {
+		return sessionListObserved(cmd, cfg, store)
+	}
 	// Operator CLI on the local DB: tenant-wide view (no agent scope). Only
 	// real asserted/talon sessions have rows — synthetic request-level ids
 	// never reach this store, so they cannot appear here (#271 boundary).
 	var sessions []*talonsession.Session
 	if sessListLimit > 0 {
-		sessions, err = store.ListRecent(context.Background(), sessTenant, "", talonsession.Status(sessStatus), time.Time{}, sessListLimit)
+		sessions, err = store.ListRecent(context.Background(), sessTenant, "", talonsession.Status(sessStatus), talonsession.Cursor{}, sessListLimit)
 	} else {
 		sessions, err = store.ListByTenant(context.Background(), sessTenant, "", talonsession.Status(sessStatus))
 	}
@@ -96,6 +102,53 @@ func sessionList(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%.4f\t%d\t%s\n",
 			s.ID, valueOrDash(s.ExternalSessionID), valueOrDash(s.Source), s.Status, s.AgentID,
 			s.TotalCost, s.TotalTokens, s.CreatedAt.Format("2006-01-02 15:04:05"))
+	}
+	return tw.Flush()
+}
+
+// sessionListObserved is `session list --observed`: the evidence-observed
+// session ids without a session-store row, the same rows the console lists
+// (evidence.Store.ListObservedSessions filtered by session.Store).
+func sessionListObserved(cmd *cobra.Command, cfg *config.Config, store *talonsession.Store) error {
+	ctx := cmd.Context()
+	evStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if err != nil {
+		return fmt.Errorf("opening evidence store: %w", err)
+	}
+	defer evStore.Close()
+	limit := sessListLimit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > evidence.MaxObservedPage {
+		limit = evidence.MaxObservedPage
+	}
+	observed, err := evStore.ListObservedSessions(ctx, sessTenant, "", evidence.ObservedCursor{}, limit)
+	if err != nil {
+		return fmt.Errorf("listing observed sessions: %w", err)
+	}
+	rows := make([]evidence.ObservedSession, 0, len(observed))
+	for i := range observed {
+		id := observed[i].SessionID
+		if _, err := store.Get(ctx, id, sessTenant); err == nil {
+			continue
+		}
+		if m, err := store.ListByExternalID(ctx, id, sessTenant); err == nil && len(m) > 0 {
+			continue
+		}
+		rows = append(rows, observed[i])
+	}
+	if sessListJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(rows)
+	}
+	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "SESSION\tAGENTS\tRECORDS\tFIRST SEEN\tLAST SEEN\tSOURCE")
+	for i := range rows {
+		o := &rows[i]
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n", o.SessionID, strings.Join(o.AgentIDs, ","), o.RecordCount,
+			o.FirstSeen.Format("2006-01-02 15:04:05"), o.LastSeen.Format("2006-01-02 15:04:05"), o.Source)
 	}
 	return tw.Flush()
 }

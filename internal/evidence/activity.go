@@ -67,11 +67,19 @@ func activityWindow(tenantID string, from, to time.Time, bucketSize time.Duratio
 		return "", time.Time{}, time.Time{}, 0, err
 	}
 	secs := int64(bucketSize / time.Second)
+	// Align on whole seconds: from floors to its bucket; to ceils to the
+	// next bucket edge, counting a fractional second as a full one so a
+	// record at 10:05:00.2 with to = 10:05:00.5 lands in a bucket the series
+	// actually contains (#535 review).
 	fromAligned = time.Unix((from.UTC().Unix()/secs)*secs, 0).UTC()
-	toAligned = to.UTC()
-	if rem := toAligned.Unix() % secs; rem != 0 {
-		toAligned = time.Unix(toAligned.Unix()-rem+secs, 0).UTC()
+	toSecs := to.UTC().Unix()
+	if to.Nanosecond() > 0 {
+		toSecs++
 	}
+	if rem := toSecs % secs; rem != 0 {
+		toSecs += secs - rem
+	}
+	toAligned = time.Unix(toSecs, 0).UTC()
 	n = int((toAligned.Unix() - fromAligned.Unix()) / secs)
 	if n > MaxActivityBuckets {
 		return "", time.Time{}, time.Time{}, 0, fmt.Errorf("activity buckets: %d buckets exceed the bound of %d; widen the bucket or narrow the window", n, MaxActivityBuckets)

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -158,7 +159,7 @@ func TestListRecent_BoundedSameOrderAsListByTenant(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, all, 6)
 
-	page1, err := sessions.ListRecent(ctx, "default", "", "", time.Time{}, 4)
+	page1, err := sessions.ListRecent(ctx, "default", "", "", Cursor{}, 4)
 	require.NoError(t, err)
 	require.Len(t, page1, 4)
 	for i := range page1 {
@@ -166,21 +167,21 @@ func TestListRecent_BoundedSameOrderAsListByTenant(t *testing.T) {
 	}
 	assert.Equal(t, "sess_other_agent", page1[0].ID, "newest first")
 
-	page2, err := sessions.ListRecent(ctx, "default", "", "", page1[len(page1)-1].CreatedAt, 4)
+	page2, err := sessions.ListRecent(ctx, "default", "", "", CursorOf(page1[len(page1)-1]), 4)
 	require.NoError(t, err)
 	require.Len(t, page2, 2)
 	assert.Equal(t, all[4].ID, page2[0].ID)
 	assert.Equal(t, all[5].ID, page2[1].ID)
 
-	byAgent, err := sessions.ListRecent(ctx, "default", "bot", "", time.Time{}, 100)
+	byAgent, err := sessions.ListRecent(ctx, "default", "bot", "", Cursor{}, 100)
 	require.NoError(t, err)
 	assert.Len(t, byAgent, 5)
 
-	byStatus, err := sessions.ListRecent(ctx, "default", "", StatusCompleted, time.Time{}, 100)
+	byStatus, err := sessions.ListRecent(ctx, "default", "", StatusCompleted, Cursor{}, 100)
 	require.NoError(t, err)
 	assert.Empty(t, byStatus)
 
-	_, err = sessions.ListRecent(ctx, "default", "", "", time.Time{}, 0)
+	_, err = sessions.ListRecent(ctx, "default", "", "", Cursor{}, 0)
 	require.ErrorContains(t, err, "limit must be positive")
 }
 
@@ -190,4 +191,123 @@ func TestSessionsSchemaHasCreatedAtIndex(t *testing.T) {
 	require.NoError(t, sessions.db.QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_tenant_created'`).Scan(&n))
 	assert.Equal(t, 1, n)
+}
+
+// TestListRecent_SameTimestampAcrossPageBoundaryIsLossless (#535 review): 7
+// sessions created in the SAME instant, paged 3 at a time → every id exactly
+// once, deterministic order, no row skipped at the boundary.
+func TestListRecent_SameTimestampAcrossPageBoundaryIsLossless(t *testing.T) {
+	sessions, _ := detailStores(t)
+	ctx := context.Background()
+	at := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+	ids := []string{"sess_a", "sess_b", "sess_c", "sess_d", "sess_e", "sess_f", "sess_g"}
+	for _, id := range ids {
+		insertSessionRow(t, sessions, id, "default", "bot", "", at)
+	}
+	insertSessionRow(t, sessions, "sess_newer", "default", "bot", "", at.Add(time.Minute))
+	insertSessionRow(t, sessions, "sess_older", "default", "bot", "", at.Add(-time.Minute))
+
+	var walked []string
+	var cursor Cursor
+	for {
+		page, err := sessions.ListRecent(ctx, "default", "", "", cursor, 3)
+		require.NoError(t, err)
+		if len(page) == 0 {
+			break
+		}
+		for _, s := range page {
+			walked = append(walked, s.ID)
+		}
+		cursor = CursorOf(page[len(page)-1])
+	}
+	assert.Equal(t, []string{"sess_newer", "sess_g", "sess_f", "sess_e", "sess_d", "sess_c", "sess_b", "sess_a", "sess_older"}, walked)
+}
+
+// TestLoadDetail_OwnerIsolation (#535 review): agents A and B both assert
+// external session id shared-123. Opening A's internal session must not
+// include B's records; an evidence-only read of the external id shows both
+// agents so the collision is visible.
+func TestLoadDetail_OwnerIsolation(t *testing.T) {
+	sessions, ev := detailStores(t)
+	ctx := context.Background()
+	at := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+	insertSessionRow(t, sessions, "sess_A", "default", "agent-a", "shared-123", at)
+	insertSessionRow(t, sessions, "sess_B", "default", "agent-b", "shared-123", at.Add(time.Second))
+	putEvidence(t, ev, "a1", "shared-123", "default", "agent-a", true, 0.10)
+	putEvidence(t, ev, "a2", "shared-123", "default", "agent-a", false, 0)
+	putEvidence(t, ev, "b1", "shared-123", "default", "agent-b", true, 5.00)
+
+	dA, err := LoadDetail(ctx, sessions, ev, "sess_A", "")
+	require.NoError(t, err)
+	assert.Equal(t, 2, dA.Summary.RecordCount, "A's two records only")
+	assert.InDelta(t, 0.10, dA.Summary.TotalCost, 1e-9, "B's 5.00 is not A's spend")
+	assert.Equal(t, 1, dA.Summary.Denied)
+	assert.Equal(t, []string{"agent-a"}, dA.Summary.AgentIDs)
+
+	dB, err := LoadDetail(ctx, sessions, ev, "sess_B", "")
+	require.NoError(t, err)
+	assert.Equal(t, 1, dB.Summary.RecordCount)
+	assert.InDelta(t, 5.00, dB.Summary.TotalCost, 1e-9)
+
+	// The external id is ambiguous between two rows: no summary is built.
+	amb, err := LoadDetail(ctx, sessions, ev, "shared-123", "")
+	require.NoError(t, err)
+	assert.Len(t, amb.Ambiguous, 2)
+	assert.Zero(t, amb.Summary.RecordCount)
+
+	// Paged timeline under the same isolation.
+	_, tl, err := LoadTimelinePage(ctx, sessions, ev, "sess_A", "", evidence.TimelineCursor{}, 1)
+	require.NoError(t, err)
+	require.NotNil(t, tl)
+	assert.Equal(t, 2, tl.Total)
+	require.Len(t, tl.Records, 1)
+	assert.Equal(t, "a1", tl.Records[0].ID)
+	require.NotNil(t, tl.NextCursor)
+	_, tl2, err := LoadTimelinePage(ctx, sessions, ev, "sess_A", "", *tl.NextCursor, 1)
+	require.NoError(t, err)
+	require.Len(t, tl2.Records, 1)
+	assert.Equal(t, "a2", tl2.Records[0].ID)
+	assert.Equal(t, 2, tl2.Summary.RecordCount, "the summary stays complete on every page")
+	// A full page carries a cursor; the walk ends on the first empty page.
+	require.NotNil(t, tl2.NextCursor)
+	_, tl3, err := LoadTimelinePage(ctx, sessions, ev, "sess_A", "", *tl2.NextCursor, 1)
+	require.NoError(t, err)
+	assert.Empty(t, tl3.Records)
+	assert.Nil(t, tl3.NextCursor)
+	assert.Equal(t, 2, tl3.Total)
+}
+
+// TestLoadTimelinePage_EvidenceOnlySessionIsBounded: an evidence-only
+// session with 25 records pages 10 at a time; the summary covers all 25.
+func TestLoadTimelinePage_EvidenceOnlySessionIsBounded(t *testing.T) {
+	sessions, ev := detailStores(t)
+	ctx := context.Background()
+	for i := 0; i < 25; i++ {
+		require.NoError(t, ev.Store(ctx, &evidence.Evidence{
+			ID: fmt.Sprintf("e%02d", i), CorrelationID: fmt.Sprintf("c%02d", i), SessionID: "hr-demo-long", TenantID: "default", AgentID: "hr",
+			Timestamp: time.Date(2026, 3, 15, 10, 0, i, 0, time.UTC), InvocationType: "gateway",
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"}, Execution: evidence.Execution{Cost: 0.01, Currency: "EUR"},
+		}))
+	}
+	var cursor evidence.TimelineCursor
+	var ids []string
+	for page := 0; ; page++ {
+		d, tl, err := LoadTimelinePage(ctx, sessions, ev, "hr-demo-long", "", cursor, 10)
+		require.NoError(t, err)
+		assert.Nil(t, d.Session)
+		assert.Equal(t, 25, d.Summary.RecordCount)
+		assert.Equal(t, 25, tl.Total)
+		assert.Equal(t, 10, tl.Limit)
+		for _, r := range tl.Records {
+			ids = append(ids, r.ID)
+		}
+		if tl.NextCursor == nil {
+			assert.Equal(t, 2, page)
+			break
+		}
+		cursor = *tl.NextCursor
+	}
+	assert.Len(t, ids, 25)
+	assert.Equal(t, "e00", ids[0])
+	assert.Equal(t, "e24", ids[24])
 }

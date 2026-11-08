@@ -76,7 +76,7 @@ func seed(t *testing.T) *fixture {
 			ID: id, CorrelationID: "corr_" + id, TenantID: tenant, AgentID: agent, SessionID: sess, InvocationType: typ,
 			Timestamp:      now.Add(-time.Duration(minutesAgo) * time.Minute),
 			PolicyDecision: evidence.PolicyDecision{Allowed: allowed, Action: map[bool]string{true: "allow", false: "deny"}[allowed]},
-			Execution:      evidence.Execution{Cost: cost, Currency: "USD", ModelUsed: map[bool]string{true: "gpt-4o-mini", false: ""}[typ == "gateway"]},
+			Execution:      evidence.Execution{Cost: cost, Currency: "USD", ModelUsed: map[bool]string{true: "gpt-4o-mini", false: ""}[typ == "gateway"], PricingKnown: cost > 0},
 		}
 		if !allowed {
 			ev.PolicyDecision.Reasons = []string{"tool_forbidden: hr_employee_export"}
@@ -100,11 +100,13 @@ func (f *fixture) service(t *testing.T) *Service {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ss.Close() })
 	fleetSrc := OfflineFleetSource(filepath.Join(f.dir, "agents"), "", filepath.Join(f.dir, "talon.config.yaml"), "USD", ro, ss, nil)
-	return New(Config{
+	svc, err := New(Config{
 		Evidence: ro, Sessions: ss, StorePath: f.dbPath, Currency: "USD",
 		Fleet: fleetSrc, Budgets: FleetCapsBudgets{Fleet: fleetSrc}, BudgetNote: "caps from the agent configuration on disk (offline)",
 		Version: "test", StartedAt: f.now,
 	})
+	require.NoError(t, err)
+	return svc
 }
 
 const eps = 1e-9
@@ -112,9 +114,14 @@ const eps = 1e-9
 func TestOverview_HandExpectations(t *testing.T) {
 	f := seed(t)
 	svc := f.service(t)
-	ov := svc.Overview(context.Background(), "")
+	ov := svc.Overview(context.Background(), "default")
 
 	assert.Equal(t, ContractVersion, ov.Meta.ContractVersion)
+	assert.Equal(t, ScopeTenant, ov.Meta.TenantScope)
+	assert.Equal(t, "default", ov.Meta.TenantID)
+	assert.Equal(t, ScopeTenant, ov.Today.TenantScope)
+	assert.Equal(t, ScopeTenant, ov.RecentEvents.TenantScope)
+	assert.Equal(t, HealthBasisProjected, ov.UseCases.HealthBasis)
 
 	uc := ov.UseCases
 	assert.Equal(t, StateOK, uc.Availability.State)
@@ -166,6 +173,8 @@ func TestUseCaseDetail_SessionsCostsActivity(t *testing.T) {
 	d, err := svc.UseCase(ctx, "", "hr-analytics-assistant")
 	require.NoError(t, err)
 	require.NotNil(t, d.Row)
+	assert.Equal(t, "default", d.Meta.TenantID, "the detail is scoped to the use case's own tenant")
+	assert.Equal(t, HealthBasisProjected, d.HealthBasis)
 	assert.Equal(t, StateUnknown, d.EffectivePolicy.State, "#305 owns provenance; nothing is inferred")
 	assert.Contains(t, d.EffectivePolicy.Note, "#305")
 
@@ -195,9 +204,14 @@ func TestUseCaseDetail_SessionsCostsActivity(t *testing.T) {
 	assert.Equal(t, 3, reqs)
 	assert.Equal(t, 1, den)
 
-	// No session rows exist (the demo asserts sessions only on MCP/gateway evidence): empty, not unavailable.
+	// No session rows exist (the demo asserts sessions only on MCP/gateway evidence): empty, not unavailable —
+	// and the evidence-only session is still discoverable through the observed list.
 	assert.Equal(t, StateEmpty, d.RecentSessions.Availability.State)
 	assert.Empty(t, d.RecentSessions.Sessions)
+	require.Len(t, d.RecentSessions.Observed, 1)
+	assert.Equal(t, "hr-demo-s1", d.RecentSessions.Observed[0].SessionID)
+	assert.Equal(t, []string{"hr-analytics-assistant"}, d.RecentSessions.Observed[0].AgentIDs)
+	assert.Equal(t, 3, d.RecentSessions.Observed[0].RecordCount)
 
 	_, err = svc.UseCase(ctx, "", "nope")
 	require.ErrorIs(t, err, ErrNotFound)
@@ -210,7 +224,7 @@ func TestSessionDetail_EvidenceOnlySessionAndTenantScope(t *testing.T) {
 	svc := f.service(t)
 	ctx := context.Background()
 
-	sd, err := svc.Session(ctx, "hr-demo-s1", "")
+	sd, err := svc.Session(ctx, "hr-demo-s1", "", evidence.TimelineCursor{}, 0)
 	require.NoError(t, err)
 	assert.Equal(t, StateOK, sd.Availability.State)
 	require.NotNil(t, sd.Detail)
@@ -221,15 +235,18 @@ func TestSessionDetail_EvidenceOnlySessionAndTenantScope(t *testing.T) {
 	assert.Equal(t, 1, sd.Detail.Summary.ToolCallsDenied)
 	assert.InDelta(t, 0.20, sd.Detail.Summary.TotalCost, eps)
 	require.NotNil(t, sd.Timeline)
+	assert.Equal(t, 3, sd.Timeline.Total)
+	assert.Equal(t, DefaultTimelineLimit, sd.Timeline.Limit)
+	assert.Nil(t, sd.Timeline.NextCursor)
 	require.Len(t, sd.Timeline.Records, 3)
 	assert.Equal(t, "e_agg", sd.Timeline.Records[0].ID, "source-time order")
 	assert.Equal(t, "proxy_tool_blocked", sd.Timeline.Records[1].InvocationType)
 	assert.False(t, sd.Timeline.Records[1].Allowed)
 	assert.Equal(t, "e_llm", sd.Timeline.Records[2].ID)
 
-	_, err = svc.Session(ctx, "hr-demo-s1", "acme")
+	_, err = svc.Session(ctx, "hr-demo-s1", "acme", evidence.TimelineCursor{}, 0)
 	require.ErrorIs(t, err, ErrNotFound, "another tenant cannot see the session")
-	_, err = svc.Session(ctx, "missing", "")
+	_, err = svc.Session(ctx, "missing", "", evidence.TimelineCursor{}, 0)
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -268,20 +285,45 @@ func TestSessionsPaging(t *testing.T) {
 		time.Sleep(3 * time.Millisecond)
 	}
 	svc := f.service(t)
-	p1 := svc.Sessions(ctx, "default", "", "", time.Time{}, 2)
+	noObs := evidence.ObservedCursor{}
+	p1 := svc.Sessions(ctx, "default", "", "", session.Cursor{}, noObs, 2)
 	assert.Equal(t, StateOK, p1.Availability.State)
 	require.Len(t, p1.Sessions, 2)
-	require.NotNil(t, p1.NextBefore)
-	p2 := svc.Sessions(ctx, "default", "", "", *p1.NextBefore, 2)
+	require.NotNil(t, p1.NextCursor)
+	p2 := svc.Sessions(ctx, "default", "", "", *p1.NextCursor, noObs, 2)
 	require.Len(t, p2.Sessions, 2)
 	assert.NotEqual(t, p1.Sessions[0].ID, p2.Sessions[0].ID)
-	p3 := svc.Sessions(ctx, "default", "", "", *p2.NextBefore, 2)
+	p3 := svc.Sessions(ctx, "default", "", "", *p2.NextCursor, noObs, 2)
 	require.Len(t, p3.Sessions, 1)
-	assert.Nil(t, p3.NextBefore, "last page")
-	big := svc.Sessions(ctx, "default", "", "", time.Time{}, 10_000)
+	assert.Nil(t, p3.NextCursor, "last page")
+	big := svc.Sessions(ctx, "default", "", "", session.Cursor{}, noObs, 10_000)
 	assert.Equal(t, MaxSessionLimit, big.Limit, "limit is clamped")
-	none := svc.Sessions(ctx, "default", "hr-analytics-assistant", "", time.Time{}, 10)
-	assert.Equal(t, StateEmpty, none.Availability.State)
+	none := svc.Sessions(ctx, "default", "hr-analytics-assistant", "", session.Cursor{}, noObs, 10)
+	assert.Equal(t, StateEmpty, none.Availability.State, "hr has no session-store rows")
+	// Observed: hr-demo-s1 has no row → listed under hr; the scratch rows have no evidence session → nothing observed for scratch.
+	assert.Equal(t, StateOK, p1.ObservedAvailability.State)
+	require.Len(t, p1.Observed, 1)
+	assert.Equal(t, "hr-demo-s1", p1.Observed[0].SessionID)
+	assert.Equal(t, StateOK, none.ObservedAvailability.State)
+	require.Len(t, none.Observed, 1, "the evidence-only HR session is discoverable under its agent")
+	scratch := svc.Sessions(ctx, "default", "scratch", "", session.Cursor{}, noObs, 10)
+	assert.Len(t, scratch.Sessions, 5)
+	assert.Equal(t, StateEmpty, scratch.ObservedAvailability.State, "agent scratch has no evidence-only session")
+}
+
+// TestSessions_RowBackedSessionIsNotAlsoObserved: a client-asserted session
+// with a store row appears once, in the rows page, not again as observed.
+func TestSessions_RowBackedSessionIsNotAlsoObserved(t *testing.T) {
+	f := seed(t)
+	ctx := context.Background()
+	_, err := f.sessions.GetOrCreateExternal(ctx, "default", "hr-analytics-assistant", "hr-demo-s1", "client_asserted")
+	require.NoError(t, err)
+	svc := f.service(t)
+	l := svc.Sessions(ctx, "default", "", "", session.Cursor{}, evidence.ObservedCursor{}, 10)
+	require.Len(t, l.Sessions, 1)
+	assert.Equal(t, "hr-demo-s1", l.Sessions[0].ExternalSessionID)
+	assert.Empty(t, l.Observed, "owned by the row page now")
+	assert.Equal(t, StateEmpty, l.ObservedAvailability.State)
 }
 
 func TestSystem_StoreFactsAndUnknownRuntime(t *testing.T) {
@@ -299,7 +341,8 @@ func TestSystem_StoreFactsAndUnknownRuntime(t *testing.T) {
 }
 
 func TestNoStores_EverySectionIsUnavailableNotZero(t *testing.T) {
-	svc := New(Config{Currency: "EUR"})
+	svc, err := New(Config{Currency: "EUR"})
+	require.NoError(t, err)
 	ov := svc.Overview(context.Background(), "")
 	assert.Equal(t, StateUnavailable, ov.UseCases.Availability.State)
 	assert.Equal(t, StateUnavailable, ov.Today.Availability.State)
@@ -312,11 +355,77 @@ func TestNoStores_EverySectionIsUnavailableNotZero(t *testing.T) {
 	assert.Equal(t, StateUnavailable, a.Availability.State)
 	sys := svc.System(context.Background())
 	assert.Equal(t, StateUnavailable, sys.Store.Availability.State)
-	sl := svc.Sessions(context.Background(), "default", "", "", time.Time{}, 5)
+	sl := svc.Sessions(context.Background(), "default", "", "", session.Cursor{}, evidence.ObservedCursor{}, 5)
 	assert.Equal(t, StateUnavailable, sl.Availability.State)
-	sd, err := svc.Session(context.Background(), "x", "")
+	assert.Equal(t, StateUnavailable, sl.ObservedAvailability.State)
+	_, err = svc.Session(context.Background(), "x", "", evidence.TimelineCursor{}, 0)
+	require.ErrorIs(t, err, ErrUnavailable, "a missing store is unavailable, never not-found")
+	_, err = svc.Evidence(context.Background(), "x", "")
+	require.ErrorIs(t, err, ErrUnavailable)
+}
+
+func TestNew_RequiresCurrency(t *testing.T) {
+	_, err := New(Config{})
+	require.ErrorContains(t, err, "Currency is required")
+	svc, err := New(Config{Currency: "EUR"})
 	require.NoError(t, err)
-	assert.Equal(t, StateUnavailable, sd.Availability.State)
+	assert.Equal(t, "EUR", svc.System(context.Background()).Console.Currency)
+}
+
+// TestOverview_AllTenantScopeIsExplicit (#535 review): with no tenant the
+// rows, the day totals and the events all span every tenant and say so;
+// with a tenant all three are scoped to it.
+func TestOverview_AllTenantScopeIsExplicit(t *testing.T) {
+	f := seed(t)
+	svc := f.service(t)
+	all := svc.Overview(context.Background(), "")
+	assert.Equal(t, ScopeAllTenants, all.Meta.TenantScope)
+	assert.Empty(t, all.Meta.TenantID)
+	assert.Equal(t, ScopeAllTenants, all.Today.TenantScope)
+	assert.Equal(t, ScopeAllTenants, all.RecentEvents.TenantScope)
+	assert.Equal(t, 5, all.Today.Requests, "default's 4 + acme's 1")
+	assert.InDelta(t, 9.25, all.Today.Cost, eps, "default 0.25 + acme 9.00")
+	assert.Len(t, all.RecentEvents.Events, 5)
+	assert.Equal(t, "e_acme", all.RecentEvents.Events[0].EvidenceID, "newest across tenants")
+	assert.Len(t, all.UseCases.Rows, 2)
+
+	one := svc.Overview(context.Background(), "default")
+	assert.Equal(t, 4, one.Today.Requests)
+	assert.InDelta(t, 0.25, one.Today.Cost, eps)
+	assert.Len(t, one.RecentEvents.Events, 4)
+
+	acme := svc.Overview(context.Background(), "acme")
+	assert.Equal(t, ScopeTenant, acme.Meta.TenantScope)
+	assert.Equal(t, 1, acme.Today.Requests)
+	assert.InDelta(t, 9.00, acme.Today.Cost, eps)
+	assert.Empty(t, acme.UseCases.Rows, "no agent on disk belongs to acme")
+}
+
+// TestCosts_PartialWhenAFieldIsUnavailable (#535 review): a failing
+// secondary query makes the section partial and names the field, instead
+// of an ok section with a silent 0.
+func TestCosts_PartialWhenAFieldIsUnavailable(t *testing.T) {
+	f := seed(t)
+	// Close the read-only evidence store mid-way: every query fails, the
+	// section is unavailable (the whole report failed). For the partial
+	// case we use the costs package's own failing source through Build and
+	// assert the console labelling rule on that report.
+	svc := f.service(t)
+	c := svc.Costs(context.Background(), "default", "", costs.BreakdownAgents)
+	assert.Equal(t, StateOK, c.Availability.State)
+	require.NotNil(t, c.Report)
+	assert.Empty(t, c.Report.UnavailableFields)
+	assert.Nil(t, c.Report.DailyBudget, "tenant-wide scope has no single cap")
+	agentCosts := svc.Costs(context.Background(), "default", "hr-analytics-assistant", costs.BreakdownAgents)
+	require.NotNil(t, agentCosts.Report.DailyBudget)
+	assert.Equal(t, "OK", agentCosts.Report.DailyBudget.StatusWord, "the status word is serialized; no consumer re-derives it")
+	assert.Zero(t, agentCosts.Report.UnpricedRecords)
+
+	partial := Costs{Availability: ok(SourceEvidenceStore, f.now), Report: &costs.Report{UnavailableFields: []string{"seven_days_eur"}, Warnings: []string{"seven_days_eur unavailable: disk I/O error"}}}
+	labelPartial(&partial)
+	assert.Equal(t, StatePartial, partial.Availability.State)
+	assert.Equal(t, []string{"seven_days_eur"}, partial.Availability.Unavailable)
+	assert.Contains(t, partial.Availability.Note, "disk I/O error")
 }
 
 func TestInvalidGatewayConfig_UseCasesUnavailable(t *testing.T) {

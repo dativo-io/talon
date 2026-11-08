@@ -235,7 +235,10 @@ func TestE2E_Console_ReadModelMatchesCLIOnLiveStore(t *testing.T) {
 	}
 	defer ss.Close()
 	fleetSrc := console.OfflineFleetSource("", filepath.Join(dir, "agent.talon.yaml"), cfgPath, cliCosts.Currency, ro, ss, nil)
-	svc := console.New(console.Config{Evidence: ro, Sessions: ss, StorePath: filepath.Join(dir, "evidence.db"), Currency: cliCosts.Currency, Fleet: fleetSrc, Budgets: console.FleetCapsBudgets{Fleet: fleetSrc}, Version: "e2e"})
+	svc, err := console.New(console.Config{Evidence: ro, Sessions: ss, StorePath: filepath.Join(dir, "evidence.db"), Currency: cliCosts.Currency, Fleet: fleetSrc, Budgets: console.FleetCapsBudgets{Fleet: fleetSrc}, Version: "e2e"})
+	if err != nil {
+		t.Fatalf("console service: %v", err)
+	}
 	api := httptest.NewServer(httpapi.Handler(svc))
 	defer api.Close()
 
@@ -306,6 +309,22 @@ func TestE2E_Console_ReadModelMatchesCLIOnLiveStore(t *testing.T) {
 	}
 	if len(dtoSession.Timeline.Records) != len(cliTimeline.Records) || dtoSession.Timeline.Records[0].ID != cliTimeline.Records[0].ID {
 		t.Fatalf("timeline console=%+v cli=%+v", dtoSession.Timeline.Records, cliTimeline.Records)
+	}
+	var dtoList console.SessionList
+	getDTO("/console/v1/sessions?tenant=default", &dtoList)
+	var listed bool
+	for _, row := range dtoList.Sessions {
+		if row.ExternalSessionID == consoleSession || row.ID == consoleSession {
+			listed = true
+		}
+	}
+	for _, o := range dtoList.Observed {
+		if o.SessionID == consoleSession {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("the real session %s must be discoverable in the sessions list: rows=%d observed=%d", consoleSession, len(dtoList.Sessions), len(dtoList.Observed))
 	}
 	var dtoEvidence console.EvidenceDetail
 	getDTO("/console/v1/evidence/"+cliTimeline.Records[0].ID+"?tenant=default", &dtoEvidence)

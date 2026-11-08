@@ -61,7 +61,8 @@ func newServer(t *testing.T) (*httptest.Server, *evidence.Store, time.Time) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ss.Close() })
 	fleetSrc := console.OfflineFleetSource(filepath.Join(dir, "agents"), "", "", "USD", ro, ss, nil)
-	svc := console.New(console.Config{Evidence: ro, Sessions: ss, StorePath: dbPath, Currency: "USD", Fleet: fleetSrc, Budgets: console.FleetCapsBudgets{Fleet: fleetSrc}, Version: "test"})
+	svc, err := console.New(console.Config{Evidence: ro, Sessions: ss, StorePath: dbPath, Currency: "USD", Fleet: fleetSrc, Budgets: console.FleetCapsBudgets{Fleet: fleetSrc}, Version: "test"})
+	require.NoError(t, err)
 	srv := httptest.NewServer(Handler(svc))
 	t.Cleanup(srv.Close)
 	return srv, writer, now
@@ -143,7 +144,47 @@ func TestRoutes_ServeTheDTOs(t *testing.T) {
 
 	var sl console.SessionList
 	require.Equal(t, http.StatusOK, get(t, srv, "/console/v1/sessions?tenant=default&limit=5", &sl))
-	assert.Equal(t, console.StateEmpty, sl.Availability.State)
+	assert.Equal(t, console.StateEmpty, sl.Availability.State, "no session-store rows")
+	require.Len(t, sl.Observed, 1, "the evidence-only session is discoverable")
+	assert.Equal(t, "hr-demo-s1", sl.Observed[0].SessionID)
+	assert.Equal(t, "evidence", sl.Observed[0].Source)
+	assert.Equal(t, 2, sl.Observed[0].RecordCount)
+
+	// Timeline paging over HTTP: one record per page, cursor carried in two params.
+	var p1 console.SessionDetail
+	require.Equal(t, http.StatusOK, get(t, srv, "/console/v1/sessions/hr-demo-s1?timeline_limit=1", &p1))
+	require.Len(t, p1.Timeline.Records, 1)
+	assert.Equal(t, 2, p1.Timeline.Total)
+	require.NotNil(t, p1.Timeline.NextCursor)
+	var p2 console.SessionDetail
+	require.Equal(t, http.StatusOK, get(t, srv, "/console/v1/sessions/hr-demo-s1?timeline_limit=1&timeline_after="+p1.Timeline.NextCursor.Timestamp.Format(time.RFC3339Nano)+"&timeline_after_id="+p1.Timeline.NextCursor.ID, &p2))
+	require.Len(t, p2.Timeline.Records, 1)
+	assert.NotEqual(t, p1.Timeline.Records[0].ID, p2.Timeline.Records[0].ID)
+	assert.Equal(t, 2, p2.Detail.Summary.RecordCount, "the summary is complete on every page")
+}
+
+func TestRoutes_StoreFailureIs503NotNotFound(t *testing.T) {
+	ro, err := evidence.OpenReadOnly(filepath.Join(t.TempDir(), "missing.db"), key)
+	require.Error(t, err)
+	_ = ro
+	// A service whose evidence store is closed: reads fail, and the handler
+	// must say unavailable (503), never not found (404).
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "evidence.db")
+	writer, err := evidence.NewStore(dbPath, key)
+	require.NoError(t, err)
+	require.NoError(t, writer.Store(context.Background(), &evidence.Evidence{ID: "e1", CorrelationID: "c1", TenantID: "default", AgentID: "a", Timestamp: time.Now().UTC(), InvocationType: "gateway"}))
+	closed, err := evidence.OpenReadOnly(dbPath, key)
+	require.NoError(t, err)
+	require.NoError(t, closed.Close())
+	svc, err := console.New(console.Config{Evidence: closed, Currency: "USD"})
+	require.NoError(t, err)
+	srv := httptest.NewServer(Handler(svc))
+	defer srv.Close()
+	var e map[string]string
+	assert.Equal(t, http.StatusServiceUnavailable, get(t, srv, "/console/v1/evidence/e1", &e))
+	assert.Equal(t, "unavailable", e["error"])
+	require.NoError(t, writer.Close())
 }
 
 func TestRoutes_ErrorsAndValidation(t *testing.T) {
@@ -158,7 +199,10 @@ func TestRoutes_ErrorsAndValidation(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/activity?bucket=7m", &e))
 	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/activity?from=yesterday", &e))
 	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions?limit=-1", &e))
-	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions?before=noon", &e))
+	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions?before=noon&before_id=x", &e))
+	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions?before=2026-01-01T00:00:00Z", &e), "a cursor needs both halves")
+	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions/hr-demo-s1?timeline_after_id=x", &e))
+	assert.Equal(t, http.StatusBadRequest, get(t, srv, "/console/v1/sessions/hr-demo-s1?timeline_limit=0", &e))
 
 	// Out-of-bound series is reported in the availability block, not as a transport error.
 	var a console.Activity

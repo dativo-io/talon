@@ -168,3 +168,36 @@ func TestDetail_VerificationStateReflectsTheSignature(t *testing.T) {
 	_, err = store.Detail(ctx, "does-not-exist")
 	require.Error(t, err)
 }
+
+// TestActivityBuckets_FractionalSecondBoundary (#535 review): a window that
+// ends a fraction of a second after a bucket edge must still contain the
+// bucket that the SQL query includes records for.
+func TestActivityBuckets_FractionalSecondBoundary(t *testing.T) {
+	store := pageStoreForActivity(t)
+	ctx := context.Background()
+	edge := time.Date(2026, 3, 15, 10, 5, 0, 0, time.UTC)
+	require.NoError(t, store.Store(ctx, &Evidence{
+		ID: "frac", CorrelationID: "c_frac", TenantID: "default", AgentID: "a", InvocationType: "gateway",
+		Timestamp:      edge.Add(200 * time.Millisecond),
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"}, Execution: Execution{Cost: 0.5},
+	}))
+	s, err := store.ActivityBuckets(ctx, "default", "", edge.Add(-5*time.Minute), edge.Add(500*time.Millisecond), 5*time.Minute)
+	require.NoError(t, err)
+	require.Len(t, s.Buckets, 2, "the 10:05 bucket is part of the series")
+	assert.Equal(t, edge.Add(5*time.Minute), s.To)
+	assert.Equal(t, 1, s.Buckets[1].Requests)
+	assert.InDelta(t, 0.5, s.Buckets[1].Cost, 1e-9)
+	var total int
+	for _, b := range s.Buckets {
+		total += b.Requests
+	}
+	assert.Equal(t, 1, total, "no record is counted outside a returned bucket")
+}
+
+func pageStoreForActivity(t *testing.T) *Store {
+	t.Helper()
+	store, err := NewStore(filepath.Join(t.TempDir(), "evidence.db"), "activity-frac-test-signing-key-01")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}

@@ -146,7 +146,8 @@ metadata: { owner: "demo-operator", tags: [synthetic] }
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ss.Close() })
 	fleetSrc := console.OfflineFleetSource(agentsDir, "", gwPath, "USD", ro, ss, nil)
-	svc := console.New(console.Config{Evidence: ro, Sessions: ss, StorePath: dbPath, Currency: "USD", Fleet: fleetSrc, Budgets: console.FleetCapsBudgets{Fleet: fleetSrc}, Version: "test"})
+	svc, err := console.New(console.Config{Evidence: ro, Sessions: ss, StorePath: dbPath, Currency: "USD", Fleet: fleetSrc, Budgets: console.FleetCapsBudgets{Fleet: fleetSrc}, Version: "test"})
+	require.NoError(t, err)
 	srv := httptest.NewServer(httpapi.Handler(svc))
 	t.Cleanup(srv.Close)
 	return &parityFixture{dir: dir, dbPath: dbPath, now: now, srv: srv, writer: writer}
@@ -162,6 +163,7 @@ func (f *parityFixture) cli(t *testing.T, args ...string) []byte {
 	costsByModel, costsByProvider, costsByTeam, costsJSON = false, false, false, false
 	auditTenant, auditAgent, auditSession, auditRuntimeRef = "", "", "", ""
 	auditLimit, auditOffset, auditReport, auditJSON = 20, 0, false, false
+	sessTenant, sessStatus, sessListJSON, sessListLimit, sessListObs = "default", "", false, 0, false
 	buf := new(bytes.Buffer)
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
@@ -368,4 +370,60 @@ func TestConsoleParity_EvidenceVerificationAndTamper(t *testing.T) {
 	assert.Equal(t, "invalid", cliTampered.Verification.State)
 	assert.Equal(t, "invalid", dtoTampered.Detail.Verification.State)
 	assert.InDelta(t, 0.02, dtoTampered.Detail.Record.Execution.Cost, 1e-9, "the tampered value is shown, labelled invalid, never hidden")
+}
+
+// TestConsoleParity_ObservedSessionsAndTimelinePaging (#535 review): the
+// evidence-only HR session is discoverable the same way on the CLI
+// (`session list --observed --json`) and the console (`sessions.observed`),
+// and the console's paged timeline walks the same records as the CLI's
+// complete timeline.
+func TestConsoleParity_ObservedSessionsAndTimelinePaging(t *testing.T) {
+	f := newParityFixture(t)
+	sessListObs, sessListLimit = false, 0
+	t.Cleanup(func() { sessListObs, sessListLimit = false, 0 })
+
+	var cliObserved []evidence.ObservedSession
+	require.NoError(t, json.Unmarshal(f.cli(t, "session", "list", "--json", "--observed", "--tenant", "default"), &cliObserved))
+	var dto console.SessionList
+	require.Equal(t, http.StatusOK, f.api(t, "/console/v1/sessions?tenant=default", &dto))
+
+	require.Len(t, cliObserved, 1)
+	require.Len(t, dto.Observed, 1)
+	assert.Equal(t, "hr-demo-s1", cliObserved[0].SessionID)
+	assert.Equal(t, cliObserved[0].SessionID, dto.Observed[0].SessionID)
+	assert.Equal(t, cliObserved[0].RecordCount, dto.Observed[0].RecordCount)
+	assert.Equal(t, 3, dto.Observed[0].RecordCount)
+	assert.Equal(t, []string{"hr-analytics-assistant"}, dto.Observed[0].AgentIDs)
+	assert.Equal(t, "evidence", dto.Observed[0].Source)
+	assert.True(t, cliObserved[0].LastSeen.Equal(dto.Observed[0].LastSeen))
+	assert.Empty(t, dto.Sessions, "no session-store rows exist for the demo traffic")
+	assert.Equal(t, console.StateEmpty, dto.Availability.State)
+	assert.Equal(t, console.StateOK, dto.ObservedAvailability.State)
+
+	// Paged timeline (console) == complete timeline (CLI), record for record.
+	resetAuditFlags(t)
+	var cliTimeline talonsession.Timeline
+	require.NoError(t, json.Unmarshal(f.cli(t, "audit", "list", "--json", "--session", "hr-demo-s1"), &cliTimeline))
+	var walked []string
+	query := "/console/v1/sessions/hr-demo-s1?timeline_limit=2"
+	for {
+		var page console.SessionDetail
+		require.Equal(t, http.StatusOK, f.api(t, query, &page))
+		require.NotNil(t, page.Timeline)
+		assert.Equal(t, 3, page.Timeline.Total)
+		assert.Equal(t, 3, page.Detail.Summary.RecordCount, "the summary is complete on every page")
+		for _, r := range page.Timeline.Records {
+			walked = append(walked, r.ID)
+		}
+		if page.Timeline.NextCursor == nil {
+			break
+		}
+		query = "/console/v1/sessions/hr-demo-s1?timeline_limit=2&timeline_after=" + page.Timeline.NextCursor.Timestamp.Format(time.RFC3339Nano) + "&timeline_after_id=" + page.Timeline.NextCursor.ID
+	}
+	var cliIDs []string
+	for _, r := range cliTimeline.Records {
+		cliIDs = append(cliIDs, r.ID)
+	}
+	assert.Equal(t, cliIDs, walked)
+	assert.Equal(t, []string{"e_agg", "e_export", "e_llm"}, walked)
 }
