@@ -50,7 +50,7 @@ Store-level projections with no CLI or HTTP surface after the removal: per-tenan
 
 ## Authentication facts the console must respect
 
-- `TALON_ADMIN_KEY` semantics are unchanged: header or bearer token, and the server is open when the key is unset (development default). The example Compose stack publishes the API on `8080:8080` and does not set the key. Securing the console process does not secure that API; #536 and #537 must define the boundary between the read-only console and privileged backend operations before a default Docker UI ships.
+- `TALON_ADMIN_KEY` semantics are unchanged: header or bearer token, and the server is open when the key is unset (development default). The example Compose stack publishes the API on `8080:8080` and does not set the key. Securing the console process does not secure that API. The boundary #536 and #537 shipped: the console is a separate process with no data-plane route, its browser session is a cookie only the console validates, and the default Compose files publish it on the host loopback only ([console access](console-access.md)); the data-plane API's own exposure (`8080:8080`, no key) is unchanged by it and remains the operator's deployment decision.
 - `RequireAdminKeyMiddleware` fails closed when the gateway is served; nothing in the removal changed which endpoints sit behind which middleware.
 
 Related: [Authentication and key scopes](authentication-and-key-scopes.md), [Operational control plane](operational-control-plane.md), [Gateway metrics API](gateway-metrics-api.md).
