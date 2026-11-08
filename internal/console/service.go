@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -191,6 +192,34 @@ func (s *Service) today(ctx context.Context, tenant string) Today {
 	if out.Requests == 0 && cost == 0 {
 		out.Availability.State = StateEmpty
 	}
+	// Same rule as the cost report: the day's priced records must all be in
+	// the configured currency for Cost to be a sum in that currency.
+	counts, err := s.cfg.Evidence.CurrenciesInRange(ctx, tenant, "", w.DayStart, w.DayEnd)
+	if err != nil {
+		out.Availability.State = StatePartial
+		out.Availability.Unavailable = []string{"cost"}
+		out.Availability.Error = err.Error()
+		return out
+	}
+	if foreign := foreignCurrencies(counts, s.cfg.Currency); len(foreign) > 0 {
+		out.Availability.State = StatePartial
+		out.Availability.Unavailable = []string{"cost"}
+		out.Availability.Note = "today's priced records include " + strings.Join(foreign, ", ") + "; cost is not a sum in " + s.cfg.Currency
+	}
+	return out
+}
+
+// foreignCurrencies lists the stamped currencies in counts that differ from
+// configured ("" counts as configured, as everywhere else).
+func foreignCurrencies(counts map[string]int, configured string) []string {
+	var out []string
+	for cur, n := range counts {
+		if n == 0 || cur == "" || cur == configured {
+			continue
+		}
+		out = append(out, cur)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -393,7 +422,26 @@ func (s *Service) Session(ctx context.Context, id, tenant, agent string, after e
 	if len(detail.Ambiguous) > 0 {
 		out.Availability.Note = fmt.Sprintf("external session id matches %d sessions; open one by its internal id or name the agent", len(detail.Ambiguous))
 	}
+	s.labelSessionCost(out, &detail.Summary)
 	return out, nil
+}
+
+// labelSessionCost marks a session detail partial when its total cost is not
+// a sum in one currency, or when that currency is not the configured one.
+func (s *Service) labelSessionCost(out *SessionDetail, sum *evidence.SessionSummary) {
+	if sum.RecordCount == 0 {
+		return
+	}
+	switch {
+	case !sum.CostComparable:
+		out.Availability.State = StatePartial
+		out.Availability.Unavailable = []string{"detail.summary.total_cost"}
+		out.Availability.Note = "the session's priced records span more than one currency; total_cost is not a sum in one unit"
+	case sum.Currency != "" && sum.Currency != s.cfg.Currency:
+		out.Availability.State = StatePartial
+		out.Availability.Unavailable = []string{"detail.summary.total_cost"}
+		out.Availability.Note = "the session's records are priced in " + sum.Currency + ", not the configured " + s.cfg.Currency
+	}
 }
 
 // SessionTimeline is one timeline page WITHOUT the summary, for walking a

@@ -504,3 +504,32 @@ func TestCurrenciesInRange_HandExpectations(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]int{"EUR": 2}, onlyA)
 }
+
+// TestSessionSummary_CurrenciesAndComparability (#535 review round 4): the
+// summary counts priced records per stamped currency and says whether
+// total_cost is a sum in one unit; unstamped records are the table currency.
+func TestSessionSummary_CurrenciesAndComparability(t *testing.T) {
+	mk := func(id, cur string, cost float64) *Evidence {
+		return &Evidence{
+			ID: id, SessionID: "s", TenantID: "default", AgentID: "a", InvocationType: "gateway", Timestamp: time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC),
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"}, Execution: Execution{ModelUsed: "m", Cost: cost, Currency: cur},
+		}
+	}
+	one := BuildSessionSummary("s", []*Evidence{mk("1", "EUR", 0.1), mk("2", "EUR", 0.2), mk("3", "EUR", 0)})
+	assert.True(t, one.CostComparable)
+	assert.Equal(t, map[string]int{"EUR": 2}, one.Currencies, "a zero-cost record is not a priced record")
+	assert.Equal(t, "EUR", one.Currency)
+
+	legacy := BuildSessionSummary("s", []*Evidence{mk("1", "", 0.1), mk("2", "EUR", 0.2)})
+	assert.True(t, legacy.CostComparable, "an unstamped record is the table currency, not a second unit")
+	assert.Equal(t, map[string]int{"": 1, "EUR": 1}, legacy.Currencies)
+
+	mixed := BuildSessionSummary("s", []*Evidence{mk("1", "EUR", 0.1), mk("2", "USD", 0.2)})
+	assert.False(t, mixed.CostComparable)
+	assert.InDelta(t, 0.3, mixed.TotalCost, 1e-9, "the legacy total is still computed; the flag says it is not a sum in one unit")
+	assert.Equal(t, "EUR", mixed.Currency, "first stamped currency, as before")
+
+	none := BuildSessionSummary("s", []*Evidence{mk("1", "", 0)})
+	assert.True(t, none.CostComparable)
+	assert.Nil(t, none.Currencies)
+}

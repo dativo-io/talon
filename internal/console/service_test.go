@@ -543,3 +543,69 @@ func TestSession_AgentScopeOpensTheObservedShare(t *testing.T) {
 	assert.Equal(t, "agent-b", tlB2.Timeline.Records[0].AgentID)
 	assert.NotEqual(t, tlB.Timeline.Records[0].ID, tlB2.Timeline.Records[0].ID)
 }
+
+// TestToday_ForeignCurrencyIsPartial (#535 review round 4): a USD-priced
+// record today under a EUR configuration makes today's cost partial, not a
+// confident EUR figure.
+func TestToday_ForeignCurrencyIsPartial(t *testing.T) {
+	f := seed(t) // every priced record is USD, configured USD
+	ctx := context.Background()
+	okSvc := f.service(t)
+	ok := okSvc.Overview(ctx, "default").Today
+	assert.Equal(t, StateOK, ok.Availability.State)
+
+	require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+		ID: "eur_today", CorrelationID: "c_eur_today", TenantID: "default", AgentID: "scratch", InvocationType: "gateway",
+		Timestamp: f.now.Add(-2 * time.Minute), PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		Execution: evidence.Execution{Cost: 0.50, Currency: "EUR", ModelUsed: "gpt-4o-mini", PricingKnown: true},
+	}))
+	today := okSvc.Overview(ctx, "default").Today
+	assert.Equal(t, StatePartial, today.Availability.State)
+	assert.Equal(t, []string{"cost"}, today.Availability.Unavailable)
+	assert.Contains(t, today.Availability.Note, "EUR")
+	assert.InDelta(t, 0.75, today.Cost, eps, "the figure is still reported, labelled not comparable")
+	assert.Equal(t, 5, today.Requests, "request counts are unaffected by currency")
+
+	// The costs section says the same thing about the same window.
+	c := okSvc.Costs(ctx, "default", "", costs.BreakdownAgents)
+	assert.Equal(t, StatePartial, c.Availability.State)
+	assert.Contains(t, c.Availability.Unavailable, "today_eur")
+	assert.Contains(t, c.Availability.Unavailable, "month_eur", "a record of today is inside the month window too")
+	assert.Contains(t, c.Availability.Unavailable, "daily_budget", "no utilization from incomparable amounts")
+	assert.Equal(t, map[string]int{"USD": 2, "EUR": 1}, c.Report.Currencies["day"])
+}
+
+// TestSession_CostNotComparableIsPartial (#535 review round 4): a session
+// priced in two currencies, or in a currency other than the configured one,
+// is partial on total_cost; the CLI's cost_comparable flag says the same.
+func TestSession_CostNotComparableIsPartial(t *testing.T) {
+	f := seed(t)
+	ctx := context.Background()
+	put := func(id, sess, cur string, cost float64) {
+		require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+			ID: id, CorrelationID: "c_" + id, SessionID: sess, TenantID: "default", AgentID: "scratch", InvocationType: "gateway",
+			Timestamp: f.now.Add(-3 * time.Minute), PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+			Execution: evidence.Execution{Cost: cost, Currency: cur, ModelUsed: "gpt-4o-mini", PricingKnown: true},
+		}))
+	}
+	put("m1", "mixed-sess", "USD", 0.10)
+	put("m2", "mixed-sess", "EUR", 0.20)
+	put("f1", "eur-sess", "EUR", 0.30)
+	svc := f.service(t)
+
+	mixed, err := svc.Session(ctx, "mixed-sess", "default", "", evidence.TimelineCursor{}, 0)
+	require.NoError(t, err)
+	assert.Equal(t, StatePartial, mixed.Availability.State)
+	assert.Equal(t, []string{"detail.summary.total_cost"}, mixed.Availability.Unavailable)
+	assert.False(t, mixed.Detail.Summary.CostComparable)
+
+	foreign, err := svc.Session(ctx, "eur-sess", "default", "", evidence.TimelineCursor{}, 0)
+	require.NoError(t, err)
+	assert.Equal(t, StatePartial, foreign.Availability.State)
+	assert.Contains(t, foreign.Availability.Note, "priced in EUR, not the configured USD")
+	assert.True(t, foreign.Detail.Summary.CostComparable, "one unit, just not the configured one")
+
+	usd, err := svc.Session(ctx, "hr-demo-s1", "default", "", evidence.TimelineCursor{}, 0)
+	require.NoError(t, err)
+	assert.Equal(t, StateOK, usd.Availability.State)
+}
