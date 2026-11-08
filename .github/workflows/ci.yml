@@ -125,14 +125,30 @@ jobs:
           set -o pipefail
           make conformance | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: OPA/Rego policy tests
+      - name: Cache the pinned OPA binary
+        # Keyed on the installer script, so a version or digest bump misses
+        # the cache; a cached binary is still digest- and version-verified by
+        # the installer before it is trusted.
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/opa-bin
+          key: opa-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-opa.sh') }}
+
+      - name: Install the pinned OPA (checksum-verified)
+        # Replaces `curl -L .../releases/latest/download/... && chmod +x`:
+        # that path executed an HTML 504 page as OPA on 2026-11-08. The
+        # installer pins the version, fails on any non-2xx, retries with
+        # backoff, verifies the release's SHA-256 and the reported version,
+        # and installs atomically or not at all (scripts/install-opa.sh).
         run: |
-          if ! command -v opa &> /dev/null; then
-            curl -L -o opa https://github.com/open-policy-agent/opa/releases/latest/download/opa_linux_amd64_static
-            chmod +x opa
-            sudo mv opa /usr/local/bin/
-          fi
-          opa test internal/policy/rego/ -v
+          OPA_INSTALL_DIR="${{ runner.temp }}/opa-bin" scripts/install-opa.sh
+          echo "${{ runner.temp }}/opa-bin" >> "$GITHUB_PATH"
+
+      - name: OPA installer failure injection (HTML 504, truncated, checksum, version)
+        run: make test-install-opa
+
+      - name: OPA/Rego policy tests
+        run: opa test internal/policy/rego/ -v
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4

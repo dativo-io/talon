@@ -78,6 +78,15 @@ test-openshell-showcase-contract: build ## Offline contract test of the canonica
 	@TALON_SHOWCASE_TALON_BIN="$(CURDIR)/bin/talon" bash ./examples/openshell/showcase/test-contract.sh
 	@TALON_SHOWCASE_TALON_BIN="$(CURDIR)/bin/talon" bash ./scripts/test-showcase-bundle.sh
 
+install-opa: ## Install the pinned, checksum-verified OPA binary to $$OPA_INSTALL_DIR (default ~/.local/bin); the same installer CI uses
+	@bash scripts/install-opa.sh
+
+test-install-opa: ## Failure-injection test of scripts/install-opa.sh against a local fake release host: HTML 504 page, truncated download, checksum mismatch, wrong reported version install nothing; a good asset installs atomically; no network
+	@bash scripts/test-install-opa.sh
+
+test-rego: install-opa ## OPA/Rego policy tests with the pinned OPA (installs it first if missing)
+	@"$${OPA_INSTALL_DIR:-$$HOME/.local/bin}/opa" test internal/policy/rego/ -v
+
 test-release-verify: ## Offline failure-injection tests of the published-artifact path (#359): scripts/verify-release.sh + scripts/install.sh against a fake release on 127.0.0.1 (altered binary, modified/missing manifest digest, version/commit mismatch, registry without digest, unparseable metadata, private image, draft, relative paths) and scripts/release-platform-report.sh (darwin outcome classification); no Docker, no network
 	@bash ./scripts/test-verify-release.sh
 	@bash ./scripts/test-release-platform-report.sh
