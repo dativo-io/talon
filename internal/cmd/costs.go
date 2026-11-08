@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/costs"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
@@ -51,38 +52,22 @@ var costsExportCmd = &cobra.Command{
 	RunE:  costsExport,
 }
 
-type costsPayload struct {
-	TenantID string `json:"tenant_id"`
-	AgentID  string `json:"agent_id,omitempty"`
-	// Currency is the ISO-4217 unit of every amount in this payload, from the
-	// active pricing table (#216). Field names keep their legacy _eur suffix
-	// for consumer compatibility; Currency is the authoritative unit.
-	Currency       string             `json:"currency"`
-	TodayEUR       float64            `json:"today_eur"`
-	MonthEUR       float64            `json:"month_eur"`
-	SevenDaysEUR   float64            `json:"seven_days_eur"`
-	ByAgentEUR     map[string]float64 `json:"by_agent_eur,omitempty"`
-	ByModelEUR     map[string]float64 `json:"by_model_eur,omitempty"`
-	ByProviderEUR  map[string]float64 `json:"by_provider_eur,omitempty"`
-	ByTeamEUR      map[string]float64 `json:"by_team_eur,omitempty"`
-	DailyBudget    *budgetUsage       `json:"daily_budget,omitempty"`
-	MonthlyBudget  *budgetUsage       `json:"monthly_budget,omitempty"`
-	CacheSevenDays *cacheUsage        `json:"cache_7d,omitempty"`
-	CacheMonth     *cacheUsage        `json:"cache_30d,omitempty"`
-}
+// The payload, budget and cache shapes are the shared cost projection
+// (internal/costs, #535): `talon costs --json` and the operations console
+// emit the same struct built by the same function. The aliases keep the
+// renderers and their tests on their historical names.
+type (
+	costsPayload = costs.Report
+	budgetUsage  = costs.BudgetUsage
+	cacheUsage   = costs.CacheUsage
+)
 
-type budgetUsage struct {
-	UsedEUR  float64 `json:"used_eur"`
-	LimitEUR float64 `json:"limit_eur"`
-	Percent  float64 `json:"percent"`
-	Source   string  `json:"source"`
-}
+// cliBudgetResolver adapts the CLI's server-first tri-state cap resolution
+// (resolveBudgetUsage) to the shared report builder.
+type cliBudgetResolver struct{ cfg *config.Config }
 
-type cacheUsage struct {
-	Hits      int64   `json:"hits"`
-	SavedEUR  float64 `json:"saved_eur"`
-	HitRate   float64 `json:"hit_rate_percent"`
-	TotalSeen int     `json:"total_seen"`
+func (r cliBudgetResolver) Resolve(ctx context.Context, tenantID, agentID string, daily, monthly float64) (dailyBudget, monthlyBudget *costs.BudgetUsage, err error) {
+	return resolveBudgetUsage(ctx, r.cfg, tenantID, agentID, daily, monthly)
 }
 
 var costsCmd = &cobra.Command{
@@ -137,152 +122,53 @@ var costsCmd = &cobra.Command{
 			return nil
 		}
 
-		now := time.Now().UTC()
-		dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-		dayEnd := dayStart.Add(24 * time.Hour)
-		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-		monthEnd := monthStart.AddDate(0, 1, 0)
-		weekStart := dayStart.AddDate(0, 0, -6)
-
-		out := cmd.OutOrStdout()
-
-		if costsByModel {
-			byModelDaily, err := store.CostByModel(ctx, tenantID, costsAgent, dayStart, dayEnd)
-			if err != nil {
-				return fmt.Errorf("cost by model (daily): %w", err)
-			}
-			byModelMonthly, err := store.CostByModel(ctx, tenantID, costsAgent, monthStart, monthEnd)
-			if err != nil {
-				return fmt.Errorf("cost by model (monthly): %w", err)
-			}
-			weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
-			if costsJSON {
-				return writeCostsJSON(out, costCurrency, costsPayload{
-					TenantID:     tenantID,
-					AgentID:      costsAgent,
-					TodayEUR:     sumValues(byModelDaily),
-					MonthEUR:     sumValues(byModelMonthly),
-					SevenDaysEUR: weekTotal,
-					ByModelEUR:   byModelDaily,
-				})
-			}
-			renderCostByModel(out, costCurrency, tenantID, costsAgent, byModelDaily, byModelMonthly)
-			// Optional: 7d trend (same agent filter when --agent is set)
-			fmt.Fprintf(out, "  7d total: %s\n", formatMoney(costCurrency, weekTotal))
-			return nil
+		// One shared projection for every view (#535): windows, maps, budgets
+		// and cache figures come from costs.Build; this command only chooses
+		// the view and renders it.
+		scope := costs.Scope{TenantID: tenantID, AgentID: costsAgent, Breakdown: costs.BreakdownAgents}
+		switch {
+		case costsByModel:
+			scope.Breakdown = costs.BreakdownModel
+		case costsByProvider:
+			scope.Breakdown = costs.BreakdownProvider
+		case costsByTeam:
+			scope.Breakdown = costs.BreakdownTeam
 		}
-		if costsByProvider {
-			byProviderDaily, err := store.CostByProvider(ctx, tenantID, costsAgent, dayStart, dayEnd)
-			if err != nil {
-				return fmt.Errorf("cost by provider (daily): %w", err)
-			}
-			byProviderMonthly, err := store.CostByProvider(ctx, tenantID, costsAgent, monthStart, monthEnd)
-			if err != nil {
-				return fmt.Errorf("cost by provider (monthly): %w", err)
-			}
-			weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
-			if costsJSON {
-				return writeCostsJSON(out, costCurrency, costsPayload{
-					TenantID:      tenantID,
-					AgentID:       costsAgent,
-					TodayEUR:      sumValues(byProviderDaily),
-					MonthEUR:      sumValues(byProviderMonthly),
-					SevenDaysEUR:  weekTotal,
-					ByProviderEUR: byProviderDaily,
-				})
-			}
-			renderCostByProvider(out, costCurrency, tenantID, costsAgent, byProviderDaily, byProviderMonthly)
-			fmt.Fprintf(out, "  7d total: %s\n", formatMoney(costCurrency, weekTotal))
-			return nil
-		}
-		if costsByTeam {
-			byTeamDaily, err := store.CostByTeam(ctx, tenantID, dayStart, dayEnd)
-			if err != nil {
-				return fmt.Errorf("cost by team (daily): %w", err)
-			}
-			byTeamMonthly, err := store.CostByTeam(ctx, tenantID, monthStart, monthEnd)
-			if err != nil {
-				return fmt.Errorf("cost by team (monthly): %w", err)
-			}
-			if costsJSON {
-				weekTotal, _ := store.CostTotal(ctx, tenantID, "", weekStart, dayEnd)
-				return writeCostsJSON(out, costCurrency, costsPayload{
-					TenantID:     tenantID,
-					TodayEUR:     sumValues(byTeamDaily),
-					MonthEUR:     sumValues(byTeamMonthly),
-					SevenDaysEUR: weekTotal,
-					ByTeamEUR:    byTeamDaily,
-				})
-			}
-			renderCostByTeam(out, costCurrency, tenantID, byTeamDaily, byTeamMonthly)
-			return nil
-		}
-
-		if costsAgent != "" {
-			daily, err := store.CostTotal(ctx, tenantID, costsAgent, dayStart, dayEnd)
-			if err != nil {
-				return fmt.Errorf("cost total daily: %w", err)
-			}
-			monthly, err := store.CostTotal(ctx, tenantID, costsAgent, monthStart, monthEnd)
-			if err != nil {
-				return fmt.Errorf("cost total monthly: %w", err)
-			}
-			dailyBudget, monthlyBudget, err := resolveBudgetUsage(ctx, cfg, tenantID, costsAgent, daily, monthly)
-			if err != nil {
-				return err
-			}
-			if costsJSON {
-				weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
-				return writeCostsJSON(out, costCurrency, costsPayload{
-					TenantID:      tenantID,
-					AgentID:       costsAgent,
-					TodayEUR:      daily,
-					MonthEUR:      monthly,
-					SevenDaysEUR:  weekTotal,
-					DailyBudget:   dailyBudget,
-					MonthlyBudget: monthlyBudget,
-				})
-			}
-			renderCostReportSingleAgent(out, costCurrency, tenantID, costsAgent, daily, monthly)
-			weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
-			fmt.Fprintf(out, "  7d total: %s\n", formatMoney(costCurrency, weekTotal))
-			printBudgetUtilization(out, costCurrency, dailyBudget, monthlyBudget)
-			return nil
-		}
-
-		byAgentDaily, err := store.CostByAgent(ctx, tenantID, dayStart, dayEnd)
-		if err != nil {
-			return fmt.Errorf("cost by agent (daily): %w", err)
-		}
-		byAgentMonthly, err := store.CostByAgent(ctx, tenantID, monthStart, monthEnd)
-		if err != nil {
-			return fmt.Errorf("cost by agent (monthly): %w", err)
-		}
-		dailyTotal, _ := store.CostTotal(ctx, tenantID, "", dayStart, dayEnd)
-		monthlyTotal, _ := store.CostTotal(ctx, tenantID, "", monthStart, monthEnd)
-		weekTotal, _ := store.CostTotal(ctx, tenantID, "", weekStart, dayEnd)
-		dailyBudget, monthlyBudget, err := resolveBudgetUsage(ctx, cfg, tenantID, "", dailyTotal, monthlyTotal)
+		report, err := costs.Build(ctx, store, scope, costs.WindowAt(time.Now().UTC()), costCurrency, cliBudgetResolver{cfg: cfg})
 		if err != nil {
 			return err
 		}
-		cache7d, cache30d := getCacheUsage(ctx, store, tenantID, weekStart, dayEnd, monthStart, monthEnd)
-		if costsJSON {
-			return writeCostsJSON(out, costCurrency, costsPayload{
-				TenantID:       tenantID,
-				TodayEUR:       dailyTotal,
-				MonthEUR:       monthlyTotal,
-				SevenDaysEUR:   weekTotal,
-				ByAgentEUR:     byAgentDaily,
-				DailyBudget:    dailyBudget,
-				MonthlyBudget:  monthlyBudget,
-				CacheSevenDays: cache7d,
-				CacheMonth:     cache30d,
-			})
+		for _, warn := range report.Warnings {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", warn)
 		}
-		renderCostReportAllAgents(out, costCurrency, tenantID, byAgentDaily, byAgentMonthly)
-		fmt.Fprintf(out, "  7d total: %s\n", formatMoney(costCurrency, weekTotal))
-		printBudgetUtilization(out, costCurrency, dailyBudget, monthlyBudget)
-		printCacheSavings(out, costCurrency, cache7d, cache30d)
+		out := cmd.OutOrStdout()
+		if costsJSON {
+			return writeCostsJSON(out, costCurrency, *report)
+		}
+		sevenDayLine := func() {
+			fmt.Fprintf(out, "  7d total: %s\n", formatMoney(costCurrency, report.SevenDaysEUR))
+		}
+		switch scope.Breakdown {
+		case costs.BreakdownModel:
+			renderCostByModel(out, costCurrency, tenantID, costsAgent, report.ByModelEUR, report.ByModelMonthEUR)
+			sevenDayLine()
+		case costs.BreakdownProvider:
+			renderCostByProvider(out, costCurrency, tenantID, costsAgent, report.ByProviderEUR, report.ByProviderMonthEUR)
+			sevenDayLine()
+		case costs.BreakdownTeam:
+			renderCostByTeam(out, costCurrency, tenantID, report.ByTeamEUR, report.ByTeamMonthEUR)
+		default:
+			if costsAgent != "" {
+				renderCostReportSingleAgent(out, costCurrency, tenantID, costsAgent, report.TodayEUR, report.MonthEUR)
+				sevenDayLine()
+				printBudgetUtilization(out, costCurrency, report.DailyBudget, report.MonthlyBudget)
+				return nil
+			}
+			renderCostReportAllAgents(out, costCurrency, tenantID, report.ByAgentEUR, report.ByAgentMonthEUR)
+			sevenDayLine()
+			printBudgetUtilization(out, costCurrency, report.DailyBudget, report.MonthlyBudget)
+			printCacheSavings(out, costCurrency, report.CacheSevenDays, report.CacheMonth)
+		}
 		return nil
 	},
 }
@@ -319,23 +205,8 @@ func printBudgetUtilization(w io.Writer, currency string, dailyBudget, monthlyBu
 	}
 }
 
-// budgetStatusWord maps utilization to the operator status vocabulary of the
-// cost-control contract (#144): the warning statuses correspond one-to-one to
-// the gateway's BudgetWarnThresholds evidence events; BLOCKED means new
-// requests whose estimate exceeds the remaining headroom are denied before
-// the provider is called.
-func budgetStatusWord(pct float64) string {
-	switch {
-	case pct >= 100:
-		return "BLOCKED"
-	case pct >= 95:
-		return "CRITICAL"
-	case pct >= 80:
-		return "WARNING"
-	default:
-		return "OK"
-	}
-}
+// budgetStatusWord is the shared status vocabulary (costs.StatusWord).
+func budgetStatusWord(pct float64) string { return costs.StatusWord(pct) }
 
 func resolveBudgetUsage(
 	ctx context.Context,
@@ -563,61 +434,7 @@ func loadAgentEffectiveCaps(ctx context.Context, cfg *config.Config, tenantID, a
 }
 
 func toBudgetUsage(used, limit float64, source string) *budgetUsage {
-	if limit <= 0 {
-		return nil
-	}
-	return &budgetUsage{
-		UsedEUR:  used,
-		LimitEUR: limit,
-		Percent:  100 * used / limit,
-		Source:   source,
-	}
-}
-
-func getCacheUsage(
-	ctx context.Context,
-	store *evidence.Store,
-	tenantID string,
-	weekStart, dayEnd, monthStart, monthEnd time.Time,
-) (sevenDays *cacheUsage, month *cacheUsage) {
-	hits7d, saved7d, err := store.CacheSavings(ctx, tenantID, weekStart, dayEnd)
-	if err != nil {
-		return nil, nil
-	}
-	total7d, _ := store.CountInRange(ctx, tenantID, "", weekStart, dayEnd)
-	sevenDays = &cacheUsage{
-		Hits:      hits7d,
-		SavedEUR:  saved7d,
-		HitRate:   percentage(int(hits7d), total7d),
-		TotalSeen: total7d,
-	}
-	hits30d, saved30d, err := store.CacheSavings(ctx, tenantID, monthStart, monthEnd)
-	if err != nil {
-		return sevenDays, nil
-	}
-	total30d, _ := store.CountInRange(ctx, tenantID, "", monthStart, monthEnd)
-	month = &cacheUsage{
-		Hits:      hits30d,
-		SavedEUR:  saved30d,
-		HitRate:   percentage(int(hits30d), total30d),
-		TotalSeen: total30d,
-	}
-	return sevenDays, month
-}
-
-func percentage(hits, total int) float64 {
-	if total <= 0 {
-		return 0
-	}
-	return 100 * float64(hits) / float64(total)
-}
-
-func sumValues(m map[string]float64) float64 {
-	total := 0.0
-	for _, v := range m {
-		total += v
-	}
-	return total
+	return costs.NewBudgetUsage(used, limit, source)
 }
 
 func writeCostsJSON(w io.Writer, currency string, payload costsPayload) error {

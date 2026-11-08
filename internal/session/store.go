@@ -143,6 +143,7 @@ func (s *Store) init(ctx context.Context) error {
 		reasoning TEXT
 	);
 	CREATE INDEX IF NOT EXISTS idx_sessions_tenant_status ON sessions(tenant_id, status);
+	CREATE INDEX IF NOT EXISTS idx_sessions_tenant_created ON sessions(tenant_id, created_at);
 	CREATE TABLE IF NOT EXISTS session_stage_counts (
 		session_id TEXT NOT NULL,
 		stage TEXT NOT NULL,
@@ -674,6 +675,51 @@ func (s *Store) GetStageCounts(ctx context.Context, sessionID string) (*StageCou
 // (tenant, agent) tuple, so two agents asserting the same external id hold
 // separate rows and owner filtering IS participation filtering here. Empty
 // agentID is the tenant-wide (admin) view.
+// ListRecent is the bounded form of ListByTenant (#535): the same filters and
+// the same order (created_at DESC, then id DESC as a tie-break so pages are
+// stable), at most limit rows, optionally only rows created strictly before
+// the cursor. limit <= 0 is rejected: the point of this query is the bound.
+// Callers page by passing the last row's CreatedAt as before; rows created in
+// the same instant as the cursor are skipped, which the id tie-break keeps
+// deterministic but not lossless (sub-second collisions are not expected from
+// one installation).
+func (s *Store) ListRecent(ctx context.Context, tenantID, agentID string, status Status, before time.Time, limit int) ([]*Session, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("listing sessions for tenant %s: limit must be positive, got %d", tenantID, limit)
+	}
+	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE tenant_id = ?`
+	args := []any{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	if status != "" {
+		query += ` AND status = ?`
+		args = append(args, string(status))
+	}
+	if !before.IsZero() {
+		query += ` AND created_at < ?`
+		args = append(args, before.UTC())
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing recent sessions for tenant %s: %w", tenantID, err)
+	}
+	defer rows.Close()
+
+	var out []*Session
+	for rows.Next() {
+		ss, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning session row: %w", err)
+		}
+		out = append(out, ss)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListByTenant(ctx context.Context, tenantID, agentID string, status Status) ([]*Session, error) {
 	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE tenant_id = ?`
 	args := []any{tenantID}

@@ -18,6 +18,7 @@ import (
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	talonsession "github.com/dativo-io/talon/internal/session"
 )
 
 var (
@@ -442,23 +443,9 @@ func fetchSessionRecords(ctx context.Context, store *evidence.Store, sessionID, 
 	return scopeSessionRecords(records, tenant, agent), nil
 }
 
-// scopeSessionRecords drops records that do not match the tenant/agent filters.
-// Empty filters match everything.
+// scopeSessionRecords is the shared scoping rule (session.ScopeRecords).
 func scopeSessionRecords(records []*evidence.Evidence, tenant, agent string) []*evidence.Evidence {
-	if tenant == "" && agent == "" {
-		return records
-	}
-	out := make([]*evidence.Evidence, 0, len(records))
-	for _, ev := range records {
-		if tenant != "" && ev.TenantID != tenant {
-			continue
-		}
-		if agent != "" && ev.AgentID != agent {
-			continue
-		}
-		out = append(out, ev)
-	}
-	return out
+	return talonsession.ScopeRecords(records, tenant, agent)
 }
 
 // derefEvidence copies a slice of evidence pointers into values (the shape the

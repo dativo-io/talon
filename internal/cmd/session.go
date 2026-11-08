@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"text/tabwriter"
@@ -20,6 +19,7 @@ var (
 	sessTenant     string
 	sessStatus     string
 	sessListJSON   bool
+	sessListLimit  int
 	sessShowTenant string
 	sessShowJSON   bool
 )
@@ -54,6 +54,7 @@ func init() {
 	sessionListCmd.Flags().StringVar(&sessTenant, "tenant", "default", "Tenant ID")
 	sessionListCmd.Flags().StringVar(&sessStatus, "status", "", "Filter by status")
 	sessionListCmd.Flags().BoolVar(&sessListJSON, "json", false, "Emit the session rows as JSON")
+	sessionListCmd.Flags().IntVar(&sessListLimit, "limit", 0, "Return at most N sessions, newest first (0 = all)")
 	sessionShowCmd.Flags().StringVar(&sessShowTenant, "tenant", "", "Scope to a tenant (default: unscoped operator read)")
 	sessionShowCmd.Flags().BoolVar(&sessShowJSON, "json", false, "Emit the session detail as JSON")
 	sessionCmd.AddCommand(sessionListCmd, sessionShowCmd)
@@ -74,7 +75,12 @@ func sessionList(cmd *cobra.Command, args []string) error {
 	// Operator CLI on the local DB: tenant-wide view (no agent scope). Only
 	// real asserted/talon sessions have rows — synthetic request-level ids
 	// never reach this store, so they cannot appear here (#271 boundary).
-	sessions, err := store.ListByTenant(context.Background(), sessTenant, "", talonsession.Status(sessStatus))
+	var sessions []*talonsession.Session
+	if sessListLimit > 0 {
+		sessions, err = store.ListRecent(context.Background(), sessTenant, "", talonsession.Status(sessStatus), time.Time{}, sessListLimit)
+	} else {
+		sessions, err = store.ListByTenant(context.Background(), sessTenant, "", talonsession.Status(sessStatus))
+	}
 	if err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
@@ -94,15 +100,9 @@ func sessionList(cmd *cobra.Command, args []string) error {
 	return tw.Flush()
 }
 
-// sessionDetail is the `session show` contract: the session-store row (when
-// one exists) plus the evidence-derived summary. The summary is built by
-// evidence.BuildSessionSummary — the same pure function behind the metrics API
-// session drill-down, so the two views cannot disagree (#271).
-type sessionDetail struct {
-	Session   *talonsession.Session   `json:"session,omitempty"`
-	Ambiguous []*talonsession.Session `json:"ambiguous_sessions,omitempty"`
-	Summary   evidence.SessionSummary `json:"summary"`
-}
+// sessionDetail is the `session show` contract: the shared session.Detail
+// (#271, #535), built by session.LoadDetail for the CLI and the console alike.
+type sessionDetail = talonsession.Detail
 
 func sessionShow(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
@@ -136,51 +136,10 @@ func sessionShow(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// loadSessionDetail resolves the argument against both id namespaces (internal
-// sess_... primary key, then external asserted id) and joins the row with the
-// session's evidence records. A session with evidence but no row (e.g. one
-// asserted only on the MCP proxy path) still gets a summary.
+// loadSessionDetail is the shared resolver (session.LoadDetail): both id
+// namespaces, tenant scoping, and the evidence join.
 func loadSessionDetail(ctx context.Context, store *talonsession.Store, evStore *evidence.Store, idOrExternal, tenant string) (*sessionDetail, error) {
-	detail := &sessionDetail{}
-	sess, err := store.Get(ctx, idOrExternal, tenant)
-	switch {
-	case err == nil:
-		detail.Session = sess
-	case errors.Is(err, talonsession.ErrSessionNotFound):
-		matches, listErr := store.ListByExternalID(ctx, idOrExternal, tenant)
-		if listErr != nil {
-			return nil, listErr
-		}
-		switch len(matches) {
-		case 0: // evidence-only session, or unknown id — decided below
-		case 1:
-			detail.Session = matches[0]
-		default:
-			detail.Ambiguous = matches
-			return detail, nil
-		}
-	default:
-		return nil, fmt.Errorf("getting session %s: %w", idOrExternal, err)
-	}
-
-	// Evidence keys sessions by the EXTERNAL id when one was asserted; runner
-	// lifecycle sessions use the internal id itself.
-	evidenceKey := idOrExternal
-	if detail.Session != nil {
-		evidenceKey = detail.Session.ID
-		if detail.Session.ExternalSessionID != "" {
-			evidenceKey = detail.Session.ExternalSessionID
-		}
-	}
-	records, err := fetchSessionRecords(ctx, evStore, evidenceKey, tenant, "")
-	if err != nil {
-		return nil, err
-	}
-	if detail.Session == nil && len(records) == 0 {
-		return nil, fmt.Errorf("session %s not found (no session row, no evidence records)", idOrExternal)
-	}
-	detail.Summary = evidence.BuildSessionSummary(evidenceKey, records)
-	return detail, nil
+	return talonsession.LoadDetail(ctx, store, evStore, idOrExternal, tenant)
 }
 
 // renderSessionDetail prints the one-screen session summary: the store row's
