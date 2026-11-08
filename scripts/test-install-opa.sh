@@ -67,20 +67,25 @@ run_case() { # $1=name $2=mode $3=sha-override(or empty) $4=expect(ok|fail) $5=e
     out="$(OPA_DOWNLOAD_BASE="$base/$mode" OPA_INSTALL_DIR="$dir" bash scripts/install-opa.sh 2>&1)" || rc=$?
   fi
   if [[ "$expect" == "fail" ]]; then
-    if [[ $rc -ne 0 ]] && grep -q -- "$fragment" <<<"$out" && [[ ! -e "$dir/opa" ]] && [[ -z "$(ls -A "$dir" 2>/dev/null)" ]]; then
+    if [[ $rc -ne 0 ]] && grep -q -- "$fragment" <<<"$out" && [[ ! -e "$dir/opa" ]] && [[ "$(entries_in "$dir")" -eq 0 ]]; then
       ok "$name: refused ($fragment), nothing installed"
     else
-      bad "$name: rc=$rc installed=$(ls -A "$dir" 2>/dev/null | tr '\n' ' ') out=$out"
+      bad "$name: rc=$rc entries=$(entries_in "$dir") out=$out"
     fi
   else
-    local extra=0
-    for f in "$dir"/* "$dir"/.[!.]*; do [[ -e "$f" && "$(basename "$f")" != "opa" ]] && extra=1; done
-    if [[ $rc -eq 0 ]] && [[ -x "$dir/opa" ]] && "$dir/opa" version | grep -q "Version: 1.22.2" && [[ $extra -eq 0 ]]; then
+    if [[ $rc -eq 0 ]] && [[ -x "$dir/opa" ]] && "$dir/opa" version | grep -q "Version: 1.22.2" && [[ "$(entries_in "$dir")" -eq 1 ]]; then
       ok "$name: installed exactly one verified binary"
     else
-      bad "$name: rc=$rc files=$(ls -A "$dir" 2>/dev/null | tr '\n' ' ') out=$out"
+      bad "$name: rc=$rc entries=$(entries_in "$dir") out=$out"
     fi
   fi
+}
+
+# entries_in counts the directory entries (hidden ones included) without
+# parsing ls output.
+entries_in() {
+  [[ -d "$1" ]] || { echo 0; return; }
+  find "$1" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' '
 }
 
 run_case gateway504   gateway504   ""                 fail "download failed"
@@ -89,13 +94,52 @@ run_case badsum       badsum       "00000000000000000000000000000000000000000000
 run_case wrongversion wrongversion "$wrongversion_sha" fail "expected 'Version: 1.22.2'"
 run_case good         good         "$good_sha"        ok   ""
 
+# A pre-existing INVALID binary at the canonical path is moved aside before
+# the download; when the download then fails nothing valid is left at the
+# path, and when it succeeds the valid binary replaces it.
+dir="$work/install-preexisting-bad"
+mkdir -p "$dir"; mk_fake "$dir/opa" "9.9.9"
+out="$(OPA_DOWNLOAD_BASE="$base/gateway504" OPA_INSTALL_DIR="$dir" OPA_SHA256="$good_sha" bash scripts/install-opa.sh 2>&1)" && rc=0 || rc=$?
+if [[ $rc -ne 0 ]] && [[ ! -e "$dir/opa" ]] && grep -q "failed digest/version verification; moved to" <<<"$out" && [[ -n "$(find "$dir" -maxdepth 1 -name 'opa.rejected.*' -print -quit)" ]]; then
+  ok "pre-existing invalid binary + failed download: canonical path left empty, rejected file kept aside"
+else
+  bad "pre-existing invalid binary + failed download: rc=$rc entries=$(entries_in "$dir") out=$out"
+fi
+dir="$work/install-preexisting-good"
+mkdir -p "$dir"; mk_fake "$dir/opa" "9.9.9"
+out="$(OPA_DOWNLOAD_BASE="$base/good" OPA_INSTALL_DIR="$dir" OPA_SHA256="$good_sha" bash scripts/install-opa.sh 2>&1)" && rc=0 || rc=$?
+if [[ $rc -eq 0 ]] && "$dir/opa" version | grep -q "Version: 1.22.2"; then
+  ok "pre-existing invalid binary + good download: replaced by the verified one"
+else
+  bad "pre-existing invalid binary + good download: rc=$rc out=$out"
+fi
+
+# Platform table: every supported platform maps to an asset and a digest (the
+# download itself is expected to fail against the closed port); an
+# unsupported one is refused before any download.
+for plat in "Linux/x86_64" "Linux/arm64" "Darwin/x86_64" "Darwin/arm64"; do
+  out="$(OPA_PLATFORM="$plat" OPA_DOWNLOAD_BASE="http://127.0.0.1:9/nowhere" OPA_INSTALL_DIR="$work/plat" bash scripts/install-opa.sh 2>&1)" || true
+  if grep -q "downloading http://127.0.0.1:9/nowhere/v1.22.2/opa_" <<<"$out"; then
+    ok "platform $plat resolves to a pinned asset"
+  else
+    bad "platform $plat did not resolve to a pinned asset: $out"
+  fi
+done
+out="$(OPA_PLATFORM="FreeBSD/amd64" OPA_INSTALL_DIR="$work/plat" bash scripts/install-opa.sh 2>&1)" || true
+if grep -q "no pinned OPA" <<<"$out" && ! grep -q "downloading" <<<"$out"; then
+  ok "unsupported platform refused before download"
+else
+  bad "unsupported platform not refused: $out"
+fi
+
 # Idempotence: a second run against an unreachable host must succeed from the
 # already-verified install without downloading.
 dir="$work/install-good"
-if OPA_DOWNLOAD_BASE="http://127.0.0.1:9/nowhere" OPA_INSTALL_DIR="$dir" OPA_SHA256="$good_sha" bash scripts/install-opa.sh 2>&1 | grep -q "already installed"; then
+out="$(OPA_DOWNLOAD_BASE="http://127.0.0.1:9/nowhere" OPA_INSTALL_DIR="$dir" OPA_SHA256="$good_sha" bash scripts/install-opa.sh 2>&1)" && rc=0 || rc=$?
+if [[ $rc -eq 0 ]] && grep -q "already installed" <<<"$out"; then
   ok "idempotent: verified install is reused without a download"
 else
-  bad "idempotent: expected the verified install to be reused"
+  bad "idempotent: rc=$rc out=$out"
 fi
 
 # Guard: the pinned digest in the script is the one published by the release.
