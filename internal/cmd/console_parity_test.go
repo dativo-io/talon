@@ -164,6 +164,7 @@ func (f *parityFixture) cli(t *testing.T, args ...string) []byte {
 	auditTenant, auditAgent, auditSession, auditRuntimeRef = "", "", "", ""
 	auditLimit, auditOffset, auditReport, auditJSON = 20, 0, false, false
 	sessTenant, sessStatus, sessListJSON, sessListLimit, sessListObs = "default", "", false, 0, false
+	sessShowAgent = ""
 	buf := new(bytes.Buffer)
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
@@ -426,4 +427,35 @@ func TestConsoleParity_ObservedSessionsAndTimelinePaging(t *testing.T) {
 	}
 	assert.Equal(t, cliIDs, walked)
 	assert.Equal(t, []string{"e_agg", "e_export", "e_llm"}, walked)
+}
+
+// TestConsoleParity_AgentScopedSessionShow (#535 review round 3): `talon
+// session show <id> --agent B --json` and `/console/v1/sessions/{id}?agent=B`
+// read the same share of a session shared by two agents.
+func TestConsoleParity_AgentScopedSessionShow(t *testing.T) {
+	f := newParityFixture(t)
+	ctx := context.Background()
+	for _, r := range []struct {
+		id, agent string
+		cost      float64
+	}{{"xa1", "hr-analytics-assistant", 0.40}, {"xb1", "scratch", 0.05}, {"xb2", "scratch", 0.06}} {
+		require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+			ID: r.id, CorrelationID: "c_" + r.id, SessionID: "shared-x", TenantID: "default", AgentID: r.agent, InvocationType: "gateway",
+			Timestamp: f.now.Add(-2 * time.Minute), PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+			Execution: evidence.Execution{Cost: r.cost, Currency: "USD", ModelUsed: "gpt-4o-mini", PricingKnown: true},
+		}))
+	}
+	var cliB talonsession.Detail
+	require.NoError(t, json.Unmarshal(f.cli(t, "session", "show", "shared-x", "--json", "--agent", "scratch"), &cliB))
+	var dtoB console.SessionDetail
+	require.Equal(t, http.StatusOK, f.api(t, "/console/v1/sessions/shared-x?agent=scratch", &dtoB))
+	for _, sum := range []evidence.SessionSummary{cliB.Summary, dtoB.Detail.Summary} {
+		assert.Equal(t, 2, sum.RecordCount)
+		assert.InDelta(t, 0.11, sum.TotalCost, 1e-9)
+		assert.Equal(t, []string{"scratch"}, sum.AgentIDs)
+	}
+	var cliAll talonsession.Detail
+	require.NoError(t, json.Unmarshal(f.cli(t, "session", "show", "shared-x", "--json"), &cliAll))
+	assert.Equal(t, 3, cliAll.Summary.RecordCount, "unscoped evidence-only read shows every agent, so the collision is visible")
+	assert.Equal(t, []string{"hr-analytics-assistant", "scratch"}, cliAll.Summary.AgentIDs)
 }

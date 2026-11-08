@@ -224,7 +224,7 @@ func TestSessionDetail_EvidenceOnlySessionAndTenantScope(t *testing.T) {
 	svc := f.service(t)
 	ctx := context.Background()
 
-	sd, err := svc.Session(ctx, "hr-demo-s1", "", evidence.TimelineCursor{}, 0)
+	sd, err := svc.Session(ctx, "hr-demo-s1", "", "", evidence.TimelineCursor{}, 0)
 	require.NoError(t, err)
 	assert.Equal(t, StateOK, sd.Availability.State)
 	require.NotNil(t, sd.Detail)
@@ -244,9 +244,9 @@ func TestSessionDetail_EvidenceOnlySessionAndTenantScope(t *testing.T) {
 	assert.False(t, sd.Timeline.Records[1].Allowed)
 	assert.Equal(t, "e_llm", sd.Timeline.Records[2].ID)
 
-	_, err = svc.Session(ctx, "hr-demo-s1", "acme", evidence.TimelineCursor{}, 0)
+	_, err = svc.Session(ctx, "hr-demo-s1", "acme", "", evidence.TimelineCursor{}, 0)
 	require.ErrorIs(t, err, ErrNotFound, "another tenant cannot see the session")
-	_, err = svc.Session(ctx, "missing", "", evidence.TimelineCursor{}, 0)
+	_, err = svc.Session(ctx, "missing", "", "", evidence.TimelineCursor{}, 0)
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -358,7 +358,7 @@ func TestNoStores_EverySectionIsUnavailableNotZero(t *testing.T) {
 	sl := svc.Sessions(context.Background(), "default", "", "", session.Cursor{}, evidence.ObservedCursor{}, 5)
 	assert.Equal(t, StateUnavailable, sl.Availability.State)
 	assert.Equal(t, StateUnavailable, sl.ObservedAvailability.State)
-	_, err = svc.Session(context.Background(), "x", "", evidence.TimelineCursor{}, 0)
+	_, err = svc.Session(context.Background(), "x", "", "", evidence.TimelineCursor{}, 0)
 	require.ErrorIs(t, err, ErrUnavailable, "a missing store is unavailable, never not-found")
 	_, err = svc.Evidence(context.Background(), "x", "")
 	require.ErrorIs(t, err, ErrUnavailable)
@@ -490,4 +490,56 @@ func TestObserved_SessionStoreUnavailableIsPartialNotEvidenceOnly(t *testing.T) 
 	assert.Equal(t, []string{"row_backed_exclusion"}, l.ObservedAvailability.Unavailable)
 	assert.Contains(t, l.ObservedAvailability.Note, "may also have a session-store row")
 	require.Len(t, l.Observed, 1, "entries are still listed, labelled partial")
+}
+
+// TestSession_AgentScopeOpensTheObservedShare (#535 review round 3): an
+// observed (session id, agent) entry opens exactly that agent's share. Agent
+// A has a row for shared-123; agent B has evidence only. Opening shared-123
+// for B shows B's records and none of A's; opening A's internal id for B is
+// not found; the summary-free timeline route follows the same scope.
+func TestSession_AgentScopeOpensTheObservedShare(t *testing.T) {
+	f := seed(t)
+	ctx := context.Background()
+	rowA, err := f.sessions.GetOrCreateExternal(ctx, "default", "agent-a", "shared-123", "client_asserted")
+	require.NoError(t, err)
+	put := func(id, agent string, cost float64) {
+		require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+			ID: id, CorrelationID: "c_" + id, SessionID: "shared-123", TenantID: "default", AgentID: agent, InvocationType: "gateway",
+			Timestamp: f.now.Add(-time.Minute), PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+			Execution: evidence.Execution{Cost: cost, Currency: "USD", ModelUsed: "gpt-4o-mini", PricingKnown: true},
+		}))
+	}
+	put("sa1", "agent-a", 1.00)
+	put("sb1", "agent-b", 0.10)
+	put("sb2", "agent-b", 0.20)
+	svc := f.service(t)
+
+	forB, err := svc.Session(ctx, "shared-123", "default", "agent-b", evidence.TimelineCursor{}, 0)
+	require.NoError(t, err)
+	assert.Nil(t, forB.Detail.Session, "B has no row: evidence-only share")
+	assert.Equal(t, 2, forB.Detail.Summary.RecordCount)
+	assert.InDelta(t, 0.30, forB.Detail.Summary.TotalCost, eps, "A's 1.00 is not B's spend")
+	assert.Equal(t, []string{"agent-b"}, forB.Detail.Summary.AgentIDs)
+	require.Len(t, forB.Timeline.Records, 2)
+
+	forA, err := svc.Session(ctx, "shared-123", "default", "agent-a", evidence.TimelineCursor{}, 0)
+	require.NoError(t, err)
+	require.NotNil(t, forA.Detail.Session, "naming A resolves A's row, not an ambiguity")
+	assert.Equal(t, rowA.ID, forA.Detail.Session.ID)
+	assert.InDelta(t, 1.00, forA.Detail.Summary.TotalCost, eps)
+
+	_, err = svc.Session(ctx, rowA.ID, "default", "agent-b", evidence.TimelineCursor{}, 0)
+	require.ErrorIs(t, err, ErrNotFound, "A's internal session is not B's")
+
+	tlB, err := svc.SessionTimeline(ctx, "shared-123", "default", "agent-b", evidence.TimelineCursor{}, 1)
+	require.NoError(t, err)
+	assert.Nil(t, tlB.Detail, "timeline-only carries no summary")
+	assert.Equal(t, 2, tlB.Timeline.Total)
+	require.Len(t, tlB.Timeline.Records, 1)
+	assert.Equal(t, "agent-b", tlB.Timeline.Records[0].AgentID)
+	require.NotNil(t, tlB.Timeline.NextCursor)
+	tlB2, err := svc.SessionTimeline(ctx, "shared-123", "default", "agent-b", *tlB.Timeline.NextCursor, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "agent-b", tlB2.Timeline.Records[0].AgentID)
+	assert.NotEqual(t, tlB.Timeline.Records[0].ID, tlB2.Timeline.Records[0].ID)
 }

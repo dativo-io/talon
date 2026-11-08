@@ -22,6 +22,7 @@ var (
 	sessListLimit  int
 	sessListObs    bool
 	sessShowTenant string
+	sessShowAgent  string
 	sessShowJSON   bool
 )
 
@@ -59,6 +60,7 @@ func init() {
 	sessionListCmd.Flags().BoolVar(&sessListObs, "observed", false, "List session ids seen in evidence that have no session row (for example asserted on the MCP proxy path): agents, record count, first/last seen; --limit bounds the page (default 50)")
 	sessionShowCmd.Flags().StringVar(&sessShowTenant, "tenant", "", "Scope to a tenant (default: unscoped operator read)")
 	sessionShowCmd.Flags().BoolVar(&sessShowJSON, "json", false, "Emit the session detail as JSON")
+	sessionShowCmd.Flags().StringVar(&sessShowAgent, "agent", "", "Scope to one agent's share of the session (the (session, agent) pair `session list --observed` shows); an external id shared by several agents resolves to that agent's row")
 	sessionCmd.AddCommand(sessionListCmd, sessionShowCmd)
 	rootCmd.AddCommand(sessionCmd)
 }
@@ -176,7 +178,7 @@ func sessionShow(cmd *cobra.Command, args []string) error {
 	}
 	defer evStore.Close()
 
-	detail, err := loadSessionDetail(cmd.Context(), store, evStore, args[0], sessShowTenant)
+	detail, err := talonsession.LoadDetailFor(cmd.Context(), store, evStore, args[0], sessShowTenant, sessShowAgent)
 	if err != nil {
 		return err
 	}
@@ -190,12 +192,6 @@ func sessionShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("external session id %q matches %d sessions; re-run with an internal id", args[0], len(detail.Ambiguous))
 	}
 	return nil
-}
-
-// loadSessionDetail is the shared resolver (session.LoadDetail): both id
-// namespaces, tenant scoping, and the evidence join.
-func loadSessionDetail(ctx context.Context, store *talonsession.Store, evStore *evidence.Store, idOrExternal, tenant string) (*sessionDetail, error) {
-	return talonsession.LoadDetail(ctx, store, evStore, idOrExternal, tenant)
 }
 
 // renderSessionDetail prints the one-screen session summary: the store row's

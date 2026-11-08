@@ -341,3 +341,51 @@ func TestBuild_UnavailableFieldsAreMachineReadable(t *testing.T) {
 	assert.Equal(t, []string{"seven_days_eur", "cache_7d"}, r.UnavailableFields)
 	assert.Len(t, r.Warnings, 2)
 }
+
+// TestBuild_MixedCurrenciesAreNotSummed (#535 review round 3): when the
+// priced records of the month span two currencies, every amount is listed as
+// unavailable with a warning and `currencies` says what was seen; one
+// currency, or legacy records without a stamp next to the table currency,
+// stay plain measurements.
+func TestBuild_MixedCurrenciesAreNotSummed(t *testing.T) {
+	store := seedFixture(t) // every priced record is EUR
+	ctx := context.Background()
+	w := WindowAt(fixtureNow)
+
+	single, err := Build(ctx, store, Scope{TenantID: "default"}, w, "EUR", nil)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"EUR": 4}, single.Currencies, "today_a, today_b, yesterday_a, eightdays_a carry a cost")
+	assert.Empty(t, single.UnavailableFields)
+
+	// A legacy record (no currency stamp) is rendered in the table currency: still one unit.
+	require.NoError(t, store.Store(ctx, &evidence.Evidence{
+		ID: "legacy", CorrelationID: "corr_legacy", TenantID: "default", AgentID: "a", Timestamp: time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC),
+		InvocationType: "gateway", PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		Execution: evidence.Execution{ModelUsed: "m1", Cost: 0.05},
+	}))
+	legacy, err := Build(ctx, store, Scope{TenantID: "default"}, w, "EUR", nil)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"EUR": 4, "": 1}, legacy.Currencies)
+	assert.Empty(t, legacy.UnavailableFields, "legacy stamps are the table currency, not a second unit")
+
+	// A USD record in the month makes the sums incomparable.
+	require.NoError(t, store.Store(ctx, &evidence.Evidence{
+		ID: "usd", CorrelationID: "corr_usd", TenantID: "default", AgentID: "b", Timestamp: time.Date(2026, 3, 12, 9, 0, 0, 0, time.UTC),
+		InvocationType: "gateway", PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		Execution: evidence.Execution{ModelUsed: "m2", Cost: 0.07, Currency: "USD", PricingKnown: true},
+	}))
+	mixed, err := Build(ctx, store, Scope{TenantID: "default"}, w, "EUR", nil)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"EUR": 4, "": 1, "USD": 1}, mixed.Currencies)
+	assert.Contains(t, mixed.UnavailableFields, "month_eur")
+	assert.Contains(t, mixed.UnavailableFields, "today_eur")
+	assert.Contains(t, mixed.UnavailableFields, "by_agent_month_eur")
+	require.NotEmpty(t, mixed.Warnings)
+	assert.Contains(t, mixed.Warnings[0], "EUR, USD")
+	assert.InDelta(t, 0.75+0.05+0.07, mixed.MonthEUR, eps, "the legacy figure is still computed as the CLI always did; it is labelled, not hidden")
+
+	// Scoped to agent a (EUR + legacy only) the amounts are measurements again.
+	onlyA, err := Build(ctx, store, Scope{TenantID: "default", AgentID: "a"}, w, "EUR", nil)
+	require.NoError(t, err)
+	assert.Empty(t, onlyA.UnavailableFields)
+}

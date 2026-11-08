@@ -371,7 +371,7 @@ func (s *Service) sessionOwners(ctx context.Context, tenant string, ids []string
 // "" is the unscoped operator read, as `talon session show` without
 // --tenant. A missing session is ErrNotFound; a failing store is
 // ErrUnavailable.
-func (s *Service) Session(ctx context.Context, id, tenant string, after evidence.TimelineCursor, limit int) (*SessionDetail, error) {
+func (s *Service) Session(ctx context.Context, id, tenant, agent string, after evidence.TimelineCursor, limit int) (*SessionDetail, error) {
 	if strings.TrimSpace(id) == "" {
 		return nil, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
@@ -379,7 +379,10 @@ func (s *Service) Session(ctx context.Context, id, tenant string, after evidence
 	if s.cfg.Sessions == nil || s.cfg.Evidence == nil {
 		return nil, fmt.Errorf("%w: session or evidence store is not open", ErrUnavailable)
 	}
-	detail, tl, err := session.LoadTimelinePage(ctx, s.cfg.Sessions, s.cfg.Evidence, id, tenant, after, limit)
+	// agent scopes the read to one agent's share of the session, exactly the
+	// (session id, agent) pair an observed entry names: never another agent's
+	// evidence (#535 review).
+	detail, tl, err := session.LoadTimelinePageFor(ctx, s.cfg.Sessions, s.cfg.Evidence, id, tenant, agent, after, limit)
 	switch {
 	case errors.Is(err, session.ErrDetailNotFound):
 		return nil, fmt.Errorf("%w: session %q", ErrNotFound, id)
@@ -388,9 +391,35 @@ func (s *Service) Session(ctx context.Context, id, tenant string, after evidence
 	}
 	out := &SessionDetail{Meta: s.meta(tenant), Detail: detail, Timeline: tl, Availability: ok(SourceSessionStore, s.now())}
 	if len(detail.Ambiguous) > 0 {
-		out.Availability.Note = fmt.Sprintf("external session id matches %d sessions; open one by its internal id", len(detail.Ambiguous))
+		out.Availability.Note = fmt.Sprintf("external session id matches %d sessions; open one by its internal id or name the agent", len(detail.Ambiguous))
 	}
 	return out, nil
+}
+
+// SessionTimeline is one timeline page WITHOUT the summary, for walking a
+// long session after Session returned the first page: each page is one
+// indexed range read of the store, never a scan of the session. Scoping and
+// errors are those of Session.
+func (s *Service) SessionTimeline(ctx context.Context, id, tenant, agent string, after evidence.TimelineCursor, limit int) (*SessionDetail, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	limit = clampLimit(limit, DefaultTimelineLimit, MaxTimelineLimit)
+	if s.cfg.Sessions == nil || s.cfg.Evidence == nil {
+		return nil, fmt.Errorf("%w: session or evidence store is not open", ErrUnavailable)
+	}
+	tl, err := session.LoadTimelineOnly(ctx, s.cfg.Sessions, s.cfg.Evidence, id, tenant, agent, after, limit)
+	switch {
+	case errors.Is(err, session.ErrDetailNotFound):
+		return nil, fmt.Errorf("%w: session %q", ErrNotFound, id)
+	case errors.Is(err, session.ErrAmbiguousSession):
+		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	case err != nil:
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	av := ok(SourceEvidenceStore, s.now())
+	av.Note = "timeline page only; the summary is on the session detail"
+	return &SessionDetail{Meta: s.meta(tenant), Timeline: tl, Availability: av}, nil
 }
 
 // ---------------------------------------------------------------- evidence
