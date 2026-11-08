@@ -130,6 +130,8 @@ talon costs --by-provider --tenant default
 
 `talon costs --agent` reports the agent's **effective** daily/monthly caps — resolved through the same computation enforcement uses, so the numbers can never drift from runtime behavior.
 
+`--json` emits the shared cost report (`internal/costs`): `today_eur`, `month_eur`, `seven_days_eur` with their exact UTC bounds in `window`, the day and month breakdown maps (`by_agent_eur` / `by_agent_month_eur`, or the `--by-model`, `--by-provider`, `--by-team` equivalents), `daily_budget` / `monthly_budget` with `source`, cache figures on the tenant view, and `warnings` when a secondary query failed. `currency` is the unit of every amount; the `_eur` suffixes are historical names.
+
 Export cost rows (joinable to signed evidence by `evidence_id`):
 
 ```bash

@@ -280,3 +280,33 @@ func TestSessionList_SourcesShownSyntheticExcluded(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, "ext-sess-1", rows[0].ExternalSessionID)
 }
+
+// TestSessionList_LimitIsTheBoundedSharedQuery (#535): --limit returns the
+// head of the same newest-first list, via session.Store.ListRecent.
+func TestSessionList_LimitIsTheBoundedSharedQuery(t *testing.T) {
+	dir := sessionTestEnv(t)
+	sessions, _ := sessionTestStores(t, dir)
+	sessListLimit = 0
+	t.Cleanup(func() { sessListLimit = 0 })
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_, err := sessions.Create(ctx, "default", "support-bot", "", 0)
+		require.NoError(t, err)
+		time.Sleep(5 * time.Millisecond) // distinct created_at so the order is defined
+	}
+
+	allOut, err := runSessionCmd(t, "session", "list", "--json")
+	require.NoError(t, err)
+	var all []*talonsession.Session
+	require.NoError(t, json.Unmarshal([]byte(allOut), &all))
+	require.Len(t, all, 3)
+	assert.True(t, !all[0].CreatedAt.Before(all[1].CreatedAt), "newest first")
+
+	limitedOut, err := runSessionCmd(t, "session", "list", "--json", "--limit", "2")
+	require.NoError(t, err)
+	var limited []*talonsession.Session
+	require.NoError(t, json.Unmarshal([]byte(limitedOut), &limited))
+	require.Len(t, limited, 2)
+	assert.Equal(t, all[0].ID, limited[0].ID)
+	assert.Equal(t, all[1].ID, limited[1].ID)
+}
