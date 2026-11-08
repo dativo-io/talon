@@ -332,20 +332,19 @@ func TestSessionSnapshotRead_ConsistentUnderConcurrentWrites(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		require.NoError(t, writer.Store(ctx, mk(i)))
 	}
-	stop := make(chan struct{})
+	// The writer adds a bounded batch while the reader snapshots; an
+	// unbounded writer let the session outgrow every summary read under
+	// the race detector (each read decodes the whole session, each insert
+	// is cgo the detector barely slows), which timed out CI.
+	const concurrentWrites = 1500
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
-		for i := 200; ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
-				_ = writer.Store(ctx, mk(i))
-			}
+		for i := 200; i < 200+concurrentWrites; i++ {
+			_ = writer.Store(ctx, mk(i))
 		}
 	}()
-	for round := 0; round < 25; round++ {
+	check := func() int {
 		snap, err := reader.SessionSnapshotRead(ctx, "live", "default", "", TimelineCursor{}, MaxTimelinePage)
 		require.NoError(t, err)
 		assert.Equal(t, snap.Summary.RecordCount, snap.Total, "summary and count read the same snapshot")
@@ -354,9 +353,17 @@ func TestSessionSnapshotRead_ConsistentUnderConcurrentWrites(t *testing.T) {
 			assert.Len(t, snap.Page, snap.Total, "a page that covers the whole session matches the same snapshot's total")
 		}
 		assert.InDelta(t, float64(snap.Total)*0.01, snap.Summary.TotalCost, 1e-6)
+		return snap.Total
 	}
-	close(stop)
+	overlapped := 0
+	for round := 0; round < 25; round++ {
+		if total := check(); total < 200+concurrentWrites {
+			overlapped++
+		}
+	}
 	<-writerDone
+	assert.Equal(t, 200+concurrentWrites, check(), "after the writer stops the snapshot is the whole session")
+	assert.Positive(t, overlapped, "at least one snapshot overlapped the live writer")
 }
 
 // TestObservedSessions_PlanAndScale (#535 review): the discovery query and
