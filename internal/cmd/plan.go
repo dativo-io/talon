@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -29,6 +30,7 @@ import (
 
 var (
 	planTenantID     string
+	planPendingJSON  bool
 	planReviewedBy   string
 	planRejectReason string
 	planApproverKey  string
@@ -68,6 +70,7 @@ var planExecuteCmd = &cobra.Command{
 
 func init() {
 	planPendingCmd.Flags().StringVar(&planTenantID, "tenant", "default", "Tenant ID")
+	planPendingCmd.Flags().BoolVar(&planPendingJSON, "json", false, "Emit the pending plans as JSON (the same rows as GET /v1/plans/pending)")
 	planApproveCmd.Flags().StringVar(&planTenantID, "tenant", "default", "Tenant ID")
 	planApproveCmd.Flags().StringVar(&planReviewedBy, "reviewed-by", "cli", "Reviewer identity")
 	planApproveCmd.Flags().StringVar(&planApproverKey, "key", "", "Approver bearer key (talon_appr_...)")
@@ -126,6 +129,14 @@ func runPlanPending(cmd *cobra.Command, _ []string) error {
 	plans, err := store.GetPending(ctx, planTenantID, "")
 	if err != nil {
 		return fmt.Errorf("listing pending plans: %w", err)
+	}
+	if planPendingJSON {
+		if plans == nil {
+			plans = []*agent.ExecutionPlan{}
+		}
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(plans)
 	}
 	if len(plans) == 0 {
 		fmt.Println("No pending plans.")

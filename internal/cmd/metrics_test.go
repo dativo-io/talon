@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -123,10 +124,78 @@ func TestFetchMetricsSnapshot(t *testing.T) {
 	})
 	defer srv.Close()
 
-	snap, err := fetchMetricsSnapshot(context.Background(), srv.URL)
+	snap, offline, err := fetchMetricsSnapshot(context.Background(), srv.URL, true, io.Discard)
 	require.NoError(t, err)
+	assert.False(t, offline)
 	require.Len(t, snap.AgentStats, 1)
 	assert.Equal(t, "agent-a", snap.AgentStats[0].Agent)
+}
+
+// TestFetchMetricsSnapshot_NoSilentFallback (#535): a reachable server that
+// rejects or fails the request is an error; only an unreachable DEFAULT url
+// (or an explicit --url "") yields the offline projection, and says so.
+func TestFetchMetricsSnapshot_NoSilentFallback(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SIGNING_KEY", sessTestSigningKey)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"401 names the admin key", http.StatusUnauthorized, "TALON_ADMIN_KEY"},
+		{"403 names the admin key", http.StatusForbidden, "TALON_ADMIN_KEY"},
+		{"500 is an error", http.StatusInternalServerError, "HTTP 500"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(tc.status) }))
+			defer srv.Close()
+			for _, explicit := range []bool{true, false} {
+				var warn bytes.Buffer
+				_, offline, err := fetchMetricsSnapshot(ctx, srv.URL, explicit, &warn)
+				require.Error(t, err, "explicit=%v", explicit)
+				assert.Contains(t, err.Error(), tc.want)
+				assert.False(t, offline)
+				assert.Empty(t, warn.String(), "an error is not also a warning")
+			}
+		})
+	}
+
+	t.Run("garbled body is an error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("<html>")) }))
+		defer srv.Close()
+		_, _, err := fetchMetricsSnapshot(ctx, srv.URL, false, io.Discard)
+		require.ErrorContains(t, err, "unexpected /api/v1/metrics response")
+	})
+
+	closed := httptest.NewServer(http.NotFoundHandler())
+	unreachable := closed.URL
+	closed.Close()
+
+	t.Run("unreachable explicit url is an error", func(t *testing.T) {
+		_, offline, err := fetchMetricsSnapshot(ctx, unreachable, true, io.Discard)
+		require.ErrorContains(t, err, "refusing the offline fallback")
+		assert.False(t, offline)
+	})
+	t.Run("unreachable default url falls back with a warning", func(t *testing.T) {
+		var warn bytes.Buffer
+		snap, offline, err := fetchMetricsSnapshot(ctx, unreachable, false, &warn)
+		require.NoError(t, err)
+		assert.True(t, offline)
+		assert.Equal(t, "standalone", snap.Uptime)
+		assert.Contains(t, warn.String(), "OFFLINE projection")
+		assert.Contains(t, warn.String(), unreachable)
+	})
+	t.Run("empty url is the explicit offline mode", func(t *testing.T) {
+		var warn bytes.Buffer
+		snap, offline, err := fetchMetricsSnapshot(ctx, "", true, &warn)
+		require.NoError(t, err)
+		assert.True(t, offline)
+		assert.Equal(t, "standalone", snap.Uptime)
+		assert.Contains(t, warn.String(), `note: --url ""`)
+	})
 }
 
 func TestAggregateStandaloneSnapshot_UsesSharedProjection(t *testing.T) {

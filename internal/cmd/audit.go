@@ -36,6 +36,7 @@ var (
 	auditVerifyOperation string
 	auditVerifyTenant    string
 	auditSession         string
+	auditJSON            bool
 	auditRuntimeRef      string
 	auditOffset          int
 	auditReport          bool
@@ -79,6 +80,8 @@ func init() {
 	auditListCmd.Flags().StringVar(&auditSession, "session", "", "Show a per-session summary and the session's records (session_id)")
 	auditListCmd.Flags().StringVar(&auditRuntimeRef, "runtime-ref", "", "Show every record attributed to one external-runtime workload reference (e.g. an OpenShell sandbox id): delegated decisions, response settlements, action lifecycle and imported containment events (#482). Indexed and complete over the store; paged by --limit/--offset, newest first, and the header states the total")
 	auditListCmd.Flags().IntVar(&auditOffset, "offset", 0, "Skip this many records (paging for --runtime-ref)")
+	auditListCmd.Flags().BoolVar(&auditJSON, "json", false, "Emit JSON: the index rows; with --session the shared session timeline {summary, records}; with --runtime-ref the page {runtime_ref, total, offset, records}")
+	auditShowCmd.Flags().BoolVar(&auditJSON, "json", false, "Emit JSON: {record, verification{state, checked_at}}")
 	auditListCmd.Flags().BoolVar(&auditReport, "report", false, "With --runtime-ref: render the operator walkthrough (identity, model requests with their settlements, action lifecycles with the human decision and the downstream result, imported runtime events kept apart as external assertions, verification status) instead of the flat record list")
 
 	auditVerifyCmd.Flags().StringVar(&auditVerifyFile, "file", "", "Verify all records from a signed export file")
@@ -126,44 +129,21 @@ func auditList(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	if auditSession != "" {
-		records, err := fetchSessionRecords(ctx, store, auditSession, auditTenant, auditAgent)
-		if err != nil {
-			return err
-		}
-		if len(records) == 0 {
-			fmt.Printf("No evidence records found for session %s.\n", auditSession)
-			return nil
-		}
-		renderSessionSummary(os.Stdout, evidence.BuildSessionSummary(auditSession, records))
-		fmt.Fprintln(os.Stdout)
-		renderSessionRecords(os.Stdout, records)
-		return nil
+		return auditListSession(ctx, cmd, store)
 	}
 	if auditRuntimeRef != "" {
-		page, err := store.ListByRuntimeRef(ctx, auditTenant, auditAgent, auditRuntimeRef, auditLimit, auditOffset)
-		if err != nil {
-			return fmt.Errorf("querying evidence: %w", err)
-		}
-		if page.Total == 0 {
-			fmt.Printf("No evidence records found for runtime reference %s.\n", auditRuntimeRef)
-			return nil
-		}
-		fmt.Fprintf(os.Stdout, "Runtime reference %s: showing %d of %d record(s) (newest first, offset %d; decisions, settlements, action lifecycle and imported containment events)\n", auditRuntimeRef, len(page.Records), page.Total, auditOffset)
-		if auditOffset+len(page.Records) < page.Total {
-			fmt.Fprintf(os.Stdout, "More records exist: rerun with --offset %d (or a larger --limit) to continue.\n", auditOffset+len(page.Records))
-		}
-		fmt.Fprintln(os.Stdout)
-		if auditReport {
-			renderRuntimeReport(os.Stdout, store, page.Records)
-			return nil
-		}
-		renderSessionRecords(os.Stdout, page.Records)
-		return nil
+		return auditListRuntimeRef(ctx, cmd, store)
 	}
 
 	index, err := store.ListIndex(ctx, auditTenant, auditAgent, time.Time{}, time.Time{}, auditLimit, "", "", "")
 	if err != nil {
 		return fmt.Errorf("querying evidence: %w", err)
+	}
+	if auditJSON {
+		if index == nil {
+			index = []evidence.Index{}
+		}
+		return writeJSONTo(cmd.OutOrStdout(), index)
 	}
 
 	if len(index) == 0 {
@@ -172,6 +152,67 @@ func auditList(cmd *cobra.Command, args []string) error {
 	}
 	renderAuditList(os.Stdout, index)
 	return nil
+}
+
+// auditListSession is `audit list --session`: the shared summary and the
+// session's records (JSON: the shared Timeline).
+func auditListSession(ctx context.Context, cmd *cobra.Command, store *evidence.Store) error {
+	records, err := fetchSessionRecords(ctx, store, auditSession, auditTenant, auditAgent)
+	if err != nil {
+		return err
+	}
+	if auditJSON {
+		return writeJSONTo(cmd.OutOrStdout(), talonsession.BuildTimeline(auditSession, records))
+	}
+	if len(records) == 0 {
+		fmt.Printf("No evidence records found for session %s.\n", auditSession)
+		return nil
+	}
+	renderSessionSummary(os.Stdout, evidence.BuildSessionSummary(auditSession, records))
+	fmt.Fprintln(os.Stdout)
+	renderSessionRecords(os.Stdout, records)
+	return nil
+}
+
+// auditListRuntimeRef is `audit list --runtime-ref`: one external-runtime
+// workload's records, paged (JSON: {runtime_ref, total, offset, records}).
+func auditListRuntimeRef(ctx context.Context, cmd *cobra.Command, store *evidence.Store) error {
+	page, err := store.ListByRuntimeRef(ctx, auditTenant, auditAgent, auditRuntimeRef, auditLimit, auditOffset)
+	if err != nil {
+		return fmt.Errorf("querying evidence: %w", err)
+	}
+	if auditJSON {
+		rows := make([]evidence.Index, 0, len(page.Records))
+		for _, rec := range page.Records {
+			rows = append(rows, evidence.IndexOf(rec))
+		}
+		return writeJSONTo(cmd.OutOrStdout(), map[string]interface{}{
+			"runtime_ref": auditRuntimeRef, "total": page.Total, "offset": auditOffset, "records": rows,
+		})
+	}
+	if page.Total == 0 {
+		fmt.Printf("No evidence records found for runtime reference %s.\n", auditRuntimeRef)
+		return nil
+	}
+	fmt.Fprintf(os.Stdout, "Runtime reference %s: showing %d of %d record(s) (newest first, offset %d; decisions, settlements, action lifecycle and imported containment events)\n", auditRuntimeRef, len(page.Records), page.Total, auditOffset)
+	if auditOffset+len(page.Records) < page.Total {
+		fmt.Fprintf(os.Stdout, "More records exist: rerun with --offset %d (or a larger --limit) to continue.\n", auditOffset+len(page.Records))
+	}
+	fmt.Fprintln(os.Stdout)
+	if auditReport {
+		renderRuntimeReport(os.Stdout, store, page.Records)
+		return nil
+	}
+	renderSessionRecords(os.Stdout, page.Records)
+	return nil
+}
+
+// writeJSONTo is the structured-output encoder shared by the audit
+// subcommands: indented, one document, trailing newline.
+func writeJSONTo(w io.Writer, v interface{}) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 func auditShow(cmd *cobra.Command, args []string) error {
@@ -193,6 +234,9 @@ func auditShow(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("listing evidence: %w", err)
 		}
 		if len(index) == 0 {
+			if auditJSON {
+				return writeJSONTo(cmd.OutOrStdout(), nil)
+			}
 			fmt.Println("No evidence records found.")
 			return nil
 		}
@@ -200,12 +244,14 @@ func auditShow(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Showing latest: %s\n", evidenceID)
 	}
 
-	ev, err := store.Get(ctx, evidenceID)
+	detail, err := store.Detail(ctx, evidenceID)
 	if err != nil {
 		return fmt.Errorf("fetching evidence: %w", err)
 	}
-	valid := store.VerifyRecord(ev)
-	renderAuditShow(os.Stdout, ev, valid)
+	if auditJSON {
+		return writeJSONTo(cmd.OutOrStdout(), detail)
+	}
+	renderAuditShow(os.Stdout, detail.Record, detail.Valid())
 	return nil
 }
 

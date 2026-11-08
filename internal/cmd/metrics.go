@@ -21,6 +21,10 @@ var (
 	metricsAgent string
 	metricsJSON  bool
 	metricsURL   string
+	// metricsURLExplicit records whether the operator set --url themselves:
+	// an explicit server is authoritative and never silently replaced by
+	// the offline projection (#535, mirrors `talon costs`).
+	metricsURLExplicit bool
 )
 
 var metricsCmd = &cobra.Command{
@@ -30,11 +34,12 @@ var metricsCmd = &cobra.Command{
 		ctx, span := tracer.Start(cmd.Context(), "metrics")
 		defer span.End()
 
-		snap, err := fetchMetricsSnapshot(ctx, metricsURL)
+		metricsURLExplicit = cmd.Flags().Changed("url")
+		snap, offline, err := fetchMetricsSnapshot(ctx, metricsURL, metricsURLExplicit, cmd.ErrOrStderr())
 		if err != nil {
 			return err
 		}
-		if !metricsJSON {
+		if !metricsJSON && !offline {
 			warnIfDegraded(ctx, cmd.OutOrStdout(), metricsURL)
 		}
 
@@ -57,14 +62,30 @@ var metricsCmd = &cobra.Command{
 	},
 }
 
-func fetchMetricsSnapshot(ctx context.Context, baseURL string) (metricsapi.Snapshot, error) {
+// offlineProjectionNote names what the offline projection is and is not, so
+// no reader mistakes it for the running server's snapshot.
+const offlineProjectionNote = "OFFLINE projection built from the local evidence store (last 24h, up to 100000 records; no budget, session, cache or model breakdown, no live counters)"
+
+// fetchMetricsSnapshot returns the running server's snapshot, or the offline
+// projection when that is what the operator asked for or the only thing
+// available. The outcome is never silent (#535):
+//   - --url "" asks for the offline projection explicitly (noted on stderr);
+//   - an unreachable DEFAULT server falls back with a warning on stderr;
+//   - an unreachable EXPLICIT --url is an error;
+//   - a reachable server that rejects (401/403) or fails the request is an
+//     error naming the cause — never local numbers dressed up as the server's.
+//
+// The bool reports whether the snapshot is the offline projection.
+func fetchMetricsSnapshot(ctx context.Context, baseURL string, explicit bool, warn io.Writer) (metricsapi.Snapshot, bool, error) {
 	trimmed := trimRightSlash(baseURL)
 	if trimmed == "" {
-		trimmed = "http://localhost:8080"
+		fmt.Fprintf(warn, "note: --url \"\" — %s\n", offlineProjectionNote)
+		snap, err := buildSnapshotFromEvidence(ctx)
+		return snap, true, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, trimmed+"/api/v1/metrics", nil)
 	if err != nil {
-		return metricsapi.Snapshot{}, fmt.Errorf("building metrics request: %w", err)
+		return metricsapi.Snapshot{}, false, fmt.Errorf("building metrics request: %w", err)
 	}
 	if adminKey := os.Getenv("TALON_ADMIN_KEY"); adminKey != "" {
 		req.Header.Set("X-Talon-Admin-Key", adminKey)
@@ -73,18 +94,26 @@ func fetchMetricsSnapshot(ctx context.Context, baseURL string) (metricsapi.Snaps
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return buildSnapshotFromEvidence(ctx)
+		if explicit {
+			return metricsapi.Snapshot{}, false, fmt.Errorf("metrics server %s is unreachable: %w — refusing the offline fallback because --url was explicitly supplied; fix the URL, or pass --url \"\" for the offline projection", baseURL, err)
+		}
+		fmt.Fprintf(warn, "warning: no Talon server answered at %s (%v); showing the %s\n", baseURL, err, offlineProjectionNote)
+		snap, err := buildSnapshotFromEvidence(ctx)
+		return snap, true, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return buildSnapshotFromEvidence(ctx)
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return metricsapi.Snapshot{}, false, fmt.Errorf("metrics request to %s rejected (HTTP %d): the server requires the admin key — set TALON_ADMIN_KEY, or pass --url \"\" for the offline projection", baseURL, resp.StatusCode)
+	case resp.StatusCode != http.StatusOK:
+		return metricsapi.Snapshot{}, false, fmt.Errorf("metrics request to %s failed: HTTP %d from /api/v1/metrics", baseURL, resp.StatusCode)
 	}
 
 	var snap metricsapi.Snapshot
-	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
-		return buildSnapshotFromEvidence(ctx)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&snap); err != nil {
+		return metricsapi.Snapshot{}, false, fmt.Errorf("unexpected /api/v1/metrics response from %s: %w", baseURL, err)
 	}
-	return snap, nil
+	return snap, false, nil
 }
 
 func buildSnapshotFromEvidence(ctx context.Context) (metricsapi.Snapshot, error) {

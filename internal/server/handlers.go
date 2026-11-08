@@ -717,6 +717,10 @@ func (s *Server) handleCostsExport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, records)
 }
 
+// statusCountsScope is the documented denominator of the /v1/status counters
+// (see docs/OBSERVABILITY.md, "Operational-event projection").
+const statusCountsScope = "all_record_classes"
+
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	tenantID := TenantIDFromContext(r.Context())
 	if tenantID == "" {
@@ -733,6 +737,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
 		"status": "ok", "evidence_count_today": 0, "cost_today": 0.0, "monthly": 0.0, "active_runs": 0,
 		"pending_memory_reviews": 0, "blocked_count": 0, "error_rate": 0.0, "tenant_id": tenantID,
+		// counts_scope declares the denominator of evidence_count_today,
+		// blocked_count, cost_today and monthly: every persisted record class
+		// (requests, provider sub-attempts, tool actions, control-plane and
+		// external events). The fleet projection (`talon agents`,
+		// /v1/agents/fleet) counts request-class records only; the two are
+		// different measurements and are not expected to be equal (#535).
+		"counts_scope": statusCountsScope,
 	}
 	// An agent key sees only its OWN agent's aggregates (#266 review r5);
 	// admin sees the tenant-wide rollup.

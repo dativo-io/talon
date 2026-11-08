@@ -84,12 +84,12 @@ Columns: the operational concept; the Go code that owns it today; the CLI surfac
 
 | # | Where | What differs | Disposition |
 |---|---|---|---|
-| D1 | `/v1/status`, `/v1/copaw/stats` vs `fleet` | `CountInRange`/`CountDeniedInRange` count every record class; fleet and `SessionSummary.requests` count request-class only | Console uses request-class counts. Follow-up issue: label `/v1/status` fields as record counts or switch them, with a CHANGELOG note; not changed in #535. |
-| D2 | `talon metrics` | any server error, including 401, silently falls back to a local projection with different limits and no SQL fills | Follow-up: fail loudly on non-network errors. The console never uses this fallback. |
+| D1 | `/v1/status`, `/v1/copaw/stats` vs `fleet` | `CountInRange`/`CountDeniedInRange` count every record class; fleet counts request-class only (which includes intercepted tool actions); `SessionSummary.requests` further splits tool actions into `tool_calls` | Both denominators are now declared: `/v1/status` carries `counts_scope: all_record_classes` and `docs/OBSERVABILITY.md` documents both scopes (#535 slice 2). The console uses request-class counts for traffic and labels record counts separately; `/v1/copaw/stats` keeps its scope and is not a console source. |
+| D2 | `talon metrics` | any server error, including 401, silently fell back to a local projection with different limits and no SQL fills | Fixed in #535 slice 2: 401/403 and other server errors are errors naming the cause; an unreachable default URL falls back with a stderr warning; an explicit `--url` never falls back; `--url ""` is the explicit offline mode. The console never uses the offline projection. |
 | D3 | `/v1/sessions/{id}` vs `talon session show` | HTTP returns the raw row; the CLI joins the evidence summary | The console contract is the CLI shape; `/v1/sessions/{id}` stays as is (compatibility). |
 | D4 | `/v1/costs/report` | `total_eur` label regardless of the pricing currency | Console DTO uses `amount` + `currency`; existing endpoint untouched. |
 | D5 | `metrics.BudgetStatus` vs `/v1/costs/budget` | collector sums binding caps of every identity; the budget endpoint resolves one agent | Console shows per-use-case budgets from the resolver and never a summed fleet cap. |
-| D6 | drift (`talon monitor`) | map iteration order, unsorted; CLI only | `--json` output sorted by agent id; no HTTP route unless a page needs one (none of the six does in v1). |
+| D6 | drift (`talon monitor`) | map iteration order, unsorted; CLI only | `drift.Analyzer.ComputeSignals` now sorts by agent id and `talon monitor --json` emits the rows (#535 slice 2); no HTTP route unless a page needs one (none of the six does in v1). |
 | D7 | session status vocabulary | code has six states; #401 (open) plans open/completed + `managed_by` | Console exposes today's states; #401 lands additively. |
 | D8 | effective-policy provenance | none shipped; #305 (open, P0) owns it | Implemented once under #305; console consumes it. |
 
