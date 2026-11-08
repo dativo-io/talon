@@ -393,7 +393,7 @@ func TestConsoleParity_ObservedSessionsAndTimelinePaging(t *testing.T) {
 	assert.Equal(t, cliObserved[0].SessionID, dto.Observed[0].SessionID)
 	assert.Equal(t, cliObserved[0].RecordCount, dto.Observed[0].RecordCount)
 	assert.Equal(t, 3, dto.Observed[0].RecordCount)
-	assert.Equal(t, []string{"hr-analytics-assistant"}, dto.Observed[0].AgentIDs)
+	assert.Equal(t, "hr-analytics-assistant", dto.Observed[0].AgentID)
 	assert.Equal(t, "evidence", dto.Observed[0].Source)
 	assert.True(t, cliObserved[0].LastSeen.Equal(dto.Observed[0].LastSeen))
 	assert.Empty(t, dto.Sessions, "no session-store rows exist for the demo traffic")

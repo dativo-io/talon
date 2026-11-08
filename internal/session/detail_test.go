@@ -311,3 +311,26 @@ func TestLoadTimelinePage_EvidenceOnlySessionIsBounded(t *testing.T) {
 	assert.Equal(t, "e00", ids[0])
 	assert.Equal(t, "e24", ids[24])
 }
+
+// TestOwnersOf_OneQueryPerPage: internal ids and external ids resolve to the
+// owning agents in one call; ids without rows are absent.
+func TestOwnersOf_OneQueryPerPage(t *testing.T) {
+	sessions, _ := detailStores(t)
+	ctx := context.Background()
+	at := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+	insertSessionRow(t, sessions, "sess_A", "default", "agent-a", "shared-123", at)
+	insertSessionRow(t, sessions, "sess_B", "default", "agent-b", "shared-123", at)
+	insertSessionRow(t, sessions, "sess_C", "default", "agent-c", "", at)
+	insertSessionRow(t, sessions, "sess_X", "acme", "agent-a", "shared-123", at)
+
+	owners, err := sessions.OwnersOf(ctx, "default", []string{"shared-123", "sess_C", "hr-demo-only", "sess_A"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]bool{"agent-a": true, "agent-b": true}, owners["shared-123"])
+	assert.Equal(t, map[string]bool{"agent-c": true}, owners["sess_C"])
+	assert.Equal(t, map[string]bool{"agent-a": true}, owners["sess_A"])
+	_, has := owners["hr-demo-only"]
+	assert.False(t, has, "no row → absent, never an empty set that reads like 'nobody owns it'")
+	empty, err := sessions.OwnersOf(ctx, "default", nil)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -127,14 +126,18 @@ func sessionListObserved(cmd *cobra.Command, cfg *config.Config, store *talonses
 	if err != nil {
 		return fmt.Errorf("listing observed sessions: %w", err)
 	}
+	ids := make([]string, 0, len(observed))
+	for i := range observed {
+		ids = append(ids, observed[i].SessionID)
+	}
+	owners, err := store.OwnersOf(ctx, sessTenant, ids)
+	if err != nil {
+		return fmt.Errorf("resolving session owners: %w", err)
+	}
 	rows := make([]evidence.ObservedSession, 0, len(observed))
 	for i := range observed {
-		id := observed[i].SessionID
-		if _, err := store.Get(ctx, id, sessTenant); err == nil {
-			continue
-		}
-		if m, err := store.ListByExternalID(ctx, id, sessTenant); err == nil && len(m) > 0 {
-			continue
+		if owners[observed[i].SessionID][observed[i].AgentID] {
+			continue // that agent's share has a row: `talon session list` shows it
 		}
 		rows = append(rows, observed[i])
 	}
@@ -144,10 +147,10 @@ func sessionListObserved(cmd *cobra.Command, cfg *config.Config, store *talonses
 		return enc.Encode(rows)
 	}
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "SESSION\tAGENTS\tRECORDS\tFIRST SEEN\tLAST SEEN\tSOURCE")
+	fmt.Fprintln(tw, "SESSION\tAGENT\tRECORDS\tFIRST SEEN\tLAST SEEN\tSOURCE")
 	for i := range rows {
 		o := &rows[i]
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n", o.SessionID, strings.Join(o.AgentIDs, ","), o.RecordCount,
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n", o.SessionID, o.AgentID, o.RecordCount,
 			o.FirstSeen.Format("2006-01-02 15:04:05"), o.LastSeen.Format("2006-01-02 15:04:05"), o.Source)
 	}
 	return tw.Flush()

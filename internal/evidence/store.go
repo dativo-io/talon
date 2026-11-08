@@ -33,6 +33,8 @@ type Store struct {
 	db *sql.DB
 	// readOnly is set by OpenReadOnly: the connection cannot write.
 	readOnly bool
+	// path is the database file the store was opened from ("" for DSNs).
+	path string
 	// observer receives post-commit notifications for successfully stored evidence.
 	observerMu sync.RWMutex
 	observer   StoreObserver
@@ -623,6 +625,11 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	addColumnIfNotExists(db, "step_evidence", "graph_run_id", "TEXT")
 
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_session ON evidence(session_id)")
+	// Covering index for the session read model (#535): observed-session
+	// discovery groups by (tenant, session, agent) and timeline pages walk
+	// (session, tenant, agent, timestamp); both resolve from this index
+	// without touching evidence_json.
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_tenant_session_agent_ts ON evidence(tenant_id, session_id, agent_id, timestamp) WHERE session_id IS NOT NULL AND session_id <> ''")
 	// Partial index for the metrics sessions block (#199): only rows with an
 	// orchestration block qualify, so the recent-sessions query scans asserted
 	// traffic only instead of json_extract-ing every evidence row.
@@ -670,6 +677,7 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	return &Store{
 		db:     db,
 		signer: signer,
+		path:   dbPath,
 	}, nil
 }
 

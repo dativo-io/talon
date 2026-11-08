@@ -2,9 +2,13 @@ package evidence
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -122,20 +126,21 @@ func TestListObservedSessions_HandExpectations(t *testing.T) {
 
 	rows, err := store.ListObservedSessions(ctx, "default", "", ObservedCursor{}, 10)
 	require.NoError(t, err)
-	require.Len(t, rows, 3, "the record without a session id and the acme session are not listed")
-	// last_seen DESC, session_id DESC: sess_native and hr-demo-2 tie at +10m → "sess_native" > "hr-demo-2".
-	assert.Equal(t, "sess_native", rows[0].SessionID)
-	assert.Equal(t, "hr-demo-2", rows[1].SessionID)
-	assert.Equal(t, "hr-demo-1", rows[2].SessionID)
-	assert.Equal(t, []string{"hr", "scratch"}, rows[0].AgentIDs, "both agents listed, sorted: the collision is visible")
-	assert.Equal(t, 2, rows[0].RecordCount)
-	assert.Equal(t, base.Add(1*time.Minute), rows[0].FirstSeen)
+	// One entry per (session, agent): sess_native appears twice (scratch and hr),
+	// so the collision is visible as two sessions, each with its own facts.
+	require.Len(t, rows, 4, "the record without a session id and the acme session are not listed")
+	// last_seen DESC, session_id DESC, agent_id DESC:
+	//   sess_native/scratch (+10m), hr-demo-2/hr (+10m), hr-demo-1/hr (+5m), sess_native/hr (+1m).
+	assert.Equal(t, []string{"sess_native/scratch", "hr-demo-2/hr", "hr-demo-1/hr", "sess_native/hr"}, pairs(rows))
+	assert.Equal(t, 1, rows[0].RecordCount)
+	assert.Equal(t, base.Add(10*time.Minute), rows[0].FirstSeen)
 	assert.Equal(t, base.Add(10*time.Minute), rows[0].LastSeen)
-	assert.Equal(t, 2, rows[2].RecordCount)
+	assert.Equal(t, 2, rows[2].RecordCount, "hr-demo-1 has two records")
 	assert.Equal(t, base.Add(5*time.Minute), rows[2].LastSeen)
+	assert.Equal(t, base.Add(1*time.Minute), rows[3].LastSeen, "hr's share of sess_native is its own entry")
 	assert.Equal(t, "evidence", rows[0].Source)
 
-	// Paging across the tie: page size 1 must visit all three, in order.
+	// Paging across the tie: page size 1 must visit all four, in order.
 	var cursor ObservedCursor
 	var walked []string
 	for {
@@ -144,15 +149,16 @@ func TestListObservedSessions_HandExpectations(t *testing.T) {
 		if len(page) == 0 {
 			break
 		}
-		walked = append(walked, page[0].SessionID)
-		cursor = ObservedCursor{LastSeen: page[0].LastSeen, SessionID: page[0].SessionID}
+		walked = append(walked, page[0].SessionID+"/"+page[0].AgentID)
+		cursor = ObservedCursor{LastSeen: page[0].LastSeen, SessionID: page[0].SessionID, AgentID: page[0].AgentID}
 	}
-	assert.Equal(t, []string{"sess_native", "hr-demo-2", "hr-demo-1"}, walked)
+	assert.Equal(t, pairs(rows), walked)
 
 	byAgent, err := store.ListObservedSessions(ctx, "default", "scratch", ObservedCursor{}, 10)
 	require.NoError(t, err)
 	require.Len(t, byAgent, 1)
 	assert.Equal(t, "sess_native", byAgent[0].SessionID)
+	assert.Equal(t, "scratch", byAgent[0].AgentID)
 	assert.Equal(t, 1, byAgent[0].RecordCount, "agent filter counts that agent's records only")
 
 	_, err = store.ListObservedSessions(ctx, "", "", ObservedCursor{}, 10)
@@ -203,4 +209,204 @@ func TestParseStoredTime(t *testing.T) {
 	}
 	_, err := parseStoredTime("yesterday")
 	require.Error(t, err)
+}
+
+func pairs(rows []ObservedSession) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.SessionID+"/"+r.AgentID)
+	}
+	return out
+}
+
+// TestSummarizeSession_StreamsWithBoundedMemory (#535 review): summarising
+// a 10,000-record session (≈3 KB each, ≈30 MB if held) through the store
+// must equal BuildSessionSummary over the loaded records and must not hold
+// the records: the sampled heap high-water mark during the streamed read
+// stays far below the size of the data, while loading them all does not.
+func TestSummarizeSession_StreamsWithBoundedMemory(t *testing.T) {
+	store := pageStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	padding := strings.Repeat("x", 2500)
+	const n = 10000
+	bulkInsert(t, store, func(i int) *Evidence {
+		return &Evidence{
+			ID: fmt.Sprintf("big%05d", i), CorrelationID: "c", SessionID: "huge", TenantID: "default", AgentID: "bot",
+			Timestamp: base.Add(time.Duration(i) * time.Second), InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: i%7 != 0, Action: "allow", Reasons: []string{"pad: " + padding}},
+			Execution:      Execution{ModelUsed: "m", Cost: 0.001, Currency: "EUR", Tokens: TokenUsage{Input: 10, Output: 5}},
+		}
+	}, n)
+
+	// Equivalence with the slice-based form on a prefix small enough to load.
+	streamed, err := store.SummarizeSession(ctx, "huge", "default", "")
+	require.NoError(t, err)
+	assert.Equal(t, n, streamed.RecordCount)
+	assert.Equal(t, n-n/7-1, streamed.Allowed) // i%7==0 for i=0,7,…: 1429 denied
+	assert.InDelta(t, float64(n)*0.001, streamed.TotalCost, 1e-6)
+
+	peakStream := peakHeapDuring(t, func() {
+		_, err := store.SummarizeSession(ctx, "huge", "default", "")
+		require.NoError(t, err)
+	})
+	peakLoad := peakHeapDuring(t, func() {
+		recs, err := store.ListBySessionID(ctx, "huge")
+		require.NoError(t, err)
+		sum := BuildSessionSummary("huge", recs)
+		assert.Equal(t, streamed.RecordCount, sum.RecordCount)
+		assert.Equal(t, streamed.Allowed, sum.Allowed)
+		assert.InDelta(t, streamed.TotalCost, sum.TotalCost, 1e-9)
+	})
+	t.Logf("peak heap: streamed %.1f MB, loaded %.1f MB", float64(peakStream)/1e6, float64(peakLoad)/1e6)
+	assert.Less(t, peakStream, uint64(12<<20), "streaming must not hold the session (≈30 MB of records)")
+	assert.Greater(t, peakLoad, peakStream*2, "loading everything is the behaviour the streamed path avoids")
+}
+
+// bulkInsert stores n signed records through the normal write path in one
+// transaction-sized burst (the store signs each; this is still the real
+// schema and real JSON, not a fixture shortcut).
+func bulkInsert(t *testing.T, store *Store, mk func(i int) *Evidence, n int) {
+	t.Helper()
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		require.NoError(t, store.Store(ctx, mk(i)))
+	}
+}
+
+// peakHeapDuring runs fn while sampling the heap every millisecond and
+// returns the highest HeapAlloc observed above the pre-call baseline.
+func peakHeapDuring(t *testing.T, fn func()) uint64 {
+	t.Helper()
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+	stop := make(chan struct{})
+	var peak atomic.Uint64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var ms runtime.MemStats
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				runtime.ReadMemStats(&ms)
+				if ms.HeapAlloc > peak.Load() {
+					peak.Store(ms.HeapAlloc)
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+	fn()
+	close(stop)
+	<-done
+	if peak.Load() < base.HeapAlloc {
+		return 0
+	}
+	return peak.Load() - base.HeapAlloc
+}
+
+// TestSessionSnapshotRead_ConsistentUnderConcurrentWrites (#535 review): the
+// summary, the page and the total come from one read transaction, so they
+// agree with each other even while another connection keeps inserting.
+func TestSessionSnapshotRead_ConsistentUnderConcurrentWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence.db")
+	writer, err := NewStore(path, "snapshot-test-signing-key-00000001")
+	require.NoError(t, err)
+	defer writer.Close()
+	reader, err := OpenReadOnly(path, "snapshot-test-signing-key-00000001")
+	require.NoError(t, err)
+	defer reader.Close()
+	ctx := context.Background()
+	base := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	mk := func(i int) *Evidence {
+		return &Evidence{
+			ID: fmt.Sprintf("w%05d", i), CorrelationID: "c", SessionID: "live", TenantID: "default", AgentID: "bot",
+			Timestamp: base.Add(time.Duration(i) * time.Millisecond), InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"}, Execution: Execution{Cost: 0.01},
+		}
+	}
+	for i := 0; i < 200; i++ {
+		require.NoError(t, writer.Store(ctx, mk(i)))
+	}
+	stop := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		for i := 200; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = writer.Store(ctx, mk(i))
+			}
+		}
+	}()
+	for round := 0; round < 25; round++ {
+		snap, err := reader.SessionSnapshotRead(ctx, "live", "default", "", TimelineCursor{}, MaxTimelinePage)
+		require.NoError(t, err)
+		assert.Equal(t, snap.Summary.RecordCount, snap.Total, "summary and count read the same snapshot")
+		assert.LessOrEqual(t, len(snap.Page), snap.Total)
+		if snap.Total <= MaxTimelinePage {
+			assert.Len(t, snap.Page, snap.Total, "a page that covers the whole session matches the same snapshot's total")
+		}
+		assert.InDelta(t, float64(snap.Total)*0.01, snap.Summary.TotalCost, 1e-6)
+	}
+	close(stop)
+	<-writerDone
+}
+
+// TestObservedSessions_PlanAndScale (#535 review): the discovery query and
+// the timeline page resolve from the covering index (no bare table scan),
+// and over 100,000 records the bounded page still returns promptly.
+func TestObservedSessions_PlanAndScale(t *testing.T) {
+	store := pageStore(t)
+	ctx := context.Background()
+	plan, err := store.ObservedSessionsPlan(ctx, "default")
+	require.NoError(t, err)
+	joined := strings.Join(plan, "\n")
+	assert.Contains(t, joined, "idx_evidence_tenant_session_agent_ts", "discovery uses the covering index: %s", joined)
+	assert.NotRegexp(t, `(?m)^SCAN evidence$`, joined, "no bare table scan: %s", joined)
+	pagePlan, err := store.ExplainQueryPlan(ctx, `SELECT evidence_json FROM evidence WHERE session_id = ? AND tenant_id = ? AND agent_id = ? AND (timestamp > ? OR (timestamp = ? AND id > ?)) ORDER BY timestamp ASC, id ASC LIMIT ?`, "s", "default", "a", time.Time{}, time.Time{}, "", 10)
+	require.NoError(t, err)
+	assert.Contains(t, strings.Join(pagePlan, "\n"), "INDEX", "timeline page uses an index: %s", pagePlan)
+
+	// Scale: 100,000 records over 5,000 sessions and 50 agents, inserted raw
+	// (the write path's signing is not what is measured here).
+	raw, err := sql.Open("sqlite3", store.dbPathForTest())
+	require.NoError(t, err)
+	defer raw.Close()
+	tx, err := raw.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO evidence (id, correlation_id, timestamp, tenant_id, agent_id, invocation_type, evidence_json, signature, session_id) VALUES (?, ?, ?, 'default', ?, 'gateway', ?, 'sig', ?)`)
+	require.NoError(t, err)
+	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 100000; i++ {
+		sess := fmt.Sprintf("sess-%04d", i%5000)
+		agent := fmt.Sprintf("agent-%02d", i%50)
+		ts := base.Add(time.Duration(i) * time.Second)
+		_, err := stmt.ExecContext(ctx, fmt.Sprintf("bulk%06d", i), "c", ts, agent, `{"id":"x","policy_decision":{"allowed":true},"execution":{"cost":0.001}}`, sess)
+		require.NoError(t, err)
+	}
+	require.NoError(t, stmt.Close())
+	require.NoError(t, tx.Commit())
+
+	started := time.Now()
+	page, err := store.ListObservedSessions(ctx, "default", "", ObservedCursor{}, MaxObservedPage)
+	elapsed := time.Since(started)
+	require.NoError(t, err)
+	assert.Len(t, page, MaxObservedPage)
+	t.Logf("observed sessions over 100k records: %s", elapsed)
+	assert.Less(t, elapsed, 5*time.Second, "discovery must stay predictable at 100k records")
+
+	started = time.Now()
+	snap, err := store.SessionSnapshotRead(ctx, "sess-0042", "default", "", TimelineCursor{}, 10)
+	elapsed = time.Since(started)
+	require.NoError(t, err)
+	assert.Equal(t, 20, snap.Total)
+	assert.Len(t, snap.Page, 10)
+	assert.Less(t, elapsed, 2*time.Second)
 }

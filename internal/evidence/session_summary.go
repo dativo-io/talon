@@ -117,14 +117,37 @@ type SessionAgentRollup struct {
 // (agents by descending cost then id, string sets sorted). Nil records are
 // skipped.
 func BuildSessionSummary(sessionID string, records []*Evidence) SessionSummary {
-	agg := newSessionAgg(sessionID)
+	acc := NewSessionAccumulator(sessionID)
 	for _, ev := range records {
-		if ev != nil {
-			agg.add(ev)
-		}
+		acc.Add(ev)
 	}
-	return agg.finish()
+	return acc.Finish()
 }
+
+// SessionAccumulator is the streaming form of BuildSessionSummary: records
+// are fed one at a time and never retained, so a session of any length is
+// summarised in memory proportional to its distinct agents, models, tools
+// and provider/model hops, not to its record count (#535 review). It is the
+// one implementation; BuildSessionSummary is defined by it.
+type SessionAccumulator struct{ agg *sessionAgg }
+
+// NewSessionAccumulator starts an accumulator for sessionID.
+func NewSessionAccumulator(sessionID string) *SessionAccumulator {
+	return &SessionAccumulator{agg: newSessionAgg(sessionID)}
+}
+
+// Add folds one record in; nil is skipped. The record is not retained.
+func (a *SessionAccumulator) Add(ev *Evidence) {
+	if ev != nil {
+		a.agg.add(ev)
+	}
+}
+
+// Count is the number of records folded in so far.
+func (a *SessionAccumulator) Count() int { return a.agg.sum.RecordCount }
+
+// Finish returns the summary. The accumulator must not be used afterwards.
+func (a *SessionAccumulator) Finish() SessionSummary { return a.agg.finish() }
 
 // sessionAgg accumulates records into a SessionSummary. Splitting the per-record
 // work across small methods keeps each below the cyclomatic-complexity budget.
@@ -137,10 +160,12 @@ type sessionAgg struct {
 	// orchAt is the timestamp of the record whose orchestration block
 	// currently supplies SessionSource/Client (earliest wins).
 	orchAt time.Time
-	// pathHops collects (timestamp, provider/model) pairs for records that
-	// actually served; ordered into ProviderPath in finish() because input
-	// order is not guaranteed.
-	pathHops  []pathHop
+	// pathHops keeps, per provider/model label that actually served, the
+	// EARLIEST serving record (time and arrival sequence); ordered into
+	// ProviderPath in finish() because input order is not guaranteed. One
+	// entry per distinct label, not per record, so memory is bounded.
+	pathHops  map[string]pathHop
+	seq       int
 	toolNames map[string]struct{}
 	filtered  map[string]struct{}
 	piiTypes  map[string]struct{}
@@ -148,6 +173,7 @@ type sessionAgg struct {
 
 type pathHop struct {
 	at    time.Time
+	seq   int // arrival order of the record that set at; stable tie-break
 	label string
 }
 
@@ -158,6 +184,7 @@ func newSessionAgg(sessionID string) *sessionAgg {
 		providers: map[string]struct{}{},
 		models:    map[string]struct{}{},
 		subagents: map[string]*SessionAgentRollup{},
+		pathHops:  map[string]pathHop{},
 		toolNames: map[string]struct{}{},
 		filtered:  map[string]struct{}{},
 		piiTypes:  map[string]struct{}{},
@@ -333,7 +360,11 @@ func (a *sessionAgg) addPathHop(ev *Evidence) {
 	if provider != "" {
 		label = provider + "/" + label
 	}
-	a.pathHops = append(a.pathHops, pathHop{at: ev.Timestamp, label: label})
+	a.seq++
+	if prev, ok := a.pathHops[label]; ok && !ev.Timestamp.Before(prev.at) {
+		return // an earlier serving of this label is already recorded
+	}
+	a.pathHops[label] = pathHop{at: ev.Timestamp, seq: a.seq, label: label}
 }
 
 // addFailure keeps the NEWEST deny or execution failure as the session's
@@ -393,21 +424,25 @@ func (a *sessionAgg) finish() SessionSummary {
 	return a.sum
 }
 
-// orderedPath sorts hops by time and keeps the first occurrence of each label,
-// so a fallback session reads "anthropic/x → openai/y" regardless of input
-// order.
-func orderedPath(hops []pathHop) []string {
+// orderedPath orders the distinct labels by the time they first served
+// (arrival sequence breaks ties), so a fallback session reads
+// "anthropic/x → openai/y" regardless of input order.
+func orderedPath(hops map[string]pathHop) []string {
 	if len(hops) == 0 {
 		return nil
 	}
-	sort.SliceStable(hops, func(i, j int) bool { return hops[i].at.Before(hops[j].at) })
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(hops))
+	list := make([]pathHop, 0, len(hops))
 	for _, h := range hops {
-		if _, ok := seen[h.label]; ok {
-			continue
+		list = append(list, h)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if !list[i].at.Equal(list[j].at) {
+			return list[i].at.Before(list[j].at)
 		}
-		seen[h.label] = struct{}{}
+		return list[i].seq < list[j].seq
+	})
+	out := make([]string, 0, len(list))
+	for _, h := range list {
 		out = append(out, h.label)
 	}
 	return out
