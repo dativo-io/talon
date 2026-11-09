@@ -541,10 +541,9 @@ func labelPartial(c *Costs) {
 
 // Activity is the request-class series for the window at bucket. tenant ""
 // is the installation's "default" tenant and Meta names it.
+// Activity is the request-class bucket series. tenant "" means every tenant
+// (Meta.TenantScope all_tenants), the same scope the Overview uses for "".
 func (s *Service) Activity(ctx context.Context, tenant, agent string, from, to time.Time, bucket time.Duration) Activity {
-	if tenant == "" {
-		tenant = "default"
-	}
 	out := Activity{Meta: s.meta(tenant)}
 	if s.cfg.Evidence == nil {
 		out.Availability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}
