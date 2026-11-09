@@ -3,12 +3,16 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dativo-io/talon/internal/evidence"
 )
 
 // configService is the fixture service with every configuration source set,
@@ -191,4 +195,36 @@ func TestSearch_BoundedExactLookups(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidArgument)
 	_, err = svc.Search(ctx, "", string(make([]byte, MaxSearchQuery+1)))
 	assert.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+// TestSearch_TenantFilterBeforeLimit (#553 review): 11 records of tenant
+// "default" share a correlation id with one record of tenant "acme"; the acme
+// search must find acme's record even though the default tenant's records
+// fill the first page of the id.
+func TestSearch_TenantFilterBeforeLimit(t *testing.T) {
+	f := seed(t)
+	ctx := context.Background()
+	for i := 0; i < 11; i++ {
+		require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+			ID: fmt.Sprintf("shared-%02d", i), CorrelationID: "corr-shared", TenantID: "default", AgentID: "scratch",
+			Timestamp: f.now.Add(-time.Duration(40-i) * time.Minute), InvocationType: "gateway",
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		}))
+	}
+	require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+		ID: "shared-acme", CorrelationID: "corr-shared", TenantID: "acme", AgentID: "hr-analytics-assistant",
+		Timestamp: f.now.Add(-time.Minute), InvocationType: "gateway",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+	}))
+	svc := f.service(t)
+	r, err := svc.Search(ctx, "acme", "corr-shared")
+	require.NoError(t, err)
+	require.Len(t, r.Evidence, 1)
+	assert.Equal(t, "shared-acme", r.Evidence[0].ID)
+	r, err = svc.Search(ctx, "default", "corr-shared")
+	require.NoError(t, err)
+	assert.Len(t, r.Evidence, maxSearchResults, "bounded")
+	for _, e := range r.Evidence {
+		assert.Equal(t, "default", e.TenantID)
+	}
 }
