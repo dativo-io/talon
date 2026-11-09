@@ -96,7 +96,13 @@ check "overview reports today's request count for tenant demo" grep -Eq '"reques
 check "session written by the data plane is readable through the console" [ "$(status_of GET "$UI/console/v1/sessions/compose-smoke?tenant=demo" -b "$WORK/jar")" = "200" ]
 check "session summary counts the governed request" grep -Eq '"requests":1' "$WORK/body"
 check "write verb on the read API is 405" [ "$(status_of POST "$UI/console/v1/overview" -b "$WORK/jar" -H 'Content-Type: application/json' -d '{}')" = "405" ]
-check "console cookie is nothing on the data plane admin route" [ "$(status_of GET "$DP/api/v1/metrics" -b "$WORK/jar")" = "401" ]
+# The demo data plane runs without TALON_ADMIN_KEY, so the admin route's
+# answer depends on that configuration, not on the console. The claim here is
+# that the console cookie changes nothing: same answer with and without it.
+# (With an admin key set, the cookie is refused: TestAdminKey_QueryAndCookieNoLongerAuthenticate.)
+without_cookie="$(status_of GET "$DP/api/v1/metrics")"
+with_cookie="$(status_of GET "$DP/api/v1/metrics" -b "$WORK/jar")"
+check "console cookie changes nothing on the data plane admin route ($without_cookie without, $with_cookie with)" [ "$with_cookie" = "$without_cookie" ]
 sleep 1
 check "replayed code refused" [ "$(status_of POST "$UI/console/auth/pair" -H 'Content-Type: application/json' -d "{\"code\":\"$code\"}")" = "401" ]
 

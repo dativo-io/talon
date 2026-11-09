@@ -35,6 +35,10 @@ services:
     command:
       - |
         talon secrets set demo-agent-talon-key "talon-demo-key" >/dev/null 2>&1 || true
+        # The gateway config names openai-api-key as the provider secret; the
+        # mock provider ignores its value, but without it the gateway refuses
+        # the upstream call ("secret not found").
+        talon secrets set openai-api-key "mock-provider-needs-no-key" >/dev/null 2>&1 || true
         exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
     # Demo stack: no TALON_ADMIN_KEY, so the API is development-open by
     # design. It is therefore published to the host's loopback only; the
