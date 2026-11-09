@@ -16,7 +16,14 @@ DP="http://127.0.0.1:8080"
 failures=0
 
 cleanup() {
-  "${COMPOSE[@]}" logs --no-color talon-ui >"$WORK/talon-ui.log" 2>/dev/null || true
+  if [ "$failures" -ne 0 ]; then
+    # The job log is the only place a CI failure can be read: show what the
+    # containers said (no secret is in these logs by the stack's design).
+    echo "::group::docker compose ps"; "${COMPOSE[@]}" ps 2>/dev/null || true; echo "::endgroup::"
+    echo "::group::talon-ui log"; "${COMPOSE[@]}" logs --no-color --tail=80 talon-ui 2>/dev/null || true; echo "::endgroup::"
+    echo "::group::talon log (tail)"; "${COMPOSE[@]}" logs --no-color --tail=40 talon 2>/dev/null || true; echo "::endgroup::"
+    echo "::group::last response body"; cat "$WORK/body" 2>/dev/null || true; echo; echo "::endgroup::"
+  fi
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -82,8 +89,12 @@ check "cross-origin pairing refused" [ "$(status_of POST "$UI/console/auth/pair"
 sleep 1
 check "pair with the logged code" [ "$(status_of POST "$UI/console/auth/pair" -c "$WORK/jar" -H 'Content-Type: application/json' -d "{\"code\":\"$code\"}")" = "200" ]
 check "session cookie is HttpOnly" grep -q 'HttpOnly' "$WORK/jar"
-check "paired overview is 200" [ "$(status_of GET "$UI/console/v1/overview?tenant=default" -b "$WORK/jar")" = "200" ]
-check "overview names the demo agent" grep -q '"demo-agent"' "$WORK/body"
+# The demo agent lives in tenant "demo" (examples/docker-compose/agent.talon.yaml).
+check "paired overview is 200" [ "$(status_of GET "$UI/console/v1/overview?tenant=demo" -b "$WORK/jar")" = "200" ]
+check "overview reports today's request count for tenant demo" grep -Eq '"requests":[1-9]' "$WORK/body"
+# The console reads the very session the data plane just wrote (shared store, read-only connection).
+check "session written by the data plane is readable through the console" [ "$(status_of GET "$UI/console/v1/sessions/compose-smoke?tenant=demo" -b "$WORK/jar")" = "200" ]
+check "session summary counts the governed request" grep -Eq '"requests":1' "$WORK/body"
 check "write verb on the read API is 405" [ "$(status_of POST "$UI/console/v1/overview" -b "$WORK/jar" -H 'Content-Type: application/json' -d '{}')" = "405" ]
 check "console cookie is nothing on the data plane admin route" [ "$(status_of GET "$DP/api/v1/metrics" -b "$WORK/jar")" = "401" ]
 sleep 1
