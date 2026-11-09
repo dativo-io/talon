@@ -129,7 +129,7 @@ func (s *Service) Overview(ctx context.Context, tenant string) *Overview {
 }
 
 func (s *Service) useCases(ctx context.Context, tenant string) UseCases {
-	out := UseCases{Rows: []fleet.AgentRow{}, Attention: []fleet.AgentRow{}, Issues: []agentcatalog.FleetIssue{}, Runtime: runtimeUnknown(), HealthBasis: HealthBasisProjected}
+	out := UseCases{Rows: []fleet.AgentRow{}, Attention: []fleet.AgentRow{}, Issues: []agentcatalog.FleetIssue{}, Runtime: runtimeUnknown(), HealthBasis: HealthBasisProjected, CounterWindows: counterWindows(fleet.DefaultThresholds())}
 	if s.cfg.Fleet == nil {
 		out.Availability = Availability{State: StateUnavailable, Source: SourceNone, Error: "no fleet source configured"}
 		return out
@@ -272,10 +272,11 @@ func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDet
 	}
 	uc := s.useCases(ctx, tenant)
 	out := &UseCaseDetail{
-		Meta:         s.meta(tenant),
-		Availability: uc.Availability,
-		HealthBasis:  uc.HealthBasis,
-		Runtime:      uc.Runtime,
+		Meta:           s.meta(tenant),
+		Availability:   uc.Availability,
+		HealthBasis:    uc.HealthBasis,
+		CounterWindows: uc.CounterWindows,
+		Runtime:        uc.Runtime,
 		EffectivePolicy: Availability{
 			State:  StateUnknown,
 			Source: SourceNone,
@@ -670,4 +671,11 @@ func clampLimit(limit, def, maxLimit int) int {
 		return maxLimit
 	}
 	return limit
+}
+
+// counterWindows states the rolling windows behind the row counters, from
+// the thresholds fleet.Project was called with (the offline projection and
+// the server both use fleet.DefaultThresholds).
+func counterWindows(th fleet.Thresholds) CounterWindows {
+	return CounterWindows{RequestsDenied: th.DenialWindow.String(), Fallbacks: th.FallbackWindow.String(), FailedSessions: th.FailedSessionWindow.String()}
 }

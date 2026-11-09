@@ -105,6 +105,16 @@ type UseCases struct {
 	// Attention is the subset of Rows whose health is not healthy, same order.
 	Attention []fleet.AgentRow `json:"attention"`
 	Runtime   Runtime          `json:"runtime"`
+	// CounterWindows are the rolling windows of the row counters (requests,
+	// denied, fallbacks, failed_sessions); spend_* use UTC day and month.
+	CounterWindows CounterWindows `json:"counter_windows"`
+}
+
+// CounterWindows are Go duration strings ("1h0m0s").
+type CounterWindows struct {
+	RequestsDenied string `json:"requests_denied"`
+	Fallbacks      string `json:"fallbacks"`
+	FailedSessions string `json:"failed_sessions"`
 }
 
 // Today is the UTC-day traffic and spend of the DTO's tenant scope.
@@ -146,6 +156,7 @@ type UseCaseDetail struct {
 	Row            *fleet.AgentRow `json:"row"`
 	Availability   Availability    `json:"availability"`
 	HealthBasis    string          `json:"health_basis"`
+	CounterWindows CounterWindows  `json:"counter_windows"`
 	Runtime        Runtime         `json:"runtime"`
 	RecentSessions SessionList     `json:"recent_sessions"`
 	Costs          Costs           `json:"costs"`

@@ -609,3 +609,9 @@ func TestSession_CostNotComparableIsPartial(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StateOK, usd.Availability.State)
 }
+
+func TestUseCases_StateTheirCounterWindows(t *testing.T) {
+	f := seed(t)
+	_, uc := f.service(t).UseCases(context.Background(), "")
+	assert.Equal(t, CounterWindows{RequestsDenied: "1h0m0s", Fallbacks: "1h0m0s", FailedSessions: "24h0m0s"}, uc.CounterWindows, "the windows fleet.Project used, so a consumer can label the counters")
+}
