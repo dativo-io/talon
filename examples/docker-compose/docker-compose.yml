@@ -11,13 +11,17 @@
 #
 #   # Check the audit trail:
 #   docker compose exec talon /usr/local/bin/talon audit list
+#
+#   # Read-only console in the browser: open http://127.0.0.1:8787/ and enter
+#   # the one-time pairing code from:
+#   docker compose logs talon-ui
 
 services:
   mock-openai:
     build:
       context: ./mock-provider
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/health || exit 1"]
       interval: 5s
@@ -31,22 +35,60 @@ services:
     command:
       - |
         talon secrets set demo-agent-talon-key "talon-demo-key" >/dev/null 2>&1 || true
+        # The gateway config names openai-api-key as the provider secret; the
+        # mock provider ignores its value, but without it the gateway refuses
+        # the upstream call ("secret not found").
+        talon secrets set openai-api-key "mock-provider-needs-no-key" >/dev/null 2>&1 || true
         exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
+    # Demo stack: no TALON_ADMIN_KEY, so the API is development-open by
+    # design. It is therefore published to the host's loopback only; the
+    # console's pairing (talon-ui) does not secure this port.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - TALON_SECRETS_KEY=abcdefghijklmnopqrstuvwxyz012345
       - TALON_LOG_LEVEL=info
       - TALON_LOG_FORMAT=json
+    # agent.talon.yaml is read from the working directory (/home/talon), not
+    # from the data directory; mounting it under .talon left serve without a
+    # keyed agent ("gateway mode requires at least one keyed agent").
     volumes:
       - ./talon.config.yaml:/etc/talon/talon.config.yaml:ro
-      - ./agent.talon.yaml:/home/talon/.talon/agent.talon.yaml:ro
+      - ./agent.talon.yaml:/home/talon/agent.talon.yaml:ro
       - talon-data:/home/talon/.talon
     depends_on:
       mock-openai:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Read-only operations console (#536, #537): same image, own process,
+  # store opened read-only, published to the host loopback only. No provider
+  # or secrets key is passed to it. TALON_SIGNING_KEY is unset on both
+  # services here, so both derive the same default key and the console can
+  # verify the evidence it shows; set the same explicit key on both in a
+  # real deployment.
+  talon-ui:
+    build:
+      context: ../../
+    command: ui serve --listen 0.0.0.0:8787 --allow-non-loopback --gateway-config /etc/talon/talon.config.yaml
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      - TALON_LOG_LEVEL=info
+      - TALON_LOG_FORMAT=json
+    volumes:
+      - ./talon.config.yaml:/etc/talon/talon.config.yaml:ro
+      - ./agent.talon.yaml:/home/talon/agent.talon.yaml:ro
+      - talon-data:/home/talon/.talon
+    depends_on:
+      talon:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8787/healthz || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 10

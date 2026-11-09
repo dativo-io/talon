@@ -10,6 +10,7 @@ This reference describes Talon's auth model across gateway traffic, tenant-scope
 |---|---|---|---|
 | **Agent key** | Talon vault, bound via `agent.key.secret_name` in `agent.talon.yaml` — mint with `talon secrets set <name> "$(openssl rand -hex 24)"` | Workload identity: authenticates `/v1/proxy` traffic **and** tenant-scoped API access, scoped to the agent's derived tenant | `Authorization: Bearer <agent_key>` (the gateway also accepts `x-api-key: <agent_key>`) |
 | **Approver credential** | `talon approver add --tenant <t> --groups <g>` (256-bit, revocable, versioned; prefix `talon_appr_`) | Human reviewer authority: decisions on Action Gateway approvals, tenant-scoped and policy-authorized by group | `Authorization: Bearer talon_appr_…` on `POST /v1/approvals/{id}/decisions` only |
+| **Console browser session** | Minted by the console process (`talon ui serve`) when a browser redeems the one-time pairing code printed to the process log; see [console access](console-access.md) | Read-only access to the console's own `/console/v1/*` read API, nothing else: the console process has no data-plane route and the data plane ignores the cookie | `talon_console_session` cookie (HttpOnly, SameSite=Strict), set and validated only by the console process |
 | **Admin key** | `TALON_ADMIN_KEY` env var | Operator authority: cross-tenant reads and metrics, secrets, policy admin, and the **legacy** Plan Review and tool-approval decisions (current behavior; converging on approver credentials under #430/#433) | `X-Talon-Admin-Key: <key>` (preferred), `Authorization: Bearer <key>` (fallback) |
 
 Notes:
@@ -32,6 +33,7 @@ Notes:
 | Operational control plane (`/v1/runs*`, `/v1/overrides*`, `/v1/tool-approvals*`) | Admin key | Run management, tenant overrides, legacy tool approval gates |
 | Action Gateway runtime routes (`POST /v1/action-operations`, `GET /v1/action-operations/{id}`, `POST /v1/action-operations/{id}/attempts`, `GET /v1/approvals/{id}`) | Agent key only | Exact-action spine; admin keys and dev-open requests get `401 agent_identity_required` |
 | Action Gateway decisions (`POST /v1/approvals/{id}/decisions`) | Approver credential only | Admin keys, agent keys, workload identities and legacy role approvers are refused |
+| Console read API (`/console/v1/*`, served by the **console process** only) | Console browser session (cookie) after local pairing | Read-only DTOs of the installation; no write verb exists; the console process serves no `/v1/*`, `/api/v1/*` or `/mcp*` route, and the cookie is not an admin carrier anywhere |
 | Gateway metrics (`/api/v1/metrics`, `/api/v1/metrics/stream`) | Admin key | Operational telemetry snapshot and stream; header or bearer only — no query-string or cookie credentials |
 
 ---

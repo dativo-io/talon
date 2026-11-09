@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -399,6 +400,15 @@ func TestAdminKey_QueryAndCookieNoLongerAuthenticate(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			assert.Equal(t, http.StatusUnauthorized, rec.Code, "session cookie must not authenticate")
+
+			// The console's read-only browser session (#537) is a cookie the
+			// console process validates; presented here it is nothing.
+			req = newTestRequest("GET", "/api/v1/metrics")
+			req.AddCookie(&http.Cookie{Name: "talon_console_session", Value: "s3cr3t"})
+			req.AddCookie(&http.Cookie{Name: "talon_console_session", Value: strings.Repeat("A", 43)})
+			rec = httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusUnauthorized, rec.Code, "console session cookie must not authenticate on the data plane")
 
 			req = newTestRequest("GET", "/api/v1/metrics")
 			req.Header.Set("X-Talon-Admin-Key", "s3cr3t")

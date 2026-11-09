@@ -6,9 +6,15 @@ services:
         VERSION: ${VERSION:-dev}
     image: talon:${VERSION:-latest}
     command: serve --port 8080
+    # Published to the host's loopback only. The data-plane API is open to
+    # unauthenticated callers when TALON_ADMIN_KEY is unset (development
+    # default), so it must not reach the network by default; to expose it,
+    # set TALON_ADMIN_KEY in .env and change the binding deliberately. The
+    # console's pairing secures the console process, not this API.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
+      - TALON_ADMIN_KEY=${TALON_ADMIN_KEY:-}
       - TALON_LLM_PROVIDER=${TALON_LLM_PROVIDER:-openai}
       - TALON_LOG_LEVEL=${TALON_LOG_LEVEL:-info}
       - TALON_LOG_FORMAT=json
@@ -23,6 +29,35 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Read-only operations console (#536, #537): its own process, same image,
+  # same data volume opened read-only (mode=ro). It holds no provider or
+  # secrets key. It is published to the host's loopback only; the browser
+  # pairs with the one-time code in `docker compose logs talon-ui`
+  # (reissue: `docker compose exec talon-ui talon ui pair`). The data volume
+  # stays read-write at the mount level because a SQLite WAL reader must
+  # create the shared-memory file; the console's own connection is read-only.
+  talon-ui:
+    image: talon:${VERSION:-latest}
+    command: ui serve --listen 0.0.0.0:8787 --allow-non-loopback
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      - TALON_LOG_LEVEL=${TALON_LOG_LEVEL:-info}
+      - TALON_LOG_FORMAT=json
+    volumes:
+      - talon-data:/home/talon/.talon
+      - ./policies:/etc/talon/policies:ro
+      - ./examples:/etc/talon/examples:ro
+    depends_on:
+      talon:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8787/healthz || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
