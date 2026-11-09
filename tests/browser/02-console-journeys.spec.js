@@ -158,3 +158,17 @@ test("Fleet spend in another currency: unavailable, budget not evaluated, same a
   await expect(ui.getByText(/budget not evaluated/)).toBeVisible();
   await expect(ui.getByText("Needs attention")).toBeVisible();
 });
+
+test("Overview: one scope for the whole page — the chart totals today's requests, for all tenants and for one", async ({ page }) => {
+  const statValue = async () => Number((await page.locator(".stat", { hasText: "Requests today" }).locator(".value").innerText()).replace(/,/g, ""));
+  const chartTotal = async () => Number(/Requests \((\d+)\)/.exec(await page.locator(".legend").innerText())?.[1]);
+  await pair(page, "/overview");
+  await expect(page.locator(".legend")).toBeVisible();
+  const allStat = await statValue();
+  expect(await chartTotal()).toBe(allStat);
+  await page.goto("/overview?tenant=default");
+  await expect(page.locator(".legend")).toBeVisible();
+  const defStat = await statValue();
+  expect(await chartTotal()).toBe(defStat);
+  expect(allStat).toBeGreaterThan(defStat); // the fixture has traffic in tenant acme too
+});

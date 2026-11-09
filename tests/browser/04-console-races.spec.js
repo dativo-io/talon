@@ -81,3 +81,20 @@ test("Session cursors: changing tenant on an older page starts the new tenant fr
   expect(last.searchParams.get("before")).toBeNull();
   expect(last.searchParams.get("observed_before")).toBeNull();
 });
+
+test("Search: results of the previous query are not shown while the next one is pending", async ({ page }) => {
+  const f = state().fixture;
+  await pair(page, "/overview");
+  const box = page.getByRole("searchbox");
+  const list = page.getByRole("listbox", { name: "Search results" });
+  await box.fill(f.export_denied_evidence);
+  await expect(list.getByText(f.export_denied_evidence)).toBeVisible();
+  await expect(list.getByText("Tenant default")).toBeVisible();
+  const release = hold(page, `**/console/v1/search?*${f.hr_rejected_evidence}*`);
+  await box.fill(f.hr_rejected_evidence);
+  await expect(list.getByText("Searching…")).toBeVisible();
+  await expect(list.getByText(f.export_denied_evidence)).toHaveCount(0);
+  release();
+  await expect(list.getByText(f.hr_rejected_evidence)).toBeVisible();
+  await expect(list.getByText(f.export_denied_evidence)).toHaveCount(0);
+});
