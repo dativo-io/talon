@@ -7,7 +7,7 @@ Companion documents: [operations console guide](../guides/operations-console.md)
 ## 1. Principles
 
 1. **One Go implementation per concept.** `internal/console` calls the shared projections (`fleet.Project`, `costs.Build`, `session.LoadDetail` / `LoadTimelinePage`, `evidence.Store.Detail`, `evidence.Store.ActivityBuckets`, `events.FromEvidence`, `evidence.OutcomeOf`); the CLI calls the same functions. The browser (`internal/console/frontend`) formats and lays out only.
-2. **Durable facts come from the shared store, read-only.** The console process opens the evidence and session stores with `mode=ro` (`evidence.OpenReadOnly`, `session.OpenReadOnly`). Live process facts (liveness, active generation, reload state) are not readable from the store and are reported `unknown` until #538.
+2. **Durable facts come from the shared store, read-only; live facts come from each process's own runtime record.** The console process opens the evidence and session stores with `mode=ro` (`evidence.OpenReadOnly`, `session.OpenReadOnly`). Live process facts (liveness, version, active catalog generation, reload rejection, loaded config digests) come from the runtime record each `talon serve` writes into the data directory (§2.4); they are never inferred from the store.
 3. **Unknown is a value.** Every DTO section carries `availability {state: ok|partial|empty|unavailable|unknown, source, as_of, error, note, unavailable[]}`. A failed query, a missing source or a figure that is not a measurement yields that state with the reason, never a zero and never healthy.
 4. **Windows and units are explicit.** Cost and today's figures use UTC day, last 7 days and UTC calendar month (`costs.Window`). Fleet counters use the rolling windows of `fleet.DefaultThresholds` and say so (`counter_windows`). Amounts are in the active pricing table's currency; `*_eur` field names are historical. Amounts are never converted between currencies.
 5. **Bounded reads.** Every list has a server maximum and a keyset cursor with documented order; search is exact or prefix and bounded; no request decodes the evidence table in full.
@@ -26,9 +26,9 @@ All routes are `GET` under `/console/v1`, behind the browser session, `contract_
 | `evidence/{id}` | `detail {record, verification {state: valid|invalid, checked_at}, outcome}` | `evidence.Store.Detail` (HMAC verified per read), `evidence.OutcomeOf` | `talon audit show <id> --json`, `talon audit verify <id>` | `TestEvidenceDetail_VerificationAndTenantScope`, browser tamper test |
 | `costs?tenant=&agent=&breakdown=agents|model|provider|team` | `costs.Report` with `window`, per-window `currencies`, `unpriced_records`, `warnings`, `unavailable_fields`, budgets with `status`; partial when any field is unavailable | `costs.Build` | `talon costs --json` | `TestBuild_*`, `TestCostsCLI_JSONParityWithSharedProjection`, browser cost parity |
 | `activity?tenant=&agent=&from=&to=&bucket=5m|1h|24h` | request-class buckets (requests, denied, errors, cost), at most 2016; tenant "" spans every tenant, the same scope as `overview` with no tenant | `evidence.Store.ActivityBuckets` | — | `TestActivityBuckets_HandExpectations`, `TestOverviewAndActivityShareOneScope` |
-| `configuration?tenant=` | `organization`, `use_cases.items[]`, `mcp_proxy`: allowlisted fields of the gateway, agent and MCP proxy files (`talon ui serve --gateway-config`, `--proxy-config`, `agents_dir`); URLs reduced to `scheme://host`; webhook URLs only as `*_configured`; secret values never copied (vault secret names are); `effective_policy` and `active_generation` always `unknown` | `console.Configuration` over `gateway.LoadGatewayConfig`, `fleetview.Scan`, `mcp.LoadProxyConfig` | `talon validate`, `talon agents show` | `TestConfiguration_*` (including planted-secret leak checks on the DTO and on load errors) |
+| `configuration?tenant=` | `organization`, `use_cases.items[]`, `mcp_proxy`: allowlisted fields of the gateway, agent and MCP proxy files (`talon ui serve --gateway-config`, `--proxy-config`, `agents_dir`); URLs reduced to `scheme://host`; webhook URLs only as `*_configured`; secret values never copied (vault secret names are); `active` (per current process: generation, whether the agent files match it, reload rejection, loaded vs current proxy and gateway config digests) and per use case `active` (`loaded_matches_file` / `loaded_differs_from_file` / `not_in_active_generation` / `unknown`, proved by policy digests); `effective_policy` `unknown` | `console.Configuration` over `gateway.LoadGatewayConfig`, `fleetview.Scan`, `mcp.LoadProxyConfig` | `talon validate`, `talon agents show` | `TestConfiguration_*` (including planted-secret leak checks on the DTO and on load errors, and `TestConfiguration_ActiveVersusFiles`) |
 | `search?q=&tenant=` | one tenant for every result type (tenant "" = `default`, reported in `meta`); use-case names by prefix; exact evidence id; exact correlation id (tenant filter applied in SQL before the bound); exact session id; `unsupported: ["explanation_code"]` | `console.Search`, `evidence.Store.ListByCorrelationIDLimit` | `talon audit show`, `talon session show` | `TestSearch_BoundedExactLookups`, `TestSearch_TenantFilterBeforeLimit`, `TestSearch_OneScopeForEveryResultType` |
-| `system` | console version, commit, start; store path, read-only, size, record count, newest record; `runtime: unknown` | the console process and the store file | `talon doctor` | `TestSystem_StoreFactsAndUnknownRuntime` |
+| `system` | console version, commit, start; store path, read-only, size, record count, newest record; `runtime` (roles, processes, rejected records, §2.4) | the console process, the store file, `runtimestatus.Reader.Assess` | `talon doctor` | `TestSystem_StoreFactsAndUnknownRuntime`, `TestRuntime_*`, `TestE2E_ConsoleRuntime_ProcessTruth` |
 
 ### 2.1 Decision, dispatch and downstream (`evidence.OutcomeOf`)
 
@@ -54,6 +54,22 @@ Pinned by `TestOutcomeOf_SeparatesDecisionDispatchAndDownstream` (constructed re
 
 A field listed in a report's `unavailable_fields`, a fleet row's `unavailable_fields` (`spend_day`, `spend_month` when that period's priced records are not all in the row's currency), or a partial section's `availability.unavailable` keeps its historical value only so existing scripts keep parsing. The console renders it as unavailable with its reason (`internal/console/frontend/src/lib/availability.ts`, `lib/costs.ts`, unit-tested); `talon agents` prints `n/a (currencies differ)`. Unpriced model calls are different: the cost report counts them (`unpriced_records`) and says the amounts understate spend, but fleet health does not use that count as a signal, so a use case can read healthy while some of its calls carry no price. A fleet budget period whose records are not comparable is not evaluated: the row carries the cause `budget_not_comparable` and needs attention instead of being blocked or healthy on a mixed sum (`TestProject_ForeignCurrencyIsNotComparedWithCaps`).
 
+### 2.4 Runtime records (#538)
+
+Each `talon serve` process publishes `<data_dir>/runtime/<instance>.json` (`internal/runtimestatus`) on start, every 5 s, and once more with `state: stopped` on graceful shutdown. Writes are atomic (temp file + rename). The record holds: instance id, roles (`mcp_proxy`, `gateway`, `native`), version and commit, pid and host, start and write time, a per-instance `sequence`, the installation fingerprint (HMAC of a fixed label under the evidence signing key; the key itself is never written), and, from the process's reloader, the active catalog generation, scan digest, activation time, reload rejection with causes and the per-agent policy digests; plus the path, sha256 and load time of `--proxy-config` / `--gateway-config`.
+
+The console reads the directory read-only. `runtimestatus.Reader.Assess` derives, in Go:
+
+| State | When |
+|---|---|
+| `running` | heartbeat younger than 3 heartbeats |
+| `stale` | older than 3, younger than 12 heartbeats (hung, overloaded or killed) |
+| `offline` | a recorded graceful shutdown, a heartbeat older than 12 beats, or a role the configuration expects that no process has reported |
+| `not_configured` | a role neither expected by the console's configuration (`--proxy-config`, an enabled gateway config) nor reported |
+| `unknown` | the runtime directory cannot be read, or the console was started without its data directory and signing key |
+
+Records with another installation's fingerprint, an unknown schema, malformed JSON or over 64 KiB are listed as `rejected`, never combined. The newest instance per role is `current`; earlier instances stay listed as history. A record with a lower `sequence` than one already seen never replaces it. The console has no network path to the data plane, no Docker socket and no new listener; the store's sessions and evidence are read independently of runtime state.
+
 ### 2.3 Tests
 
 - **Go:** service and route tests per DTO; CLI ↔ console parity (`internal/cmd/console_parity_test.go`) over one seeded store; real-binary e2e (`tests/e2e/console_e2e_test.go`, `make test-console-smoke`, smoke section 43).
@@ -64,7 +80,6 @@ A field listed in a report's `unavailable_fields`, a fleet row's `unavailable_fi
 
 | Contract | Owner | Until it ships, the console shows |
 |---|---|---|
-| Runtime facts: process liveness, version and listen address per process, active catalog generation, last reload and rejection, collector freshness | #538 | `runtime.availability.state: unknown`; `active_generation: unknown`; health basis `projected_from_store` |
 | Effective policy with per-rule source and precedence | #305 | `effective_policy: unknown` ("Effective policy provenance not available") |
 | Session lifecycle `open|completed` and `managed_by` | #401 | today's six session-store states; evidence-observed sessions have no lifecycle |
 | Cross-process People Analytics conformance with real MCP proxy and HR backend processes and independent execution counters | #545 | the browser fixture is written through the store, not by running processes |
