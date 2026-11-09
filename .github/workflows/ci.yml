@@ -339,7 +339,7 @@ jobs:
       - name: Install Playwright (pinned) and Chromium
         working-directory: tests/browser
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
       - name: Console pairing in a real browser
         working-directory: tests/browser

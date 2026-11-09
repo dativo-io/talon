@@ -65,7 +65,7 @@ test-action-smoke: ## Exact governed-action smoke (#458) + one company action po
 test-console-smoke: ## Operations-console smoke (#535/#536/#537, no keys, no Docker): read model opened read-only on a live `talon serve --gateway` store == `talon agents/costs/session/audit --json`, across a restart and after the data plane stops; `talon metrics` fails loudly without the admin key or server; `talon ui serve` real-binary pairing, read-only boundary, reissue and restart independence; also smoke section 43 and a PR CI step
 	@bash scripts/console-smoke.sh
 
-test-browser-console: build ## Real-browser console pairing test (#537): Playwright/Chromium against `talon ui serve` from bin/talon (needs node; first run: cd tests/browser && npm install && npx playwright install chromium)
+test-browser-console: build ## Real-browser console pairing test (#537): Playwright/Chromium against `talon ui serve` from bin/talon (needs node; first run: cd tests/browser && npm ci && npx playwright install chromium)
 	@cd tests/browser && TALON_BINARY=$(CURDIR)/bin/talon npx playwright test
 
 test-console-compose-smoke: ## Console Compose smoke (#536/#537, Docker): the no-key examples/docker-compose stack starts `talon-ui` on 127.0.0.1:8787 only; pair with the logged one-time code, read the live store, no privileged route through the console, reissue via `docker compose exec talon-ui talon ui pair`, console restart leaves the data plane serving
