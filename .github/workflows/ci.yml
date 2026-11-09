@@ -373,6 +373,10 @@ jobs:
         env:
           TALON_BINARY: ${{ runner.temp }}/talon
         run: bash scripts/console-browser-smoke.sh
+      # People Analytics over real processes (#545): HR MCP backend, talon
+      # serve --proxy-config and talon ui serve, then the live spec in Chromium.
+      - name: People Analytics live (real processes, browser)
+        run: bash scripts/people-analytics-live.sh
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

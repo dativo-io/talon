@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-console-smoke test-console-compose-smoke test-browser-console console-frontend test-console-frontend test-openshell-live test-openshell-showcase-contract test-release-verify verify-release openshell-showcase-validate openshell-agent-image showcase-bundle test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-console-smoke test-console-compose-smoke test-browser-console test-people-analytics-live console-frontend test-console-frontend test-openshell-live test-openshell-showcase-contract test-release-verify verify-release openshell-showcase-validate openshell-agent-image showcase-bundle test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -64,6 +64,9 @@ test-action-smoke: ## Exact governed-action smoke (#458) + one company action po
 
 test-console-smoke: ## Operations-console smoke (#535/#536/#537, no keys, no Docker): read model opened read-only on a live `talon serve --gateway` store == `talon agents/costs/session/audit --json`, across a restart and after the data plane stops; `talon metrics` fails loudly without the admin key or server; `talon ui serve` real-binary pairing, read-only boundary, reissue and restart independence; also smoke section 43 and a PR CI step
 	@bash scripts/console-smoke.sh
+
+test-people-analytics-live: ## People Analytics over real processes (#545, no keys, no Docker): HR MCP backend with its own counters + `talon serve --proxy-config` + `talon ui serve`; allowed dispatched, forbidden never reaches the backend, backend rejection shown as such, console = CLI = browser, SIGKILL/restart, tamper, negative auth; also the CI e2e (processes) and browser (Chromium) jobs
+	@bash scripts/people-analytics-live.sh
 
 console-frontend: ## Build the console frontend into internal/console/web/static (embedded in the binary; needs node 22; commit the result)
 	@cd internal/console/frontend && npm ci --no-audit --no-fund && npm run build

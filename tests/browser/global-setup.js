@@ -9,7 +9,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const STATE = path.join(os.tmpdir(), "talon-console-browser-state.json");
+// TALON_BROWSER_STATE lets a live run (tests/e2e TestE2E_PeopleAnalytics_CrossProcess
+// with TALON_PA_BROWSER=1) hand its own installation to the same helpers.
+const STATE = process.env.TALON_BROWSER_STATE || path.join(os.tmpdir(), "talon-console-browser-state.json");
 const CODE_RE = /Talon console pairing code: ([A-Z2-9]{5}(?:-[A-Z2-9]{5}){3})/g;
 const SIGNING_KEY = "browser-test-signing-key-0123456789ab";
 const REPO = path.resolve(__dirname, "..", "..");
