@@ -45,9 +45,12 @@ services:
       - TALON_SECRETS_KEY=abcdefghijklmnopqrstuvwxyz012345
       - TALON_LOG_LEVEL=info
       - TALON_LOG_FORMAT=json
+    # agent.talon.yaml is read from the working directory (/home/talon), not
+    # from the data directory; mounting it under .talon left serve without a
+    # keyed agent ("gateway mode requires at least one keyed agent").
     volumes:
       - ./talon.config.yaml:/etc/talon/talon.config.yaml:ro
-      - ./agent.talon.yaml:/home/talon/.talon/agent.talon.yaml:ro
+      - ./agent.talon.yaml:/home/talon/agent.talon.yaml:ro
       - talon-data:/home/talon/.talon
     depends_on:
       mock-openai:
@@ -67,7 +70,7 @@ services:
   talon-ui:
     build:
       context: ../../
-    command: ui serve --listen 0.0.0.0:8787 --allow-non-loopback
+    command: ui serve --listen 0.0.0.0:8787 --allow-non-loopback --gateway-config /etc/talon/talon.config.yaml
     ports:
       - "127.0.0.1:8787:8787"
     environment:
@@ -75,7 +78,7 @@ services:
       - TALON_LOG_FORMAT=json
     volumes:
       - ./talon.config.yaml:/etc/talon/talon.config.yaml:ro
-      - ./agent.talon.yaml:/home/talon/.talon/agent.talon.yaml:ro
+      - ./agent.talon.yaml:/home/talon/agent.talon.yaml:ro
       - talon-data:/home/talon/.talon
     depends_on:
       talon:
