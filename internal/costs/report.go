@@ -395,8 +395,8 @@ func amountWindows(w Window) []amountWindow {
 }
 
 // currencies fills Currencies per amount window and marks the fields of
-// every window whose priced records are not all in r.Currency as not a
-// measurement: adding euros to dollars is not a total, and a sum of dollars
+// every window whose priced records are not all in r.Currency, or whose
+// currencies could not be read, as not a measurement: adding euros to dollars is not a total, and a sum of dollars
 // labelled "EUR" is not one either (#535 review rounds 3 and 4). Unstamped
 // records count as r.Currency, the unit the shipped tables always used.
 // It reports whether every window is comparable.
@@ -405,7 +405,12 @@ func currencies(ctx context.Context, src Source, tenant, agent string, w Window,
 	for _, win := range amountWindows(w) {
 		counts, err := src.CurrenciesInRange(ctx, tenant, agent, win.from, win.to)
 		if err != nil {
+			// Fail closed: a total whose unit could not be validated is not a
+			// measurement either, and no budget utilization is derived from it
+			// (#535 review round 5).
 			r.markUnavailable("currencies."+win.name, err)
+			r.Warnings = append(r.Warnings, win.name+" window: currency of the priced records could not be validated; amounts are not reported as sums in "+r.Currency)
+			r.UnavailableFields = append(r.UnavailableFields, win.fields...)
 			comparable = false
 			continue
 		}
