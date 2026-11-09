@@ -69,6 +69,10 @@ const (
 	// CausePolicyDenyAll — BLOCKED: agent-wide policy invalidity denies all new
 	// work.
 	CausePolicyDenyAll CauseKind = "policy_deny_all"
+	// CauseBudgetNotComparable: priced records in a budget period are in a
+	// currency other than the caps', so spend cannot be compared with the
+	// cap and that period's budget is not evaluated (needs-attention).
+	CauseBudgetNotComparable CauseKind = "budget_not_comparable"
 )
 
 // Cause is one matched health signal. Kind is stable for machines/JSON; Detail
@@ -151,6 +155,11 @@ type Signals struct {
 	// PolicyDenyAll — the agent's ACTIVE policy denies all new work agent-wide:
 	// BLOCKED. This is persistent, never a single request-specific denial.
 	PolicyDenyAll bool
+	// NotComparable names budget periods left out of Budgets because their
+	// priced records are not all in the caps' currency; each foreign
+	// currency is listed in NotComparableCurrencies.
+	NotComparable           []string
+	NotComparableCurrencies []string
 }
 
 // AgentStatus is the per-agent identity + config-validity + effective-cap input
@@ -209,6 +218,11 @@ type AgentRow struct {
 	ConfigPath     string    `json:"config_path"`
 	PolicyDigest   string    `json:"policy_digest"`
 	ConfigError    string    `json:"config_error,omitempty"`
+	// UnavailableFields names fields whose value is not a measurement:
+	// spend_day / spend_month when that period's priced records are not all
+	// in Currency. The retained number is kept for compatibility; consumers
+	// render it as unavailable (#553 review).
+	UnavailableFields []string `json:"unavailable_fields,omitempty"`
 	// UseCase is the operating record declared in the agent's config (#382):
 	// purpose, organizational context and accountable owners. Nil when the
 	// config declares none — the record is optional by design.
@@ -235,6 +249,11 @@ type UseCase struct {
 // CostString renders the COST column: month-to-date spend, and "/ cap" when a
 // monthly cap is set (0 = uncapped, shown as spend alone).
 func (r AgentRow) CostString() string {
+	for _, f := range r.UnavailableFields {
+		if f == "spend_month" {
+			return "n/a (currencies differ)"
+		}
+	}
 	if r.MonthlyCap > 0 {
 		return formatMoney(r.Currency, r.SpendMonth) + " / " + formatMoney(r.Currency, r.MonthlyCap)
 	}

@@ -540,3 +540,31 @@ func TestSessionSummary_CurrenciesAndComparability(t *testing.T) {
 	assert.True(t, none.CostComparable)
 	assert.Nil(t, none.Currencies)
 }
+
+// TestCurrenciesByAgent_GroupsPerAgentAndCurrency: the fleet's comparability
+// input counts priced records only, per agent and stamped currency, in range
+// and tenant scope.
+func TestCurrenciesByAgent_GroupsPerAgentAndCurrency(t *testing.T) {
+	store := pageStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	put := func(id, tenant, agent, cur string, cost float64, at time.Time) {
+		require.NoError(t, store.Store(ctx, &Evidence{
+			ID: id, CorrelationID: "c" + id, TenantID: tenant, AgentID: agent, Timestamp: at, InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"}, Execution: Execution{Cost: cost, Currency: cur},
+		}))
+	}
+	put("1", "default", "a", "USD", 0.1, base)
+	put("2", "default", "a", "EUR", 0.2, base.Add(time.Minute))
+	put("3", "default", "a", "", 0.3, base.Add(2*time.Minute))
+	put("4", "default", "a", "USD", 0, base.Add(3*time.Minute)) // unpriced: not counted
+	put("5", "default", "b", "USD", 0.1, base.Add(4*time.Minute))
+	put("6", "acme", "a", "GBP", 0.1, base.Add(5*time.Minute))
+	put("7", "default", "a", "JPY", 0.1, base.Add(48*time.Hour)) // out of range
+	got, err := store.CurrenciesByAgent(ctx, "default", base, base.Add(time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]map[string]int{"a": {"USD": 1, "EUR": 1, "": 1}, "b": {"USD": 1}}, got)
+	all, err := store.CurrenciesByAgent(ctx, "", base, base.Add(time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, all["a"]["GBP"], "empty tenant spans all tenants")
+}

@@ -124,6 +124,40 @@ func (s *Store) LastRequestByAgent(ctx context.Context, tenantID string, from, t
 // rows are deliberately excluded: they are failures, not dispatches, and #270's
 // "repeated fallbacks" signal counts dispatches. Empty tenantID spans all
 // tenants (agent_id is fleet-unique).
+// CurrenciesByAgent counts priced records (non-zero cost) per agent and
+// stamped currency ("" = written before the currency field) in [from, to).
+// fleet.Project uses it to refuse sums that mix units. Empty tenantID spans
+// all tenants.
+func (s *Store) CurrenciesByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]map[string]int, error) {
+	query := `SELECT agent_id, COALESCE(json_extract(evidence_json, '$.execution.currency'), ''), COUNT(*) FROM evidence
+		WHERE COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur'), 0) <> 0
+		AND timestamp >= ? AND timestamp < ?`
+	args := []interface{}{from.UTC(), to.UTC()}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` GROUP BY 1, 2`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying cost currencies by agent: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]map[string]int{}
+	for rows.Next() {
+		var agent, cur string
+		var n int
+		if err := rows.Scan(&agent, &cur, &n); err != nil {
+			return nil, fmt.Errorf("scanning cost currency by agent: %w", err)
+		}
+		if out[agent] == nil {
+			out[agent] = map[string]int{}
+		}
+		out[agent][cur] = n
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) FallbackCountsByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]int, error) {
 	query := `SELECT agent_id, COUNT(*) FROM evidence
 		WHERE json_extract(evidence_json, '$.failover.role') = ?`

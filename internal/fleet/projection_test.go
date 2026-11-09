@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,6 +18,7 @@ type fakeEvidence struct {
 	dayCost     map[string]float64
 	summary     []evidence.AgentSummary
 	lastReq     map[string]time.Time
+	currencies  map[string]map[string]int // agent -> currency -> priced records (both windows)
 	seenTenants []string
 }
 
@@ -39,6 +41,10 @@ func (f *fakeEvidence) CostByAgent(_ context.Context, _ string, _, _ time.Time) 
 
 func (f *fakeEvidence) AgentsSummary(_ context.Context, _, _ time.Time, _ string) ([]evidence.AgentSummary, error) {
 	return f.summary, nil
+}
+
+func (f *fakeEvidence) CurrenciesByAgent(_ context.Context, _ string, _, _ time.Time) (map[string]map[string]int, error) {
+	return f.currencies, nil
 }
 
 type fakeSessions struct{ failed map[string]int }
@@ -109,4 +115,39 @@ func TestProject_MixedTenantsQueryUnscoped(t *testing.T) {
 	_, err := Project(context.Background(), ev, ss, agents, DefaultThresholds(), now)
 	require.NoError(t, err)
 	require.Equal(t, []string{""}, ev.seenTenants, "agents spanning tenants query all tenants")
+}
+
+// TestProject_ForeignCurrencyIsNotComparedWithCaps (#553 review): spend whose
+// priced records are not all in the caps' currency is neither a measurement
+// nor a budget signal. A period that would read "exhausted" from a sum of
+// EUR records against USD caps must not block the agent; it is reported as
+// not evaluated instead, and the comparable period still counts.
+func TestProject_ForeignCurrencyIsNotComparedWithCaps(t *testing.T) {
+	ev := &fakeEvidence{
+		dayCost:    map[string]float64{"a": 9, "b": 1},
+		summary:    []evidence.AgentSummary{{AgentID: "a", CostEUR: 99}, {AgentID: "b", CostEUR: 1}},
+		currencies: map[string]map[string]int{"a": {"EUR": 3, "USD": 1}, "b": {"USD": 2, "": 1}},
+	}
+	agents := []AgentStatus{
+		{Name: "a", TenantID: "t", Enabled: true, DailyCap: 5, MonthlyCap: 50, Currency: "USD"},
+		{Name: "b", TenantID: "t", Enabled: true, DailyCap: 5, MonthlyCap: 50, Currency: "USD"},
+	}
+	rows, err := Project(context.Background(), ev, &fakeSessions{}, agents, DefaultThresholds(), time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	byName := map[string]AgentRow{}
+	for _, r := range rows {
+		byName[r.Name] = r
+	}
+	a := byName["a"]
+	assert.Equal(t, []string{"spend_day", "spend_month"}, a.UnavailableFields)
+	assert.Equal(t, HealthNeedsAttention, a.Health, "not BLOCKED by a sum of incomparable units, and not silently healthy")
+	require.Len(t, a.Causes, 1)
+	assert.Equal(t, CauseBudgetNotComparable, a.Causes[0].Kind)
+	assert.Contains(t, a.Causes[0].Detail, "daily and monthly budget not evaluated")
+	assert.Contains(t, a.Causes[0].Detail, "EUR")
+	assert.Equal(t, "n/a (currencies differ)", a.CostString(), "the CLI table does not print the mixed sum")
+
+	b := byName["b"]
+	assert.Empty(t, b.UnavailableFields, "USD and unstamped legacy records are comparable with USD caps")
+	assert.Equal(t, HealthHealthy, b.Health)
 }
