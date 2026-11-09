@@ -37,17 +37,18 @@ Evidence records open from any timeline, event or search result (`/evidence/<id>
 - **Decision and outcome are separate facts.** Each timeline row shows Talon's decision, then whether the request left Talon, then what the destination did. *Talon denied → Not dispatched* (a forbidden MCP tool), *Talon allowed → Dispatched → Destination rejected* (the HR backend refused the SQL), and *Talon allowed → Dispatched → Attempt failed* (a provider error before a fallback) are different rows, and a cache hit reads *Talon allowed → Not dispatched → Answered from Talon's cache*. A failed attempt counts as dispatched only when the provider's HTTP status was recorded; a bare transport error reads *Dispatch unknown*. These come from `evidence.OutcomeOf`, which reads only facts the writer recorded and says *not recorded* otherwise; "Why this outcome" names the fact.
 - **Sessions are never invented.** Managed sessions (with a lifecycle Talon tracks) and session ids seen only on evidence are listed separately. A record without a session id is shown as standalone. Two AI use cases that assert the same external session id are separate sessions; pick the use case to see each.
 - **Verification is a real check.** The evidence page verifies the HMAC signature for each read and shows *Signature valid* or *Signature invalid*. Evidence is tamper-evident, not immutable.
+- **Unpriced calls do not change health.** The Costs page counts model calls without a pricing-table price and warns that amounts understate spend; fleet health does not use that count, so a healthy use case can still have unpriced calls.
 - **Fleet spend in another currency is not a number.** When a use case's priced records in a period are not all in the pricing currency, its spend shows *unavailable* and its budget is *not evaluated* (cause `budget_not_comparable`), as in `talon agents`.
 - **Amounts keep their currency.** Amounts are in the active pricing table's currency. Fields named `*_eur` in the API are historical names, not euros. When priced records in a window are in another currency, or the currency check failed, those amounts and the budget utilization are shown as unavailable with the warning; no exchange rate is ever applied.
 - **Configuration is file contents.** The Configuration page shows what the files say now, built from an allowlist of fields: URLs are reduced to scheme and host, webhook URLs are only reported as configured, and secret values never leave the server (vault secret names are shown). It does not claim a running process loaded these values: the active generation stays *unknown* until #538 and effective-policy provenance stays *not available* until #305.
 
 ## Search
 
-The search box accepts an AI use case name (prefix), an exact session id, an exact evidence id or an exact correlation id, within the current tenant. Explanation codes are not searchable yet: they live inside the signed record and have no index. Search never loads the evidence store into the browser.
+The search box accepts an AI use case name (prefix), an exact session id, an exact evidence id or an exact correlation id. It searches one tenant for every kind of result: the tenant in the header, or `default` when it is empty; the dropdown names the tenant searched. Explanation codes are not searchable yet: they live inside the signed record and have no index. Search never loads the evidence store into the browser.
 
 ## Scope
 
-The tenant field in the header scopes every page (`?tenant=` in the URL; empty means all tenants where the projection supports it, otherwise `default`). Filters and scope live in the URL, so a link to an investigation can be shared; no code, cookie or key is ever placed in a URL.
+The tenant field in the header scopes every page (`?tenant=` in the URL). Empty means all tenants on Overview, including its activity chart, and on AI Use Cases; Sessions, Costs and search use `default`. Each page states the scope it shows. Filters and scope live in the URL, so a link to an investigation can be shared; no code, cookie or key is ever placed in a URL.
 
 ## What the console does not do
 
