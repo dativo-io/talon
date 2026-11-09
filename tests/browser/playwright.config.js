@@ -10,6 +10,7 @@ const { defineConfig } = require("@playwright/test");
 module.exports = defineConfig({
   testDir: ".",
   testMatch: /.*\.spec\.js/,
+  testIgnore: /live\//, // tests/browser/live runs only from the cross-process e2e (playwright.live.config.js)
   globalSetup: require.resolve("./global-setup.js"),
   globalTeardown: require.resolve("./global-teardown.js"),
   timeout: 60_000,
