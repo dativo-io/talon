@@ -398,8 +398,16 @@ func TestE2E_ConsoleUI_PairingReadOnlyProcess(t *testing.T) {
 		t.Fatalf("overview with the data plane stopped: %d %s", status, body)
 	}
 	mustJSON(t, body, &ov)
-	if ov.UseCases.Runtime.Availability.State != console.StateUnknown {
-		t.Fatalf("runtime must be unknown, never inferred: %+v", ov.UseCases.Runtime.Availability)
+	// The stopped data plane recorded its shutdown: the gateway reads
+	// offline (#538), never running, while the store's history stays.
+	gw := ""
+	for _, r := range ov.UseCases.Runtime.Roles {
+		if r.Role == "gateway" {
+			gw = r.State
+		}
+	}
+	if gw != "offline" {
+		t.Fatalf("after a graceful stop the gateway must read offline, got %q: %+v", gw, ov.UseCases.Runtime)
 	}
 	if strings.Contains(ui2.readLog(), consoleAdminKey) || strings.Contains(ui2.readLog(), consoleAgentKey) {
 		t.Fatalf("a key leaked into the console log")

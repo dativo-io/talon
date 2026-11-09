@@ -16,6 +16,7 @@ import (
 	"github.com/dativo-io/talon/internal/fleet"
 	"github.com/dativo-io/talon/internal/fleetview"
 	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/runtimestatus"
 	"github.com/dativo-io/talon/internal/session"
 )
 
@@ -58,14 +59,22 @@ type Config struct {
 	BudgetNote string
 	// ConfigSources are the files behind the Configuration page (#543).
 	ConfigSources ConfigSources
-	Version       string
-	Commit        string
-	StartedAt     time.Time
-	Now           func() time.Time
+	// DataDir and InstallationFingerprint (runtimestatus.Fingerprint of the
+	// evidence signing key) let the console read and match the runtime
+	// records of its own installation's processes (#538).
+	DataDir                 string
+	InstallationFingerprint string
+	Version                 string
+	Commit                  string
+	StartedAt               time.Time
+	Now                     func() time.Time
 }
 
 // Service builds the DTOs.
-type Service struct{ cfg Config }
+type Service struct {
+	cfg           Config
+	runtimeReader *runtimestatus.Reader
+}
 
 // New returns a Service. Evidence and Sessions may be nil: every section then
 // reports unavailable with the reason, which is the console's first-run and
@@ -80,7 +89,7 @@ func New(cfg Config) (*Service, error) {
 	if cfg.StartedAt.IsZero() {
 		cfg.StartedAt = cfg.Now()
 	}
-	return &Service{cfg: cfg}, nil
+	return &Service{cfg: cfg, runtimeReader: runtimestatus.NewReader()}, nil
 }
 
 func (s *Service) now() time.Time { return s.cfg.Now().UTC() }
@@ -104,13 +113,6 @@ func unavailable(source string, err error) Availability {
 	return Availability{State: StateUnavailable, Source: source, Error: err.Error()}
 }
 
-func runtimeUnknown() Runtime {
-	return Runtime{Availability: Availability{
-		State: StateUnknown, Source: SourceNone,
-		Note: "active generation, reload state and collector freshness come from the running Talon process; no runtime probe is wired yet (#538)",
-	}}
-}
-
 const noStoreMsg = "evidence store is not open"
 
 // ---------------------------------------------------------------- overview
@@ -129,7 +131,7 @@ func (s *Service) Overview(ctx context.Context, tenant string) *Overview {
 }
 
 func (s *Service) useCases(ctx context.Context, tenant string) UseCases {
-	out := UseCases{Rows: []fleet.AgentRow{}, Attention: []fleet.AgentRow{}, Issues: []agentcatalog.FleetIssue{}, Runtime: runtimeUnknown(), HealthBasis: HealthBasisProjected, CounterWindows: counterWindows(fleet.DefaultThresholds())}
+	out := UseCases{Rows: []fleet.AgentRow{}, Attention: []fleet.AgentRow{}, Issues: []agentcatalog.FleetIssue{}, Runtime: s.runtime(), HealthBasis: HealthBasisProjected, CounterWindows: counterWindows(fleet.DefaultThresholds())}
 	if s.cfg.Fleet == nil {
 		out.Availability = Availability{State: StateUnavailable, Source: SourceNone, Error: "no fleet source configured"}
 		return out
@@ -567,7 +569,7 @@ func (s *Service) System(ctx context.Context) *System {
 		Meta:    s.meta(""),
 		Console: Info{Version: s.cfg.Version, Commit: s.cfg.Commit, StartedAt: s.cfg.StartedAt, Currency: s.cfg.Currency},
 		Store:   StoreHealth{Path: s.cfg.StorePath},
-		Runtime: runtimeUnknown(),
+		Runtime: s.runtime(),
 	}
 	if s.cfg.Evidence == nil {
 		out.Store.Availability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}

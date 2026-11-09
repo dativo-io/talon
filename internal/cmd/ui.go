@@ -19,6 +19,7 @@ import (
 	"github.com/dativo-io/talon/internal/console"
 	consoleserver "github.com/dativo-io/talon/internal/console/server"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/runtimestatus"
 	talonsession "github.com/dativo-io/talon/internal/session"
 )
 
@@ -125,6 +126,7 @@ func runUIServe(cmd *cobra.Command, openBrowser bool) error {
 	svc, err := console.New(console.Config{
 		Evidence: inst.evidence, Sessions: inst.sessions, StorePath: inst.storePath, Currency: inst.currency,
 		Fleet: inst.fleet, Budgets: console.FleetCapsBudgets{Fleet: inst.fleet}, ConfigSources: inst.sources,
+		DataDir: cfg.DataDir, InstallationFingerprint: runtimestatus.Fingerprint(cfg.SigningKey),
 		Version: resolvedVersion(), Commit: Commit,
 	})
 	if err != nil {

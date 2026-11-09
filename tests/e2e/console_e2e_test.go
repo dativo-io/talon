@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -48,9 +49,19 @@ func startConsoleServe(t *testing.T, dir string, port int, env map[string]string
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start serve: %v", err)
 	}
+	// Graceful stop (SIGTERM, as an operator or Compose stops it), with a
+	// hard kill after 10 s; the process then writes its "stopped" runtime
+	// record (#538).
 	stop := func() {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		done := make(chan struct{})
+		go func() { _, _ = cmd.Process.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
 		_ = logFile.Close()
 	}
 	deadline := time.Now().Add(20 * time.Second)

@@ -976,6 +976,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Bool("openshell_middleware", openshellServer != nil).
 		Msg("talon_serve_started")
 
+	// Runtime status record for the console (#538): written from now on,
+	// with a final "stopped" record after the listeners shut down.
+	stopRuntimeStatus := startRuntimeStatus(ctx, cfg, fleetView, reloader != nil)
+	defer stopRuntimeStatus()
+
 	errCh := make(chan error, 1)
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

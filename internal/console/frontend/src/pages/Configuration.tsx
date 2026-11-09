@@ -4,6 +4,8 @@ import type { Configuration as ConfigDTO, UseCaseConfig } from "../api/types";
 import { PageHead } from "../components/Layout";
 import { AvailabilityNotice, Badge, Chips, DetailSection, EmptyState, ErrorState, Loading, SourceFreshness } from "../components/ui";
 import { utc } from "../lib/format";
+import type { ActiveFile, ActiveStatus } from "../api/types";
+import { roleLabel, RuntimeStateBadge } from "../components/RuntimeStatus";
 import { useScope } from "../lib/scope";
 
 // Configuration as the files read NOW, summarised server-side from an
@@ -29,10 +31,11 @@ export function Configuration() {
         <div className="grid">
           <div className="notice info" role="note">
             <div>
-              <strong>Current file contents, read {utc(c.read_at)}.</strong> Active runtime generation: {c.active_generation.state} — {c.active_generation.note}{" "}
-              <strong>Effective policy provenance not available.</strong> {c.effective_policy.note}
+              <strong>Current file contents, read {utc(c.read_at)}.</strong> Below each file: whether a running process proves it loaded these bytes.{" "}
+              {c.effective_policy.state === "ok" ? null : <><strong>Effective policy provenance not available.</strong> {c.effective_policy.note}</>}
             </div>
           </div>
+          <Active c={c} />
           {c.issues && c.issues.length > 0 ? (
             <div className="notice warn" role="status">
               <div>
@@ -149,6 +152,7 @@ function UseCaseCard({ u }: { u: UseCaseConfig }) {
           <dt>Data</dt><dd>{[u.input_scan && "input scan", u.output_scan && "output scan", u.redact_pii && "redact PII", u.block_on_pii && "block on PII"].filter(Boolean).join(", ") || "no scanning configured"}</dd>
           <dt>Audit</dt><dd>{u.audit_log_level ?? "default"}{u.audit_retention_days ? `, ${u.audit_retention_days} days` : ""}{u.audit_include_prompts ? ", prompts" : ""}</dd>
           <dt>Policy digest</dt><dd>{u.policy_digest ? <code className="small">{u.policy_digest.slice(0, 16)}…</code> : "—"}</dd>
+          <dt>Loaded by a running process</dt><dd><ActiveBadge a={u.active} /></dd>
         </dl>
       </div>
     </article>
@@ -171,6 +175,64 @@ function Proxy({ c }: { c: ConfigDTO }) {
           <dt>Rate limit</dt><dd>{p.requests_per_minute ? `${p.requests_per_minute}/min` : "—"}</dd>
         </dl>
       ) : null}
+    </DetailSection>
+  );
+}
+
+const ACTIVE: Record<ActiveStatus["state"], { label: string; tone: "ok" | "warn" | "info" | "neutral" }> = {
+  loaded_matches_file: { label: "Yes: this file is loaded", tone: "ok" },
+  loaded_differs_from_file: { label: "A different version is loaded", tone: "warn" },
+  not_in_active_generation: { label: "Not in the active generation", tone: "warn" },
+  unknown: { label: "Not proven", tone: "info" },
+};
+
+function ActiveBadge({ a }: { a: ActiveStatus | undefined }) {
+  if (!a) return <span className="muted">not reported</span>;
+  const s = ACTIVE[a.state] ?? ACTIVE.unknown;
+  return (
+    <span className="stack">
+      <Badge tone={s.tone}>{s.label}</Badge>
+      <span className="small muted">{a.reason}</span>
+    </span>
+  );
+}
+
+function FileMatch({ label, f }: { label: string; f: ActiveFile | undefined }) {
+  if (!f) return null;
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>
+        {f.matches === null ? <span className="muted">loaded <code className="small">{f.loaded_digest.slice(0, 12)}</code>; not comparable from this console</span>
+          : f.matches ? <Badge tone="ok" plain>current file is loaded</Badge> : <Badge tone="warn" plain>file changed since it was loaded</Badge>}
+        <div className="small muted">loaded {utc(f.loaded_at)} from <code>{f.loaded_path}</code></div>
+      </dd>
+    </>
+  );
+}
+
+// Active: what each current data-plane process reports it loaded (#538).
+function Active({ c }: { c: ConfigDTO }) {
+  return (
+    <DetailSection title="Active configuration" id="cfg-active" actions={<SourceFreshness a={c.active_generation} />}>
+      {c.active_generation.state !== "ok" ? (
+        <div className="notice info" role="status"><div><strong>Active configuration not proven.</strong> {c.active_generation.note ?? c.active_generation.error}</div></div>
+      ) : null}
+      {c.active.length === 0 ? <p className="muted">No data-plane process of this installation has reported.</p> : null}
+      <div className="stack">
+        {c.active.map((a) => (
+          <article key={a.instance_id} className="card card-body" aria-label={`Process ${a.instance_id}`}>
+            <div className="row"><strong>{a.roles.map(roleLabel).join(" + ")}</strong> <RuntimeStateBadge state={a.state} /> <code className="small">{a.instance_id}</code></div>
+            <dl className="facts">
+              <dt>Active generation</dt><dd>{a.active_generation ? <code className="small">{a.active_generation.slice(0, 16)}</code> : <span className="muted">not reported</span>}{a.activated_at ? <span className="small muted"> · activated {utc(a.activated_at)}</span> : null}</dd>
+              <dt>Agent files</dt><dd>{a.agent_files_match === null ? <span className="muted">not comparable</span> : a.agent_files_match ? <Badge tone="ok" plain>match the active generation</Badge> : <Badge tone="warn" plain>differ from the active generation</Badge>}</dd>
+              <dt>Last reload</dt><dd>{!a.reload_enabled ? "reload off" : a.reload_rejected ? <><Badge tone="warn">Rejected</Badge> <span className="small">last-known-good keeps serving{a.rejected_at ? ` since ${utc(a.rejected_at)}` : ""}</span>{(a.rejected_causes ?? []).map((x) => <div key={x} className="small muted">{x}</div>)}</> : "accepted"}</dd>
+              <FileMatch label="MCP proxy config" f={a.proxy_config} />
+              <FileMatch label="Gateway config" f={a.gateway_config} />
+            </dl>
+          </article>
+        ))}
+      </div>
     </DetailSection>
   );
 }

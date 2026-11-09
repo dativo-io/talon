@@ -113,6 +113,31 @@ second="$(pairing_codes | tail -n1)"
 check "reissued code differs" [ "$second" != "$code" ]
 check "existing session survives the reissue" [ "$(status_of GET "$UI/console/v1/system" -b "$WORK/jar")" = "200" ]
 
+# Runtime truth (#538): the console reads the data plane's own runtime record
+# from the shared volume. The demo's gateway is running; after a graceful stop
+# it is offline (history stays readable); after a start it runs again as a
+# new instance.
+gateway_state() {
+  status_of GET "$UI/console/v1/system" -b "$WORK/jar" >/dev/null
+  jq -r '.runtime.roles[] | select(.role=="gateway") | .state' "$WORK/body"
+}
+wait_gateway() { # wait_gateway <state> <seconds>
+  local want="$1" deadline=$(( $(date +%s) + $2 ))
+  while [ "$(gateway_state)" != "$want" ]; do
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
+    sleep 2
+  done
+}
+check "console reports the demo gateway running" wait_gateway running 30
+first_instance="$(jq -r '.runtime.roles[] | select(.role=="gateway") | .instance_id' "$WORK/body")"
+"${COMPOSE[@]}" stop talon >/dev/null
+check "a stopped gateway reads offline, not running" wait_gateway offline 30
+check "the session written earlier is still readable with the data plane stopped" [ "$(status_of GET "$UI/console/v1/sessions/compose-smoke?tenant=demo" -b "$WORK/jar")" = "200" ]
+"${COMPOSE[@]}" start talon >/dev/null
+wait_http "$DP/health" 120
+check "the restarted gateway runs again" wait_gateway running 30
+check "the restart is a new instance" [ "$(jq -r '.runtime.roles[] | select(.role=="gateway") | .instance_id' "$WORK/body")" != "$first_instance" ]
+
 # Restart independence: the console restarts, the data plane never stopped.
 "${COMPOSE[@]}" restart talon-ui >/dev/null
 check "data plane healthy across the console restart" [ "$(status_of GET "$DP/health")" = "200" ]

@@ -33,14 +33,57 @@ type ConfigSources struct {
 // running process enforces: ActiveGeneration stays unknown until the runtime
 // probe (#538), EffectivePolicy until the provenance contract (#305).
 type Configuration struct {
-	Meta             Meta                 `json:"meta"`
-	ReadAt           time.Time            `json:"read_at"`
-	Organization     OrganizationConfig   `json:"organization"`
-	UseCases         UseCaseConfigList    `json:"use_cases"`
-	MCPProxy         ProxyConfigView      `json:"mcp_proxy"`
-	EffectivePolicy  Availability         `json:"effective_policy"`
-	ActiveGeneration Availability         `json:"active_generation"`
-	Issues           []ConfigurationIssue `json:"issues,omitempty"`
+	Meta             Meta               `json:"meta"`
+	ReadAt           time.Time          `json:"read_at"`
+	Organization     OrganizationConfig `json:"organization"`
+	UseCases         UseCaseConfigList  `json:"use_cases"`
+	MCPProxy         ProxyConfigView    `json:"mcp_proxy"`
+	EffectivePolicy  Availability       `json:"effective_policy"`
+	ActiveGeneration Availability       `json:"active_generation"`
+	// Active is what each current data-plane process reports it loaded
+	// (#538): catalog generation, reload rejection, and whether the files
+	// on disk still match the loaded bytes. Empty when no runtime record of
+	// this installation exists.
+	Active []ActiveProcessConfig `json:"active"`
+	Issues []ConfigurationIssue  `json:"issues,omitempty"`
+}
+
+// ActiveProcessConfig is one current process's loaded configuration.
+type ActiveProcessConfig struct {
+	InstanceID       string     `json:"instance_id"`
+	Roles            []string   `json:"roles"`
+	State            string     `json:"state"` // runtimestatus assessed state
+	ActiveGeneration string     `json:"active_generation,omitempty"`
+	ActivatedAt      *time.Time `json:"activated_at,omitempty"`
+	// AgentFilesMatch: the agent files the console reads now have the scan
+	// digest the process activated (true), a different one (false: edited
+	// since activation, or a rejected reload), or cannot be compared (nil).
+	AgentFilesMatch *bool       `json:"agent_files_match"`
+	ReloadEnabled   bool        `json:"reload_enabled"`
+	ReloadRejected  bool        `json:"reload_rejected"`
+	RejectedAt      *time.Time  `json:"rejected_at,omitempty"`
+	RejectedCauses  []string    `json:"rejected_causes,omitempty"`
+	Proxy           *ActiveFile `json:"proxy_config,omitempty"`
+	Gateway         *ActiveFile `json:"gateway_config,omitempty"`
+}
+
+// ActiveFile compares a configuration file the process loaded with the
+// file the console reads now, by sha256 of the bytes.
+type ActiveFile struct {
+	LoadedPath    string    `json:"loaded_path"`
+	LoadedDigest  string    `json:"loaded_digest"`
+	LoadedAt      time.Time `json:"loaded_at"`
+	CurrentDigest string    `json:"current_digest,omitempty"`
+	Matches       *bool     `json:"matches"` // nil: the console has no path for this file or cannot read it
+}
+
+// ActiveStatus says whether a use case's current file is what a running
+// process loaded, proved by the policy digest the process reports.
+type ActiveStatus struct {
+	State              string   `json:"state"` // loaded_matches_file | loaded_differs_from_file | not_in_active_generation | unknown
+	Reason             string   `json:"reason"`
+	ActivePolicyDigest string   `json:"active_policy_digest,omitempty"`
+	InstanceIDs        []string `json:"instance_ids,omitempty"`
 }
 
 // ConfigurationIssue is a configuration file that could not be used.
@@ -149,6 +192,8 @@ type UseCaseConfig struct {
 	AuditIncludeResponses bool   `json:"audit_include_responses"`
 
 	UseCase *UseCaseRecord `json:"use_case,omitempty"`
+	// Active: is this file what a running process loaded? (#538, #305)
+	Active ActiveStatus `json:"active"`
 }
 
 // UseCaseRecord is the optional operating record of an agent file.
@@ -195,13 +240,111 @@ func (s *Service) Configuration(ctx context.Context, tenant string) *Configurati
 			State: StateUnknown, Source: SourceNone,
 			Note: "effective-policy provenance not available: owned by #305; values are not merged from YAML here",
 		},
-		ActiveGeneration: runtimeUnknown().Availability,
+		Active: []ActiveProcessConfig{},
 	}
 	src := s.cfg.ConfigSources
 	out.Organization = organizationView(src.GatewayConfig, now)
-	out.UseCases, out.Issues = useCaseConfigs(ctx, src, tenant, now)
+	var scanDigest string
+	out.UseCases, out.Issues, scanDigest = useCaseConfigs(ctx, src, tenant, now)
 	out.MCPProxy = proxyView(ctx, src.ProxyConfig, now)
+	rt := s.runtime()
+	out.ActiveGeneration, out.Active = activeConfig(rt, src, scanDigest)
+	for i := range out.UseCases.Items {
+		out.UseCases.Items[i].Active = activeStatus(rt, out.UseCases.Items[i])
+	}
 	return out
+}
+
+// activeConfig reports what each current process loaded and whether the
+// files on disk still match.
+func activeConfig(rt Runtime, src ConfigSources, scanDigest string) (Availability, []ActiveProcessConfig) {
+	out := []ActiveProcessConfig{}
+	if rt.Availability.State != StateOK {
+		return Availability{State: StateUnknown, Source: rt.Availability.Source, Error: rt.Availability.Error, Note: firstNonEmpty(rt.Availability.Note, "runtime records unavailable: the active generation cannot be proved")}, out
+	}
+	running := 0
+	for i := range rt.Processes {
+		p := &rt.Processes[i]
+		if !p.Current {
+			continue
+		}
+		a := ActiveProcessConfig{InstanceID: p.InstanceID, Roles: p.Roles, State: p.Assessed}
+		if c := p.Catalog; c != nil {
+			a.ActiveGeneration, a.ReloadEnabled, a.ReloadRejected, a.RejectedCauses = c.ActiveGeneration, c.ReloadEnabled, c.ReloadRejected, c.RejectedCauses
+			t := c.ActivatedAt
+			a.ActivatedAt = &t
+			a.RejectedAt = c.RejectedAt
+			if scanDigest != "" && c.ScanDigest != "" {
+				m := scanDigest == c.ScanDigest
+				a.AgentFilesMatch = &m
+			}
+		}
+		if p.ProxyConfig != nil {
+			a.Proxy = compareFile(p.ProxyConfig.Path, p.ProxyConfig.Digest, p.ProxyConfig.LoadedAt, src.ProxyConfig)
+		}
+		if p.GatewayConfig != nil {
+			a.Gateway = compareFile(p.GatewayConfig.Path, p.GatewayConfig.Digest, p.GatewayConfig.LoadedAt, src.GatewayConfig)
+		}
+		if p.Assessed == "running" {
+			running++
+		}
+		out = append(out, a)
+	}
+	if running == 0 {
+		return Availability{
+			State: StateUnknown, Source: SourceRuntimeRecords, AsOf: rt.ReadAt,
+			Note: "no data-plane process of this installation is running now: the files below are not proven active",
+		}, out
+	}
+	return Availability{
+		State: StateOK, Source: SourceRuntimeRecords, AsOf: rt.ReadAt,
+		Note: "active generation as reported by each running process; compare with the files below",
+	}, out
+}
+
+func compareFile(loadedPath, loadedDigest string, loadedAt time.Time, consolePath string) *ActiveFile {
+	f := &ActiveFile{LoadedPath: loadedPath, LoadedDigest: loadedDigest, LoadedAt: loadedAt}
+	if consolePath == "" || loadedDigest == "" {
+		return f
+	}
+	if cur := fileDigest(consolePath); cur != "" {
+		f.CurrentDigest = cur
+		m := cur == loadedDigest
+		f.Matches = &m
+	}
+	return f
+}
+
+// activeStatus compares a use case's file policy digest with what running
+// processes report for that use case.
+func activeStatus(rt Runtime, u UseCaseConfig) ActiveStatus {
+	if rt.Availability.State != StateOK {
+		return ActiveStatus{State: "unknown", Reason: "runtime records unavailable: whether this file is loaded cannot be proved"}
+	}
+	ids, digest, seen, conflict := activeDigest(rt, u)
+	switch {
+	case conflict:
+		return ActiveStatus{State: "unknown", Reason: "running processes report different policy digests for this use case", InstanceIDs: ids}
+	case !seen:
+		return ActiveStatus{State: "unknown", Reason: "no running process reports an agent catalog: whether this file is loaded cannot be proved"}
+	case len(ids) == 0:
+		return ActiveStatus{State: "not_in_active_generation", Reason: "no running process has this use case in its active generation (added since activation, or rejected)"}
+	case u.PolicyDigest == "" || digest == "":
+		return ActiveStatus{State: "unknown", Reason: "a policy digest is missing, so the file cannot be compared", ActivePolicyDigest: digest, InstanceIDs: ids}
+	case u.PolicyDigest == digest:
+		return ActiveStatus{State: "loaded_matches_file", Reason: "the running process reports the policy digest of the current file", ActivePolicyDigest: digest, InstanceIDs: ids}
+	default:
+		return ActiveStatus{State: "loaded_differs_from_file", Reason: "the running process loaded a different version of this file (edited since activation, or the reload was rejected)", ActivePolicyDigest: digest, InstanceIDs: ids}
+	}
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func organizationView(path string, now time.Time) OrganizationConfig {
@@ -258,16 +401,16 @@ func organizationView(path string, now time.Time) OrganizationConfig {
 	return out
 }
 
-func useCaseConfigs(ctx context.Context, src ConfigSources, tenant string, now time.Time) (UseCaseConfigList, []ConfigurationIssue) {
+func useCaseConfigs(ctx context.Context, src ConfigSources, tenant string, now time.Time) (UseCaseConfigList, []ConfigurationIssue, string) {
 	out := UseCaseConfigList{Items: []UseCaseConfig{}}
 	if src.AgentsDir == "" && src.DefaultPolicy == "" {
 		out.Availability = Availability{State: StateUnknown, Source: SourceNone, Note: "no agent configuration source is configured for this console"}
-		return out, nil
+		return out, nil, ""
 	}
 	scan, err := fleetview.Scan(ctx, src.AgentsDir, src.DefaultPolicy)
 	if err != nil {
 		out.Availability = Availability{State: StateUnavailable, Source: SourceConfigFiles, AsOf: now, Error: err.Error()}
-		return out, nil
+		return out, nil, ""
 	}
 	out.Source = scan.Source
 	var issues []ConfigurationIssue
@@ -286,7 +429,7 @@ func useCaseConfigs(ctx context.Context, src ConfigSources, tenant string, now t
 	if len(out.Items) == 0 {
 		out.Availability.State = StateEmpty
 	}
-	return out, issues
+	return out, issues, scan.Digest
 }
 
 func useCaseConfig(name, tenant, path, digest string, enabled bool, p *policy.Policy) UseCaseConfig {
@@ -391,4 +534,37 @@ func endpointOnly(raw string) string {
 		return "(not a URL)"
 	}
 	return u.Scheme + "://" + u.Host
+}
+
+// effectiveTenant normalizes an agent file's declared tenant: empty means
+// "default" (agentcatalog normalizes the same way when it builds bundles).
+func effectiveTenant(t string) string {
+	if t == "" {
+		return "default"
+	}
+	return t
+}
+
+// activeDigest collects the policy digest running processes report for u.
+func activeDigest(rt Runtime, u UseCaseConfig) (ids []string, digest string, seen, conflict bool) {
+	for i := range rt.Processes {
+		p := &rt.Processes[i]
+		if !p.Current || p.Assessed != "running" || p.Catalog == nil {
+			continue
+		}
+		seen = true
+		for _, a := range p.Catalog.Agents {
+			if a.Name != u.Name || effectiveTenant(a.TenantID) != effectiveTenant(u.TenantID) {
+				continue
+			}
+			ids = append(ids, p.InstanceID)
+			switch {
+			case digest == "":
+				digest = a.PolicyDigest
+			case digest != a.PolicyDigest:
+				conflict = true
+			}
+		}
+	}
+	return ids, digest, seen, conflict
 }

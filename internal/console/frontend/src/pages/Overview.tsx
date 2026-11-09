@@ -11,6 +11,7 @@ import { isMeasurement } from "../lib/availability";
 import { humanize, integer, money, relative, utc, utcShort } from "../lib/format";
 import { scoped, useScope } from "../lib/scope";
 import { rowSpend } from "../lib/costs";
+import { runtimeSummary } from "../components/RuntimeStatus";
 
 export function Overview() {
   const { tenant } = useScope();
@@ -71,7 +72,6 @@ function OverviewBody({ o, tenant }: { o: OverviewDTO; tenant: string }) {
 }
 
 function RuntimeConfidence({ o }: { o: OverviewDTO }) {
-  const rt = o.use_cases.runtime.availability;
   const projected = o.use_cases.health_basis === "projected_from_store";
   return (
     <div className="notice info" role="note">
@@ -80,8 +80,7 @@ function RuntimeConfidence({ o }: { o: OverviewDTO }) {
         {projected
           ? "States are evaluated from recorded evidence and the configuration files; they are not a liveness check of the gateway or MCP proxy. "
           : ""}
-        Runtime: {rt.state === "ok" ? "verified" : rt.state}
-        {rt.note ? ` — ${rt.note}` : ""}
+        {runtimeSummary(o.use_cases.runtime)}. <Link to="/system">System</Link>
       </div>
     </div>
   );
