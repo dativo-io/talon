@@ -96,6 +96,9 @@ func runAgentShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	if agentsShowEffective {
+		return runAgentShowEffective(ctx, cmd, cfg, name)
+	}
 	rows, _, label, err := resolveFleet(ctx, cmd, cfg, agentsQueueTenant)
 	if err != nil {
 		return err
@@ -232,10 +235,7 @@ func offlineFleet(ctx context.Context, cfg *config.Config, tenant string) ([]fle
 }
 
 func loadOfflineGatewayContext() (org gateway.OrganizationPolicy, providers map[string]gateway.ProviderConfig, err error) {
-	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
-	if path == "" {
-		path = "talon.config.yaml"
-	}
+	path := offlineGatewayConfigPath()
 	gwCfg, loadErr := gateway.LoadGatewayConfig(path)
 	if loadErr != nil {
 		if errors.Is(loadErr, os.ErrNotExist) {

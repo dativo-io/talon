@@ -280,9 +280,9 @@ func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDet
 		CounterWindows: uc.CounterWindows,
 		Runtime:        uc.Runtime,
 		EffectivePolicy: Availability{
-			State:  StateUnknown,
-			Source: SourceNone,
-			Note:   "effective-policy provenance is owned by #305 and not implemented yet; values are not inferred from YAML",
+			State:  StateOK,
+			Source: SourceConfigFiles,
+			Note:   "the effective policy with rule provenance is at /console/v1/use-cases/{name}/effective-policy (talon agents show <name> --effective)",
 		},
 	}
 	if uc.Availability.State == StateUnavailable {
