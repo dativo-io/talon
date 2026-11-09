@@ -37,6 +37,10 @@ type expectations struct {
 	LLMID           string `json:"llm_evidence"`
 	StandaloneID    string `json:"standalone_evidence"`
 	TamperedID      string `json:"tampered_evidence"`
+	CacheHitID      string `json:"cache_hit_evidence"`
+	LongSession     string `json:"long_session"`
+	ForeignUseCase  string `json:"foreign_currency_use_case"`
+	Records         int    `json:"records"`
 	Correlation     string `json:"correlation"`
 	LLMCost         string `json:"llm_cost"`
 }
@@ -90,6 +94,14 @@ policies:
 policies:
   cost_limits:
     monthly: 20
+`)
+	write(filepath.Join(*dir, "agents/eu-reports/agent.talon.yaml"), `agent:
+  name: eu-reports
+  version: "1.0.0"
+policies:
+  cost_limits:
+    daily: 1
+    monthly: 10
 `)
 	write(filepath.Join(*dir, "talon.config.yaml"), `gateway:
   enabled: true
@@ -175,6 +187,25 @@ proxy:
 	put(&evidence.Evidence{ID: "shared-b", CorrelationID: "corr-shared-b", SessionID: "shared-ext", AgentID: "support-bot", Timestamp: at(6), InvocationType: "gateway", PolicyDecision: allow, Execution: evidence.Execution{ModelUsed: "gpt-4o-mini"}})
 	put(&evidence.Evidence{ID: "pa-tampered", CorrelationID: "corr-pa-tampered", AgentID: agent, Timestamp: at(7), InvocationType: "gateway", PolicyDecision: allow, Execution: evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 0.002, Currency: "USD", PricingKnown: true}})
 
+	// A cache hit as the gateway writes it: allowed, cache_hit, no provider call.
+	put(&evidence.Evidence{
+		ID: "pa-cache-hit", CorrelationID: "corr-pa-cache", SessionID: sess, AgentID: agent, Timestamp: at(9),
+		InvocationType: "gateway", PolicyDecision: allow, CacheHit: true, CacheEntryID: "cache-entry-1", CostSaved: 0.0123,
+		Execution: evidence.Execution{ModelUsed: "gpt-4o-mini", Currency: "USD"},
+	})
+	// Spend recorded in EUR while the pricing table is USD: not comparable with the caps.
+	put(&evidence.Evidence{
+		ID: "eu-spend", CorrelationID: "corr-eu", AgentID: "eu-reports", Timestamp: at(10), InvocationType: "gateway", PolicyDecision: allow,
+		Execution: evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 2.5, Currency: "EUR", PricingKnown: true},
+	})
+	// A long session (60 records) for timeline paging.
+	for i := 0; i < 60; i++ {
+		put(&evidence.Evidence{
+			ID: fmt.Sprintf("long-%02d", i), CorrelationID: fmt.Sprintf("corr-long-%02d", i), SessionID: "pa-long", AgentID: agent,
+			Timestamp: at(20 + i), InvocationType: "proxy_tool_call", PolicyDecision: allow, Execution: evidence.Execution{ToolsCalled: []string{"hr_aggregate_sql"}},
+		})
+	}
+
 	managed, err := sessions.Create(ctx, "default", agent, "guided people analytics run", 1.0)
 	must(err)
 	put(&evidence.Evidence{ID: "pa-managed-call", CorrelationID: "corr-pa-managed", SessionID: managed.ID, AgentID: agent, Timestamp: at(8), InvocationType: "gateway", PolicyDecision: allow, Execution: evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 0.004, Currency: "USD", PricingKnown: true}})
@@ -188,10 +219,13 @@ proxy:
 	must(err)
 	must(raw.Close())
 
+	count, _, err := store.Stats(ctx)
+	must(err)
 	out := expectations{
 		Dir: *dir, UseCase: agent, DisabledUseCase: "support-bot", Session: sess, ManagedSession: managed.ID, SharedExternal: "shared-ext",
 		AllowedID: "pa-allowed-aggregate", ExportDeniedID: "pa-export-denied", HRRejectedID: "pa-hr-rejected", LLMID: "pa-llm-answer",
 		StandaloneID: "pa-standalone", TamperedID: "pa-tampered", Correlation: corr, LLMCost: "$0.0123",
+		CacheHitID: "pa-cache-hit", LongSession: "pa-long", ForeignUseCase: "eu-reports", Records: count,
 	}
 	must(json.NewEncoder(os.Stdout).Encode(out))
 }

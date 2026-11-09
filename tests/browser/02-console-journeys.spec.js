@@ -57,6 +57,10 @@ test("Session investigation: allowed, denied-not-dispatched and HR-rejected stay
   await expect(item(f.hr_rejected_evidence).getByText("Talon allowed")).toBeVisible();
   await expect(item(f.hr_rejected_evidence).getByText("Destination rejected")).toBeVisible();
   await expect(item(f.hr_rejected_evidence).getByText("Talon denied")).toHaveCount(0);
+  // A cache hit is not a provider dispatch.
+  await expect(item(f.cache_hit_evidence).getByText("Not dispatched")).toBeVisible();
+  await expect(item(f.cache_hit_evidence).getByText("Answered from Talon's cache")).toBeVisible();
+  await expect(item(f.cache_hit_evidence).getByText("Destination answered")).toHaveCount(0);
 
   await item(f.export_denied_evidence).getByRole("link", { name: f.export_denied_evidence }).click();
   await expect(page.getByText("Signature valid")).toBeVisible();
@@ -87,15 +91,26 @@ test("Shared external session id: each AI use case's records stay separate", asy
   await expect(page.getByText("AI use cases recorded this session id.")).toHaveCount(0);
 });
 
-test("Costs: month figure and currency match talon costs --json", async ({ page }) => {
+test("Costs: figures, unavailability and currency match talon costs --json", async ({ page }) => {
   const f = state().fixture;
-  const report = cli(["costs", "--json", "--tenant", "default"]);
+  const fmt = (v, cur) => new Intl.NumberFormat("en-US", { style: "currency", currency: cur, minimumFractionDigits: 2, maximumFractionDigits: v !== 0 && Math.abs(v) < 1 ? 4 : 2 }).format(v);
+  // Tenant-wide: the EUR record makes the month total not a USD sum. The CLI
+  // marks it unavailable; the console must show unavailable, not $x.xx.
+  const tenantReport = cli(["costs", "--json", "--tenant", "default"]);
+  expect(tenantReport.unavailable_fields).toContain("month_eur");
   await pair(page, "/costs");
-  await expect(page.getByText(`Currency: ${report.currency}`)).toBeVisible();
+  await expect(page.getByText(`Currency: ${tenantReport.currency}`)).toBeVisible();
   const month = page.locator(".stat", { hasText: "This calendar month" });
-  const expected = new Intl.NumberFormat("en-US", { style: "currency", currency: report.currency, minimumFractionDigits: 2, maximumFractionDigits: report.month_eur !== 0 && Math.abs(report.month_eur) < 1 ? 4 : 2 }).format(report.month_eur);
-  await expect(month.locator(".value")).toHaveText(expected);
-  const byUseCase = page.getByRole("region", { name: "By ai use case" });
+  await expect(month.locator(".value")).toContainText("unavailable");
+  await expect(month).toContainText("EUR");
+  // One use case with comparable records: the exact CLI figure.
+  const ucReport = cli(["costs", "--json", "--tenant", "default", "--agent", f.use_case]);
+  expect(ucReport.unavailable_fields ?? []).not.toContain("month_eur");
+  await page.goto(`/costs?agent=${f.use_case}`);
+  const ucMonth = page.locator(".stat", { hasText: "This calendar month" });
+  await expect(ucMonth.locator(".value")).toHaveText(fmt(ucReport.month_eur, ucReport.currency));
+  await page.goto("/costs");
+  const byUseCase = page.getByRole("region", { name: "By AI use case" });
   await expect(byUseCase.getByRole("link", { name: f.use_case })).toBeVisible();
 });
 
@@ -113,7 +128,8 @@ test("System: console responding, store readable with the fixture's record count
   await expect(page.locator(".stat", { hasText: "Console" }).getByText("Responding", { exact: true })).toBeVisible();
   await expect(page.locator(".stat", { hasText: "Evidence store" }).getByText("Readable", { exact: true })).toBeVisible();
   await expect(page.locator(".stat", { hasText: "Gateway / MCP runtime" }).getByText("Unknown")).toBeVisible();
-  await expect(page.getByRole("region", { name: "Evidence store" }).getByText("9", { exact: true })).toBeVisible();
+  const f = state().fixture;
+  await expect(page.getByRole("region", { name: "Evidence store" }).getByText(String(f.records), { exact: true })).toBeVisible();
 });
 
 test("Global search finds evidence by id and navigates to it", async ({ page }) => {
@@ -128,4 +144,17 @@ test("Global search finds evidence by id and navigates to it", async ({ page }) 
 test("Unknown routes are a truthful 404", async ({ page }) => {
   const res = await page.goto("/decisions");
   expect(res?.status()).toBe(404);
+});
+
+test("Fleet spend in another currency: unavailable, budget not evaluated, same as talon agents", async ({ page }) => {
+  const f = state().fixture;
+  const row = cli(["agents", "--json"]).agents.find((a) => a.name === f.foreign_currency_use_case);
+  expect(row.unavailable_fields).toEqual(["spend_day", "spend_month"]);
+  expect(row.health).toBe("needs-attention");
+  await pair(page, "/use-cases");
+  const ui = page.getByRole("row", { name: new RegExp(`^${f.foreign_currency_use_case}`) });
+  await expect(ui.getByText("unavailable")).toBeVisible();
+  await expect(ui.getByText("€")).toHaveCount(0);
+  await expect(ui.getByText(/budget not evaluated/)).toBeVisible();
+  await expect(ui.getByText("Needs attention")).toBeVisible();
 });
