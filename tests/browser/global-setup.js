@@ -13,16 +13,26 @@ const CODE_RE = /Talon console pairing code: ([A-Z2-9]{5}(?:-[A-Z2-9]{5}){3})/g;
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-async function waitHttp(url, ms) {
+// waitHttp polls url until it answers 2xx. If the process exits first, or
+// the deadline passes, the error carries the process log: a setup failure
+// must say WHY the server never answered.
+async function waitHttp(url, ms, proc, logPath) {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
+    if (proc && proc.exitCode !== null) {
+      throw new Error(`${proc.spawnargs.join(" ")} exited with ${proc.exitCode} before ${url} answered:\n${readLog(logPath)}`);
+    }
     try {
       const res = await fetch(url);
       if (res.ok) return;
     } catch (_) { /* not up yet */ }
     await sleep(200);
   }
-  throw new Error(`timeout waiting for ${url}`);
+  throw new Error(`timeout waiting for ${url}; log:\n${readLog(logPath)}`);
+}
+
+function readLog(p) {
+  try { return fs.readFileSync(p, "utf8"); } catch (_) { return "(no log)"; }
 }
 
 function run(bin, args, env, cwd) {
@@ -38,7 +48,8 @@ module.exports = async () => {
   const env = {
     ...process.env,
     TALON_DATA_DIR: dir,
-    TALON_SECRETS_KEY: "browser-test-secrets-key-0123456789ab",
+    // secrets_key must be exactly 32 bytes (talon refuses to start otherwise).
+    TALON_SECRETS_KEY: "browser-test-secrets-key-0123456",
     TALON_SIGNING_KEY: "browser-test-signing-key-0123456789ab",
     TALON_LOG_FORMAT: "json",
   };
@@ -46,14 +57,15 @@ module.exports = async () => {
 
   const dpPort = Number(process.env.TALON_DP_PORT || 8796);
   const uiPort = Number(process.env.TALON_UI_PORT || 8797);
-  const dpLog = fs.openSync(path.join(dir, "serve.log"), "a");
+  const dpLogPath = path.join(dir, "serve.log");
+  const dpLog = fs.openSync(dpLogPath, "a");
   const dp = spawn(bin, ["serve", "--port", String(dpPort)], { env, cwd: dir, stdio: ["ignore", dpLog, dpLog] });
-  await waitHttp(`http://127.0.0.1:${dpPort}/health`, 30_000);
+  await waitHttp(`http://127.0.0.1:${dpPort}/health`, 30_000, dp, dpLogPath);
 
   const uiLogPath = path.join(dir, "ui.log");
   const uiLog = fs.openSync(uiLogPath, "a");
   const ui = spawn(bin, ["ui", "serve", "--listen", `127.0.0.1:${uiPort}`, "--store-wait", "10s"], { env, cwd: dir, stdio: ["ignore", uiLog, uiLog] });
-  await waitHttp(`http://127.0.0.1:${uiPort}/healthz`, 30_000);
+  await waitHttp(`http://127.0.0.1:${uiPort}/healthz`, 30_000, ui, uiLogPath);
 
   let code = null;
   for (let i = 0; i < 50 && !code; i++) {
