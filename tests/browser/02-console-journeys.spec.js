@@ -120,14 +120,20 @@ test("Configuration: MCP proxy forbids hr_employee_export; file contents are not
   await expect(proxy.getByText("hr_employee_export")).toBeVisible();
   await expect(proxy.getByText("http://hr-upstream:9000")).toBeVisible();
   await expect(page.getByText("Effective policy provenance not available.")).toBeVisible();
-  await expect(page.getByText(/Active runtime generation: unknown/)).toBeVisible();
+  await expect(page.getByText("Active configuration not proven.")).toBeVisible();
+  await expect(page.getByText("Not proven").first()).toBeVisible();
 });
 
-test("System: console responding, store readable with the fixture's record count, runtime unknown", async ({ page }) => {
+test("System: console responding, store readable with the fixture's record count, runtimes offline with the reason", async ({ page }) => {
   await pair(page, "/system");
   await expect(page.locator(".stat", { hasText: "Console" }).getByText("Responding", { exact: true })).toBeVisible();
   await expect(page.locator(".stat", { hasText: "Evidence store" }).getByText("Readable", { exact: true })).toBeVisible();
-  await expect(page.locator(".stat", { hasText: "Gateway / MCP runtime" }).getByText("Unknown")).toBeVisible();
+  // The fixture runs no data-plane process: both configured runtimes are
+  // offline with the reason, never running and never inferred from the store.
+  for (const label of ["MCP proxy", "LLM gateway"]) {
+    await expect(page.locator(".stat", { hasText: label }).getByText("Offline", { exact: true })).toBeVisible();
+  }
+  await expect(page.getByText("configured for this installation, but no process has reported this role").first()).toBeVisible();
   const f = state().fixture;
   await expect(page.getByRole("region", { name: "Evidence store" }).getByText(String(f.records), { exact: true })).toBeVisible();
 });
