@@ -198,6 +198,14 @@ proxy:
 		ID: "eu-spend", CorrelationID: "corr-eu", AgentID: "eu-reports", Timestamp: at(10), InvocationType: "gateway", PolicyDecision: allow,
 		Execution: evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 2.5, Currency: "EUR", PricingKnown: true},
 	})
+	// Traffic in a second tenant, so the all-tenant Overview and the default
+	// tenant differ (one scope per page must hold across its sections).
+	for i := 0; i < 3; i++ {
+		put(&evidence.Evidence{
+			ID: fmt.Sprintf("acme-%d", i), CorrelationID: fmt.Sprintf("corr-acme-%d", i), TenantID: "acme", AgentID: "acme-bot", Timestamp: at(11 + i),
+			InvocationType: "gateway", PolicyDecision: allow, Execution: evidence.Execution{ModelUsed: "gpt-4o-mini"},
+		})
+	}
 	// A long session (60 records) for timeline paging.
 	for i := 0; i < 60; i++ {
 		put(&evidence.Evidence{

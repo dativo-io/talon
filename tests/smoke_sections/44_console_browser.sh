@@ -24,7 +24,7 @@
 # `browser`) and as `make test-browser-console`. Offline: no provider key;
 # needs node >= 18 (a prerequisite, never skipped).
 # -----------------------------------------------------------------------------
-SMOKE_BROWSER_MIN_TESTS="${SMOKE_BROWSER_MIN_TESTS:-20}"
+SMOKE_BROWSER_MIN_TESTS="${SMOKE_BROWSER_MIN_TESTS:-22}"
 
 test_section_44_console_browser() {
   echo ""
