@@ -87,6 +87,7 @@ The report is read-only: files, runtime records and the store. It is not a dry r
 
 - **Go:** service and route tests per DTO; CLI ↔ console parity (`internal/cmd/console_parity_test.go`) over one seeded store; real-binary e2e (`tests/e2e/console_e2e_test.go`, `make test-console-smoke`, smoke section 43).
 - **Browser:** `tests/browser` (Playwright, Chromium, CI job `browser`) against the built binary over a fixture written through the production store (`tests/browser/seed`): pairing and session expiry, every page's journey, CLI ↔ browser value parity for fleet counters and costs (including a foreign-currency use case and the unavailable tenant month total), and delayed-response tests for evidence, tenant, timeline-paging and cursor changes.
+- **Cross-process (People Analytics, #545):** `TestE2E_PeopleAnalytics_CrossProcess` (`tests/e2e/people_analytics_e2e_test.go`, CI job `e2e`; with the browser leg `make test-people-analytics-live` and the CI `browser` job) runs an HR MCP backend that counts the calls it receives, the production `talon serve --proxy-config` and `talon ui serve`. The backend's counters prove an allowed call was dispatched once, `hr_employee_export` never reached it, and a call Talon allowed but the backend rejected was dispatched once and is shown as rejected by the destination. It also checks client-asserted session and correlation ids, signature verification in the console and with `talon audit verify`, console = CLI for the session, evidence, search, effective policy and runtime, zero spend with no gateway configured, 401 without a console session, a wrong workload key reaching nothing, SIGKILL (stale, nothing dispatched, evidence readable), restart (a new instance extending the same session), and a record edited in the database after signing reading as invalid. `tests/browser/live` checks the same installation in Chromium while the data plane runs.
 - **Frontend:** type-check, unit tests and a rebuild that must equal the committed embedded assets (CI job `console-frontend`).
 
 ## 3. Pending contracts (not shipped)
@@ -94,7 +95,6 @@ The report is read-only: files, runtime records and the store. It is not a dry r
 | Contract | Owner | Until it ships, the console shows |
 |---|---|---|
 | Session lifecycle `open|completed` and `managed_by` | #401 | today's six session-store states; evidence-observed sessions have no lifecycle |
-| Cross-process People Analytics conformance with real MCP proxy and HR backend processes and independent execution counters | #545 | the browser fixture is written through the store, not by running processes |
 | Explanation-code search | needs an indexed column | `unsupported: ["explanation_code"]` |
 | Raw configuration file view with server-side redaction | not scheduled | semantic summaries only |
 
