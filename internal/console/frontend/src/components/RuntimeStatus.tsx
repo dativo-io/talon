@@ -1,4 +1,4 @@
-import type { RoleStatus, Runtime, RuntimeProcess, RuntimeState } from "../api/types";
+import type { ActiveStatus, RoleStatus, Runtime, RuntimeProcess, RuntimeState } from "../api/types";
 import { Badge, CopyableIdentifier } from "./ui";
 import type { Tone } from "../lib/availability";
 import { relative, utc } from "../lib/format";
@@ -84,4 +84,22 @@ export function runtimeSummary(rt: Runtime): string {
   const roles = (rt.roles ?? []).filter((r) => r.state !== "not_configured" || r.expected);
   if (roles.length === 0) return "No data-plane process is configured or reporting.";
   return roles.map((r) => `${roleLabel(r.role)}: ${(STATE[r.state] ?? STATE.unknown).label.toLowerCase()}`).join(" · ");
+}
+
+const ACTIVE: Record<ActiveStatus["state"], { label: string; tone: "ok" | "warn" | "info" | "neutral" }> = {
+  loaded_matches_file: { label: "Yes: this file is loaded", tone: "ok" },
+  loaded_differs_from_file: { label: "A different version is loaded", tone: "warn" },
+  not_in_active_generation: { label: "Not in the active generation", tone: "warn" },
+  unknown: { label: "Not proven", tone: "info" },
+};
+
+export function ActiveBadge({ a }: { a: ActiveStatus | undefined }) {
+  if (!a) return <span className="muted">not reported</span>;
+  const s = ACTIVE[a.state] ?? ACTIVE.unknown;
+  return (
+    <span className="stack">
+      <Badge tone={s.tone}>{s.label}</Badge>
+      <span className="small muted">{a.reason}</span>
+    </span>
+  );
 }

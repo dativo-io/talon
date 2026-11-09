@@ -30,6 +30,7 @@ const Prefix = "/console/v1"
 //	/console/v1/overview?tenant=
 //	/console/v1/use-cases?tenant=
 //	/console/v1/use-cases/{name}?tenant=
+//	/console/v1/use-cases/{name}/effective-policy?tenant=   (#305; = talon agents show <name> --effective --json)
 //	/console/v1/sessions?tenant=&agent=&status=&limit=&before=<RFC3339>&before_id=&observed_before=<RFC3339>&observed_before_id=&observed_before_agent=
 //	/console/v1/sessions/{id}?tenant=&agent=&timeline_limit=&timeline_after=<RFC3339>&timeline_after_id=
 //	/console/v1/sessions/{id}/timeline?tenant=&agent=&timeline_limit=&timeline_after=<RFC3339>&timeline_after_id=   (no summary)
@@ -70,6 +71,14 @@ func Handler(svc *console.Service) http.Handler {
 				return
 			}
 			writeJSON(w, http.StatusOK, res)
+		})
+		r.Get("/use-cases/{name}/effective-policy", func(w http.ResponseWriter, req *http.Request) {
+			d, err := svc.EffectivePolicy(req.Context(), q(req, "tenant"), chi.URLParam(req, "name"))
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, d)
 		})
 		r.Get("/sessions", sessionsHandler(svc))
 		r.Get("/sessions/{id}", sessionDetailHandler(svc))

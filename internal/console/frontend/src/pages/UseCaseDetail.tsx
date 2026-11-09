@@ -17,6 +17,7 @@ import {
   UseCaseHealth,
 } from "../components/ui";
 import { ActivityChart } from "../components/ActivityChart";
+import { EffectivePolicySection } from "../components/EffectivePolicy";
 import { isMeasurement } from "../lib/availability";
 import { fieldValue, warningsFor } from "../lib/costs";
 import { goDuration, humanize, integer, relative, utc, utcShort } from "../lib/format";
@@ -120,15 +121,11 @@ export function UseCaseDetail() {
           </DetailSection>
 
           <DetailSection
-            title="Policy"
-            id="uc-policy"
+            title="Effective policy"
+            id="uc-effective"
             actions={<Link to={scoped("/configuration", tenant || row.tenant_id, { use_case: row.name })}>Open in Configuration</Link>}
           >
-            <div className="notice info" role="note">
-              <div>
-                <strong>Effective policy provenance not available.</strong> {d.effective_policy.note}
-              </div>
-            </div>
+            <EffectivePolicySection name={row.name} tenant={tenant || row.tenant_id} />
           </DetailSection>
 
           <DetailSection

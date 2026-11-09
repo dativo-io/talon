@@ -108,7 +108,7 @@ func TestConfiguration_SemanticSummaryFromTheFiles(t *testing.T) {
 	assert.Equal(t, []string{"hr_employee_export"}, px.ForbiddenTools)
 	assert.Equal(t, "hr-upstream-token", px.AuthSecretName)
 
-	assert.Equal(t, StateUnknown, c.EffectivePolicy.State, "provenance is #305's: never merged here")
+	assert.Contains(t, c.EffectivePolicy.Note, "talon agents show <name> --effective", "provenance comes from the canonical resolver per use case (#305), not from a merge on this page")
 	assert.Equal(t, StateUnknown, c.ActiveGeneration.State, "file contents are not proof of the running generation (#538)")
 
 	scoped := svc.Configuration(context.Background(), "acme")

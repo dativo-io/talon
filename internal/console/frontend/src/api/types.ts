@@ -662,3 +662,83 @@ export interface AuthSession {
   paired: boolean;
   expires_at?: string;
 }
+
+// Effective policy of one AI use case (#305): effective.Report, the same
+// projection `talon agents show <name> --effective --json` prints.
+export interface RuleCandidate {
+  source: string;
+  field: string;
+  value: string;
+  applied: boolean;
+}
+
+export interface RuleProvenance {
+  rule: string;
+  effective: string;
+  winner: string;
+  precedence: string;
+  candidates: RuleCandidate[];
+}
+
+export interface EffectiveFile {
+  path: string;
+  present: boolean;
+  digest?: string;
+  error?: string;
+}
+
+export interface ToolAccess {
+  tool: string;
+  allowed: boolean;
+  stage: string; // forbidden_tools | policy
+  matched?: string;
+  reasons?: string[];
+  note?: string;
+}
+
+export interface EffectiveReport {
+  use_case: string;
+  tenant_id: string;
+  generated_at: string;
+  current_files: { agent_file: string; policy_digest: string; gateway_config?: EffectiveFile; proxy_config?: EffectiveFile };
+  loaded: ActiveStatus;
+  effective: {
+    basis: string;
+    proven_active: boolean;
+    organization_baseline_present: boolean;
+    daily_cap?: number;
+    monthly_cap?: number;
+    session_cap?: number;
+    pii_action?: string;
+    response_pii_action?: string;
+    allowed_models?: string[];
+    organization_allowed_models?: string[];
+    allowed_providers?: string[];
+    forbidden_tools?: string[];
+    tool_policy_action?: string;
+    rules: RuleProvenance[];
+    providers?: { name: string; enabled: boolean; effective_digest: string; forbidden_tools?: string[]; allowed_models?: string[] }[];
+  };
+  mcp_boundary?: { proxy: string; file: string; scope: string; tools: ToolAccess[]; error?: string };
+  last_decision?: {
+    evidence_id: string;
+    timestamp: string;
+    invocation_type: string;
+    session_id?: string;
+    outcome: Outcome;
+    primary_explanation_code?: string;
+    primary_explanation_reason?: string;
+    recorded_agent_policy_digest?: string;
+    recorded_effective_digest?: string;
+    agent_file: string; // same | different | not_recorded
+    effective_policy: string; // matches_current:<provider> | differs_from_current | not_recorded
+    note: string;
+  };
+  notes?: string[];
+}
+
+export interface EffectivePolicyDTO {
+  meta: Meta;
+  availability: Availability;
+  report?: EffectiveReport;
+}

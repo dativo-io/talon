@@ -175,8 +175,7 @@ func TestUseCaseDetail_SessionsCostsActivity(t *testing.T) {
 	require.NotNil(t, d.Row)
 	assert.Equal(t, "default", d.Meta.TenantID, "the detail is scoped to the use case's own tenant")
 	assert.Equal(t, HealthBasisProjected, d.HealthBasis)
-	assert.Equal(t, StateUnknown, d.EffectivePolicy.State, "#305 owns provenance; nothing is inferred")
-	assert.Contains(t, d.EffectivePolicy.Note, "#305")
+	assert.Contains(t, d.EffectivePolicy.Note, "/console/v1/use-cases/{name}/effective-policy", "the detail points at the canonical effective-policy report (#305)")
 
 	// Costs: the shared report for the agent, with caps from the same scan.
 	assert.Equal(t, StateOK, d.Costs.Availability.State)

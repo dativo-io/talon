@@ -105,7 +105,7 @@ func TestRoutes_ServeTheDTOs(t *testing.T) {
 	assert.InDelta(t, 0.30, uc.Costs.Report.TodayEUR, 1e-9)
 	require.NotNil(t, uc.Costs.Report.DailyBudget)
 	assert.InDelta(t, 3, uc.Costs.Report.DailyBudget.Percent, 1e-9)
-	assert.Equal(t, console.StateUnknown, uc.EffectivePolicy.State)
+	assert.Contains(t, uc.EffectivePolicy.Note, "effective-policy")
 
 	var sd console.SessionDetail
 	require.Equal(t, http.StatusOK, get(t, srv, "/console/v1/sessions/hr-demo-s1", &sd))
