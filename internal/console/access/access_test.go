@@ -259,6 +259,10 @@ func TestGate_RejectsRebindingCrossOriginAndForms(t *testing.T) {
 		{"cross-site fetch", "127.0.0.1:8787", map[string]string{"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"}, http.StatusForbidden, ReasonCrossOrigin},
 		{"foreign Origin", "127.0.0.1:8787", map[string]string{"Content-Type": "application/json", "Origin": "http://evil.example"}, http.StatusForbidden, ReasonCrossOrigin},
 		{"opaque Origin", "127.0.0.1:8787", map[string]string{"Content-Type": "application/json", "Origin": "null"}, http.StatusForbidden, ReasonCrossOrigin},
+		{"Origin is an allowed-host alias, not the addressed host", "127.0.0.1:8787", map[string]string{"Content-Type": "application/json", "Origin": "http://localhost:8787"}, http.StatusForbidden, ReasonCrossOrigin},
+		{"Origin with another scheme", "127.0.0.1:8787", map[string]string{"Content-Type": "application/json", "Origin": "https://127.0.0.1:8787"}, http.StatusForbidden, ReasonCrossOrigin},
+		{"Origin with another port on the same host", "127.0.0.1:8787", map[string]string{"Content-Type": "application/json", "Origin": "http://127.0.0.1:9999"}, http.StatusForbidden, ReasonCrossOrigin},
+		{"Origin without the port", "127.0.0.1:8787", map[string]string{"Content-Type": "application/json", "Origin": "http://127.0.0.1"}, http.StatusForbidden, ReasonCrossOrigin},
 		{"HTML form post", "127.0.0.1:8787", map[string]string{"Content-Type": "application/x-www-form-urlencoded"}, http.StatusForbidden, ReasonCrossOrigin},
 		{"no content type", "127.0.0.1:8787", nil, http.StatusForbidden, ReasonCrossOrigin},
 	}
@@ -319,4 +323,32 @@ func TestHostsForListener(t *testing.T) {
 		HostsForListener("0.0.0.0:8787", []string{"console.internal", " 10.0.0.5:8787 ", ""}), "a wildcard bind contributes no public name by itself")
 	assert.ElementsMatch(t, []string{"localhost:9000", "127.0.0.1:9000", "[::1]:9000", "192.168.1.2:9000"}, HostsForListener("192.168.1.2:9000", nil))
 	assert.Contains(t, HostsForListener("127.0.0.1:80", nil), "localhost")
+}
+
+func TestGate_ExpectedOriginFollowsSchemeAndHost(t *testing.T) {
+	c := newClock()
+	g := newGate(c)
+	h := router(g)
+	// Exact origin over plain HTTP pairs; the same request body with a
+	// trailing slash on the Origin (never sent by browsers, tolerated) too.
+	for _, origin := range []string{"http://127.0.0.1:8787", "HTTP://127.0.0.1:8787/"} {
+		code, _, _ := g.Pairer.Issue()
+		c.advance(time.Second)
+		rec := do(t, h, http.MethodPost, "/console/auth/pair", "127.0.0.1:8787", `{"code":"`+code+`"}`, map[string]string{"Content-Type": "application/json", "Origin": origin})
+		assert.Equal(t, http.StatusOK, rec.Code, origin)
+	}
+	// Behind a TLS terminator (SecureCookie) the browser's origin is https.
+	g.SecureCookie = true
+	code, _, _ := g.Pairer.Issue()
+	c.advance(time.Second)
+	rec := do(t, h, http.MethodPost, "/console/auth/pair", "console.internal:8787", `{"code":"`+code+`"}`, map[string]string{"Content-Type": "application/json", "Origin": "http://console.internal:8787"})
+	assert.Equal(t, http.StatusMisdirectedRequest, rec.Code, "the host is not allowed until named")
+	g.AllowedHosts = append(g.AllowedHosts, "console.internal:8787")
+	c.advance(time.Second)
+	rec = do(t, h, http.MethodPost, "/console/auth/pair", "console.internal:8787", `{"code":"`+code+`"}`, map[string]string{"Content-Type": "application/json", "Origin": "http://console.internal:8787"})
+	assert.Equal(t, http.StatusForbidden, rec.Code, "plain-http origin is not this deployment's origin")
+	c.advance(time.Second)
+	rec = do(t, h, http.MethodPost, "/console/auth/pair", "console.internal:8787", `{"code":"`+code+`"}`, map[string]string{"Content-Type": "application/json", "Origin": "https://console.internal:8787"})
+	assert.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.True(t, rec.Result().Cookies()[0].Secure)
 }

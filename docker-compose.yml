@@ -6,9 +6,15 @@ services:
         VERSION: ${VERSION:-dev}
     image: talon:${VERSION:-latest}
     command: serve --port 8080
+    # Published to the host's loopback only. The data-plane API is open to
+    # unauthenticated callers when TALON_ADMIN_KEY is unset (development
+    # default), so it must not reach the network by default; to expose it,
+    # set TALON_ADMIN_KEY in .env and change the binding deliberately. The
+    # console's pairing secures the console process, not this API.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
+      - TALON_ADMIN_KEY=${TALON_ADMIN_KEY:-}
       - TALON_LLM_PROVIDER=${TALON_LLM_PROVIDER:-openai}
       - TALON_LOG_LEVEL=${TALON_LOG_LEVEL:-info}
       - TALON_LOG_FORMAT=json

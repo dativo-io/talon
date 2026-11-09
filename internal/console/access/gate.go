@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -109,19 +108,18 @@ func (g *Gate) sessionOf(r *http.Request) (*Session, bool) {
 
 // sameOrigin enforces, for state-changing requests, that the browser sent
 // the request from this origin: Sec-Fetch-Site (when present) must be
-// same-origin or none, Origin (when present) must name an allowed host, and
-// the body must be declared JSON (a plain HTML form cannot send that).
+// same-origin or none, Origin (when present) must equal the request's own
+// origin exactly (scheme, host and port: a browser addressing
+// http://127.0.0.1:8787 sends that Origin and no alias of it), and the body
+// must be declared JSON (a plain HTML form cannot send that).
 func (g *Gate) sameOrigin(r *http.Request) error {
 	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
 		return errors.New("Sec-Fetch-Site " + site)
 	}
-	if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
-		u, err := url.Parse(origin)
-		if err != nil || !g.hostAllowed(u.Host) {
-			return errors.New("Origin " + origin)
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if expected := g.expectedOrigin(r); !strings.EqualFold(strings.TrimSuffix(origin, "/"), expected) {
+			return errors.New("Origin " + origin + " is not " + expected)
 		}
-	} else if origin == "null" {
-		return errors.New("opaque Origin")
 	}
 	ct := r.Header.Get("Content-Type")
 	if mt := strings.ToLower(strings.TrimSpace(strings.Split(ct, ";")[0])); mt != "application/json" {
@@ -203,6 +201,18 @@ func (g *Gate) SessionHandler() http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"paired": true, "expires_at": sess.ExpiresAt})
 	}
+}
+
+// expectedOrigin is the origin a browser sends when it addresses this
+// request's Host over this request's scheme. The scheme is https when the
+// connection is TLS or the deployment declared a TLS terminator in front
+// (SecureCookie); the Host has already passed the allowlist.
+func (g *Gate) expectedOrigin(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || g.SecureCookie {
+		scheme = "https"
+	}
+	return scheme + "://" + strings.ToLower(r.Host)
 }
 
 func (g *Gate) cookie(r *http.Request, value string, expires time.Time) *http.Cookie {

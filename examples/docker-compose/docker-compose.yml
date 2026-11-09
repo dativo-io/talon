@@ -21,7 +21,7 @@ services:
     build:
       context: ./mock-provider
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/health || exit 1"]
       interval: 5s
@@ -36,8 +36,11 @@ services:
       - |
         talon secrets set demo-agent-talon-key "talon-demo-key" >/dev/null 2>&1 || true
         exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
+    # Demo stack: no TALON_ADMIN_KEY, so the API is development-open by
+    # design. It is therefore published to the host's loopback only; the
+    # console's pairing (talon-ui) does not secure this port.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - TALON_SECRETS_KEY=abcdefghijklmnopqrstuvwxyz012345
       - TALON_LOG_LEVEL=info

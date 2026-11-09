@@ -56,9 +56,13 @@ status_of() { # status_of <method> <url> [curl args...]
 wait_http "$DP/health" 120
 wait_http "$UI/healthz" 60
 
-# Port scope: the console is published on the host loopback only.
+# Port scope: console AND data plane are published on the host loopback only.
+# The data plane of this no-key stack is development-open; console pairing
+# must never read as "the installation is secured" while 8080 faces the LAN.
 binding="$("${COMPOSE[@]}" port talon-ui 8787)"
 check "console published on 127.0.0.1 only (got $binding)" [ "${binding%%:*}" = "127.0.0.1" ]
+dp_binding="$("${COMPOSE[@]}" port talon 8080)"
+check "data plane published on 127.0.0.1 only (got $dp_binding)" [ "${dp_binding%%:*}" = "127.0.0.1" ]
 
 # One governed request through the data plane (mock provider), so the store holds traffic.
 check "governed request through the data plane" \
