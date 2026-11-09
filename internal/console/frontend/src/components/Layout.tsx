@@ -91,36 +91,37 @@ function TenantScope() {
   );
 }
 
+// GlobalSearch shows results only for the exact (query, tenant) pair they
+// answer, like useApi: while a newer search is pending the dropdown says so
+// instead of showing the previous query's or tenant's results, and an error
+// replaces old results rather than sitting next to them.
 function GlobalSearch({ tenant }: { tenant: string }) {
   const [q, setQ] = useState("");
-  const [res, setRes] = useState<SearchResults | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [settled, setSettled] = useState<{ key: string; res: SearchResults | null; err: string | null } | null>(null);
   const [show, setShow] = useState(false);
   const nav = useNavigate();
   const box = useRef<HTMLDivElement>(null);
+  const term = q.trim();
+  const key = term.length >= 2 ? JSON.stringify([term, tenant]) : null;
   useEffect(() => {
-    const term = q.trim();
-    if (term.length < 2) {
-      setRes(null);
-      setErr(null);
-      return;
-    }
+    if (key === null) return;
     const ctrl = new AbortController();
     const t = window.setTimeout(() => {
       getJSON<SearchResults>(api("/search"), { q: term, tenant }, ctrl.signal)
         .then((r) => {
-          setRes(r);
-          setErr(null);
+          if (!ctrl.signal.aborted) setSettled({ key, res: r, err: null });
         })
         .catch((e: unknown) => {
-          if (!ctrl.signal.aborted) setErr(e instanceof ApiError ? e.message : String(e));
+          if (!ctrl.signal.aborted) setSettled({ key, res: null, err: e instanceof ApiError ? e.message : String(e) });
         });
     }, 200);
     return () => {
       ctrl.abort();
       window.clearTimeout(t);
     };
-  }, [q, tenant]);
+    // key captures term and tenant
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
   useEffect(() => {
     const close = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) setShow(false);
@@ -133,6 +134,10 @@ function GlobalSearch({ tenant }: { tenant: string }) {
     setQ("");
     nav(to);
   };
+  const current = key !== null && settled !== null && settled.key === key;
+  const res = current ? settled.res : null;
+  const err = current ? settled.err : null;
+  const pending = key !== null && !current;
   const empty = res && res.use_cases.length + res.sessions.length + res.evidence.length === 0;
   return (
     <div className="search" ref={box} role="search">
@@ -152,9 +157,11 @@ function GlobalSearch({ tenant }: { tenant: string }) {
           if (e.key === "Escape") setShow(false);
         }}
       />
-      {show && (res || err) ? (
-        <div className="search-results" role="listbox" aria-label="Search results">
+      {show && key !== null ? (
+        <div className="search-results" role="listbox" aria-label="Search results" aria-busy={pending}>
+          {pending ? <span className="none muted">Searching…</span> : null}
           {err ? <span className="none">Search unavailable: {err}</span> : null}
+          {res ? <span className="none muted small">Tenant {res.meta.tenant_id ?? "default"}</span> : null}
           {res && res.use_cases.length > 0 ? <h3>AI use cases</h3> : null}
           {res?.use_cases.map((u) => (
             <a key={`u${u.tenant_id}/${u.name}`} href="#" onClick={(e) => { e.preventDefault(); go(scoped(`/use-cases/${encodeURIComponent(u.name)}`, u.tenant_id)); }}>
@@ -173,7 +180,7 @@ function GlobalSearch({ tenant }: { tenant: string }) {
               <code>{ev.id}</code> <span className="muted small">{ev.agent_id} · {ev.invocation_type}</span>
             </a>
           ))}
-          {empty ? <span className="none muted">No exact match in this scope. Explanation-code search is not available.</span> : null}
+          {empty ? <span className="none muted">No exact match in this tenant. Explanation-code search is not available.</span> : null}
         </div>
       ) : null}
     </div>

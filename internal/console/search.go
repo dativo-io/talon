@@ -17,7 +17,8 @@ const (
 
 // SearchResults is a bounded lookup over the facts the console can resolve
 // exactly (#539): AI use-case names by prefix, and session, evidence and
-// correlation ids by exact match. Explanation-code search is not offered:
+// correlation ids by exact match, all in one tenant (tenant "" = "default",
+// reported in Meta). Explanation-code search is not offered:
 // codes live inside the signed record JSON and have no index, so a lookup
 // would scan the store. Unsupported says so instead of returning nothing.
 type SearchResults struct {
@@ -63,7 +64,9 @@ func (s *Service) Search(ctx context.Context, tenant, q string) (*SearchResults,
 		Unsupported: []string{"explanation_code"},
 	}
 	var errs []string
-	uc := s.useCases(ctx, tenant)
+	// One scope for every result type: tenant "" means the default tenant
+	// for use cases, sessions and evidence alike, and Meta says so.
+	uc := s.useCases(ctx, scope)
 	if uc.Availability.State == StateUnavailable {
 		errs = append(errs, "use cases: "+uc.Availability.Error)
 	}
