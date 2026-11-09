@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, getJSON } from "../api/client";
 import { useApi } from "../api/useApi";
@@ -15,35 +15,55 @@ export function SessionDetail() {
   const { tenant, params } = useScope();
   const agent = params.get("agent") ?? "";
   const res = useApi<DetailDTO>(api(`/sessions/${encodeURIComponent(id)}`), { tenant, agent, timeline_limit: PAGE });
-  const [extra, setExtra] = useState<EvidenceIndex[]>([]);
-  const [cursor, setCursor] = useState<TimelineCursor | undefined>(undefined);
-  const [moreErr, setMoreErr] = useState<Error | null>(null);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    setExtra([]);
-    setCursor(res.data?.timeline?.next_cursor);
-    setMoreErr(null);
-  }, [res.data]);
   const d = res.data;
+  // One investigation = session id + scope + the first page it was opened
+  // with. Extra pages belong to exactly one investigation: a late page for a
+  // previous one is aborted or discarded, never appended here.
+  const investigation = d ? JSON.stringify([id, tenant, agent, d.meta.generated_at]) : null;
+  const [paged, setPaged] = useState<{ inv: string | null; extra: EvidenceIndex[]; cursor?: TimelineCursor; err: Error | null }>({ inv: null, extra: [], err: null });
+  const [busy, setBusy] = useState(false);
+  const inflight = useRef<AbortController | null>(null);
+  useEffect(() => {
+    inflight.current?.abort();
+    inflight.current = null;
+    setBusy(false);
+    setPaged({ inv: investigation, extra: [], cursor: d?.timeline?.next_cursor, err: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [investigation]);
+  useEffect(() => () => inflight.current?.abort(), []);
+  const own = paged.inv === investigation;
+  const extra = own ? paged.extra : [];
+  const cursor = own ? paged.cursor : d?.timeline?.next_cursor;
+  const moreErr = own ? paged.err : null;
   const summary = d?.detail?.summary;
   const records = [...(d?.timeline?.records ?? []), ...extra];
   const loadMore = () => {
-    if (!cursor) return;
+    if (!cursor || investigation === null) return;
+    const inv = investigation;
+    inflight.current?.abort();
+    const ctrl = new AbortController();
+    inflight.current = ctrl;
     setBusy(true);
     // Further pages come from /timeline, which does not recompute the summary.
-    getJSON<DetailDTO>(api(`/sessions/${encodeURIComponent(id)}/timeline`), {
-      tenant,
-      agent,
-      timeline_limit: PAGE,
-      timeline_after: cursor.timestamp,
-      timeline_after_id: cursor.id,
-    })
+    getJSON<DetailDTO>(
+      api(`/sessions/${encodeURIComponent(id)}/timeline`),
+      { tenant, agent, timeline_limit: PAGE, timeline_after: cursor.timestamp, timeline_after_id: cursor.id },
+      ctrl.signal,
+    )
       .then((page) => {
-        setExtra((x) => [...x, ...(page.timeline?.records ?? [])]);
-        setCursor(page.timeline?.next_cursor);
+        if (ctrl.signal.aborted) return;
+        setPaged((p) => (p.inv !== inv ? p : { inv, extra: [...p.extra, ...(page.timeline?.records ?? [])], cursor: page.timeline?.next_cursor, err: null }));
       })
-      .catch((e: unknown) => setMoreErr(e instanceof Error ? e : new Error(String(e))))
-      .finally(() => setBusy(false));
+      .catch((e: unknown) => {
+        if (ctrl.signal.aborted) return;
+        setPaged((p) => (p.inv !== inv ? p : { ...p, err: e instanceof Error ? e : new Error(String(e)) }));
+      })
+      .finally(() => {
+        if (inflight.current === ctrl) {
+          inflight.current = null;
+          setBusy(false);
+        }
+      });
   };
   const scopeTenant = d?.meta.tenant_id ?? tenant;
   return (

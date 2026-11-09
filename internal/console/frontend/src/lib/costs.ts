@@ -1,4 +1,4 @@
-import type { CostReport } from "../api/types";
+import type { AgentRow, CostReport } from "../api/types";
 
 // Field names of the cost report. The `_eur` suffix is historical: the unit
 // of every amount is CostReport.currency.
@@ -46,4 +46,10 @@ export function fieldValue(r: CostReport, field: "today_eur" | "seven_days_eur" 
 // name, so an unavailable figure can show its own reason.
 export function warningsFor(r: CostReport, needles: string[]): string[] {
   return (r.warnings ?? []).filter((w) => needles.some((n) => w.includes(n)));
+}
+
+// rowSpend is a fleet row's spend for one period, or null when the row says
+// that period's priced records are not comparable with its currency.
+export function rowSpend(r: AgentRow, period: "spend_day" | "spend_month"): number | null {
+  return (r.unavailable_fields ?? []).includes(period) ? null : r[period];
 }
