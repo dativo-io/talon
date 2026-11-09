@@ -22,6 +22,7 @@ import (
 	"github.com/dativo-io/talon/internal/events"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/fleet"
+	"github.com/dativo-io/talon/internal/runtimestatus"
 	"github.com/dativo-io/talon/internal/session"
 )
 
@@ -76,12 +77,21 @@ type Meta struct {
 	TenantID        string    `json:"tenant_id,omitempty"`
 }
 
-// Runtime is the live-process section (#538). Until a probe exists it is
-// StateUnknown with a note; nothing in it is ever derived from evidence.
+// Runtime is the live-process section (#538): the data-plane processes of
+// this installation as assessed from their own runtime records (heartbeat,
+// version, active catalog generation, reload rejection). Nothing in it is
+// ever derived from evidence; history in the store is independent of it.
 type Runtime struct {
 	Availability     Availability `json:"availability"`
 	ActiveGeneration string       `json:"active_generation,omitempty"`
 	ActivatedAt      *time.Time   `json:"activated_at,omitempty"`
+	ReadAt           time.Time    `json:"read_at,omitempty"`
+	// Roles: mcp_proxy and gateway (and native when served), each running |
+	// stale | offline | not_configured | unknown with the reason.
+	Roles     []runtimestatus.RoleStatus `json:"roles"`
+	Processes []runtimestatus.Process    `json:"processes"`
+	// Rejected lists records not combined (another installation, malformed).
+	Rejected []runtimestatus.Rejected `json:"rejected,omitempty"`
 }
 
 // Health bases of the attention queue.

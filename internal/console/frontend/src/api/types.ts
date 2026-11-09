@@ -21,10 +21,59 @@ export interface Meta {
   tenant_id?: string;
 }
 
+export type RuntimeState = "running" | "stale" | "offline" | "not_configured" | "unknown";
+
+export interface RoleStatus {
+  role: string; // mcp_proxy | gateway | native
+  expected: boolean;
+  state: RuntimeState;
+  reason: string;
+  instance_id?: string;
+  last_seen?: string;
+}
+
+export interface RuntimeCatalog {
+  active_generation: string;
+  scan_digest: string;
+  activated_at: string;
+  reload_enabled: boolean;
+  reload_rejected: boolean;
+  rejected_digest?: string;
+  rejected_at?: string;
+  rejected_causes?: string[];
+  agents: { name: string; tenant_id: string; enabled: boolean; policy_digest: string }[];
+}
+
+export interface RuntimeProcess {
+  instance_id: string;
+  roles: string[];
+  version: string;
+  commit?: string;
+  pid: number;
+  host?: string;
+  started_at: string;
+  written_at: string;
+  sequence: number;
+  interval_seconds: number;
+  state: "running" | "stopped";
+  stopped_at?: string;
+  catalog?: RuntimeCatalog;
+  proxy_config?: { path: string; digest: string; loaded_at: string };
+  gateway_config?: { path: string; digest: string; loaded_at: string };
+  assessed_state: RuntimeState;
+  reason: string;
+  age_seconds: number;
+  current: boolean;
+}
+
 export interface Runtime {
   availability: Availability;
   active_generation?: string;
   activated_at?: string;
+  read_at?: string;
+  roles: RoleStatus[] | null;
+  processes: RuntimeProcess[] | null;
+  rejected?: { file: string; reason: string }[];
 }
 
 export type Health = "healthy" | "needs-attention" | "stopped" | "blocked";
@@ -527,6 +576,7 @@ export interface UseCaseConfig {
   audit_include_prompts: boolean;
   audit_include_responses: boolean;
   use_case?: UseCaseRecordRow;
+  active: ActiveStatus;
 }
 
 export interface ProxyConfigView {
@@ -550,7 +600,38 @@ export interface Configuration {
   mcp_proxy: ProxyConfigView;
   effective_policy: Availability;
   active_generation: Availability;
+  active: ActiveProcessConfig[];
   issues?: { path: string; status: string; reason: string }[];
+}
+
+export interface ActiveFile {
+  loaded_path: string;
+  loaded_digest: string;
+  loaded_at: string;
+  current_digest?: string;
+  matches: boolean | null;
+}
+
+export interface ActiveProcessConfig {
+  instance_id: string;
+  roles: string[];
+  state: RuntimeState;
+  active_generation?: string;
+  activated_at?: string;
+  agent_files_match: boolean | null;
+  reload_enabled: boolean;
+  reload_rejected: boolean;
+  rejected_at?: string;
+  rejected_causes?: string[];
+  proxy_config?: ActiveFile;
+  gateway_config?: ActiveFile;
+}
+
+export interface ActiveStatus {
+  state: "loaded_matches_file" | "loaded_differs_from_file" | "not_in_active_generation" | "unknown";
+  reason: string;
+  active_policy_digest?: string;
+  instance_ids?: string[];
 }
 
 export interface UseCaseDetail {
