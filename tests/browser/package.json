@@ -1,7 +1,7 @@
 {
   "name": "talon-console-browser-tests",
   "private": true,
-  "description": "Real-browser tests of the packaged Talon console shell (#537): pairing, read API behind the session cookie, logout.",
+  "description": "Real-browser tests of the packaged Talon console shell (#537): pairing, read API behind the session cookie, logout. The @playwright/test pin and the CI runner image (ubuntu-24.04 in .github/workflows/ci.yml) are coupled: Playwright installs browser dependencies only for the OS releases it shipped with.",
   "scripts": {
     "test": "playwright test"
   },

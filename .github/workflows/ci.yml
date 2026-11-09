@@ -318,7 +318,12 @@ jobs:
   # embedded shell served by `talon ui serve` from the built binary.
   browser:
     name: Browser (console pairing)
-    runs-on: ubuntu-latest
+    # Pinned runner image: `npx playwright install --with-deps` only knows
+    # the OS releases its Playwright version shipped with. ubuntu-latest
+    # became 26.04 and 1.52.0 refuses to install Chromium there ("does not
+    # support chromium on ubuntu26.04-x64"). Bump the runner image and the
+    # @playwright/test pin in tests/browser/package.json together.
+    runs-on: ubuntu-24.04
     needs: [test, lint]
     steps:
       - uses: actions/checkout@v4
