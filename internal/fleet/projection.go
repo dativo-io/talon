@@ -17,6 +17,8 @@ type EvidenceSource interface {
 	FallbackCountsByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]int, error)
 	CostByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]float64, error)
 	AgentsSummary(ctx context.Context, from, to time.Time, tenantID string) ([]evidence.AgentSummary, error)
+	// CurrenciesByAgent counts priced records per agent and stamped currency.
+	CurrenciesByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]map[string]int, error)
 	LastRequestByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]time.Time, error)
 }
 
@@ -69,6 +71,14 @@ func Project(ctx context.Context, ev EvidenceSource, ss SessionSource, agents []
 	// LastRun is the most recent REQUEST-class timestamp, all-time (no month
 	// boundary), so an operator event never becomes the last-run and an agent
 	// whose last request predates this month still shows one (#270 review P2).
+	dayCur, err := ev.CurrenciesByAgent(ctx, qTenant, dayStart, now)
+	if err != nil {
+		return nil, err
+	}
+	monthCur, err := ev.CurrenciesByAgent(ctx, qTenant, monthStart, monthEnd)
+	if err != nil {
+		return nil, err
+	}
 	lastRun, err := ev.LastRequestByAgent(ctx, qTenant, time.Time{}, now)
 	if err != nil {
 		return nil, err
@@ -98,33 +108,31 @@ func Project(ctx context.Context, ev EvidenceSource, ss SessionSource, agents []
 			FailedSessions: failed[a.Name],
 			ConfigRejected: a.ConfigRejected,
 			PolicyDenyAll:  a.PolicyDenyAll,
-			Budgets: []BudgetPeriod{
-				{Name: "daily", Spend: dayCost[a.Name], Cap: a.DailyCap},
-				{Name: "monthly", Spend: monthCost[a.Name], Cap: a.MonthlyCap},
-			},
 		}
+		unavailable := budgetSignals(&sig, a, [2]float64{dayCost[a.Name], monthCost[a.Name]}, [2]map[string]int{dayCur[a.Name], monthCur[a.Name]})
 		health, causes := Evaluate(state, sig, th, a.Currency)
 		rows = append(rows, AgentRow{
-			Name:           a.Name,
-			TenantID:       a.TenantID,
-			State:          state,
-			Health:         health,
-			Why:            WhyString(causes),
-			Causes:         causes,
-			SpendMonth:     monthCost[a.Name],
-			MonthlyCap:     a.MonthlyCap,
-			SpendDay:       dayCost[a.Name],
-			DailyCap:       a.DailyCap,
-			Currency:       a.Currency,
-			Requests:       sig.Requests,
-			Denied:         sig.Denied,
-			Fallbacks:      sig.Fallbacks,
-			FailedSessions: sig.FailedSessions,
-			LastRun:        lastRun[a.Name],
-			ConfigPath:     a.ConfigPath,
-			PolicyDigest:   a.PolicyDigest,
-			ConfigError:    a.ConfigError,
-			UseCase:        a.UseCase,
+			Name:              a.Name,
+			TenantID:          a.TenantID,
+			State:             state,
+			Health:            health,
+			Why:               WhyString(causes),
+			Causes:            causes,
+			SpendMonth:        monthCost[a.Name],
+			MonthlyCap:        a.MonthlyCap,
+			SpendDay:          dayCost[a.Name],
+			DailyCap:          a.DailyCap,
+			Currency:          a.Currency,
+			Requests:          sig.Requests,
+			Denied:            sig.Denied,
+			Fallbacks:         sig.Fallbacks,
+			FailedSessions:    sig.FailedSessions,
+			LastRun:           lastRun[a.Name],
+			ConfigPath:        a.ConfigPath,
+			PolicyDigest:      a.PolicyDigest,
+			ConfigError:       a.ConfigError,
+			UnavailableFields: unavailable,
+			UseCase:           a.UseCase,
 		})
 	}
 	sortRows(rows)
@@ -180,4 +188,48 @@ func sortRows(rows []AgentRow) {
 		}
 		return rows[i].Name < rows[j].Name
 	})
+}
+
+// foreignCurrencies lists the stamped currencies other than configured
+// (unstamped legacy records count as the configured currency, the unit the
+// tables always used), sorted.
+func foreignCurrencies(counts map[string]int, configured string) []string {
+	var out []string
+	for cur, n := range counts {
+		if n > 0 && cur != "" && cur != configured {
+			out = append(out, cur)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// budgetSignals fills sig's budget periods (daily, monthly) from spend, and
+// leaves out a period whose priced records are not all in a.Currency: that
+// period is named in sig.NotComparable with its foreign currencies, and its
+// spend field is returned as unavailable. A sum of mixed or foreign units is
+// not spend in a.Currency, so it is neither a measurement nor compared with
+// the cap.
+func budgetSignals(sig *Signals, a *AgentStatus, spend [2]float64, counts [2]map[string]int) (unavailable []string) {
+	periods := [2]struct {
+		name, field string
+		cap         float64
+	}{{"daily", "spend_day", a.DailyCap}, {"monthly", "spend_month", a.MonthlyCap}}
+	foreign := map[string]bool{}
+	for i, p := range periods {
+		if f := foreignCurrencies(counts[i], a.Currency); len(f) > 0 {
+			unavailable = append(unavailable, p.field)
+			sig.NotComparable = append(sig.NotComparable, p.name)
+			for _, c := range f {
+				foreign[c] = true
+			}
+			continue
+		}
+		sig.Budgets = append(sig.Budgets, BudgetPeriod{Name: p.name, Spend: spend[i], Cap: p.cap})
+	}
+	for c := range foreign {
+		sig.NotComparableCurrencies = append(sig.NotComparableCurrencies, c)
+	}
+	sort.Strings(sig.NotComparableCurrencies)
+	return unavailable
 }

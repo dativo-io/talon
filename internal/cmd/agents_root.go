@@ -357,7 +357,21 @@ func renderAgentUseCase(w io.Writer, uc *fleet.UseCase) {
 	fmt.Fprintln(w)
 }
 
+// notComparable is the cost text when the row says the period's spend is
+// not a measurement (priced records in another currency, #553 review).
+func notComparable(r fleet.AgentRow, field string) bool {
+	for _, f := range r.UnavailableFields {
+		if f == field {
+			return true
+		}
+	}
+	return false
+}
+
 func monthCostLine(r fleet.AgentRow) string {
+	if notComparable(r, "spend_month") {
+		return "n/a (currencies differ) / " + fleet.FormatMoney(r.Currency, r.MonthlyCap)
+	}
 	if r.MonthlyCap > 0 {
 		return fleet.FormatMoney(r.Currency, r.SpendMonth) + " / " + fleet.FormatMoney(r.Currency, r.MonthlyCap)
 	}
@@ -365,6 +379,9 @@ func monthCostLine(r fleet.AgentRow) string {
 }
 
 func dayCostLine(r fleet.AgentRow) string {
+	if notComparable(r, "spend_day") {
+		return "n/a (currencies differ) / " + fleet.FormatMoney(r.Currency, r.DailyCap)
+	}
 	if r.DailyCap > 0 {
 		return fleet.FormatMoney(r.Currency, r.SpendDay) + " / " + fleet.FormatMoney(r.Currency, r.DailyCap)
 	}

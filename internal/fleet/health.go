@@ -1,6 +1,9 @@
 package fleet
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Evaluate derives an agent's HEALTH and the ordered causes from its configured
 // State and pre-windowed Signals. It is pure — no time math, no I/O — so every
@@ -96,6 +99,13 @@ func attentionCauses(s Signals, th Thresholds, currency string) []Cause {
 		causes = append(causes, Cause{
 			Kind:   CauseInvalidConfig,
 			Detail: "current config rejected",
+		})
+	}
+	if len(s.NotComparable) > 0 {
+		causes = append(causes, Cause{
+			Kind: CauseBudgetNotComparable,
+			Detail: fmt.Sprintf("%s budget not evaluated: spend recorded in %s is not comparable with caps in %s",
+				strings.Join(s.NotComparable, " and "), strings.Join(s.NotComparableCurrencies, ", "), currency),
 		})
 	}
 	if b, ok := warningBudget(s.Budgets, th.BudgetWarnRatio); ok {
