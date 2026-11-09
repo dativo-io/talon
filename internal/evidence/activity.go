@@ -49,7 +49,7 @@ var ActivityBucketSizes = map[string]time.Duration{"5m": 5 * time.Minute, "1h": 
 const MaxActivityBuckets = 2016
 
 // activityWindow validates the request and aligns it to the bucket grid.
-func activityWindow(tenantID string, from, to time.Time, bucketSize time.Duration) (label string, fromAligned, toAligned time.Time, n int, err error) {
+func activityWindow(from, to time.Time, bucketSize time.Duration) (label string, fromAligned, toAligned time.Time, n int, err error) {
 	for name, d := range ActivityBucketSizes {
 		if d == bucketSize {
 			label = name
@@ -58,8 +58,6 @@ func activityWindow(tenantID string, from, to time.Time, bucketSize time.Duratio
 	switch {
 	case label == "":
 		err = fmt.Errorf("activity buckets: unsupported bucket size %s (5m, 1h or 24h)", bucketSize)
-	case tenantID == "":
-		err = fmt.Errorf("activity buckets: tenant is required")
 	case from.IsZero() || to.IsZero() || !to.After(from):
 		err = fmt.Errorf("activity buckets: window [%s, %s) is empty", from.Format(time.RFC3339), to.Format(time.RFC3339))
 	}
@@ -92,7 +90,7 @@ func activityWindow(tenantID string, from, to time.Time, bucketSize time.Duratio
 // series longer than MaxActivityBuckets is refused rather than truncated.
 // tenantID is required; agentID narrows to one agent.
 func (s *Store) ActivityBuckets(ctx context.Context, tenantID, agentID string, from, to time.Time, bucketSize time.Duration) (*ActivitySeries, error) {
-	label, fromAligned, toAligned, n, err := activityWindow(tenantID, from, to, bucketSize)
+	label, fromAligned, toAligned, n, err := activityWindow(from, to, bucketSize)
 	if err != nil {
 		return nil, err
 	}
@@ -104,8 +102,14 @@ func (s *Store) ActivityBuckets(ctx context.Context, tenantID, agentID string, f
 		SUM(CASE WHEN (json_extract(evidence_json, '$.policy_decision.allowed') = 0 OR json_extract(evidence_json, '$.policy_decision.allowed') = 0.0) THEN 1 ELSE 0 END),
 		SUM(CASE WHEN COALESCE(json_extract(evidence_json, '$.execution.error'), '') <> '' THEN 1 ELSE 0 END),
 		COALESCE(SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur'))), 0)
-		FROM evidence WHERE ` + RequestClassSQLPredicate("invocation_type") + ` AND tenant_id = ?`
-	args := []interface{}{secs, secs, tenantID}
+		FROM evidence WHERE ` + RequestClassSQLPredicate("invocation_type")
+	args := []interface{}{secs, secs}
+	// tenant "" spans every tenant, like AgentTrafficStats and CostTotal, so
+	// an all-tenant Overview and its chart describe the same records.
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
 	if agentID != "" {
 		query += ` AND agent_id = ?`
 		args = append(args, agentID)

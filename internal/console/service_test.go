@@ -615,3 +615,28 @@ func TestUseCases_StateTheirCounterWindows(t *testing.T) {
 	_, uc := f.service(t).UseCases(context.Background(), "")
 	assert.Equal(t, CounterWindows{RequestsDenied: "1h0m0s", Fallbacks: "1h0m0s", FailedSessions: "24h0m0s"}, uc.CounterWindows, "the windows fleet.Project used, so a consumer can label the counters")
 }
+
+// TestOverviewAndActivityShareOneScope (#553 review 2): with no tenant
+// selected the Overview counts every tenant; its activity chart must count
+// the same request-class records, not the default tenant only. Both tenants
+// of the fixture have traffic today.
+func TestOverviewAndActivityShareOneScope(t *testing.T) {
+	f := seed(t)
+	svc := f.service(t)
+	ctx := context.Background()
+	for _, tenant := range []string{"", "default", "acme"} {
+		ov := svc.Overview(ctx, tenant)
+		require.Equal(t, StateOK, ov.Today.Availability.State)
+		act := svc.Activity(ctx, tenant, "", ov.Today.Window.DayStart, f.now.Add(time.Minute), time.Hour)
+		require.Equal(t, StateOK, act.Availability.State, act.Availability.Error)
+		assert.Equal(t, ov.Meta.TenantScope, act.Meta.TenantScope, "tenant %q: one scope for the page", tenant)
+		sum := 0
+		for _, b := range act.Series.Buckets {
+			sum += b.Requests
+		}
+		assert.Equal(t, ov.Today.Requests, sum, "tenant %q: chart buckets total the Overview's requests today", tenant)
+	}
+	all := svc.Overview(ctx, "")
+	def := svc.Overview(ctx, "default")
+	assert.Greater(t, all.Today.Requests, def.Today.Requests, "the fixture has traffic in a second tenant, so the scopes really differ")
+}

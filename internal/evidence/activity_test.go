@@ -128,8 +128,13 @@ func TestActivityBuckets_AgentFilterAlignmentAndBounds(t *testing.T) {
 	require.ErrorContains(t, err, "exceed the bound")
 	_, err = store.ActivityBuckets(ctx, "default", "", from, to, 7*time.Minute)
 	require.ErrorContains(t, err, "unsupported bucket size")
-	_, err = store.ActivityBuckets(ctx, "", "", from, to, 5*time.Minute)
-	require.ErrorContains(t, err, "tenant is required")
+	// Tenant "" spans every tenant: the default tenant's buckets plus the
+	// other tenants' records in the same window, never fewer.
+	all, err := store.ActivityBuckets(ctx, "", "", time.Date(2026, 3, 15, 6, 0, 0, 0, time.UTC), time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC), 24*time.Hour)
+	require.NoError(t, err)
+	require.Len(t, all.Buckets, 1)
+	assert.Equal(t, "", all.TenantID)
+	assert.GreaterOrEqual(t, all.Buckets[0].Requests, day.Buckets[0].Requests)
 	_, err = store.ActivityBuckets(ctx, "default", "", to, from, 5*time.Minute)
 	require.ErrorContains(t, err, "is empty")
 }
