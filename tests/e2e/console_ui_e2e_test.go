@@ -234,7 +234,7 @@ func TestE2E_ConsoleUI_PairingReadOnlyProcess(t *testing.T) {
 	if status, body, _ := anon.do(http.MethodGet, "/console/v1/overview", "", nil); status != http.StatusUnauthorized || !strings.Contains(body, access.ReasonSessionRequired) {
 		t.Fatalf("unpaired read: %d %s", status, body)
 	}
-	if status, body, _ := anon.do(http.MethodGet, "/", "", nil); status != http.StatusOK || !strings.Contains(body, "pair-form") {
+	if status, body, _ := anon.do(http.MethodGet, "/", "", nil); status != http.StatusOK || !strings.Contains(body, `<div id="root"></div>`) {
 		t.Fatalf("shell: %d", status)
 	}
 	if status, body := anon.pair("AAAAA-AAAAA-AAAAA-AAAAA"); status != http.StatusUnauthorized || !strings.Contains(body, access.ReasonPairingMismatch) {

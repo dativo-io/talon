@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -84,13 +85,19 @@ func TestServer_PairThenReadAPI_ShellAndHealthUnauthenticated(t *testing.T) {
 
 	rec = request(t, h, http.MethodGet, "/", "", nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), `<form id="pair-form"`)
+	assert.Contains(t, rec.Body.String(), `<div id="root"></div>`, "the embedded single-page console")
 	assert.NotContains(t, rec.Body.String(), "<script>", "no inline script under the CSP")
+	assert.NotContains(t, rec.Body.String(), "<style", "no inline style under the CSP")
+	script := regexp.MustCompile(`src="(/static/assets/[^"]+\.js)"`).FindStringSubmatch(rec.Body.String())
+	require.Len(t, script, 2, "the document loads its bundle from /static/assets")
 	assert.Contains(t, rec.Header().Get("Content-Security-Policy"), "script-src 'self'")
 	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
-	rec = request(t, h, http.MethodGet, "/static/app.js", "", nil)
+	rec = request(t, h, http.MethodGet, script[1], "", nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Header().Get("Content-Type"), "javascript")
+	deep := request(t, h, http.MethodGet, "/sessions/hr-demo-s1", "", nil)
+	assert.Equal(t, http.StatusOK, deep.Code, "a deep link serves the app")
+	assert.Equal(t, http.StatusNotFound, request(t, h, http.MethodGet, "/not-a-page", "", nil).Code)
 	rec = request(t, h, http.MethodGet, "/static/../index.html", "", nil)
 	assert.NotEqual(t, http.StatusOK, rec.Code)
 

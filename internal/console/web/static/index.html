@@ -1,45 +1,15 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
-<title>Talon Console</title>
-<link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-<main class="shell">
-  <header class="masthead">
-    <h1>Talon Console</h1>
-    <p class="sub">Read-only operations view of this Talon installation.</p>
-  </header>
-
-  <section id="pair" class="card" hidden>
-    <h2>Pair this browser</h2>
-    <p>Enter the one-time pairing code printed by the console process (<code>docker compose logs talon-ui</code>, or the terminal that started <code>talon ui</code>). Codes are single use and expire within ten minutes.</p>
-    <form id="pair-form" autocomplete="off">
-      <label for="code">Pairing code</label>
-      <input id="code" name="code" inputmode="text" autocapitalize="characters" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" required>
-      <button type="submit">Pair</button>
-    </form>
-    <p id="pair-error" class="error" role="alert" hidden></p>
-  </section>
-
-  <section id="connected" class="card" hidden>
-    <h2>Connected</h2>
-    <dl class="facts">
-      <dt>Console</dt><dd id="f-console">…</dd>
-      <dt>Store</dt><dd id="f-store">…</dd>
-      <dt>Records</dt><dd id="f-records">…</dd>
-      <dt>Runtime</dt><dd id="f-runtime">…</dd>
-      <dt>Session expires</dt><dd id="f-expires">…</dd>
-    </dl>
-    <p class="note">Operator pages (Overview, AI Use Cases, Sessions, Costs, Configuration, System) arrive with the next console increments; the read API under <code>/console/v1</code> is live for this session.</p>
-    <button id="logout" type="button">Log out</button>
-  </section>
-
-  <section id="fatal" class="card error" hidden></section>
-</main>
-<script src="/static/app.js"></script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Talon Console</title>
+    <script type="module" crossorigin src="/static/assets/index-CNEgkyPt.js"></script>
+    <link rel="stylesheet" crossorigin href="/static/assets/style-GbuiqjUO.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
 </html>
