@@ -4,14 +4,16 @@ import type { Configuration as ConfigDTO, UseCaseConfig } from "../api/types";
 import { PageHead } from "../components/Layout";
 import { AvailabilityNotice, Badge, Chips, DetailSection, EmptyState, ErrorState, Loading, SourceFreshness } from "../components/ui";
 import { utc } from "../lib/format";
-import type { ActiveFile, ActiveStatus } from "../api/types";
-import { roleLabel, RuntimeStateBadge } from "../components/RuntimeStatus";
-import { useScope } from "../lib/scope";
+import type { ActiveFile } from "../api/types";
+import { ActiveBadge, roleLabel, RuntimeStateBadge } from "../components/RuntimeStatus";
+import { scoped, useScope } from "../lib/scope";
+import { Link } from "react-router-dom";
 
 // Configuration as the files read NOW, summarised server-side from an
 // allowlist of fields (no secret values, no raw file contents). This is not
-// proof of what a running process enforces: active generation and
-// effective-policy provenance are stated as unknown until #538 / #305.
+// proof of what a running process enforces: each file states whether a
+// running process proves it loaded (#538); the effective policy with rule
+// provenance is on each AI use case's page (#305).
 export function Configuration() {
   const { tenant, params, set } = useScope();
   const focus = params.get("use_case") ?? "";
@@ -32,7 +34,7 @@ export function Configuration() {
           <div className="notice info" role="note">
             <div>
               <strong>Current file contents, read {utc(c.read_at)}.</strong> Below each file: whether a running process proves it loaded these bytes.{" "}
-              {c.effective_policy.state === "ok" ? null : <><strong>Effective policy provenance not available.</strong> {c.effective_policy.note}</>}
+              The effective policy with rule provenance is on each AI use case's page.
             </div>
           </div>
           <Active c={c} />
@@ -153,6 +155,7 @@ function UseCaseCard({ u }: { u: UseCaseConfig }) {
           <dt>Audit</dt><dd>{u.audit_log_level ?? "default"}{u.audit_retention_days ? `, ${u.audit_retention_days} days` : ""}{u.audit_include_prompts ? ", prompts" : ""}</dd>
           <dt>Policy digest</dt><dd>{u.policy_digest ? <code className="small">{u.policy_digest.slice(0, 16)}…</code> : "—"}</dd>
           <dt>Loaded by a running process</dt><dd><ActiveBadge a={u.active} /></dd>
+          <dt>Effective policy</dt><dd><Link to={`${scoped(`/use-cases/${encodeURIComponent(u.name)}`, u.tenant_id)}#uc-effective`}>Effective policy and provenance</Link></dd>
         </dl>
       </div>
     </article>
@@ -176,24 +179,6 @@ function Proxy({ c }: { c: ConfigDTO }) {
         </dl>
       ) : null}
     </DetailSection>
-  );
-}
-
-const ACTIVE: Record<ActiveStatus["state"], { label: string; tone: "ok" | "warn" | "info" | "neutral" }> = {
-  loaded_matches_file: { label: "Yes: this file is loaded", tone: "ok" },
-  loaded_differs_from_file: { label: "A different version is loaded", tone: "warn" },
-  not_in_active_generation: { label: "Not in the active generation", tone: "warn" },
-  unknown: { label: "Not proven", tone: "info" },
-};
-
-function ActiveBadge({ a }: { a: ActiveStatus | undefined }) {
-  if (!a) return <span className="muted">not reported</span>;
-  const s = ACTIVE[a.state] ?? ACTIVE.unknown;
-  return (
-    <span className="stack">
-      <Badge tone={s.tone}>{s.label}</Badge>
-      <span className="small muted">{a.reason}</span>
-    </span>
   );
 }
 

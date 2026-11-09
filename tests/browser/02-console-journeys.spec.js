@@ -28,11 +28,31 @@ test("Overview: canonical health, disabled is not a failure, runtime stated as u
   await expect(cells.nth(7)).toHaveText(String(hr.denied)); // Denied column
 });
 
-test("Use case detail: identity, costs with caps, policy provenance stated unknown, deep link survives refresh", async ({ page }) => {
+test("Use case detail: identity, costs with caps, effective policy in four layers matching talon agents show --effective, deep link survives refresh", async ({ page }) => {
   const f = state().fixture;
+  const st = state();
+  const report = cli(["agents", "show", f.use_case, "--effective", "--json", "--proxy-config", `${st.dir}/proxy.talon.yaml`]);
   await pair(page, `/use-cases/${f.use_case}`);
   await expect(page.getByRole("heading", { name: f.use_case, level: 1 })).toBeVisible();
-  await expect(page.getByText("Effective policy provenance not available.")).toBeVisible();
+  const eff = page.getByRole("region", { name: "Effective policy" });
+  for (const layer of ["1. Current files", "2. Loaded by a running process", "3. Effective policy", "4. Last recorded decision"]) {
+    await expect(eff.getByRole("heading", { name: layer })).toBeVisible();
+  }
+  // No talon serve runs in this suite: compiled, never claimed active.
+  expect(report.effective.proven_active).toBe(false);
+  await expect(eff.getByText("Compiled from current files, not proven active")).toBeVisible();
+  await expect(eff.getByText("Not proven", { exact: true })).toBeVisible();
+  // The forbidden-tools rule: the union of the organization and use-case lists, as the CLI prints it.
+  const ft = report.effective.rules.find((r) => r.rule === "forbidden_tools");
+  const ftRow = eff.getByRole("row").filter({ has: page.getByText("forbidden_tools", { exact: true }) });
+  await expect(ftRow.getByRole("cell").nth(1)).toHaveText(ft.effective);
+  expect(ft.effective).toContain("hr_employee_export");
+  expect(ft.effective).toContain("admin_*");
+  // The MCP proxy denies hr_employee_export before dispatch.
+  const tool = eff.getByRole("row").filter({ has: page.getByText("hr_employee_export", { exact: true }) });
+  await expect(tool.getByText("denied at forbidden tools (hr_employee_export)")).toBeVisible();
+  // The last decision is the same evidence record the CLI names.
+  await expect(eff.getByRole("link", { name: report.last_decision.evidence_id })).toBeVisible();
   await expect(page.getByRole("region", { name: "Costs" }).getByText("Cap source")).toHaveCount(2);
   await page.reload();
   await expect(page.getByRole("heading", { name: f.use_case, level: 1 })).toBeVisible();
@@ -114,12 +134,13 @@ test("Costs: figures, unavailability and currency match talon costs --json", asy
   await expect(byUseCase.getByRole("link", { name: f.use_case })).toBeVisible();
 });
 
-test("Configuration: MCP proxy forbids hr_employee_export; file contents are not claimed active", async ({ page }) => {
+test("Configuration: MCP proxy forbids hr_employee_export; file contents are not claimed active; links to effective policy", async ({ page }) => {
   await pair(page, "/configuration");
   const proxy = page.getByRole("region", { name: "MCP proxy" });
   await expect(proxy.getByText("hr_employee_export")).toBeVisible();
   await expect(proxy.getByText("http://hr-upstream:9000")).toBeVisible();
-  await expect(page.getByText("Effective policy provenance not available.")).toBeVisible();
+  await expect(page.getByText("The effective policy with rule provenance is on each AI use case's page.")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Effective policy and provenance" }).first()).toBeVisible();
   await expect(page.getByText("Active configuration not proven.")).toBeVisible();
   await expect(page.getByText("Not proven").first()).toBeVisible();
 });

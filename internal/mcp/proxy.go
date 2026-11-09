@@ -471,11 +471,9 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, w http.ResponseW
 
 	// Forbidden check (fail-closed): an explicitly forbidden tool is blocked
 	// before any policy evaluation and never reaches the upstream.
-	for _, f := range h.config.Proxy.ForbiddenTools {
-		if f == toolName || (strings.HasSuffix(f, "*") && strings.HasPrefix(toolName, strings.TrimSuffix(f, "*"))) {
-			span.SetAttributes(attribute.String("proxy.blocked", "forbidden"))
-			return governedError(req.ID, govcode.PolicyDenied, "tool not allowed by policy", h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, "forbidden_tools", nil), TalonCodeToolForbidden, true)
-		}
+	if _, forbidden := ForbiddenToolMatch(h.config.Proxy.ForbiddenTools, toolName); forbidden {
+		span.SetAttributes(attribute.String("proxy.blocked", "forbidden"))
+		return governedError(req.ID, govcode.PolicyDenied, "tool not allowed by policy", h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, "forbidden_tools", nil), TalonCodeToolForbidden, true)
 	}
 
 	// Mcp-Param-* integrity against the captured trusted definition (the
@@ -887,8 +885,12 @@ type proxyFlowState struct {
 
 // upstreamRegion returns the configured jurisdiction of the upstream vendor
 // endpoint, or "unknown" when not configured. Never a guess.
-func (h *ProxyHandler) upstreamRegion() string {
-	if r := strings.TrimSpace(h.config.Proxy.Upstream.Region); r != "" {
+func (h *ProxyHandler) upstreamRegion() string { return upstreamRegionOf(h.config) }
+
+// upstreamRegionOf is the region the proxy reports for its upstream: the
+// configured one, or evidence.FlowRegionUnknown.
+func upstreamRegionOf(cfg *policy.ProxyPolicyConfig) string {
+	if r := strings.TrimSpace(cfg.Proxy.Upstream.Region); r != "" {
 		return r
 	}
 	return evidence.FlowRegionUnknown

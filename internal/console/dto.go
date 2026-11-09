@@ -171,9 +171,8 @@ type UseCaseDetail struct {
 	RecentSessions SessionList     `json:"recent_sessions"`
 	Costs          Costs           `json:"costs"`
 	Activity       Activity        `json:"activity"`
-	// EffectivePolicy is reserved for the provenance contract owned by #305.
-	// It stays unknown until that implementation lands; nothing here infers
-	// provenance from YAML.
+	// EffectivePolicy points at the per-use-case effective-policy report
+	// (#305, /console/v1/use-cases/{name}/effective-policy).
 	EffectivePolicy Availability `json:"effective_policy"`
 }
 

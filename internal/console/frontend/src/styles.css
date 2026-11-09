@@ -208,3 +208,5 @@ pre.json { margin: 0; padding: 12px 14px; background: var(--surface-2); border-r
 .search-results h3 { padding: 6px 14px 2px; }
 .search-results a, .search-results .none { display: block; padding: 6px 14px; color: var(--text); }
 .search-results a:hover, .search-results a:focus { background: var(--surface-2); text-decoration: none; }
+
+ul.plain { list-style: none; margin: 0; padding: 0; }

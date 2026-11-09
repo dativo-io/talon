@@ -13,6 +13,7 @@ import (
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/mcp"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/runtimestatus"
 )
 
 // ConfigSources names the configuration files the console reads for the
@@ -237,8 +238,8 @@ func (s *Service) Configuration(ctx context.Context, tenant string) *Configurati
 		Meta:   s.meta(tenant),
 		ReadAt: now,
 		EffectivePolicy: Availability{
-			State: StateUnknown, Source: SourceNone,
-			Note: "effective-policy provenance not available: owned by #305; values are not merged from YAML here",
+			State: StateOK, Source: SourceConfigFiles,
+			Note: "per use case: the canonical resolver's effective policy with rule provenance (talon agents show <name> --effective)",
 		},
 		Active: []ActiveProcessConfig{},
 	}
@@ -315,27 +316,11 @@ func compareFile(loadedPath, loadedDigest string, loadedAt time.Time, consolePat
 	return f
 }
 
-// activeStatus compares a use case's file policy digest with what running
-// processes report for that use case.
+// activeStatus: is this file what a running process loaded?
+// runtimestatus.ProveLoaded is the one implementation (CLI and console).
 func activeStatus(rt Runtime, u UseCaseConfig) ActiveStatus {
-	if rt.Availability.State != StateOK {
-		return ActiveStatus{State: "unknown", Reason: "runtime records unavailable: whether this file is loaded cannot be proved"}
-	}
-	ids, digest, seen, conflict := activeDigest(rt, u)
-	switch {
-	case conflict:
-		return ActiveStatus{State: "unknown", Reason: "running processes report different policy digests for this use case", InstanceIDs: ids}
-	case !seen:
-		return ActiveStatus{State: "unknown", Reason: "no running process reports an agent catalog: whether this file is loaded cannot be proved"}
-	case len(ids) == 0:
-		return ActiveStatus{State: "not_in_active_generation", Reason: "no running process has this use case in its active generation (added since activation, or rejected)"}
-	case u.PolicyDigest == "" || digest == "":
-		return ActiveStatus{State: "unknown", Reason: "a policy digest is missing, so the file cannot be compared", ActivePolicyDigest: digest, InstanceIDs: ids}
-	case u.PolicyDigest == digest:
-		return ActiveStatus{State: "loaded_matches_file", Reason: "the running process reports the policy digest of the current file", ActivePolicyDigest: digest, InstanceIDs: ids}
-	default:
-		return ActiveStatus{State: "loaded_differs_from_file", Reason: "the running process loaded a different version of this file (edited since activation, or the reload was rejected)", ActivePolicyDigest: digest, InstanceIDs: ids}
-	}
+	l := runtimestatus.ProveLoaded(runtimestatus.View{Processes: rt.Processes}, rt.Availability.State == StateOK, u.Name, u.TenantID, u.PolicyDigest)
+	return ActiveStatus(l)
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -534,37 +519,4 @@ func endpointOnly(raw string) string {
 		return "(not a URL)"
 	}
 	return u.Scheme + "://" + u.Host
-}
-
-// effectiveTenant normalizes an agent file's declared tenant: empty means
-// "default" (agentcatalog normalizes the same way when it builds bundles).
-func effectiveTenant(t string) string {
-	if t == "" {
-		return "default"
-	}
-	return t
-}
-
-// activeDigest collects the policy digest running processes report for u.
-func activeDigest(rt Runtime, u UseCaseConfig) (ids []string, digest string, seen, conflict bool) {
-	for i := range rt.Processes {
-		p := &rt.Processes[i]
-		if !p.Current || p.Assessed != "running" || p.Catalog == nil {
-			continue
-		}
-		seen = true
-		for _, a := range p.Catalog.Agents {
-			if a.Name != u.Name || effectiveTenant(a.TenantID) != effectiveTenant(u.TenantID) {
-				continue
-			}
-			ids = append(ids, p.InstanceID)
-			switch {
-			case digest == "":
-				digest = a.PolicyDigest
-			case digest != a.PolicyDigest:
-				conflict = true
-			}
-		}
-	}
-	return ids, digest, seen, conflict
 }
