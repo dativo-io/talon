@@ -152,7 +152,7 @@ docker compose exec talon /usr/local/bin/talon audit show <evidence-id>
 
 The record shows the PII detected (email, IBAN), the data tier, the policy decision, the cost, and a verifiable HMAC signature.
 
-The same stack starts the read-only operations console as its own service: open <http://127.0.0.1:8787/> and enter the one-time pairing code from `docker compose logs talon-ui` (loopback only, no admin key in the browser; see [console access](docs/reference/console-access.md)).
+The same stack starts the read-only operations console as its own service: open <http://127.0.0.1:8787/> and enter the one-time pairing code from `docker compose logs talon-ui` (no admin key in the browser; see [console access](docs/reference/console-access.md)). Both the console and the API are published on the host's loopback only; the demo API has no admin key, so do not expose it to a network as is.
 
 > **Why did the request still succeed?** The demo config sets `pii_action: redact` — the enforced policy keeps traffic flowing but the provider never sees the raw values. The mock provider receives `[IBAN]` (and `[EMAIL]`) in place of the detected PII, and the signed record shows `pii_redacted: true` alongside the detections. The hero above shows the same redaction against real providers. Change one line to `pii_action: block` and the same request is denied before the provider is reached — a real denial that costs nothing. There is no shadow/observe-only posture (#442): whatever action a rule declares is what happens.
 
