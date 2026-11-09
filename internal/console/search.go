@@ -131,7 +131,7 @@ func (s *Service) searchEvidenceIDs(ctx context.Context, tenant, q string, out *
 	case !errors.Is(err, evidence.ErrNotFound):
 		errs = append(errs, "evidence id: "+err.Error())
 	}
-	byCorr, err := s.cfg.Evidence.ListByCorrelationIDLimit(ctx, q, maxSearchResults)
+	byCorr, err := s.cfg.Evidence.ListByCorrelationIDLimit(ctx, q, tenant, maxSearchResults)
 	if err != nil {
 		errs = append(errs, "correlation id: "+err.Error())
 	}

@@ -1119,14 +1119,16 @@ func escapeLike(s string) string {
 // ListByCorrelationID returns all evidence records sharing a correlation ID,
 // oldest first. Used by the failover verifier to reconstruct a fallback chain
 // (failed attempts + fallback decision) from linked signed records.
-// ListByCorrelationIDLimit is ListByCorrelationID bounded to limit rows, for
-// lookups driven by untrusted input (console search).
-func (s *Store) ListByCorrelationIDLimit(ctx context.Context, correlationID string, limit int) ([]*Evidence, error) {
+// ListByCorrelationIDLimit is ListByCorrelationID in one tenant, bounded to
+// limit rows, for lookups driven by untrusted input (console search). The
+// tenant filter is applied in SQL before the limit, so another tenant's
+// records sharing the correlation id cannot crowd this tenant's out.
+func (s *Store) ListByCorrelationIDLimit(ctx context.Context, correlationID, tenantID string, limit int) ([]*Evidence, error) {
 	if limit <= 0 {
 		limit = 1
 	}
 	return s.queryEvidenceJSON(ctx, "correlation",
-		`SELECT evidence_json FROM evidence WHERE correlation_id = ? ORDER BY timestamp ASC, id ASC LIMIT ?`, correlationID, limit)
+		`SELECT evidence_json FROM evidence WHERE correlation_id = ? AND tenant_id = ? ORDER BY timestamp ASC, id ASC LIMIT ?`, correlationID, tenantID, limit)
 }
 
 func (s *Store) ListByCorrelationID(ctx context.Context, correlationID string) ([]*Evidence, error) {
