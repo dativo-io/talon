@@ -2,12 +2,14 @@ package effective
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -142,15 +144,12 @@ func TestBuild_LoadedProofAndHistoricalDecision(t *testing.T) {
 	require.NoError(t, err)
 	digest := first.CurrentFiles.PolicyDigest
 
-	// A running process reports the current file's digest: proven active.
+	// A running gateway reports the current agent file's digest and the
+	// current gateway config's digest: proven active.
 	now := time.Now().UTC()
-	view := runtimestatus.View{Processes: []runtimestatus.Process{{
-		Record: runtimestatus.Record{
-			InstanceID: "gw1", Roles: []string{runtimestatus.RoleGateway},
-			Catalog: &runtimestatus.Catalog{Agents: []runtimestatus.Agent{{Name: "hr-analytics-assistant", TenantID: "", PolicyDigest: digest}}},
-		},
-		Assessed: runtimestatus.Running, Current: true,
-	}}}
+	view := runtimestatus.View{Processes: []runtimestatus.Process{
+		runningRecord("gw1", []string{runtimestatus.RoleGateway}, digest, first.CurrentFiles.GatewayConfig.Digest, ""),
+	}}
 	in.Runtime, in.RuntimeReadable = &view, true
 	r, err := Build(ctx, in)
 	require.NoError(t, err)
@@ -231,4 +230,109 @@ func TestBuild_FailClosed(t *testing.T) {
 	require.NotNil(t, r.MCPBoundary)
 	assert.NotEmpty(t, r.MCPBoundary.Error)
 	assert.Empty(t, r.MCPBoundary.Tools, "no decision is shown from a config that cannot be loaded")
+}
+
+// runningRecord is a running process of this installation as Assess shows it.
+func runningRecord(id string, roles []string, agentDigest, gwDigest, proxyDigest string) runtimestatus.Process {
+	r := runtimestatus.Record{InstanceID: id, Roles: roles, Catalog: &runtimestatus.Catalog{Agents: []runtimestatus.Agent{{Name: "hr-analytics-assistant", PolicyDigest: agentDigest}}}}
+	if gwDigest != "" {
+		r.GatewayConfig = &runtimestatus.ConfigRef{Digest: gwDigest}
+	}
+	if proxyDigest != "" {
+		r.ProxyConfig = &runtimestatus.ConfigRef{Digest: proxyDigest}
+	}
+	return runtimestatus.Process{Record: r, Assessed: runtimestatus.Running, Current: true}
+}
+
+// TestBuild_ProofIsPerEnforcementBoundary (#555 review): the gateway policy is
+// proven active only when a running gateway loaded the current agent file AND
+// the current gateway config; the MCP decisions only when a running proxy
+// loaded the current proxy config. Neither proves the other.
+func TestBuild_ProofIsPerEnforcementBoundary(t *testing.T) {
+	f := peopleAnalytics(t)
+	ctx := context.Background()
+	in := f.inputs()
+	first, err := Build(ctx, in)
+	require.NoError(t, err)
+	agent, gw, px := first.CurrentFiles.PolicyDigest, first.CurrentFiles.GatewayConfig.Digest, first.CurrentFiles.ProxyConfig.Digest
+
+	// Only the MCP proxy runs: its tool decisions are proven, the gateway
+	// policy is not (no gateway enforces it).
+	view := runtimestatus.View{Processes: []runtimestatus.Process{runningRecord("px", []string{runtimestatus.RoleMCPProxy}, agent, "", px)}}
+	in.Runtime, in.RuntimeReadable = &view, true
+	r, err := Build(ctx, in)
+	require.NoError(t, err)
+	assert.Equal(t, runtimestatus.LoadedMatchesFile, r.Loaded.State, "the agent file itself is loaded by the proxy")
+	assert.False(t, r.Effective.ProvenActive, "a proxy does not enforce the gateway policy")
+	assert.Equal(t, runtimestatus.BoundaryNotRunning, r.Effective.Proof.State)
+	require.NotNil(t, r.MCPBoundary)
+	assert.True(t, r.MCPBoundary.ProvenActive)
+	assert.Equal(t, runtimestatus.BoundaryProven, r.MCPBoundary.Proof.State)
+
+	// A gateway runs with the current files: proven.
+	view.Processes = append(view.Processes, runningRecord("gw", []string{runtimestatus.RoleGateway}, agent, gw, ""))
+	r, err = Build(ctx, in)
+	require.NoError(t, err)
+	assert.True(t, r.Effective.ProvenActive)
+
+	// talon.config.yaml edited without restarting the gateway: the report
+	// computes the new policy but must not call it active.
+	raw, err := os.ReadFile(f.gw)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.gw, []byte(strings.Replace(string(raw), "daily_cost: 100", "daily_cost: 90", 1)), 0o600))
+	r, err = Build(ctx, in)
+	require.NoError(t, err)
+	assert.Equal(t, runtimestatus.LoadedMatchesFile, r.Loaded.State, "the agent file did not change")
+	assert.False(t, r.Effective.ProvenActive, "the running gateway loaded an older gateway config")
+	assert.Equal(t, runtimestatus.BoundaryDiffers, r.Effective.Proof.State)
+	assert.Contains(t, r.Effective.Basis, "not proven")
+
+	// The proxy config edited without a restart: MCP decisions not proven.
+	praw, err := os.ReadFile(f.proxy)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.proxy, append(praw, []byte("# edited\n")...), 0o600))
+	r, err = Build(ctx, in)
+	require.NoError(t, err)
+	assert.False(t, r.MCPBoundary.ProvenActive)
+	assert.Equal(t, runtimestatus.BoundaryDiffers, r.MCPBoundary.Proof.State)
+}
+
+// TestBuild_LastDecisionIsVerified (#555 review): the last decision is shown
+// as authenticated history only when its signature verifies; a record changed
+// after signing is flagged and its digests are not compared.
+func TestBuild_LastDecisionIsVerified(t *testing.T) {
+	f := peopleAnalytics(t)
+	ctx := context.Background()
+	first, err := Build(ctx, f.inputs())
+	require.NoError(t, err)
+	require.NoError(t, f.store.Store(ctx, &evidence.Evidence{
+		ID: "ld1", CorrelationID: "c-ld1", TenantID: "default", AgentID: "hr-analytics-assistant", Timestamp: time.Now().UTC(), InvocationType: "gateway",
+		PolicyDecision: evidence.PolicyDecision{Allowed: false, Action: "deny", PolicyDigests: &evidence.PolicyDigests{Agent: first.CurrentFiles.PolicyDigest}},
+	}))
+
+	r, err := Build(ctx, f.inputs())
+	require.NoError(t, err)
+	require.NotNil(t, r.LastDecision)
+	assert.Equal(t, "valid", r.LastDecision.Verification)
+	assert.Equal(t, "same", r.LastDecision.AgentFile)
+
+	// Make the denial look allowed, without re-signing.
+	db, err := sql.Open("sqlite3", filepath.Join(f.dir, "evidence.db"))
+	require.NoError(t, err)
+	defer db.Close()
+	var js string
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT evidence_json FROM evidence WHERE id = 'ld1'`).Scan(&js))
+	changed := strings.Replace(js, `"allowed":false`, `"allowed":true`, 1)
+	require.NotEqual(t, js, changed)
+	_, err = db.ExecContext(ctx, `UPDATE evidence SET evidence_json = ? WHERE id = 'ld1'`, changed)
+	require.NoError(t, err)
+
+	r, err = Build(ctx, f.inputs())
+	require.NoError(t, err)
+	require.NotNil(t, r.LastDecision)
+	assert.Equal(t, "ld1", r.LastDecision.EvidenceID, "the record is still pointed at, never hidden")
+	assert.Equal(t, "invalid", r.LastDecision.Verification)
+	assert.Equal(t, "unverified", r.LastDecision.AgentFile, "no digest comparison on a record that fails verification")
+	assert.Equal(t, "unverified", r.LastDecision.EffectivePolicy)
+	assert.Contains(t, r.LastDecision.Note, "signature")
 }

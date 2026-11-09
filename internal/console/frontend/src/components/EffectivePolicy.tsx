@@ -9,8 +9,9 @@ import { scoped } from "../lib/scope";
 
 // EffectivePolicySection renders effective.Report (#305) as four layers that
 // are never merged: the current files, whether a running process loaded
-// them, the policy compiled from them with rule provenance, and the last
-// recorded decision. Every value comes from the server; nothing is inferred
+// them, the policy compiled from them with rule provenance (each enforcement
+// boundary proved on its own), and the last recorded decision with its
+// signature check. Every value comes from the server; nothing is inferred
 // here.
 export function EffectivePolicySection({ name, tenant }: { name: string; tenant: string }) {
   const res = useApi<EffectivePolicyDTO>(api(`/use-cases/${encodeURIComponent(name)}/effective-policy`), { tenant });
@@ -49,9 +50,11 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
       <section aria-labelledby="eff-compiled">
         <h3 id="eff-compiled">3. Effective policy</h3>
         <p>
+          <strong className="small">LLM gateway: </strong>
           {e.proven_active ? <Badge tone="ok">Proven active</Badge> : <Badge tone="info">Compiled from current files, not proven active</Badge>}{" "}
-          <span className="small muted">{e.basis}</span>
+          <span className="small muted">{e.proof.reason}</span>
         </p>
+        <p className="small muted">{e.basis}</p>
         <div className="table-wrap">
           <table>
             <thead><tr><th>Rule</th><th>Effective</th><th>From</th><th>Every layer</th></tr></thead>
@@ -84,6 +87,11 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
         {r.mcp_boundary ? (
           <div className="stack">
             <h4>MCP proxy {r.mcp_boundary.proxy} <span className="small muted">({r.mcp_boundary.scope})</span></h4>
+            <p>
+              <strong className="small">MCP proxy: </strong>
+              {r.mcp_boundary.proven_active ? <Badge tone="ok">Proven active</Badge> : <Badge tone="info">Computed from the current proxy config, not proven active</Badge>}{" "}
+              <span className="small muted">{r.mcp_boundary.proof.reason}</span>
+            </p>
             {r.mcp_boundary.error ? <div className="notice warn" role="status"><div>MCP proxy config unusable: {r.mcp_boundary.error}</div></div> : null}
             {r.mcp_boundary.tools.length ? (
               <table>
@@ -111,7 +119,8 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
         {r.last_decision ? (
           <dl className="facts">
             <dt>Evidence</dt><dd><Link to={scoped(`/evidence/${encodeURIComponent(r.last_decision.evidence_id)}`, tenant)}>{r.last_decision.evidence_id}</Link> <span className="small muted">{utc(r.last_decision.timestamp)} · {r.last_decision.invocation_type}</span></dd>
-            <dt>Outcome</dt><dd><DecisionOutcome o={r.last_decision.outcome} /></dd>
+            <dt>Signature</dt><dd>{r.last_decision.verification === "valid" ? <Badge tone="ok">Signature valid</Badge> : <Badge tone="error">Signature invalid: record changed after signing</Badge>}</dd>
+            <dt>Outcome</dt><dd><DecisionOutcome o={r.last_decision.outcome} />{r.last_decision.verification === "valid" ? null : <div className="small">Not authenticated: shown only to point at the record.</div>}</dd>
             {r.last_decision.primary_explanation_code ? (<><dt>Why</dt><dd><code>{r.last_decision.primary_explanation_code}</code> {r.last_decision.primary_explanation_reason}</dd></>) : null}
             <dt>Recorded agent policy vs current file</dt><dd>{humanize(r.last_decision.agent_file)}</dd>
             <dt>Recorded effective policy</dt><dd>{humanize(r.last_decision.effective_policy)}</dd>

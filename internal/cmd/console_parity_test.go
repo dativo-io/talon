@@ -508,14 +508,17 @@ func TestConsoleParity_EffectivePolicy(t *testing.T) {
 	f := newParityFixture(t)
 	proxyPath := filepath.Join(f.dir, "proxy.talon.yaml")
 
-	// A running gateway process reports the current file's policy digest.
+	// A running process serving the gateway and the MCP proxy reports the
+	// current agent file's policy digest and the digests of the gateway and
+	// proxy configs it loaded, as talon serve does.
 	var probe effective.Report
 	require.NoError(t, json.Unmarshal(f.cli(t, "agents", "show", "hr-analytics-assistant", "--effective", "--json", "--proxy-config", proxyPath), &probe))
 	rd := filepath.Join(f.dir, runtimestatus.DirName)
 	require.NoError(t, os.MkdirAll(rd, 0o750))
 	rec := runtimestatus.Record{
 		Schema: runtimestatus.SchemaVersion, InstanceID: "gw1", IntervalSeconds: 5,
-		Installation: runtimestatus.Installation{KeyFingerprint: runtimestatus.Fingerprint(sessTestSigningKey)}, Roles: []string{runtimestatus.RoleGateway},
+		Installation: runtimestatus.Installation{KeyFingerprint: runtimestatus.Fingerprint(sessTestSigningKey)}, Roles: []string{runtimestatus.RoleGateway, runtimestatus.RoleMCPProxy},
+		GatewayConfig: &runtimestatus.ConfigRef{Digest: probe.CurrentFiles.GatewayConfig.Digest}, ProxyConfig: &runtimestatus.ConfigRef{Digest: probe.CurrentFiles.ProxyConfig.Digest},
 		StartedAt: time.Now().UTC().Add(-time.Minute), WrittenAt: time.Now().UTC(), State: runtimestatus.StateRunning,
 		Catalog: &runtimestatus.Catalog{ActiveGeneration: "g", Agents: []runtimestatus.Agent{{Name: "hr-analytics-assistant", PolicyDigest: probe.CurrentFiles.PolicyDigest}}},
 	}
@@ -534,6 +537,7 @@ func TestConsoleParity_EffectivePolicy(t *testing.T) {
 	assert.Equal(t, runtimestatus.LoadedMatchesFile, api.Loaded.State)
 	assert.True(t, api.Effective.ProvenActive)
 	require.NotNil(t, api.MCPBoundary)
+	assert.True(t, api.MCPBoundary.ProvenActive)
 	assert.Equal(t, console.StateOK, dto.Availability.State)
 
 	assert.Equal(t, http.StatusNotFound, f.api(t, "/console/v1/use-cases/nope/effective-policy", nil), "unknown use case")

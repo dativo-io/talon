@@ -93,9 +93,12 @@ type File struct {
 type Effective struct {
 	// Basis says what the values are computed from and whether they are
 	// proven active (only when Loaded is loaded_matches_file).
-	Basis           string `json:"basis"`
-	ProvenActive    bool   `json:"proven_active"`
-	BaselinePresent bool   `json:"organization_baseline_present"`
+	Basis        string `json:"basis"`
+	ProvenActive bool   `json:"proven_active"`
+	// Proof is the gateway boundary's proof: a running gateway loaded the
+	// current agent file and the current gateway config (#555 review).
+	Proof           runtimestatus.Loaded `json:"proof"`
+	BaselinePresent bool                 `json:"organization_baseline_present"`
 
 	DailyCap          float64  `json:"daily_cap,omitempty"`
 	MonthlyCap        float64  `json:"monthly_cap,omitempty"`
@@ -130,6 +133,10 @@ type MCPBoundary struct {
 	Scope string           `json:"scope"`
 	Tools []mcp.ToolAccess `json:"tools"`
 	Error string           `json:"error,omitempty"`
+	// ProvenActive: every running MCP proxy loaded exactly this proxy config
+	// (Proof says why or why not). Independent of the gateway proof.
+	ProvenActive bool                 `json:"proven_active"`
+	Proof        runtimestatus.Loaded `json:"proof"`
 }
 
 // LastDecision points at the newest evidence record of the use case.
@@ -143,11 +150,15 @@ type LastDecision struct {
 	PrimaryReason     string           `json:"primary_explanation_reason,omitempty"`
 	RecordedAgent     string           `json:"recorded_agent_policy_digest,omitempty"`
 	RecordedEffective string           `json:"recorded_effective_digest,omitempty"`
-	// AgentFile: same | different | not_recorded — the recorded agent policy
-	// digest against the current file's.
+	// Verification is the record's signature check for this read: valid |
+	// invalid. An invalid record is still pointed at, but nothing on it is
+	// compared or presented as authenticated (#555 review).
+	Verification string `json:"verification"`
+	// AgentFile: same | different | not_recorded | unverified — the recorded
+	// agent policy digest against the current file's.
 	AgentFile string `json:"agent_file"`
 	// EffectivePolicy: matches_current:<provider> | differs_from_current |
-	// not_recorded — the recorded effective digest against the current
+	// not_recorded | unverified — the recorded effective digest against the current
 	// effective policy toward each configured provider.
 	EffectivePolicy string `json:"effective_policy"`
 	Note            string `json:"note"`
@@ -223,12 +234,19 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 			ForbiddenTools: p.ForbiddenTools, AllowedModels: p.AllowedModels,
 		})
 	}
-	r.Effective.ProvenActive = r.Loaded.State == runtimestatus.LoadedMatchesFile
+	gwDigest := ""
+	if f := r.CurrentFiles.GatewayConfig; f != nil && f.Present {
+		gwDigest = f.Digest
+	}
+	r.Effective.Proof = proveBoundary(in, func(v runtimestatus.View) runtimestatus.Loaded {
+		return runtimestatus.ProveGateway(v, in.RuntimeReadable, in.Name, tenant, digest, gwDigest)
+	})
+	r.Effective.ProvenActive = r.Effective.Proof.State == runtimestatus.BoundaryProven
 	switch {
 	case r.Effective.ProvenActive:
-		r.Effective.Basis = "compiled by gateway.ResolveEffectivePolicy from the current files; a running process proves it loaded this agent file"
+		r.Effective.Basis = "compiled by gateway.ResolveEffectivePolicy from the current files; every running gateway loaded this agent file and this gateway config"
 	default:
-		r.Effective.Basis = "compiled by gateway.ResolveEffectivePolicy from the current files; not proven to be what a running process enforces (" + r.Loaded.Reason + ")"
+		r.Effective.Basis = "compiled by gateway.ResolveEffectivePolicy from the current files; not proven to be what a running gateway enforces (" + r.Effective.Proof.Reason + ")"
 	}
 	if !r.Effective.BaselinePresent {
 		r.Notes = append(r.Notes, "no organization baseline was read (no or invalid gateway config): the effective values are the use case's own")
@@ -236,6 +254,7 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 
 	// 3b. MCP boundary
 	r.MCPBoundary = mcpBoundary(ctx, in.ProxyConfig, agent, &r.CurrentFiles)
+	proveMCP(in, r)
 
 	// 4. last decision
 	if in.Evidence != nil {
@@ -250,6 +269,32 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 		}
 	}
 	return r, nil
+}
+
+// proveMCP proves the MCP boundary independently of the gateway: a running
+// MCP proxy must have loaded the current proxy config.
+func proveMCP(in Inputs, r *Report) {
+	b := r.MCPBoundary
+	if b == nil {
+		return
+	}
+	if b.Error != "" {
+		b.Proof = runtimestatus.Loaded{State: runtimestatus.BoundaryUnknown, Reason: "the proxy config cannot be loaded, so no decision is shown or proved"}
+		return
+	}
+	b.Proof = proveBoundary(in, func(v runtimestatus.View) runtimestatus.Loaded {
+		return runtimestatus.ProveProxy(v, in.RuntimeReadable, r.CurrentFiles.ProxyConfig.Digest)
+	})
+	b.ProvenActive = b.Proof.State == runtimestatus.BoundaryProven
+}
+
+// proveBoundary runs a boundary proof over the caller's runtime view; with
+// no view at all nothing can be proved.
+func proveBoundary(in Inputs, prove func(runtimestatus.View) runtimestatus.Loaded) runtimestatus.Loaded {
+	if in.Runtime == nil {
+		return runtimestatus.Loaded{State: runtimestatus.BoundaryUnknown, Reason: "no runtime records were read: what a running process enforces cannot be proved"}
+	}
+	return prove(*in.Runtime)
 }
 
 func (r *Report) organization(path string) (baseline gateway.OrganizationPolicy, providers map[string]gateway.ProviderConfig) {
@@ -330,11 +375,22 @@ func lastDecision(ctx context.Context, store *evidence.Store, tenant, name, file
 	if err != nil || len(recs) == 0 {
 		return nil, err
 	}
-	ev := &recs[0]
+	// List does not verify signatures: re-read the selected record through
+	// the verifying path before anything on it is presented as history.
+	det, err := store.Detail(ctx, recs[0].ID)
+	if err != nil {
+		return nil, err
+	}
+	ev := det.Record
 	ld := &LastDecision{
 		EvidenceID: ev.ID, Timestamp: ev.Timestamp, InvocationType: ev.InvocationType, SessionID: ev.SessionID,
-		Outcome: evidence.OutcomeOf(ev), AgentFile: "not_recorded", EffectivePolicy: "not_recorded",
+		Outcome: det.Outcome, Verification: det.Verification.State, AgentFile: "not_recorded", EffectivePolicy: "not_recorded",
 		Note: "a historical decision: the policy recorded on this signed record applied to it; the current files are compared only by recorded digests",
+	}
+	if det.Verification.State != "valid" {
+		ld.AgentFile, ld.EffectivePolicy = "unverified", "unverified"
+		ld.Note = "this record's signature does not verify: it was changed after signing, so its decision and recorded digests are not authenticated and are not compared with the current files"
+		return ld, nil
 	}
 	if p, ok := explanation.Primary(ev.Explanations); ok {
 		ld.PrimaryCode, ld.PrimaryReason = p.Code, p.Reason

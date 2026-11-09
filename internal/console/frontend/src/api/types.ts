@@ -696,6 +696,14 @@ export interface ToolAccess {
   note?: string;
 }
 
+// Proof that a running process of one enforcement boundary runs exactly the
+// current files (#555 review): the gateway and the MCP proxy are proved apart.
+export interface BoundaryProof {
+  state: "proven_active" | "loaded_differs_from_files" | "no_running_process" | "unknown";
+  reason: string;
+  instance_ids?: string[];
+}
+
 export interface EffectiveReport {
   use_case: string;
   tenant_id: string;
@@ -705,6 +713,7 @@ export interface EffectiveReport {
   effective: {
     basis: string;
     proven_active: boolean;
+    proof: BoundaryProof; // the gateway boundary
     organization_baseline_present: boolean;
     daily_cap?: number;
     monthly_cap?: number;
@@ -719,7 +728,7 @@ export interface EffectiveReport {
     rules: RuleProvenance[];
     providers?: { name: string; enabled: boolean; effective_digest: string; forbidden_tools?: string[]; allowed_models?: string[] }[];
   };
-  mcp_boundary?: { proxy: string; file: string; scope: string; tools: ToolAccess[]; error?: string };
+  mcp_boundary?: { proxy: string; file: string; scope: string; tools: ToolAccess[]; error?: string; proven_active: boolean; proof: BoundaryProof };
   last_decision?: {
     evidence_id: string;
     timestamp: string;
@@ -730,7 +739,8 @@ export interface EffectiveReport {
     primary_explanation_reason?: string;
     recorded_agent_policy_digest?: string;
     recorded_effective_digest?: string;
-    agent_file: string; // same | different | not_recorded
+    verification: "valid" | "invalid";
+    agent_file: string; // same | different | not_recorded | unverified
     effective_policy: string; // matches_current:<provider> | differs_from_current | not_recorded
     note: string;
   };

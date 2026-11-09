@@ -76,6 +76,7 @@ func renderEffective(w io.Writer, r *effective.Report) {
 	fmt.Fprintln(w, "\n2. Loaded by a running process")
 	fmt.Fprintf(w, "   %s — %s\n", r.Loaded.State, r.Loaded.Reason)
 	fmt.Fprintln(w, "\n3. Effective policy")
+	fmt.Fprintf(w, "   gateway boundary: %s — %s\n", r.Effective.Proof.State, r.Effective.Proof.Reason)
 	fmt.Fprintf(w, "   basis: %s\n", r.Effective.Basis)
 	for _, rule := range r.Effective.Rules {
 		val := rule.Effective
@@ -87,6 +88,7 @@ func renderEffective(w io.Writer, r *effective.Report) {
 	}
 	if b := r.MCPBoundary; b != nil {
 		fmt.Fprintf(w, "\n   MCP proxy %s (%s)\n", b.Proxy, b.Scope)
+		fmt.Fprintf(w, "   MCP boundary: %s — %s\n", b.Proof.State, b.Proof.Reason)
 		if b.Error != "" {
 			fmt.Fprintf(w, "   unavailable: %s\n", b.Error)
 		}
@@ -103,7 +105,10 @@ func renderEffective(w io.Writer, r *effective.Report) {
 	}
 	fmt.Fprintln(w, "\n4. Last recorded decision")
 	if d := r.LastDecision; d != nil {
-		fmt.Fprintf(w, "   %s at %s: %s, dispatch %s (%s)\n", d.EvidenceID, d.Timestamp.UTC().Format(time.RFC3339), d.Outcome.Decision, d.Outcome.Dispatch, d.InvocationType)
+		if d.Verification != "valid" {
+			fmt.Fprintf(w, "   %s: SIGNATURE INVALID — changed after signing; not authenticated\n", d.EvidenceID)
+		}
+		fmt.Fprintf(w, "   %s at %s: %s, dispatch %s (%s), signature %s\n", d.EvidenceID, d.Timestamp.UTC().Format(time.RFC3339), d.Outcome.Decision, d.Outcome.Dispatch, d.InvocationType, d.Verification)
 		if d.PrimaryCode != "" {
 			fmt.Fprintf(w, "   %s: %s\n", d.PrimaryCode, d.PrimaryReason)
 		}
