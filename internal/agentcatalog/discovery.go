@@ -154,6 +154,7 @@ func scanFiles(ctx context.Context, relBase string, paths []string) *ScanResult 
 			others := otherPaths(namePaths[rec.agent.Name], rec.path)
 			result.addFailure(rec.path, IssueDuplicateName,
 				fmt.Errorf("duplicate agent name %q: also defined in %s — agent names are unique per installation", rec.agent.Name, others))
+			result.Issues[len(result.Issues)-1].Agent = rec.agent.Name // the name both files claim (additive, omitempty)
 		default:
 			result.Files = append(result.Files, FileResult{Path: rec.path, Agent: rec.agent})
 			result.Agents = append(result.Agents, *rec.agent)

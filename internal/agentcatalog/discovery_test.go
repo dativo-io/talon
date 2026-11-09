@@ -77,6 +77,7 @@ func TestDiscoverAgents_DuplicateNamesFailClosed(t *testing.T) {
 	for _, iss := range scan.Issues {
 		assert.Equal(t, IssueDuplicateName, iss.Status)
 		assert.Contains(t, iss.Reason, "support", "the reason names the ambiguous agent")
+		assert.Equal(t, "support", iss.Agent, "the issue carries the claimed name, so a reader can say which use case is not loaded")
 	}
 }
 

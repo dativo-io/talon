@@ -336,3 +336,35 @@ func TestBuild_LastDecisionIsVerified(t *testing.T) {
 	assert.Equal(t, "unverified", r.LastDecision.EffectivePolicy)
 	assert.Contains(t, r.LastDecision.Note, "signature")
 }
+
+// TestBuild_DuplicateNameAcrossTenantsIsNotGuessed (#555 review 2): two
+// tenants define a use case with the same name. Agent names are unique per
+// installation, so the catalog rejects both files (#267) and the report
+// resolves neither, in any tenant: it never returns one tenant's policy for
+// the other. The error names the duplicate and both files.
+func TestBuild_DuplicateNameAcrossTenantsIsNotGuessed(t *testing.T) {
+	f := peopleAnalytics(t)
+	ctx := context.Background()
+	acme := filepath.Join(f.agents, "acme-hr")
+	require.NoError(t, os.MkdirAll(acme, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(acme, "agent.talon.yaml"), []byte(`agent:
+  name: hr-analytics-assistant
+  tenant_id: acme
+  version: "1.0.0"
+policies:
+  cost_limits:
+    daily: 9
+    monthly: 90
+`), 0o600))
+
+	for _, tenant := range []string{"", "default", "acme"} {
+		in := f.inputs()
+		in.Tenant = tenant
+		r, err := Build(ctx, in)
+		require.ErrorIs(t, err, ErrUnknownUseCase, "tenant %q", tenant)
+		assert.Nil(t, r)
+		assert.Contains(t, err.Error(), "more than one file")
+		assert.Contains(t, err.Error(), filepath.Join("acme-hr", "agent.talon.yaml"))
+		assert.Contains(t, err.Error(), filepath.Join("hr-analytics-assistant", "agent.talon.yaml"))
+	}
+}

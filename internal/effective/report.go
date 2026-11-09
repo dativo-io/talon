@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/dativo-io/talon/internal/agentbridge"
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/fleetview"
@@ -165,7 +166,10 @@ type LastDecision struct {
 }
 
 // findAgent scans the agent files and returns the named use case in the
-// requested tenant ("" = any), or ErrUnknownUseCase listing what exists.
+// requested tenant ("" = its own tenant). Agent names are unique per
+// installation: the catalog rejects every file of a duplicated name (#267),
+// so at most one match exists, and a duplicated name is reported as such
+// rather than as unknown.
 func findAgent(ctx context.Context, in Inputs) (agent *policy.Policy, path, digest, tenant string, err error) {
 	scan, err := fleetview.Scan(ctx, in.AgentsDir, in.DefaultPolicy)
 	if err != nil {
@@ -179,15 +183,25 @@ func findAgent(ctx context.Context, in Inputs) (agent *policy.Policy, path, dige
 		if t == "" {
 			t = "default"
 		}
-		if a.Name == in.Name && (in.Tenant == "" || in.Tenant == t) {
+		if agent == nil && a.Name == in.Name && (in.Tenant == "" || in.Tenant == t) {
 			agent, path, digest, tenant = a.Policy, a.Path, a.PolicyDigest, t
 		}
 	}
-	if agent == nil {
-		sort.Strings(names)
-		return nil, "", "", "", fmt.Errorf("%w %q: defined use cases: %s", ErrUnknownUseCase, in.Name, strings.Join(names, ", "))
+	if agent != nil {
+		return agent, path, digest, tenant, nil
 	}
-	return agent, path, digest, tenant, nil
+	var dups []string
+	for _, is := range scan.Issues {
+		if is.Agent == in.Name && is.Status == agentcatalog.IssueDuplicateName {
+			dups = append(dups, is.Path)
+		}
+	}
+	if len(dups) > 0 {
+		sort.Strings(dups)
+		return nil, "", "", "", fmt.Errorf("%w %q: it is defined in more than one file (%s); agent names are unique per installation, so none of them is loaded", ErrUnknownUseCase, in.Name, strings.Join(dups, ", "))
+	}
+	sort.Strings(names)
+	return nil, "", "", "", fmt.Errorf("%w %q: defined use cases: %s", ErrUnknownUseCase, in.Name, strings.Join(names, ", "))
 }
 
 // Build assembles the report.
