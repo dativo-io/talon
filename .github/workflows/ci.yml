@@ -314,8 +314,35 @@ jobs:
           name: talon-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/talon
 
-  # Real browser against the PACKAGED console (#537): Chromium drives the
-  # embedded shell served by `talon ui serve` from the built binary.
+  # The console frontend (#539-#544) is built into internal/console/web/static
+  # and embedded in the binary. This job proves the committed assets are
+  # exactly what the source builds to, so the binary never ships stale UI.
+  console-frontend:
+    name: Console frontend (types, unit tests, embedded build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install (lockfile)
+        working-directory: internal/console/frontend
+        run: npm ci --no-audit --no-fund
+      - name: Type-check and unit tests
+        working-directory: internal/console/frontend
+        run: |
+          npm run typecheck
+          npm test
+      - name: Rebuild and compare with the committed embedded assets
+        run: |
+          (cd internal/console/frontend && npm run build)
+          git status --porcelain -- internal/console/web/static
+          git diff --exit-code -- internal/console/web/static
+          if [ -n "$(git status --porcelain -- internal/console/web/static)" ]; then echo "::error::internal/console/web/static is stale: run make console-frontend and commit"; exit 1; fi
+
+  # Real browser against the PACKAGED console (#537, #539-#544): Chromium
+  # drives the embedded app served by `talon ui serve` from the built binary
+  # over a seeded, signed installation.
   browser:
     name: Browser (console pairing)
     # Pinned runner image: `npx playwright install --with-deps` only knows
@@ -334,8 +361,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Build talon
-        run: go build -o "$RUNNER_TEMP/talon" ./cmd/talon/
+      - name: Build talon and the browser fixture
+        run: |
+          go build -o "$RUNNER_TEMP/talon" ./cmd/talon/
+          go build -o "$RUNNER_TEMP/talon-seed" ./tests/browser/seed
       - name: Install Playwright (pinned) and Chromium
         working-directory: tests/browser
         run: |
@@ -345,6 +374,7 @@ jobs:
         working-directory: tests/browser
         env:
           TALON_BINARY: ${{ runner.temp }}/talon
+          TALON_SEED_BINARY: ${{ runner.temp }}/talon-seed
         run: npx playwright test
       - uses: actions/upload-artifact@v4
         if: failure()
