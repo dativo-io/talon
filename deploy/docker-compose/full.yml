@@ -10,9 +10,13 @@ services:
     build:
       context: ../../
     command: serve --port 8080 --gateway
+    # This stack publishes the API on every interface, so the admin key is
+    # mandatory: Compose refuses to start without TALON_ADMIN_KEY in .env
+    # (an unset key would leave admin routes open to the network).
     ports:
       - "8080:8080"
     environment:
+      - "TALON_ADMIN_KEY=${TALON_ADMIN_KEY:?TALON_ADMIN_KEY must be set in .env because this stack publishes the API on all interfaces}"
       - TALON_SECRETS_KEY=${TALON_SECRETS_KEY}
       - TALON_LOG_LEVEL=info
       - TALON_LOG_FORMAT=json

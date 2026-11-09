@@ -4,7 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # Stacked PRs (a feature branch targeting another feature branch) run the
+    # same gates as PRs to main; a branch is not "green" until this ran on it.
+    branches: [main, 'feat/**', 'fix/**']
   schedule:
     - cron: '0 3 * * *'
 
@@ -312,6 +314,45 @@ jobs:
           name: talon-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/talon
 
+  # Real browser against the PACKAGED console (#537): Chromium drives the
+  # embedded shell served by `talon ui serve` from the built binary.
+  browser:
+    name: Browser (console pairing)
+    # Pinned runner image: `npx playwright install --with-deps` only knows
+    # the OS releases its Playwright version shipped with. ubuntu-latest
+    # became 26.04 and 1.52.0 refuses to install Chromium there ("does not
+    # support chromium on ubuntu26.04-x64"). Bump the runner image and the
+    # @playwright/test pin in tests/browser/package.json together.
+    runs-on: ubuntu-24.04
+    needs: [test, lint]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.10'
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build talon
+        run: go build -o "$RUNNER_TEMP/talon" ./cmd/talon/
+      - name: Install Playwright (pinned) and Chromium
+        working-directory: tests/browser
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Console pairing in a real browser
+        working-directory: tests/browser
+        env:
+          TALON_BINARY: ${{ runner.temp }}/talon
+        run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: tests/browser/test-results
+          if-no-files-found: ignore
+
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
@@ -336,6 +377,13 @@ jobs:
         run: |
           docker run --rm talon:ci version
           docker run --rm talon:ci --help
+
+      # The supported no-key Compose stack starts the read-only console as
+      # its own service (#536, #537): loopback-only publication, pairing from
+      # the container log, no privileged route through the console, reissue
+      # from inside the container, restart independence.
+      - name: Console Compose smoke (examples/docker-compose + talon-ui)
+        run: bash scripts/console-compose-smoke.sh
 
       # The RELEASE image is a different Dockerfile: goreleaser-cross links
       # talon against glibc (CGO, go-sqlite3) and Dockerfile.goreleaser copies
