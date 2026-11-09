@@ -65,6 +65,9 @@ export interface AgentRow {
   config_path: string;
   policy_digest: string;
   config_error?: string;
+  // spend_day / spend_month when that period's priced records are not all in
+  // `currency`: the retained number is not a measurement.
+  unavailable_fields?: string[];
   use_case?: UseCaseRecordRow;
 }
 
@@ -317,7 +320,7 @@ export interface SessionDetailInner {
 }
 
 export type Dispatch = "not_dispatched" | "dispatched" | "unknown" | "not_recorded";
-export type Downstream = "none" | "completed" | "rejected" | "failed" | "unknown" | "not_recorded";
+export type Downstream = "none" | "completed" | "rejected" | "failed" | "unknown" | "not_recorded" | "cache";
 
 export interface Outcome {
   decision: "allowed" | "denied";

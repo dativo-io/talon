@@ -5,11 +5,12 @@ import { useApi } from "../api/useApi";
 import type { Activity, AgentRow, Overview as OverviewDTO } from "../api/types";
 import { ActivityChart } from "../components/ActivityChart";
 import { PageHead } from "../components/Layout";
-import { AvailabilityNotice, Badge, EmptyState, ErrorState, Loading, SourceFreshness, UseCaseHealth } from "../components/ui";
+import { AvailabilityNotice, Badge, CurrencyAmount, EmptyState, ErrorState, Loading, SourceFreshness, UseCaseHealth } from "../components/ui";
 import { TimeRangeSelector, rangeQuery, type Range } from "../components/TimeRange";
 import { isMeasurement } from "../lib/availability";
 import { humanize, integer, money, relative, utc, utcShort } from "../lib/format";
 import { scoped, useScope } from "../lib/scope";
+import { rowSpend } from "../lib/costs";
 
 export function Overview() {
   const { tenant } = useScope();
@@ -124,7 +125,7 @@ function AttentionQueue({ rows, total, tenant, scope }: { rows: AgentRow[]; tota
                   <td><UseCaseHealth health={r.health} /></td>
                   <td>{r.why}</td>
                   <td className="num">
-                    {money(r.spend_month, r.currency)}
+                    <CurrencyAmount amount={rowSpend(r, "spend_month")} currency={r.currency} reason="priced records in another currency: not comparable with the cap" />
                     <div className="small muted">{r.monthly_cap > 0 ? `cap ${money(r.monthly_cap, r.currency)}` : "no monthly cap"}</div>
                   </td>
                   <td className="num" title={utc(r.last_run)}>{relative(r.last_run)}</td>

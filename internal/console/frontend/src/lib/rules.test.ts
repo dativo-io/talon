@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isMeasurement, viewOf } from "./availability";
-import { breakdownRows, fieldValue } from "./costs";
+import { breakdownRows, fieldValue, rowSpend } from "./costs";
 import { money, utc, isZeroTime, relative, goDuration } from "./format";
 import type { CostReport } from "../api/types";
 
@@ -75,5 +75,13 @@ describe("goDuration", () => {
     expect(goDuration("24h0m0s")).toBe("24h");
     expect(goDuration("30m0s")).toBe("30m");
     expect(goDuration("1h30m0s")).toBe("1h30m");
+  });
+});
+
+describe("fleet spend", () => {
+  it("is null for a period whose records are not comparable", () => {
+    const row = { spend_month: 99, spend_day: 1, unavailable_fields: ["spend_month"] } as unknown as Parameters<typeof rowSpend>[0];
+    expect(rowSpend(row, "spend_month")).toBeNull();
+    expect(rowSpend(row, "spend_day")).toBe(1);
   });
 });

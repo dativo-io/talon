@@ -19,24 +19,30 @@ export function Sessions() {
   const { tenant, params, set } = useScope();
   const agent = params.get("agent") ?? "";
   const status = params.get("status") ?? "";
-  const [managedStack, setManagedStack] = useState<SessionCursor[]>([]);
-  const [observedStack, setObservedStack] = useState<ObservedCursor[]>([]);
+  const limit = params.get("limit") ?? ""; // page size; the server clamps it
+  // Cursor stacks belong to one query scope (tenant, use case, status): a
+  // cursor from another scope is never sent, whichever control changed it.
+  const scope = JSON.stringify([tenant, agent, status, limit]);
+  const [pages, setPages] = useState<{ scope: string; managed: SessionCursor[]; observed: ObservedCursor[] }>({ scope, managed: [], observed: [] });
+  const owned = pages.scope === scope;
+  const managedStack = owned ? pages.managed : [];
+  const observedStack = owned ? pages.observed : [];
+  const setManagedStack = (f: (s: SessionCursor[]) => SessionCursor[]) => setPages({ scope, managed: f(managedStack), observed: observedStack });
+  const setObservedStack = (f: (s: ObservedCursor[]) => ObservedCursor[]) => setPages({ scope, managed: managedStack, observed: f(observedStack) });
   const mc = managedStack[managedStack.length - 1];
   const oc = observedStack[observedStack.length - 1];
   const res = useApi<SessionList>(api("/sessions"), {
     tenant,
     agent,
     status,
+    limit,
     before: mc?.created_at,
     before_id: mc?.id,
     observed_before: oc?.last_seen,
     observed_before_id: oc?.session_id,
     observed_before_agent: oc?.agent_id,
   });
-  const reset = () => {
-    setManagedStack([]);
-    setObservedStack([]);
-  };
+  const reset = () => setPages({ scope, managed: [], observed: [] });
   const d = res.data;
   const scopeTenant = d?.meta.tenant_id ?? (tenant || "default");
   return (

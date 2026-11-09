@@ -150,6 +150,7 @@ const DOWNSTREAM: Record<string, { label: string; tone: Tone | "ok" }> = {
   failed: { label: "Attempt failed", tone: "error" },
   unknown: { label: "Outcome unknown", tone: "warn" },
   not_recorded: { label: "", tone: "neutral" },
+  cache: { label: "Answered from Talon's cache", tone: "info" },
 };
 
 // PolicyDecision + DispatchOutcome: Talon's decision, then what happened to

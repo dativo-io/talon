@@ -4,10 +4,11 @@ import { api } from "../api/client";
 import { useApi } from "../api/useApi";
 import type { Health, UseCases as UseCasesDTO, Meta } from "../api/types";
 import { PageHead } from "../components/Layout";
-import { AvailabilityNotice, Badge, EmptyState, ErrorState, Loading, SourceFreshness, UseCaseHealth } from "../components/ui";
+import { AvailabilityNotice, Badge, CurrencyAmount, EmptyState, ErrorState, Loading, SourceFreshness, UseCaseHealth } from "../components/ui";
 import { isMeasurement } from "../lib/availability";
 import { goDuration, integer, money, relative, utc } from "../lib/format";
 import { scoped, useScope } from "../lib/scope";
+import { rowSpend } from "../lib/costs";
 
 type Resp = { meta: Meta; use_cases: UseCasesDTO };
 
@@ -96,7 +97,7 @@ export function UseCases() {
                       <td>{r.state === "enabled" ? "Enabled" : <Badge tone="neutral">Disabled</Badge>}</td>
                       <td><UseCaseHealth health={r.health} /></td>
                       <td className="small">{r.why}</td>
-                      <td className="num">{money(r.spend_month, r.currency)}</td>
+                      <td className="num"><CurrencyAmount amount={rowSpend(r, "spend_month")} currency={r.currency} reason="priced records in another currency: not comparable with the cap" /></td>
                       <td className="num">{r.monthly_cap > 0 ? money(r.monthly_cap, r.currency) : <span className="muted">none</span>}</td>
                       <td className="num">{integer(r.requests)}</td>
                       <td className="num">{integer(r.denied)}</td>
