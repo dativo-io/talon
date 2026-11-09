@@ -37,6 +37,8 @@ const Prefix = "/console/v1"
 //	/console/v1/costs?tenant=&agent=&breakdown=agents|model|provider|team
 //	/console/v1/activity?tenant=&agent=&from=&to=&bucket=5m|1h|24h
 //	/console/v1/system
+//	/console/v1/configuration?tenant=
+//	/console/v1/search?q=&tenant=   (exact ids, use-case name prefix; bounded)
 func Handler(svc *console.Service) http.Handler {
 	r := chi.NewRouter()
 	r.Route(Prefix, func(r chi.Router) {
@@ -57,6 +59,17 @@ func Handler(svc *console.Service) http.Handler {
 				return
 			}
 			writeJSON(w, http.StatusOK, d)
+		})
+		r.Get("/configuration", func(w http.ResponseWriter, req *http.Request) {
+			writeJSON(w, http.StatusOK, svc.Configuration(req.Context(), q(req, "tenant")))
+		})
+		r.Get("/search", func(w http.ResponseWriter, req *http.Request) {
+			res, err := svc.Search(req.Context(), q(req, "tenant"), q(req, "q"))
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, res)
 		})
 		r.Get("/sessions", sessionsHandler(svc))
 		r.Get("/sessions/{id}", sessionDetailHandler(svc))

@@ -1024,8 +1024,8 @@ func (s *Store) ListBySessionID(ctx context.Context, sessionID string) ([]*Evide
 
 // queryEvidenceJSON runs a single-argument evidence_json query and unmarshals
 // each row into an Evidence record. scope names the query for error wrapping.
-func (s *Store) queryEvidenceJSON(ctx context.Context, scope, query, arg string) ([]*Evidence, error) {
-	rows, err := s.db.QueryContext(ctx, query, arg)
+func (s *Store) queryEvidenceJSON(ctx context.Context, scope, query string, args ...any) ([]*Evidence, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying evidence by %s: %w", scope, err)
 	}
@@ -1119,6 +1119,16 @@ func escapeLike(s string) string {
 // ListByCorrelationID returns all evidence records sharing a correlation ID,
 // oldest first. Used by the failover verifier to reconstruct a fallback chain
 // (failed attempts + fallback decision) from linked signed records.
+// ListByCorrelationIDLimit is ListByCorrelationID bounded to limit rows, for
+// lookups driven by untrusted input (console search).
+func (s *Store) ListByCorrelationIDLimit(ctx context.Context, correlationID string, limit int) ([]*Evidence, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	return s.queryEvidenceJSON(ctx, "correlation",
+		`SELECT evidence_json FROM evidence WHERE correlation_id = ? ORDER BY timestamp ASC, id ASC LIMIT ?`, correlationID, limit)
+}
+
 func (s *Store) ListByCorrelationID(ctx context.Context, correlationID string) ([]*Evidence, error) {
 	ctx, span := tracer.Start(ctx, "evidence.list_by_correlation",
 		trace.WithAttributes(attribute.String("correlation_id", correlationID)))
@@ -1926,6 +1936,9 @@ type Index struct {
 	Compliance               *Compliance `json:"compliance,omitempty"` // Framework alignment (GDPR Art. 30, EU AI Act, etc.)
 	PrimaryExplanationCode   string      `json:"primary_explanation_code,omitempty"`
 	PrimaryExplanationReason string      `json:"primary_explanation_reason,omitempty"`
+	// Outcome separates Talon's decision from dispatch and the destination's
+	// answer, from recorded facts only (OutcomeOf). Additive (#541).
+	Outcome *Outcome `json:"outcome,omitempty"`
 }
 
 // ListIndex returns lightweight evidence summaries (Layer 1).
@@ -2129,5 +2142,7 @@ func toIndex(full *Evidence) Index {
 	if len(full.Compliance.Frameworks) > 0 || full.Compliance.DataLocation != "" {
 		idx.Compliance = &full.Compliance
 	}
+	outcome := OutcomeOf(full)
+	idx.Outcome = &outcome
 	return idx
 }

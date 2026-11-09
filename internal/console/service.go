@@ -56,10 +56,12 @@ type Config struct {
 	// caps are reported (never a zero cap). See FleetCapsBudgets.
 	Budgets    costs.BudgetResolver
 	BudgetNote string
-	Version    string
-	Commit     string
-	StartedAt  time.Time
-	Now        func() time.Time
+	// ConfigSources are the files behind the Configuration page (#543).
+	ConfigSources ConfigSources
+	Version       string
+	Commit        string
+	StartedAt     time.Time
+	Now           func() time.Time
 }
 
 // Service builds the DTOs.
