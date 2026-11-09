@@ -66,9 +66,9 @@ The console reads the directory read-only. `runtimestatus.Reader.Assess` derives
 | `stale` | older than 3, younger than 12 heartbeats (hung, overloaded or killed) |
 | `offline` | a recorded graceful shutdown, a heartbeat older than 12 beats, or a role the configuration expects that no process has reported |
 | `not_configured` | a role neither expected by the console's configuration (`--proxy-config`, an enabled gateway config) nor reported |
-| `unknown` | the runtime directory cannot be read, or the console was started without its data directory and signing key |
+| `unknown` | the runtime directory cannot be read, the console was started without its data directory and signing key, or the role's configuration exists but cannot be parsed (a broken gateway config is never read as `not_configured`) |
 
-Records with another installation's fingerprint, an unknown schema, malformed JSON or over 64 KiB are listed as `rejected`, never combined. The newest instance per role is `current`; earlier instances stay listed as history. A record with a lower `sequence` than one already seen never replaces it. The console has no network path to the data plane, no Docker socket and no new listener; the store's sessions and evidence are read independently of runtime state.
+Records with another installation's fingerprint, an unknown schema, malformed JSON or over 64 KiB are listed as `rejected`, never combined. Every running instance is `current`; a role reports its most relevant instance (running before stale before offline, newest first within a state), so a newer instance that stopped never hides an older one that still serves. Instances that neither run nor represent a role stay listed as history with their own state. A record with a lower `sequence` than one already seen never replaces it. The console has no network path to the data plane, no Docker socket and no new listener; the store's sessions and evidence are read independently of runtime state.
 
 ### 2.3 Tests
 

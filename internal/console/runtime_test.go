@@ -191,3 +191,21 @@ func TestConfiguration_ActiveVersusFiles(t *testing.T) {
 }
 
 func evidenceCursorZero() evidence.TimelineCursor { return evidence.TimelineCursor{} }
+
+// TestRuntime_MalformedGatewayConfigIsNotNotConfigured (#554 review): a
+// gateway config the console cannot parse says nothing about whether a
+// gateway should run; the role reads unknown with the parse error, never
+// not_configured. An absent file still means not configured.
+func TestRuntime_MalformedGatewayConfigIsNotNotConfigured(t *testing.T) {
+	f := seed(t)
+	svc := runtimeService(t, f)
+	svc.cfg.ConfigSources.GatewayConfig = filepath.Join(f.dir, "absent.talon.config.yaml")
+	assert.Equal(t, runtimestatus.NotConfigured, role(svc.runtime(), runtimestatus.RoleGateway).State, "no file: not configured")
+
+	gw := filepath.Join(f.dir, "broken.talon.config.yaml")
+	require.NoError(t, os.WriteFile(gw, []byte("gateway: [broken"), 0o600))
+	svc.cfg.ConfigSources.GatewayConfig = gw
+	r := role(svc.runtime(), runtimestatus.RoleGateway)
+	assert.Equal(t, runtimestatus.Unknown, r.State)
+	assert.Contains(t, r.Reason, "cannot be parsed")
+}

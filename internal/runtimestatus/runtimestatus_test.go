@@ -221,3 +221,50 @@ func TestPublisher_PrunesOnlyOldRecordsOfItsInstallation(t *testing.T) {
 	_, err = os.Stat(filepath.Join(dir, DirName, "foreign.json"))
 	assert.NoError(t, err, "another installation's records are never touched")
 }
+
+// TestAssess_StoppedNewerInstanceDoesNotHideARunningOne (#554 review): gateway
+// A runs; gateway B starts later and stops. A still serves, so the role is
+// running from A, and B is history with its own offline state.
+func TestAssess_StoppedNewerInstanceDoesNotHideARunningOne(t *testing.T) {
+	now := time.Now().UTC()
+	dir := t.TempDir()
+	a := base(RoleGateway)
+	a.InstanceID, a.State, a.StartedAt, a.WrittenAt = "a", StateRunning, now.Add(-time.Hour), now.Add(-2*time.Second)
+	writeRec(t, dir, a)
+	b := base(RoleGateway)
+	stopped := now.Add(-5 * time.Second)
+	b.InstanceID, b.State, b.StartedAt, b.WrittenAt, b.StoppedAt = "b", StateStopped, now.Add(-time.Minute), stopped, &stopped
+	writeRec(t, dir, b)
+
+	v := NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleGateway: true}, now)
+	r := role(v, RoleGateway)
+	assert.Equal(t, Running, r.State, "a stopped newer instance must not hide a running one")
+	assert.Equal(t, "a", r.InstanceID)
+	byID := map[string]Process{}
+	for _, p := range v.Processes {
+		byID[p.InstanceID] = p
+	}
+	assert.True(t, byID["a"].Current)
+	assert.Equal(t, Running, byID["a"].Assessed)
+	assert.False(t, byID["b"].Current, "the stopped instance is history")
+	assert.Equal(t, Offline, byID["b"].Assessed, "history keeps its own state")
+
+	// Two running instances of one role both serve: both are current, the
+	// role reports the newest running one.
+	b.State, b.StoppedAt, b.WrittenAt = StateRunning, nil, now
+	writeRec(t, dir, b)
+	v = NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleGateway: true}, now)
+	assert.Equal(t, "b", role(v, RoleGateway).InstanceID)
+	for _, p := range v.Processes {
+		assert.True(t, p.Current, "%s runs, so it is current", p.InstanceID)
+	}
+
+	// A stale instance ranks below a running one, above an offline one.
+	a.WrittenAt = now.Add(-30 * time.Second) // stale: 6 beats
+	writeRec(t, dir, a)
+	b.State, b.StoppedAt, b.WrittenAt = StateStopped, &stopped, stopped
+	writeRec(t, dir, b)
+	v = NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleGateway: true}, now)
+	assert.Equal(t, Stale, role(v, RoleGateway).State, "a hung older instance is more relevant than a newer stopped one")
+	assert.Equal(t, "a", role(v, RoleGateway).InstanceID)
+}

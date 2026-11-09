@@ -3,6 +3,8 @@ package console
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 
 	"github.com/dativo-io/talon/internal/gateway"
@@ -24,7 +26,15 @@ func (s *Service) runtime() Runtime {
 			Note: "the console was started without its installation's data directory and signing key, so runtime records cannot be matched to it",
 		}}
 	}
-	v := s.runtimeReader.Assess(s.cfg.DataDir, s.cfg.InstallationFingerprint, s.expectedRoles(), s.now())
+	expected, configErrs := s.expectedRoles()
+	v := s.runtimeReader.Assess(s.cfg.DataDir, s.cfg.InstallationFingerprint, expected, s.now())
+	// A role whose configuration cannot be read is not "not configured":
+	// whether it should run is unknown (#554 review).
+	for i := range v.Roles {
+		if e, bad := configErrs[v.Roles[i].Role]; bad && v.Roles[i].State == runtimestatus.NotConfigured {
+			v.Roles[i].State, v.Roles[i].Reason = runtimestatus.Unknown, e
+		}
+	}
 	out := Runtime{Roles: v.Roles, Processes: v.Processes, Rejected: v.Rejected, ReadAt: v.ReadAt}
 	if out.Processes == nil {
 		out.Processes = []runtimestatus.Process{}
@@ -66,18 +76,26 @@ func (s *Service) runtime() Runtime {
 
 // expectedRoles are the roles this installation's configuration (as given
 // to the console) says should run: the MCP proxy when a proxy config is set,
-// the gateway when the gateway config enables it.
-func (s *Service) expectedRoles() map[string]bool {
-	exp := map[string]bool{}
+// the gateway when the gateway config enables it. configErrs names roles
+// whose configuration exists but cannot be used, so the caller never reports
+// them as intentionally absent. A gateway config path that does not exist is
+// no gateway.
+func (s *Service) expectedRoles() (exp map[string]bool, configErrs map[string]string) {
+	exp, configErrs = map[string]bool{}, map[string]string{}
 	if s.cfg.ConfigSources.ProxyConfig != "" {
 		exp[runtimestatus.RoleMCPProxy] = true
 	}
 	if p := s.cfg.ConfigSources.GatewayConfig; p != "" {
-		if gw, err := gateway.LoadGatewayConfig(p); err == nil && gw.Enabled {
+		gw, err := gateway.LoadGatewayConfig(p)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			configErrs[runtimestatus.RoleGateway] = "the gateway config cannot be parsed, so whether a gateway should run is unknown: " + err.Error()
+		case gw.Enabled:
 			exp[runtimestatus.RoleGateway] = true
 		}
 	}
-	return exp
+	return exp, configErrs
 }
 
 // fileDigest is the sha256 of a file's current bytes ("" when unreadable).

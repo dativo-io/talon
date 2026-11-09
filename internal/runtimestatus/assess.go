@@ -37,8 +37,10 @@ type Process struct {
 	Assessed   string  `json:"assessed_state"`
 	Reason     string  `json:"reason"`
 	AgeSeconds float64 `json:"age_seconds"`
-	// Current is true for the newest instance of each of its roles; older
-	// instances (a previous run) are kept as history, never merged.
+	// Current is true for every instance that is running now, and for the
+	// instance a role reports when none of that role's instances runs.
+	// Other instances (a stopped or killed earlier run) are history: listed
+	// with their own state, never merged.
 	Current bool `json:"current"`
 }
 
@@ -197,8 +199,14 @@ func assessProcesses(recs []Record, now time.Time) []Process {
 		}
 		out = append(out, p)
 	}
-	// Newest instance first per role decides "current".
+	// Most relevant first: running before stale before offline, newest
+	// first within a state. A role reports its first instance in this order,
+	// so a newer instance that stopped never hides an older one that still
+	// serves (#554 review).
 	sort.Slice(out, func(i, j int) bool {
+		if ri, rj := stateRank(out[i].Assessed), stateRank(out[j].Assessed); ri != rj {
+			return ri < rj
+		}
 		if !out[i].StartedAt.Equal(out[j].StartedAt) {
 			return out[i].StartedAt.After(out[j].StartedAt)
 		}
@@ -206,6 +214,9 @@ func assessProcesses(recs []Record, now time.Time) []Process {
 	})
 	claimed := map[string]bool{}
 	for i := range out {
+		if out[i].Assessed == Running {
+			out[i].Current = true
+		}
 		for _, role := range out[i].Roles {
 			if !claimed[role] {
 				claimed[role] = true
@@ -234,9 +245,10 @@ func assessRoles(procs []Process, expected map[string]bool) []RoleStatus {
 	var out []RoleStatus
 	for _, role := range names {
 		rs := RoleStatus{Role: role, Expected: expected[role]}
+		// procs is ordered most relevant first (assessProcesses).
 		var cur *Process
 		for i := range procs {
-			if procs[i].Current && hasRole(procs[i].Roles, role) {
+			if hasRole(procs[i].Roles, role) {
 				cur = &procs[i]
 				break
 			}
@@ -257,6 +269,18 @@ func assessRoles(procs []Process, expected map[string]bool) []RoleStatus {
 		out = append(out, rs)
 	}
 	return out
+}
+
+// stateRank orders assessed states by how much they say about a role now.
+func stateRank(state string) int {
+	switch state {
+	case Running:
+		return 0
+	case Stale:
+		return 1
+	default:
+		return 2
+	}
 }
 
 func unknownRoles(expected map[string]bool, reason string) []RoleStatus {
