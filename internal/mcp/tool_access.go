@@ -20,11 +20,18 @@ func ForbiddenToolMatch(forbidden []string, tool string) (string, bool) {
 	return "", false
 }
 
+// Pre-dispatch stages of the MCP proxy that ToolAccess reports. They name
+// where in the proxy a tool is decided; they are not explanation stages.
+const (
+	AccessStageForbiddenTools = "forbidden_tools"
+	AccessStagePolicy         = "policy"
+)
+
 // ToolAccess is the MCP proxy's pre-dispatch decision for a tool name.
 type ToolAccess struct {
 	Tool    string   `json:"tool"`
 	Allowed bool     `json:"allowed"`
-	Stage   string   `json:"stage"`             // forbidden_tools | policy
+	Stage   string   `json:"stage"`             // AccessStageForbiddenTools | AccessStagePolicy
 	Matched string   `json:"matched,omitempty"` // the forbidden_tools entry that matched
 	Reasons []string `json:"reasons,omitempty"` // policy deny reasons
 	Note    string   `json:"note,omitempty"`
@@ -37,11 +44,11 @@ type ToolAccess struct {
 // evaluated without them; Note says so.
 func EvaluateToolAccess(ctx context.Context, cfg *policy.ProxyPolicyConfig, engine *policy.ProxyEngine, tool string) (ToolAccess, error) {
 	if m, ok := ForbiddenToolMatch(cfg.Proxy.ForbiddenTools, tool); ok {
-		return ToolAccess{Tool: tool, Allowed: false, Stage: "forbidden_tools", Matched: m}, nil
+		return ToolAccess{Tool: tool, Allowed: false, Stage: AccessStageForbiddenTools, Matched: m}, nil
 	}
 	d, err := engine.EvaluateProxyToolAccess(ctx, &policy.ProxyInput{ToolName: tool, Vendor: cfg.Proxy.Upstream.Vendor, UpstreamRegion: upstreamRegionOf(cfg)})
 	if err != nil {
 		return ToolAccess{}, err
 	}
-	return ToolAccess{Tool: tool, Allowed: d.Allowed, Stage: "policy", Reasons: d.Reasons, Note: "evaluated without call arguments"}, nil
+	return ToolAccess{Tool: tool, Allowed: d.Allowed, Stage: AccessStagePolicy, Reasons: d.Reasons, Note: "evaluated without call arguments"}, nil
 }
