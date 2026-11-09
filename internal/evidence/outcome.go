@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/dativo-io/talon/internal/explanation"
@@ -42,6 +43,7 @@ const (
 	DownstreamFailed      = "failed"       // the attempt failed (transport or provider error)
 	DownstreamUnknown     = "unknown"      // the effect may exist; no trustworthy answer
 	DownstreamNotRecorded = "not_recorded" // this record type carries no downstream fact
+	DownstreamCache       = "cache"        // Talon answered from its semantic cache; no destination was involved
 )
 
 // OutcomeOf projects ev. Rules, in order:
@@ -58,12 +60,18 @@ const (
 //     vendor rejected it; any other failure happened before the transport.
 //   - proxy_tool_call: the call was forwarded and answered; a denied
 //     proxy_tool_call is an answer Talon withheld (output scanning).
-//   - gateway / gateway_failover_attempt: a failover-attempt record is a
-//     failed provider attempt; an allowed gateway record reached the
-//     provider (failed when it carries an execution error); a denied one
-//     whose primary explanation stage is policy_evaluation or pre_execution
-//     was refused before the provider, one denied at output_validation was
-//     answered and withheld.
+//   - gateway cache hits (cache_hit true): Talon served the response from its
+//     semantic cache and returned without contacting a provider
+//     (internal/gateway: recordEvidence then writeCachedCompletion).
+//   - gateway / gateway_failover_attempt failures: dispatched only when the
+//     record carries the provider's HTTP status (failover.upstream_status),
+//     which proves an answer came back; a transport failure without one
+//     (connection error, timeout, cancellation) may have happened before or
+//     after delivery, so dispatch is unknown.
+//   - an allowed gateway record without an error reached the provider and was
+//     answered; a denied one whose primary explanation stage is
+//     policy_evaluation or pre_execution was refused before the provider, one
+//     denied at output_validation was answered and withheld.
 //   - anything else: decision only; dispatch and downstream not_recorded.
 func OutcomeOf(ev *Evidence) Outcome {
 	out := Outcome{Decision: "denied", Dispatch: DispatchNotRecorded, Downstream: DownstreamNotRecorded}
@@ -89,8 +97,7 @@ func OutcomeOf(ev *Evidence) Outcome {
 			out.Basis = "proxy_tool_call denied after the upstream answered: the answer was withheld"
 		}
 	case "gateway_failover_attempt":
-		out.Dispatch, out.Downstream = DispatchDispatched, DownstreamFailed
-		out.Basis = "gateway_failover_attempt: a provider attempt that failed"
+		providerFailure(ev, &out, "gateway_failover_attempt")
 	case "gateway":
 		gatewayOutcome(ev, &out)
 	default:
@@ -139,14 +146,38 @@ func upstreamErrorOutcome(ev *Evidence, out *Outcome) {
 	}
 }
 
+// providerFailure reads a failed provider attempt: dispatched only when the
+// provider's HTTP status was recorded, unknown otherwise.
+func providerFailure(ev *Evidence, out *Outcome, kind string) {
+	if f := ev.Failover; f != nil && f.UpstreamStatus > 0 {
+		out.Dispatch, out.Downstream = DispatchDispatched, DownstreamFailed
+		out.Basis = fmt.Sprintf("%s: the provider answered HTTP %d", kind, f.UpstreamStatus)
+		return
+	}
+	out.Dispatch, out.Downstream = DispatchUnknown, DownstreamUnknown
+	class := ""
+	if ev.Failover != nil && ev.Failover.ErrorClass != "" {
+		class = " (" + ev.Failover.ErrorClass + ")"
+	}
+	out.Basis = kind + ": failed without a recorded provider response" + class + "; delivery is not proven"
+}
+
 func gatewayOutcome(ev *Evidence, out *Outcome) {
-	if ev.PolicyDecision.Allowed {
-		out.Dispatch, out.Downstream = DispatchDispatched, DownstreamCompleted
-		out.Basis = "allowed gateway record: forwarded to the provider"
-		if ev.Execution.Error != "" {
-			out.Downstream = DownstreamFailed
-			out.Basis = "allowed gateway record with an execution error from the provider path"
+	if ev.CacheHit {
+		out.Dispatch, out.Downstream = DispatchNotDispatched, DownstreamCache
+		out.Basis = "gateway cache hit: answered from Talon's semantic cache, no provider call"
+		if ev.CacheEntryID != "" {
+			out.Basis += " (cache entry " + ev.CacheEntryID + ")"
 		}
+		return
+	}
+	if ev.PolicyDecision.Allowed {
+		if ev.Execution.Error != "" {
+			providerFailure(ev, out, "allowed gateway record with an execution error")
+			return
+		}
+		out.Dispatch, out.Downstream = DispatchDispatched, DownstreamCompleted
+		out.Basis = "allowed gateway record: forwarded to the provider and answered"
 		return
 	}
 	stage := ""
