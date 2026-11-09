@@ -72,9 +72,8 @@ test-console-frontend: ## Console frontend: type-check, unit tests, and fail if 
 	@cd internal/console/frontend && npm ci --no-audit --no-fund && npm run typecheck && npm test && npm run build
 	@bash scripts/check-console-assets.sh
 
-test-browser-console: build ## Real-browser console tests (#537, #539-#544): Playwright/Chromium against `talon ui serve` over a seeded signed installation (needs node; first run: cd tests/browser && npm ci && npx playwright install chromium)
-	@go build -o bin/talon-browser-seed ./tests/browser/seed
-	@cd tests/browser && TALON_BINARY=$(CURDIR)/bin/talon TALON_SEED_BINARY=$(CURDIR)/bin/talon-browser-seed npx playwright test
+test-browser-console: build ## Real-browser console tests (#537, #539-#544): Playwright/Chromium against `talon ui serve` over a seeded signed installation (needs node >= 18; installs the pinned Playwright and Chromium on first run); also smoke section 44 and the CI browser job
+	@TALON_BINARY=$(CURDIR)/bin/talon bash scripts/console-browser-smoke.sh
 
 test-console-compose-smoke: ## Console Compose smoke (#536/#537, Docker): the no-key examples/docker-compose stack starts `talon-ui` on 127.0.0.1:8787 only; pair with the logged one-time code, read the live store, no privileged route through the console, reissue via `docker compose exec talon-ui talon ui pair`, console restart leaves the data plane serving
 	@bash scripts/console-compose-smoke.sh
@@ -123,7 +122,7 @@ showcase-bundle: build ## Build the versioned OpenShell showcase bundle + manife
 openshell-proto: ## Regenerate Go types from the pinned OpenShell v0.1.3 protos (buf via go run; generated code is checked in)
 	@bash scripts/openshell-proto-gen.sh
 
-test-smoke: build ## Run black-box smoke test against the REAL providers (prereqs: TALON_SECRETS_KEY, OPENAI_API_KEY and ANTHROPIC_API_KEY — section 42 sends real Anthropic requests; see tests/smoke_test.sh; SMOKE_ONLY selects sections; sections 37/38 embed the MCP governance and OpenShell smokes)
+test-smoke: build ## Run black-box smoke test against the REAL providers (prereqs: TALON_SECRETS_KEY, OPENAI_API_KEY and ANTHROPIC_API_KEY — section 42 sends real Anthropic requests; node >= 18 for section 44, the operations console in Chromium; see tests/smoke_test.sh; SMOKE_ONLY selects sections; sections 37/38/43/44 embed the MCP governance, OpenShell, console contract and console browser smokes)
 	@PATH="$(CURDIR)/bin:$$PATH" bash ./tests/smoke_test.sh
 
 test-all: test test-e2e ## Run unit, integration, and e2e tests (does not include test-smoke)

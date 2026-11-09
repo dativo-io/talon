@@ -361,21 +361,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Build talon and the browser fixture
-        run: |
-          go build -o "$RUNNER_TEMP/talon" ./cmd/talon/
-          go build -o "$RUNNER_TEMP/talon-seed" ./tests/browser/seed
+      - name: Build talon
+        run: go build -o "$RUNNER_TEMP/talon" ./cmd/talon/
       - name: Install Playwright (pinned) and Chromium
         working-directory: tests/browser
         run: |
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
-      - name: Console pairing in a real browser
-        working-directory: tests/browser
+      # Same entry point as `make test-browser-console` and smoke section 44.
+      - name: Operations console in a real browser
         env:
           TALON_BINARY: ${{ runner.temp }}/talon
-          TALON_SEED_BINARY: ${{ runner.temp }}/talon-seed
-        run: npx playwright test
+        run: bash scripts/console-browser-smoke.sh
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

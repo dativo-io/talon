@@ -22,7 +22,9 @@
 #   them into command lines — the harness redacts `secrets set` lines, sk-/sk-ant- tokens, bearer and
 #   x-api-key values before anything reaches a log.
 #   SMOKE_ONLY selections need only the keys their sections use: offline sections (37–41) need none,
-#   42_anthropic needs ANTHROPIC_API_KEY only, 43_console_contract is offline, everything else needs OPENAI_API_KEY.
+#   42_anthropic needs ANTHROPIC_API_KEY only, 43_console_contract and 44_console_browser are offline, everything
+#   else needs OPENAI_API_KEY. 44_console_browser (the operations console in a real Chromium) needs node >= 18 and,
+#   on its first run, network to install the pinned Playwright package and Chromium.
 # Optional: TALON_SIGNING_KEY, TALON_ADMIN_KEY, TALON_AGENT_KEY (defaults applied for smoke run). curl, jq; port 8080 free.
 #
 # Output: All sections run regardless of failures. Failures print exit code and
@@ -317,7 +319,13 @@ dump_diag_env() {
 # none, the Anthropic section needs the Anthropic key, every other section
 # needs the OpenAI key. TALON_SECRETS_KEY, talon and the tools are always
 # required.
-readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance 38_openshell 39_budget 40_webhook_triggers 41_action_gateway 43_console_contract "
+readonly SMOKE_OFFLINE_SECTIONS=" 37_mcp_governance 38_openshell 39_budget 40_webhook_triggers 41_action_gateway 43_console_contract 44_console_browser "
+# smoke_run_includes SECTION: is SECTION part of this run (full, or SMOKE_ONLY)?
+smoke_run_includes() {
+  [[ -z "${SMOKE_ONLY:-}" ]] && return 0
+  case " ${SMOKE_ONLY} " in *" $1 "*) return 0 ;; esac
+  return 1
+}
 readonly SMOKE_ANTHROPIC_SECTIONS=" 42_anthropic "
 # smoke_run_needs_provider openai|anthropic: does this run (full, or the
 # SMOKE_ONLY selection) exercise the provider?
@@ -342,6 +350,12 @@ check_prereqs() {
   [[ -n "${TALON_SECRETS_KEY:-}" ]] || missing+=("TALON_SECRETS_KEY set (32-byte for AES-256-GCM vault)")
   command -v curl &>/dev/null || missing+=("curl")
   command -v jq &>/dev/null || missing+=("jq")
+  # The browser section is part of the full suite: a missing Node is a
+  # prerequisite, never a silent skip (SMOKE_ONLY without 44 does not need it).
+  if smoke_run_includes 44_console_browser; then
+    command -v node &>/dev/null || missing+=("node >= 18 and npm (section 44_console_browser drives the console in Chromium; test-time only)")
+    command -v npm &>/dev/null || missing+=("npm (section 44_console_browser)")
+  fi
   if [[ ${#missing[@]} -gt 0 ]]; then
     echo "Missing: ${missing[*]}"
     exit 2
@@ -372,7 +386,7 @@ check_prereqs() {
     echo "Missing provider prerequisite(s) — a real-provider smoke run is not skipped silently:"
     printf '  - %s\n' "${missing[@]}"
     echo "Export the keys from your secret store (never paste them into a command line), or select"
-    echo "offline sections only, e.g. SMOKE_ONLY=\"37_mcp_governance 38_openshell 39_budget 40_webhook_triggers 41_action_gateway 43_console_contract\"."
+    echo "offline sections only, e.g. SMOKE_ONLY=\"37_mcp_governance 38_openshell 39_budget 40_webhook_triggers 41_action_gateway 43_console_contract 44_console_browser\"."
     exit 2
   fi
   # Optional: default signing key, admin key, and tenant API keys for smoke run
@@ -774,7 +788,8 @@ for _section_file in \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
   33_auditor_documents.sh 34_compliance_api.sh 35_failover.sh \
   36_external_scanner.sh 37_mcp_governance.sh 38_openshell.sh 39_budget.sh \
-  40_webhook_triggers.sh 41_action_gateway.sh 42_anthropic.sh 43_console_contract.sh; do
+  40_webhook_triggers.sh 41_action_gateway.sh 42_anthropic.sh 43_console_contract.sh \
+  44_console_browser.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -874,6 +889,7 @@ main() {
   run_section "41_action_gateway" test_section_41_action_gateway
   run_section "42_anthropic" test_section_42_anthropic
   run_section "43_console_contract" test_section_43_console_contract
+  run_section "44_console_browser" test_section_44_console_browser
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency
