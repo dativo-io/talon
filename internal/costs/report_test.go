@@ -447,3 +447,41 @@ func TestBuild_SevenDayWindowCrossesMonthBoundary(t *testing.T) {
 	assert.NotContains(t, r.UnavailableFields, "today_eur")
 	assert.InDelta(t, 0.11, r.MonthEUR, eps)
 }
+
+// currencyQueryFails is a Source whose aggregate cost queries succeed while
+// the currency validation query fails.
+type currencyQueryFails struct {
+	Source
+	err error
+}
+
+func (c currencyQueryFails) CurrenciesInRange(context.Context, string, string, time.Time, time.Time) (map[string]int, error) {
+	return nil, c.err
+}
+
+// TestBuild_CurrencyValidationFailureFailsClosed (#535 review round 5): when
+// the aggregate totals are computed but their unit cannot be validated, the
+// totals are not measurements and no budget utilization is derived from them.
+func TestBuild_CurrencyValidationFailureFailsClosed(t *testing.T) {
+	store := seedFixture(t)
+	src := currencyQueryFails{Source: store, err: errors.New("disk I/O error")}
+	r, err := Build(context.Background(), src, Scope{TenantID: "default"}, WindowAt(fixtureNow), "EUR", fixedCaps{daily: 1, monthly: 10})
+	require.NoError(t, err, "a failed validation query is reported, not fatal")
+	assert.InDelta(t, 0.75, r.MonthEUR, eps, "the legacy figure is still computed")
+	for _, f := range []string{"today_eur", "seven_days_eur", "month_eur", "by_agent_eur", "by_agent_month_eur", "currencies.day", "currencies.seven_days", "currencies.month", "daily_budget", "monthly_budget"} {
+		assert.Contains(t, r.UnavailableFields, f, f)
+	}
+	assert.Nil(t, r.DailyBudget, "no utilization from totals whose unit was not validated")
+	assert.Nil(t, r.MonthlyBudget)
+	assert.Nil(t, r.Currencies)
+	joined := strings.Join(r.Warnings, " | ")
+	assert.Contains(t, joined, "disk I/O error")
+	assert.Contains(t, joined, "could not be validated")
+	assert.Contains(t, joined, "budget utilization not computed")
+
+	// Agent scope takes the same path.
+	ra, err := Build(context.Background(), src, Scope{TenantID: "default", AgentID: "a"}, WindowAt(fixtureNow), "EUR", fixedCaps{daily: 1, monthly: 10})
+	require.NoError(t, err)
+	assert.Contains(t, ra.UnavailableFields, "today_eur")
+	assert.Nil(t, ra.DailyBudget)
+}
