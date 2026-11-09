@@ -25,6 +25,9 @@ type Verification struct {
 type RecordDetail struct {
 	Record       *Evidence    `json:"record"`
 	Verification Verification `json:"verification"`
+	// Outcome is OutcomeOf(Record): decision, dispatch and downstream as
+	// separate recorded facts. Additive (#541).
+	Outcome Outcome `json:"outcome"`
 }
 
 // Valid reports whether the signature verified.
@@ -40,7 +43,7 @@ func (s *Store) Detail(ctx context.Context, id string) (*RecordDetail, error) {
 	if s.VerifyRecord(ev) {
 		state = "valid"
 	}
-	return &RecordDetail{Record: ev, Verification: Verification{State: state, CheckedAt: time.Now().UTC()}}, nil
+	return &RecordDetail{Record: ev, Verification: Verification{State: state, CheckedAt: time.Now().UTC()}, Outcome: OutcomeOf(ev)}, nil
 }
 
 // Stats reports the store-wide record count and the newest record timestamp

@@ -39,6 +39,7 @@ var (
 	uiStoreWait        time.Duration
 	uiPidFile          string
 	uiGatewayConfig    string
+	uiProxyConfig      string
 	uiNoBrowser        bool
 )
 
@@ -95,7 +96,8 @@ func init() {
 		c.Flags().DurationVar(&uiIdleTTL, "session-idle", time.Hour, "idle timeout of a browser session")
 		c.Flags().DurationVar(&uiStoreWait, "store-wait", 30*time.Second, "how long to wait for the evidence store to appear (a data plane that is still starting)")
 		c.Flags().StringVar(&uiPidFile, "pid-file", "", "pid file for 'talon ui pair' (default <data_dir>/"+uiPidFileName+")")
-		c.Flags().StringVar(&uiGatewayConfig, "gateway-config", "", "gateway config for effective caps (default $TALON_GATEWAY_CONFIG or talon.config.yaml)")
+		c.Flags().StringVar(&uiGatewayConfig, "gateway-config", "", "gateway config for effective caps and the Configuration page (default $TALON_GATEWAY_CONFIG or talon.config.yaml)")
+		c.Flags().StringVar(&uiProxyConfig, "proxy-config", "", "MCP proxy config shown read-only on the Configuration page (optional; the same file talon serve --proxy-config uses)")
 	}
 	uiCmd.Flags().BoolVar(&uiNoBrowser, "no-browser", false, "do not open the browser")
 	uiPairCmd.Flags().StringVar(&uiPidFile, "pid-file", "", "pid file of the console process (default <data_dir>/"+uiPidFileName+")")
@@ -122,7 +124,7 @@ func runUIServe(cmd *cobra.Command, openBrowser bool) error {
 
 	svc, err := console.New(console.Config{
 		Evidence: inst.evidence, Sessions: inst.sessions, StorePath: inst.storePath, Currency: inst.currency,
-		Fleet: inst.fleet, Budgets: console.FleetCapsBudgets{Fleet: inst.fleet},
+		Fleet: inst.fleet, Budgets: console.FleetCapsBudgets{Fleet: inst.fleet}, ConfigSources: inst.sources,
 		Version: resolvedVersion(), Commit: Commit,
 	})
 	if err != nil {
@@ -176,6 +178,7 @@ func runUIServe(cmd *cobra.Command, openBrowser bool) error {
 type consoleInstallation struct {
 	storePath string
 	currency  string
+	sources   console.ConfigSources
 	evidence  *evidence.Store
 	sessions  *talonsession.Store
 	fleet     console.FleetSource
@@ -221,7 +224,8 @@ func resolveConsoleInstallation(ctx context.Context, cfg *config.Config, storeWa
 	currency := loadPricingTable(cfg, "").CurrencyCode()
 	return &consoleInstallation{
 		storePath: storePath, currency: currency, evidence: ev, sessions: ss,
-		fleet: console.OfflineFleetSource(cfg.AgentsDir, cfg.DefaultPolicy, gatewayCfg, currency, ev, ss, nil),
+		sources: console.ConfigSources{AgentsDir: cfg.AgentsDir, DefaultPolicy: cfg.DefaultPolicy, GatewayConfig: gatewayCfg, ProxyConfig: strings.TrimSpace(uiProxyConfig)},
+		fleet:   console.OfflineFleetSource(cfg.AgentsDir, cfg.DefaultPolicy, gatewayCfg, currency, ev, ss, nil),
 	}, nil
 }
 
