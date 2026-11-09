@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-console-smoke test-console-compose-smoke test-browser-console test-openshell-live test-openshell-showcase-contract test-release-verify verify-release openshell-showcase-validate openshell-agent-image showcase-bundle test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-console-smoke test-console-compose-smoke test-browser-console console-frontend test-console-frontend test-openshell-live test-openshell-showcase-contract test-release-verify verify-release openshell-showcase-validate openshell-agent-image showcase-bundle test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -65,8 +65,16 @@ test-action-smoke: ## Exact governed-action smoke (#458) + one company action po
 test-console-smoke: ## Operations-console smoke (#535/#536/#537, no keys, no Docker): read model opened read-only on a live `talon serve --gateway` store == `talon agents/costs/session/audit --json`, across a restart and after the data plane stops; `talon metrics` fails loudly without the admin key or server; `talon ui serve` real-binary pairing, read-only boundary, reissue and restart independence; also smoke section 43 and a PR CI step
 	@bash scripts/console-smoke.sh
 
-test-browser-console: build ## Real-browser console pairing test (#537): Playwright/Chromium against `talon ui serve` from bin/talon (needs node; first run: cd tests/browser && npm ci && npx playwright install chromium)
-	@cd tests/browser && TALON_BINARY=$(CURDIR)/bin/talon npx playwright test
+console-frontend: ## Build the console frontend into internal/console/web/static (embedded in the binary; needs node 22; commit the result)
+	@cd internal/console/frontend && npm ci --no-audit --no-fund && npm run build
+
+test-console-frontend: ## Console frontend: type-check, unit tests, and fail if the committed embedded assets differ from a fresh build
+	@cd internal/console/frontend && npm ci --no-audit --no-fund && npm run typecheck && npm test && npm run build
+	@bash scripts/check-console-assets.sh
+
+test-browser-console: build ## Real-browser console tests (#537, #539-#544): Playwright/Chromium against `talon ui serve` over a seeded signed installation (needs node; first run: cd tests/browser && npm ci && npx playwright install chromium)
+	@go build -o bin/talon-browser-seed ./tests/browser/seed
+	@cd tests/browser && TALON_BINARY=$(CURDIR)/bin/talon TALON_SEED_BINARY=$(CURDIR)/bin/talon-browser-seed npx playwright test
 
 test-console-compose-smoke: ## Console Compose smoke (#536/#537, Docker): the no-key examples/docker-compose stack starts `talon-ui` on 127.0.0.1:8787 only; pair with the logged one-time code, read the live store, no privileged route through the console, reissue via `docker compose exec talon-ui talon ui pair`, console restart leaves the data plane serving
 	@bash scripts/console-compose-smoke.sh
