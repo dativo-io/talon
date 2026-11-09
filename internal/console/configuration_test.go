@@ -228,3 +228,34 @@ func TestSearch_TenantFilterBeforeLimit(t *testing.T) {
 		assert.Equal(t, "default", e.TenantID)
 	}
 }
+
+// TestSearch_OneScopeForEveryResultType (#553 review 2): with no tenant the
+// search covers the default tenant for use cases as well as for sessions and
+// evidence; a use case of tenant acme appears only in an acme search.
+func TestSearch_OneScopeForEveryResultType(t *testing.T) {
+	f := seed(t)
+	d := filepath.Join(f.dir, "agents", "hr-acme-copilot")
+	require.NoError(t, os.MkdirAll(d, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte("agent:\n  name: hr-acme-copilot\n  version: \"1.0.0\"\n  tenant_id: acme\npolicies:\n  cost_limits:\n    monthly: 10\n"), 0o600))
+	svc := f.service(t)
+	ctx := context.Background()
+
+	r, err := svc.Search(ctx, "", "hr-")
+	require.NoError(t, err)
+	assert.Equal(t, ScopeTenant, r.Meta.TenantScope)
+	assert.Equal(t, "default", r.Meta.TenantID)
+	for _, u := range r.UseCases {
+		assert.Equal(t, "default", u.TenantID, "use cases are searched in the reported scope, like sessions and evidence")
+	}
+	names := []string{}
+	for _, u := range r.UseCases {
+		names = append(names, u.Name)
+	}
+	assert.Equal(t, []string{"hr-analytics-assistant"}, names)
+
+	r, err = svc.Search(ctx, "acme", "hr-")
+	require.NoError(t, err)
+	require.Len(t, r.UseCases, 1)
+	assert.Equal(t, "hr-acme-copilot", r.UseCases[0].Name)
+	assert.Equal(t, "acme", r.Meta.TenantID)
+}
