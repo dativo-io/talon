@@ -19,6 +19,15 @@ For user-facing entries, include:
 
 ### Added
 
+- **Use-case-centric investigation in the console: four sections per AI use case, a kept investigation path, plain-language outcomes and explicit proof boundaries (#533).** Problem: understanding one AI use case meant reading six cards with no order. Following a decision to its evidence lost the tenant and use case on the way, and pages did not separate what Talon proves from what the application only asserted. What shipped:
+  - **Four sections per use case.** *Summary*, *Sessions & Activity*, *Policy & Runtime* and *Costs*, each answering one question. The detail DTO adds `readiness`, `findings`, `recent_decisions` (the use case's newest evidence rows with `outcome`, as `talon audit list --json`) and `issues`.
+  - **Investigation path.** Breadcrumbs follow tenant → use case → session → evidence, built from the URL and the record. The activity range is in the URL.
+  - **Plain-language outcomes.** Each decision first reads as a sentence that never claims a destination answer the evidence does not record.
+  - **Proof boundaries.** A *Talon-verified / Application-reported / Not independently verified* block appears on sessions and evidence.
+  - **Cross-tenant spend.** With all tenants selected, Costs lists spend per (tenant, use case) from the canonical fleet rows and drills into sessions without first choosing a use case.
+
+  Who cares: operators and reviewers investigating one workload or one incident. Verify: `make test-browser-console` (`06-console-investigation.spec.js`), `make test-console-frontend` (`lib/outcome.test.ts`), `go test ./internal/console -run UseCaseDetail`. Upgrade impact: additive DTO fields; no route or field removed.
+
 - **The console no longer gives an all-clear while the runtime cannot serve: operational readiness, findings and a tenant selector (#533).** Problem: the Overview could say "No AI use case needs attention" while the expected gateway was offline or the MCP proxy heartbeated without a working agent identity registry. Fleet health is correct within its scope (budgets, policy, recorded traffic), but it never looks at runtime readiness. In the People Analytics demo, a stored agent key that no longer decrypted stopped `serve --gateway` at start-up, the proxy kept heartbeating and refused the right key, and the page still looked healthy. What shipped:
   - **Readiness projection.** `overview.readiness` and `system.readiness` cover the gateway, the MCP proxy, configuration activation (digests of the files running processes loaded, rejected reloads), agent authentication, the evidence and session stores, and the runtime records. Each dimension is OK, degraded, unverified, unknown or not configured, with its source and when it was established. The projection is installation-wide and never tenant-filtered, and it is kept apart from canonical fleet health, which is unchanged.
   - **Findings.** `findings` answer what is wrong, what it affects, why it is reported, when that was observed and where to look next. Installation findings come first, then the use cases fleet health flags.
