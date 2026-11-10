@@ -70,19 +70,19 @@ test("Session investigation: allowed, denied-not-dispatched and HR-rejected stay
 
   const timeline = page.locator("ol.timeline");
   const item = (id) => timeline.locator("li", { has: page.getByRole("link", { name: id }) });
-  await expect(item(f.allowed_evidence).getByText("Talon allowed")).toBeVisible();
-  await expect(item(f.allowed_evidence).getByText("Destination answered")).toBeVisible();
-  await expect(item(f.export_denied_evidence).getByText("Talon denied")).toBeVisible();
-  await expect(item(f.export_denied_evidence).getByText("Not dispatched")).toBeVisible();
-  await expect(item(f.export_denied_evidence).getByText("hr_employee_export")).toBeVisible();
+  await expect(item(f.allowed_evidence).getByText("Talon allowed", { exact: true })).toBeVisible();
+  await expect(item(f.allowed_evidence).getByText("Destination answered", { exact: true })).toBeVisible();
+  await expect(item(f.export_denied_evidence).getByText("Talon denied", { exact: true })).toBeVisible();
+  await expect(item(f.export_denied_evidence).getByText("Not dispatched", { exact: true })).toBeVisible();
+  await expect(item(f.export_denied_evidence).getByText("hr_employee_export", { exact: true })).toBeVisible();
   // Talon allowed the SQL; the HR backend rejected it. Not a Talon denial.
-  await expect(item(f.hr_rejected_evidence).getByText("Talon allowed")).toBeVisible();
-  await expect(item(f.hr_rejected_evidence).getByText("Destination rejected")).toBeVisible();
-  await expect(item(f.hr_rejected_evidence).getByText("Talon denied")).toHaveCount(0);
+  await expect(item(f.hr_rejected_evidence).getByText("Talon allowed", { exact: true })).toBeVisible();
+  await expect(item(f.hr_rejected_evidence).getByText("Destination rejected", { exact: true })).toBeVisible();
+  await expect(item(f.hr_rejected_evidence).getByText("Talon denied", { exact: true })).toHaveCount(0);
   // A cache hit is not a provider dispatch.
-  await expect(item(f.cache_hit_evidence).getByText("Not dispatched")).toBeVisible();
-  await expect(item(f.cache_hit_evidence).getByText("Answered from Talon's cache")).toBeVisible();
-  await expect(item(f.cache_hit_evidence).getByText("Destination answered")).toHaveCount(0);
+  await expect(item(f.cache_hit_evidence).getByText("Not dispatched", { exact: true })).toBeVisible();
+  await expect(item(f.cache_hit_evidence).getByText("Answered from Talon's cache", { exact: true })).toBeVisible();
+  await expect(item(f.cache_hit_evidence).getByText("Destination answered", { exact: true })).toHaveCount(0);
 
   await item(f.export_denied_evidence).getByRole("link", { name: f.export_denied_evidence }).click();
   await expect(page.getByText("Signature valid")).toBeVisible();
@@ -94,7 +94,7 @@ test("Session investigation: allowed, denied-not-dispatched and HR-rejected stay
 test("Tampered and standalone evidence: invalid signature is shown as such; no session is fabricated", async ({ page }) => {
   const f = state().fixture;
   await pair(page, `/evidence/${f.tampered_evidence}`);
-  await expect(page.getByText("Signature invalid")).toBeVisible();
+  await expect(page.getByText("Signature invalid: record changed after signing")).toBeVisible();
   await page.goto(`/evidence/${f.standalone_evidence}`);
   await expect(page.getByText("Signature valid")).toBeVisible();
   await expect(page.getByText("none: a standalone record, not part of a session")).toBeVisible();
@@ -167,7 +167,7 @@ test("Global search finds evidence by id and navigates to it", async ({ page }) 
   await page.getByRole("searchbox").fill(f.hr_rejected_evidence);
   await page.getByRole("listbox", { name: "Search results" }).getByText(f.hr_rejected_evidence).click();
   await expect(page).toHaveURL(new RegExp(`/evidence/${f.hr_rejected_evidence}`));
-  await expect(page.getByText("Destination rejected")).toBeVisible();
+  await expect(page.getByText("Destination rejected", { exact: true })).toBeVisible();
 });
 
 test("Unknown routes are a truthful 404", async ({ page }) => {

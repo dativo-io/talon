@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import { useApi } from "../api/useApi";
 import type { ObservedCursor, SessionCursor, SessionList } from "../api/types";
 import { PageHead } from "../components/Layout";
+import { Breadcrumbs, scopeCrumb } from "../components/Breadcrumbs";
 import { AvailabilityNotice, EmptyState, ErrorState, Loading, SourceFreshness } from "../components/ui";
 import { isMeasurement } from "../lib/availability";
 import { humanize, integer, money, utc, utcShort } from "../lib/format";
@@ -47,8 +48,9 @@ export function Sessions() {
   const scopeTenant = d?.meta.tenant_id ?? (tenant || "default");
   return (
     <>
+      {agent ? <Breadcrumbs items={[scopeCrumb(tenant), { label: agent, to: scoped(`/use-cases/${encodeURIComponent(agent)}`, scopeTenant) }, { label: "Sessions" }]} /> : null}
       <PageHead
-        title="Sessions"
+        title={agent ? `Sessions of ${agent}` : "Sessions"}
         lede="Managed sessions with the lifecycle Talon tracks, and session ids observed only in evidence. Open one to see what Talon decided and what happened."
         actions={<button type="button" onClick={res.reload} disabled={res.loading}>Refresh</button>}
       />

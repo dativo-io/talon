@@ -180,6 +180,24 @@ type UseCaseDetail struct {
 	// EffectivePolicy points at the per-use-case effective-policy report
 	// (#305, /console/v1/use-cases/{name}/effective-policy).
 	EffectivePolicy Availability `json:"effective_policy"`
+	// Readiness is the installation's (#533): it applies to this use case
+	// as to every other. Findings are the installation findings plus this
+	// use case's own canonical fleet finding, most urgent first.
+	Readiness Readiness `json:"readiness"`
+	Findings  []Finding `json:"findings"`
+	// RecentDecisions are this use case's newest records with their outcome.
+	RecentDecisions DecisionList `json:"recent_decisions"`
+	// Issues are configuration issues the catalog attributes to this name
+	// (for example a duplicated name).
+	Issues []agentcatalog.FleetIssue `json:"issues"`
+}
+
+// DecisionList is a bounded list of evidence index rows (evidence.IndexOf,
+// each with evidence.OutcomeOf), newest first.
+type DecisionList struct {
+	Availability Availability     `json:"availability"`
+	Records      []evidence.Index `json:"records"`
+	Limit        int              `json:"limit"`
 }
 
 // SessionList is a bounded page of sessions from two sources, each with its

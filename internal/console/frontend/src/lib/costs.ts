@@ -1,4 +1,4 @@
-import type { AgentRow, CostReport } from "../api/types";
+import type { AgentRow, BudgetUsage, CostReport } from "../api/types";
 
 // Field names of the cost report. The `_eur` suffix is historical: the unit
 // of every amount is CostReport.currency.
@@ -39,6 +39,14 @@ export function breakdownRows(r: CostReport, b: Breakdown): BreakdownRow[] {
 }
 
 export function fieldValue(r: CostReport, field: "today_eur" | "seven_days_eur" | "month_eur"): number | null {
+  return (r.unavailable_fields ?? []).includes(field) ? null : r[field];
+}
+
+// budgetUsage is a report's budget utilization, or null when the report lists
+// that budget in unavailable_fields (spend in a currency the cap cannot be
+// compared with): the percentage must then not be shown at all. undefined
+// means no effective cap was reported.
+export function budgetUsage(r: CostReport, field: "daily_budget" | "monthly_budget"): BudgetUsage | null | undefined {
   return (r.unavailable_fields ?? []).includes(field) ? null : r[field];
 }
 

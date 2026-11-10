@@ -3,6 +3,10 @@ import { api } from "../api/client";
 import { useApi } from "../api/useApi";
 import type { EvidenceDetail } from "../api/types";
 import { PageHead } from "../components/Layout";
+import { Breadcrumbs, scopeCrumb } from "../components/Breadcrumbs";
+import { ProofBoundary } from "../components/ProofBoundary";
+import { outcomeStory } from "../lib/outcome";
+import { evidenceProof } from "../lib/proof";
 import { AvailabilityNotice, CopyableIdentifier, DecisionOutcome, DetailSection, ErrorState, EvidenceVerification, Loading, Chips } from "../components/ui";
 import { duration, humanize, utc } from "../lib/format";
 import { scoped, useScope } from "../lib/scope";
@@ -17,14 +21,37 @@ export function EvidencePage() {
   const res = useApi<EvidenceDetail>(api(`/evidence/${encodeURIComponent(id)}`), { tenant });
   const det = res.data?.detail;
   const r = det?.record;
+  const crumbs = [scopeCrumb(tenant)];
+  if (r) {
+    crumbs.push({ label: r.agent_id, to: scoped(`/use-cases/${encodeURIComponent(r.agent_id)}`, r.tenant_id) });
+    if (r.session_id) crumbs.push({ label: `Session ${r.session_id}`, to: scoped(`/sessions/${encodeURIComponent(r.session_id)}`, r.tenant_id, { agent: r.agent_id }) });
+  }
+  crumbs.push({ label: `Evidence ${id}` });
+  // A record whose signature fails tells no story: its outcome is a claim
+  // from an altered record (#558 review).
+  const tampered = det?.verification?.state === "invalid";
+  const story = !det
+    ? null
+    : tampered
+      ? { headline: "Signature invalid — this record's outcome cannot be relied on", detail: "The record changed after it was signed. Its decision, dispatch and destination facts are shown below only as claims; do not act on them.", tone: "error" as const }
+      : outcomeStory(det.outcome);
   return (
     <>
+      <Breadcrumbs items={crumbs} />
       <PageHead title="Evidence record" lede={<CopyableIdentifier value={id} label="evidence id" />} actions={<button type="button" onClick={res.reload}>Refresh</button>} />
       {res.error ? <ErrorState error={res.error} what={`evidence ${id}`} onRetry={res.reload} /> : null}
       {!res.data && res.loading ? <Loading what="evidence" /> : null}
       {res.data ? <AvailabilityNotice a={res.data.availability} what="Evidence" /> : null}
-      {det && r ? (
+      {det && r && story ? (
         <div className="grid">
+          <section className={`card story-card tone-border-${story.tone}`} aria-labelledby="ev-story" data-testid="outcome-story">
+            <div className="card-body story">
+              <h2 id="ev-story">{story.headline}</h2>
+              <p>{story.detail}</p>
+              {tampered ? null : <span className="small muted">The separate facts behind this sentence are under Decision and outcome.</span>}
+            </div>
+          </section>
+          <ProofBoundary facts={evidenceProof(r, det.outcome, det.verification)} />
           <DetailSection title="Verification" id="ev-verify">
             <div className="row">
               <EvidenceVerification v={det.verification} />
@@ -36,7 +63,8 @@ export function EvidencePage() {
           </DetailSection>
 
           <div className="grid two">
-            <DetailSection title="Decision and outcome" id="ev-outcome">
+            <DetailSection title={tampered ? "Decision and outcome — claimed, not verified" : "Decision and outcome"} id="ev-outcome">
+              {tampered ? <div className="notice error" role="note"><div>From an altered record: these values are what the record now says, not facts Talon vouches for.</div></div> : null}
               <DecisionOutcome o={det.outcome} />
               <p className="small">Why this outcome: {det.outcome.basis}</p>
               <dl className="facts">

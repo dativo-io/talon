@@ -3,7 +3,11 @@ import { Link, useParams } from "react-router-dom";
 import { api, getJSON } from "../api/client";
 import { useApi } from "../api/useApi";
 import type { EvidenceIndex, SessionDetail as DetailDTO, SessionSummary, TimelineCursor } from "../api/types";
-import { BackLink, PageHead } from "../components/Layout";
+import { PageHead } from "../components/Layout";
+import { Breadcrumbs, scopeCrumb } from "../components/Breadcrumbs";
+import { ProofBoundary } from "../components/ProofBoundary";
+import { outcomeStory } from "../lib/outcome";
+import { sessionProof } from "../lib/proof";
 import { AvailabilityNotice, Badge, Chips, CopyableIdentifier, CurrencyAmount, DecisionOutcome, DetailSection, EmptyState, ErrorState, Loading } from "../components/ui";
 import { duration, humanize, integer, utc } from "../lib/format";
 import { scoped, useScope } from "../lib/scope";
@@ -66,9 +70,17 @@ export function SessionDetail() {
       });
   };
   const scopeTenant = d?.meta.tenant_id ?? tenant;
+  // The use case of the path: the one the URL scopes to, else the only one
+  // the session's records name. Never guessed between several.
+  const agents = summary?.agents ?? [];
+  const pathAgent = agent || (agents.length === 1 ? agents[0] : "");
+  const crumbs = [scopeCrumb(tenant)];
+  if (pathAgent) crumbs.push({ label: pathAgent, to: scoped(`/use-cases/${encodeURIComponent(pathAgent)}`, scopeTenant) });
+  else crumbs.push({ label: "Sessions", to: scoped("/sessions", tenant) });
+  crumbs.push({ label: `Session ${id}` });
   return (
     <>
-      <BackLink to={scoped("/sessions", tenant)} label="Sessions" />
+      <Breadcrumbs items={crumbs} />
       <PageHead
         title={`Session ${id}`}
         lede={agent ? `Scoped to AI use case ${agent}.` : undefined}
@@ -109,6 +121,7 @@ export function SessionDetail() {
         <div className="grid">
           <Header d={d} s={summary} tenant={scopeTenant} />
           <Summary s={summary} />
+          <ProofBoundary facts={sessionProof(summary, Boolean(d.detail?.session), scopeTenant)} />
           <section className="card" aria-labelledby="timeline-title">
             <div className="card-head">
               <h2 id="timeline-title">Timeline</h2>
@@ -199,6 +212,11 @@ function Summary({ s }: { s: SessionSummary }) {
   );
 }
 
+function TimelineStory({ o }: { o: EvidenceIndex["outcome"] }) {
+  const s = outcomeStory(o);
+  return <div className="story"><strong>{s.headline}</strong><span className="small muted">{s.detail}</span></div>;
+}
+
 function Timeline({ records, tenant }: { records: EvidenceIndex[]; tenant: string }) {
   return (
     <ol className="timeline">
@@ -212,6 +230,7 @@ function Timeline({ records, tenant }: { records: EvidenceIndex[]; tenant: strin
               {r.model_used ? <span className="chip">{r.model_used}</span> : null}
               {r.agent_id ? <span className="small muted">{r.agent_id}</span> : null}
             </div>
+            <TimelineStory o={r.outcome} />
             <DecisionOutcome o={r.outcome} />
             {r.primary_explanation_code ? (
               <div className="small">
