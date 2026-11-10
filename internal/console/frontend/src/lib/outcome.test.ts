@@ -69,6 +69,10 @@ describe("proof boundaries", () => {
     expect(p.trust).toBe("signature_invalid");
     expect(p.recorded.join(" ")).not.toContain("Talon denied it — not dispatched:");
   });
+  it("a session's tenant comes from the session, not an empty all-tenants scope", () => {
+    const s = { session_id: "s", tenant_id: "default", record_count: 1, allowed: 1, denied: 0, agents: ["a"], total_cost: 0 } as unknown as SessionSummary;
+    expect(sessionProof(s, false, "").recorded[0]).toContain("in tenant default,");
+  });
   it("a session summary is Talon-recorded, never signature-verified (no per-record check)", () => {
     const s = { session_id: "s", record_count: 2, allowed: 2, denied: 0, agents: ["a"], total_cost: 0 } as unknown as SessionSummary;
     const p = sessionProof(s, false, "default");

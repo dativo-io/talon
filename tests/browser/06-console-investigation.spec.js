@@ -82,6 +82,7 @@ test("Case D: use case → session → decision → signed evidence, with plain-
   const proof = page.getByTestId("proof-boundary");
   await expect(proof.getByRole("heading", { name: "Talon-recorded", exact: true })).toBeVisible();
   await expect(proof.getByText("signature verified", { exact: false })).toHaveCount(0);
+  await expect(proof.getByText("in tenant default,", { exact: false })).toBeVisible();
   await expect(proof.getByRole("heading", { name: "Application-reported" })).toBeVisible();
   await expect(proof.getByRole("heading", { name: "Not independently verified" })).toBeVisible();
   await expect(proof.getByText("refund executed", { exact: false })).toBeVisible();
@@ -127,6 +128,9 @@ test("A tampered record: an invalid signature invalidates the narrative, not jus
   await expect(proof.getByRole("heading", { name: /^Talon-(verified|recorded)/ })).toHaveCount(0);
   await expect(proof.getByText(/^Talon (allowed|denied) it/)).toHaveCount(0);
   await expect(proof.getByText("Signature: INVALID", { exact: false })).toBeVisible();
+  // The detailed decision card is qualified too, not shown as Talon's facts.
+  await expect(page.getByRole("heading", { name: "Decision and outcome — claimed, not verified" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Decision and outcome", exact: true })).toHaveCount(0);
 });
 
 test("Case H: Costs with all tenants lists spend per (tenant, use case) and drills into sessions without choosing a use case first", async ({ page }) => {

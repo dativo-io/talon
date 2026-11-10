@@ -40,7 +40,7 @@ export function evidenceProof(r: EvidenceRecord, o: Outcome | undefined, v: Veri
   const story = outcomeStory(o);
   const verified = [
     `AI use case ${r.agent_id} in tenant ${r.tenant_id}, as Talon resolved it at its boundary.`,
-    `Talon's decision: ${r.policy_decision.allowed ? "allowed" : "denied"} (${r.policy_decision.action}).`,
+    `${trust === "signature_invalid" ? "Decision the record claims" : "Talon's decision"}: ${r.policy_decision.allowed ? "allowed" : "denied"} (${r.policy_decision.action}).`,
     // A tampered record's outcome is not narrated as a story: only the
     // recorded axes are listed, as claims.
     trust === "signature_invalid" ? `Recorded outcome axes (unverified): dispatch ${o?.dispatch ?? "not recorded"}, destination ${o?.downstream ?? "not recorded"}.` : `${story.headline}: ${story.detail}`,
@@ -68,8 +68,11 @@ export function evidenceProof(r: EvidenceRecord, o: Outcome | undefined, v: Veri
 }
 
 export function sessionProof(s: SessionSummary, managed: boolean, tenant: string): ProofLists {
+  // The session's own tenant, not the page scope: with "All tenants" the
+  // scope is empty.
+  const t = s.tenant_id || tenant || "(not recorded)";
   const verified = [
-    `AI use case${(s.agents ?? []).length === 1 ? "" : "s"} ${(s.agents ?? []).join(", ") || "(none recorded)"} in tenant ${tenant}, as Talon resolved ${(s.agents ?? []).length === 1 ? "it" : "them"} at its boundary.`,
+    `AI use case${(s.agents ?? []).length === 1 ? "" : "s"} ${(s.agents ?? []).join(", ") || "(none recorded)"} in tenant ${t}, as Talon resolved ${(s.agents ?? []).length === 1 ? "it" : "them"} at its boundary.`,
     `${s.allowed} allowed and ${s.denied} denied decisions by Talon over ${s.record_count} evidence records; each timeline row states dispatch and the destination's answer as far as recorded.`,
   ];
   if ((s.provider_path ?? []).length > 0) verified.push(`Recorded provider path: ${(s.provider_path ?? []).join(" → ")}${s.fallbacks ? ` (${s.fallbacks} fallback${s.fallbacks === 1 ? "" : "s"})` : ""}.`);

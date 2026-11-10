@@ -29,9 +29,10 @@ export function EvidencePage() {
   crumbs.push({ label: `Evidence ${id}` });
   // A record whose signature fails tells no story: its outcome is a claim
   // from an altered record (#558 review).
+  const tampered = det?.verification?.state === "invalid";
   const story = !det
     ? null
-    : det.verification?.state === "invalid"
+    : tampered
       ? { headline: "Signature invalid — this record's outcome cannot be relied on", detail: "The record changed after it was signed. Its decision, dispatch and destination facts are shown below only as claims; do not act on them.", tone: "error" as const }
       : outcomeStory(det.outcome);
   return (
@@ -47,7 +48,7 @@ export function EvidencePage() {
             <div className="card-body story">
               <h2 id="ev-story">{story.headline}</h2>
               <p>{story.detail}</p>
-              <span className="small muted">The separate facts behind this sentence are under Decision and outcome.</span>
+              {tampered ? null : <span className="small muted">The separate facts behind this sentence are under Decision and outcome.</span>}
             </div>
           </section>
           <ProofBoundary facts={evidenceProof(r, det.outcome, det.verification)} />
@@ -62,7 +63,8 @@ export function EvidencePage() {
           </DetailSection>
 
           <div className="grid two">
-            <DetailSection title="Decision and outcome" id="ev-outcome">
+            <DetailSection title={tampered ? "Decision and outcome — claimed, not verified" : "Decision and outcome"} id="ev-outcome">
+              {tampered ? <div className="notice error" role="note"><div>From an altered record: these values are what the record now says, not facts Talon vouches for.</div></div> : null}
               <DecisionOutcome o={det.outcome} />
               <p className="small">Why this outcome: {det.outcome.basis}</p>
               <dl className="facts">
