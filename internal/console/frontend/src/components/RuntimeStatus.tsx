@@ -1,4 +1,4 @@
-import type { ActiveStatus, RoleStatus, Runtime, RuntimeProcess, RuntimeState } from "../api/types";
+import type { ActiveStatus, RoleStatus, RuntimeProcess, RuntimeState } from "../api/types";
 import { Badge, CopyableIdentifier } from "./ui";
 import type { Tone } from "../lib/availability";
 import { relative, utc } from "../lib/format";
@@ -49,7 +49,7 @@ export function ProcessTable({ processes }: { processes: RuntimeProcess[] }) {
     <div className="table-wrap">
       <table>
         <thead>
-          <tr><th>Process</th><th>Roles</th><th>State</th><th>Version</th><th>Active generation</th><th>Reload</th><th className="num">Started (UTC)</th></tr>
+          <tr><th>Process</th><th>Roles</th><th>State</th><th>Version</th><th>Active generation</th><th>Reload</th><th>Agent keys</th><th className="num">Started (UTC)</th></tr>
         </thead>
         <tbody>
           {processes.map((p) => (
@@ -69,6 +69,7 @@ export function ProcessTable({ processes }: { processes: RuntimeProcess[] }) {
                   <><Badge tone="warn">Rejected</Badge><div>last-known-good keeps serving{p.catalog.rejected_at ? ` since ${utc(p.catalog.rejected_at)}` : ""}</div>{(p.catalog.rejected_causes ?? []).map((c) => <div key={c} className="muted">{c}</div>)}</>
                 ) : "accepted"}
               </td>
+              <td className="small"><AgentKeysCell p={p} /></td>
               <td className="num">{utc(p.started_at)}</td>
             </tr>
           ))}
@@ -78,12 +79,21 @@ export function ProcessTable({ processes }: { processes: RuntimeProcess[] }) {
   );
 }
 
-// runtimeSummary is one sentence for headers: the role states as Go derived them.
-export function runtimeSummary(rt: Runtime): string {
-  if (rt.availability.state !== "ok") return `Runtime ${rt.availability.state}${rt.availability.error ? `: ${rt.availability.error}` : rt.availability.note ? ` — ${rt.availability.note}` : ""}`;
-  const roles = (rt.roles ?? []).filter((r) => r.state !== "not_configured" || r.expected);
-  if (roles.length === 0) return "No data-plane process is configured or reporting.";
-  return roles.map((r) => `${roleLabel(r.role)}: ${(STATE[r.state] ?? STATE.unknown).label.toLowerCase()}`).join(" · ");
+// AgentKeysCell: what the process reports holding for agent-key
+// authentication (names and counts only). Not reported means unverified;
+// holding a key does not prove any client presents the right one.
+function AgentKeysCell({ p }: { p: RuntimeProcess }) {
+  if (p.startup_failure) return <><Badge tone="error">Failed to start</Badge><div className="muted">{p.startup_failure.code.replace(/_/g, " ")}</div></>;
+  const k = p.agent_keys;
+  if (!k) return <span className="muted">not reported (unverified)</span>;
+  if (k.declared === 0) return <span className="muted">no use case declares a key</span>;
+  const missing = k.unloaded ?? [];
+  return (
+    <>
+      <Badge tone={missing.length > 0 ? "error" : "ok"}>{k.loaded} of {k.declared} loaded</Badge>
+      {missing.length > 0 ? <div>missing: {missing.join(", ")}</div> : null}
+    </>
+  );
 }
 
 const ACTIVE: Record<ActiveStatus["state"], { label: string; tone: "ok" | "warn" | "info" | "neutral" }> = {

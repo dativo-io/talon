@@ -24,7 +24,7 @@ export function Configuration() {
     <>
       <PageHead
         title="Configuration"
-        lede="What is configured for the organization, each AI use case and the MCP proxy, and what can be proven active."
+        lede="How Talon is configured: what the installation shares, what each AI use case declares, and what a running process proves it loaded."
         actions={<button type="button" onClick={res.reload} disabled={res.loading}>Refresh</button>}
       />
       {res.error ? <ErrorState error={res.error} what="configuration" onRetry={res.reload} /> : null}
@@ -37,31 +37,51 @@ export function Configuration() {
               The effective policy with rule provenance is on each AI use case's page.
             </div>
           </div>
-          <Active c={c} />
-          {c.issues && c.issues.length > 0 ? (
-            <div className="notice warn" role="status">
-              <div>
-                <strong>Configuration files that could not be used:</strong>
-                <ul className="small">{c.issues.map((i) => <li key={i.path}><code>{i.path}</code> — {i.status}: {i.reason}</li>)}</ul>
+          <section className="stack" aria-labelledby="cfg-installation">
+            <div className="section-head">
+              <h2 id="cfg-installation">Installation configuration</h2>
+              <Badge tone="neutral">Shared by every tenant</Badge>
+            </div>
+            <p className="small muted">
+              The organization baseline, the gateway and providers, and the MCP proxy are installation-wide{tenant ? `; they apply to tenant ${tenant} as to every other` : ""}.
+            </p>
+            <Active c={c} />
+            {c.issues && c.issues.length > 0 ? (
+              <div className="notice warn" role="status">
+                <div>
+                  <strong>Configuration files that could not be used:</strong>
+                  <ul className="small">{c.issues.map((i) => <li key={i.path}><code>{i.path}</code> — {i.status}: {i.reason}</li>)}</ul>
+                </div>
               </div>
-            </div>
-          ) : null}
-          <Organization c={c} />
-          <section className="card" aria-labelledby="cfg-usecases">
-            <div className="card-head">
-              <h2 id="cfg-usecases">AI use cases</h2>
-              <div className="row">
-                {focus ? <button type="button" onClick={() => set("use_case", "")}>Show all</button> : null}
-                <SourceFreshness a={c.use_cases.availability} />
-              </div>
-            </div>
-            <AvailabilityNotice a={c.use_cases.availability} what="Agent configuration" />
-            {c.use_cases.availability.state === "empty" ? <EmptyState title="No agent file in this scope" /> : null}
-            <div className="card-body stack">
-              {items.map((u) => <UseCaseCard key={`${u.tenant_id}/${u.name}`} u={u} />)}
-            </div>
+            ) : null}
+            <Organization c={c} />
+            <Proxy c={c} />
           </section>
-          <Proxy c={c} />
+          <section className="stack" aria-labelledby="cfg-tenant">
+            <div className="section-head">
+              <h2 id="cfg-tenant">{tenant ? `Tenant ${tenant}: AI use cases` : "AI use cases in every tenant"}</h2>
+              <Badge tone="info">{tenant ? "Tenant scope" : "All tenants"}</Badge>
+            </div>
+            <p className="small muted">
+              Talon has no tenant-wide policy layer. Each AI use case's effective policy is the shared organization baseline, its own agent file's
+              override and the hard constraints, enforced separately at the LLM gateway and the MCP proxy. Open a use case's effective policy for the
+              winning rule of each field.
+            </p>
+            <section className="card" aria-labelledby="cfg-usecases">
+              <div className="card-head">
+                <h2 id="cfg-usecases">AI use cases</h2>
+                <div className="row">
+                  {focus ? <button type="button" onClick={() => set("use_case", "")}>Show all</button> : null}
+                  <SourceFreshness a={c.use_cases.availability} />
+                </div>
+              </div>
+              <AvailabilityNotice a={c.use_cases.availability} what="Agent configuration" />
+              {c.use_cases.availability.state === "empty" ? <EmptyState title={tenant ? `No agent file declares tenant ${tenant}` : "No agent file in this scope"} /> : null}
+              <div className="card-body stack">
+                {items.map((u) => <UseCaseCard key={`${u.tenant_id}/${u.name}`} u={u} />)}
+              </div>
+            </section>
+          </section>
         </div>
       ) : null}
     </>
@@ -71,7 +91,7 @@ export function Configuration() {
 function Organization({ c }: { c: ConfigDTO }) {
   const o = c.organization;
   return (
-    <DetailSection title="Organization" id="cfg-org" actions={<SourceFreshness a={o.availability} />}>
+    <DetailSection title="Organization baseline (shared)" id="cfg-org" actions={<SourceFreshness a={o.availability} />}>
       <AvailabilityNotice a={o.availability} what="Organization configuration" />
       {o.availability.state === "empty" ? <p className="muted">{o.availability.note}</p> : null}
       {o.availability.state === "ok" ? (
@@ -165,7 +185,7 @@ function UseCaseCard({ u }: { u: UseCaseConfig }) {
 function Proxy({ c }: { c: ConfigDTO }) {
   const p = c.mcp_proxy;
   return (
-    <DetailSection title="MCP proxy" id="cfg-proxy" actions={<SourceFreshness a={p.availability} />}>
+    <DetailSection title="MCP proxy (shared)" id="cfg-proxy" actions={<SourceFreshness a={p.availability} />}>
       <AvailabilityNotice a={p.availability} what="MCP proxy configuration" />
       {p.availability.state === "ok" ? (
         <dl className="facts">

@@ -55,8 +55,14 @@ export interface RuntimeProcess {
   written_at: string;
   sequence: number;
   interval_seconds: number;
-  state: "running" | "stopped";
+  state: "running" | "stopped" | "failed";
   stopped_at?: string;
+  // agent_keys: what the process holds for agent-key authentication (names
+  // and counts only). Absent from older processes: authentication readiness
+  // is then unverified.
+  agent_keys?: { declared: number; loaded: number; unloaded?: string[] };
+  // startup_failure: set on a "failed" record, a fixed cause, never raw error text.
+  startup_failure?: { code: string; reason: string };
   catalog?: RuntimeCatalog;
   proxy_config?: { path: string; digest: string; loaded_at: string };
   gateway_config?: { path: string; digest: string; loaded_at: string };
@@ -188,11 +194,64 @@ export interface RecentEvents {
   limit: number;
 }
 
+export type ReadyState = "ok" | "degraded" | "unverified" | "unknown" | "not_configured";
+export type OverallReadiness = "operational" | "degraded" | "unverified" | "unknown" | "not_configured";
+export type Severity = "critical" | "warning" | "info";
+
+export interface ReadinessDimension {
+  key: string; // runtime.gateway | runtime.mcp_proxy | configuration.activation | authentication.agent_keys | data.evidence_store | data.session_store | data.runtime_records
+  label: string;
+  state: ReadyState;
+  reason: string;
+  source: string;
+  observed_at?: string;
+}
+
+export interface Finding {
+  severity: Severity;
+  code: string;
+  scope: "installation" | "use_case";
+  title: string;
+  affected: string;
+  why: string;
+  source: string;
+  observed_at?: string;
+  link: string; // console route
+  tenant_id?: string;
+  use_case?: string;
+}
+
+// Readiness is installation-wide: no tenant scope filters it.
+export interface Readiness {
+  scope: "installation";
+  overall: OverallReadiness;
+  summary: string;
+  assessed_at: string;
+  dimensions: ReadinessDimension[];
+  findings: Finding[];
+}
+
 export interface Overview {
   meta: Meta;
+  readiness: Readiness;
   use_cases: UseCases;
   today: Today;
   recent_events: RecentEvents;
+  findings: Finding[];
+}
+
+export interface TenantEntry {
+  tenant_id: string;
+  use_cases: number;
+  has_evidence: boolean;
+  has_sessions: boolean;
+  configured: boolean;
+}
+
+export interface Tenants {
+  meta: Meta;
+  tenants: TenantEntry[];
+  availability: Availability;
 }
 
 export interface BudgetUsage {
@@ -488,6 +547,7 @@ export interface SystemInfo {
   console: { version: string; commit?: string; started_at: string; currency: string };
   store: StoreHealth;
   runtime: Runtime;
+  readiness: Readiness;
 }
 
 export interface Retry {
