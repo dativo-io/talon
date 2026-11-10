@@ -3,7 +3,7 @@
 // Not an assertion suite; skipped unless the variable is set.
 const { test } = require("@playwright/test");
 const path = require("node:path");
-const { state, pair } = require("./helpers.js");
+const { state, pair, writeRecords, caseGRecords } = require("./helpers.js");
 
 const dir = process.env.CONSOLE_SCREENSHOTS;
 test.skip(!dir, "set CONSOLE_SCREENSHOTS=<dir> to capture page screenshots");
@@ -37,5 +37,20 @@ for (const theme of ["light", "dark"]) {
     await page.goto(`/sessions/${f.session}`);
     await page.waitForLoadState("networkidle");
     await page.screenshot({ path: path.join(dir, `${theme}-11-session-mobile.png`), fullPage: true });
+    await page.goto("/overview");
+    await page.waitForLoadState("networkidle");
+    await page.screenshot({ path: path.join(dir, `${theme}-12-overview-mobile.png`), fullPage: true });
+    // Case G (#533): the People Analytics broken runtime.
+    await page.setViewportSize({ width: 1360, height: 900 });
+    const cleanup = writeRecords(caseGRecords(f.use_case));
+    try {
+      for (const [name, url] of [["13-overview-case-g", "/overview?tenant=default"], ["14-system-case-g", "/system"]]) {
+        await page.goto(url);
+        await page.waitForLoadState("networkidle");
+        await page.screenshot({ path: path.join(dir, `${theme}-${name}.png`), fullPage: true });
+      }
+    } finally {
+      cleanup();
+    }
   });
 }

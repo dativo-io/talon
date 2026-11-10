@@ -601,6 +601,17 @@ func summary(r Readiness) string {
 
 var severityRank = map[string]int{SeverityCritical: 0, SeverityWarning: 1, SeverityInfo: 2}
 
+// codeRank puts a runtime that cannot serve ahead of its consequences within
+// a severity: the root cause is the most actionable item.
+var codeRank = map[string]int{"runtime_failed_to_start": 0, "runtime_offline": 1, "data.evidence_store_unavailable": 2, "agent_keys_unavailable": 3}
+
+func rankOf(code string) int {
+	if r, ok := codeRank[code]; ok {
+		return r
+	}
+	return len(codeRank)
+}
+
 func sortFindings(fs []Finding) {
 	sort.SliceStable(fs, func(i, j int) bool {
 		a, b := fs[i], fs[j]
@@ -609,6 +620,9 @@ func sortFindings(fs []Finding) {
 		}
 		if a.Scope != b.Scope {
 			return a.Scope == FindingInstallation
+		}
+		if rankOf(a.Code) != rankOf(b.Code) {
+			return rankOf(a.Code) < rankOf(b.Code)
 		}
 		if a.Code != b.Code {
 			return a.Code < b.Code

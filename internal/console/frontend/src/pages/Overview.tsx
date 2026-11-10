@@ -260,17 +260,21 @@ function ActivitySection({ tenant, agent }: { tenant: string; agent?: string }) 
 }
 export { ActivitySection };
 
+const RECENT_SHOWN = 10;
+
 function RecentEvents({ o, tenant }: { o: OverviewDTO; tenant: string }) {
   const re = o.recent_events;
-  const events = re.events ?? [];
+  const all = re.events ?? [];
+  const [more, setMore] = useState(false);
+  const events = more ? all : all.slice(0, RECENT_SHOWN);
   return (
     <section className="card" aria-labelledby="events-title">
       <div className="card-head">
-        <h2 id="events-title">Recent events</h2>
+        <h2 id="events-title">Recent decisions</h2>
         <SourceFreshness a={re.availability} />
       </div>
-      <AvailabilityNotice a={re.availability} what="Recent events" />
-      {isMeasurement(re.availability) && events.length === 0 ? <EmptyState title="No events recorded yet" /> : null}
+      <AvailabilityNotice a={re.availability} what="Recent decisions" />
+      {isMeasurement(re.availability) && all.length === 0 ? <EmptyState title="No events recorded yet" /> : null}
       {events.length > 0 ? (
         <div className="table-wrap">
           <table>
@@ -293,6 +297,12 @@ function RecentEvents({ o, tenant }: { o: OverviewDTO; tenant: string }) {
               ))}
             </tbody>
           </table>
+          {all.length > RECENT_SHOWN ? (
+            <div className="table-foot">
+              <span className="small muted">{events.length} of {all.length} most recent decisions in this scope · every decision links to its signed evidence</span>
+              <button type="button" onClick={() => setMore((m) => !m)}>{more ? "Show fewer" : `Show all ${all.length}`}</button>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </section>

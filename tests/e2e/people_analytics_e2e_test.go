@@ -169,7 +169,8 @@ func talonJSON(t *testing.T, dir string, out any, args ...string) {
 // runs); the last decision's signature is verified;
 // session and correlation ids are the ones the client asserted; every record
 // verifies; the console's session, evidence, search, effective-policy and
-// runtime answers equal the CLI's; spend stays zero; a SIGKILLed data plane
+// runtime answers equal the CLI's; readiness is operational for this
+// MCP-only installation; spend stays zero; a SIGKILLed data plane
 // goes stale, nothing more reaches the backend, the evidence stays
 // readable, and a restart is a new instance that serves the same session; a
 // record changed in the database after signing reads as invalid in the
@@ -382,6 +383,27 @@ proxy:
 		runLiveBrowser(t, dir, ui, proxyCfg, byCorr)
 	}
 
+	// --- Operational readiness (#533): an MCP-only installation whose proxy
+	// runs, loaded the current proxy config and holds the use case's key is
+	// operational. The absent gateway is not an incident, and the recorded
+	// denial of hr_employee_export is evidence, not a runtime finding.
+	var ready console.Overview
+	consoleGet(t, c, "/console/v1/overview", &ready)
+	if ready.Readiness.Overall != console.OverallOperational {
+		t.Fatalf("readiness %q (%s), want operational: %+v", ready.Readiness.Overall, ready.Readiness.Summary, ready.Readiness.Dimensions)
+	}
+	if len(ready.Readiness.Findings) != 0 {
+		t.Fatalf("installation findings on a ready MCP-only installation: %+v", ready.Readiness.Findings)
+	}
+	for _, d := range ready.Readiness.Dimensions {
+		if d.Key == console.DimGateway && d.State != console.ReadyNotConfigured {
+			t.Fatalf("gateway dimension %+v, want not_configured", d)
+		}
+		if d.Key == console.DimAgentKeys && d.State != console.ReadyOK {
+			t.Fatalf("agent keys %+v, want ok: the proxy reports holding the use case's key", d)
+		}
+	}
+
 	// --- SIGKILL the data plane: stale, nothing reaches the backend, evidence stays readable.
 	_, firstInstance := roleState(s, "mcp_proxy")
 	if err := dp.cmd.Process.Signal(syscall.SIGKILL); err != nil {
@@ -399,6 +421,12 @@ proxy:
 		t.Fatal("a call reached the HR backend while the data plane was down")
 	}
 	waitRole(t, c, "mcp_proxy", "stale", 30*time.Second)
+	// The killed proxy: readiness degraded with a stale-runtime finding, and
+	// its keys are no longer evidence of anything.
+	consoleGet(t, c, "/console/v1/overview", &ready)
+	if ready.Readiness.Overall != console.OverallDegraded || len(ready.Readiness.Findings) == 0 || ready.Readiness.Findings[0].Code != "runtime_stale" {
+		t.Fatalf("after SIGKILL: readiness %q findings %+v, want degraded with runtime_stale first", ready.Readiness.Overall, ready.Readiness.Findings)
+	}
 	consoleGet(t, c, "/console/v1/sessions/"+paSession+"?agent="+paAgent, &sd)
 	if sd.Timeline == nil || len(sd.Timeline.Records) != 3 {
 		t.Fatalf("evidence must stay readable while the data plane is down: %+v", sd.Availability)

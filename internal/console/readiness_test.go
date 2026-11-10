@@ -234,6 +234,8 @@ func TestReadiness_PeopleAnalyticsBrokenRuntime(t *testing.T) {
 	keys := dim(r, DimAgentKeys).Reason
 	assert.Contains(t, keys, "LLM gateway failed to start", "both causes are named")
 	assert.Contains(t, keys, "hr-analytics-assistant (MCP proxy mcp1)")
+	assert.Equal(t, "runtime_failed_to_start", r.Findings[0].Code, "the root cause leads, its consequence follows")
+	assert.Equal(t, "LLM gateway failed to start.", r.Summary)
 	assert.Equal(t, SeverityCritical, r.Findings[0].Severity)
 
 	// A tenant with no traffic and no use cases still sees the outage.

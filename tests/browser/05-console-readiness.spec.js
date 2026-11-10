@@ -4,39 +4,10 @@
 // are written into the installation's data directory exactly as `talon
 // serve` writes them (same schema, same installation fingerprint), so the
 // console reads them through its production path.
-const crypto = require("node:crypto");
-const fs = require("node:fs");
-const path = require("node:path");
 const { test, expect } = require("@playwright/test");
-const { state, pair } = require("./helpers.js");
+const { state, pair, writeRecords, runtimeRecord: record, caseGRecords } = require("./helpers.js");
 
 test.describe.configure({ mode: "serial" });
-
-function fingerprint(signingKey) {
-  return crypto.createHmac("sha256", signingKey).update("talon-installation-fingerprint-v1").digest("hex").slice(0, 32);
-}
-
-// writeRecords writes runtime records and returns a cleanup function.
-function writeRecords(records) {
-  const st = state();
-  const dir = path.join(st.dir, "runtime");
-  fs.mkdirSync(dir, { recursive: true });
-  const files = records.map((r) => {
-    const p = path.join(dir, `${r.instance_id}.json`);
-    fs.writeFileSync(p, JSON.stringify(r));
-    return p;
-  });
-  return () => files.forEach((p) => fs.rmSync(p, { force: true }));
-}
-
-function record(extra) {
-  const st = state();
-  const now = new Date().toISOString();
-  return {
-    schema: 1, installation: { key_fingerprint: fingerprint(st.env.TALON_SIGNING_KEY), store_path: path.join(st.dir, "evidence.db") },
-    version: "browser-test", pid: 4242, started_at: now, written_at: now, sequence: Date.now(), interval_seconds: 5, state: "running", ...extra,
-  };
-}
 
 test("Overview: configured runtimes that do not run read degraded, with findings that say what, why and where next", async ({ page }) => {
   await pair(page, "/overview");
@@ -93,11 +64,7 @@ test("Tenant scope: a discoverable selector; it filters use cases and keeps the 
 
 test("Case G: gateway failed to start on an undecryptable agent key, MCP proxy heartbeats without the key — never an unqualified healthy installation", async ({ page }) => {
   const f = state().fixture;
-  const cleanup = writeRecords([
-    record({ instance_id: "startup-failure-gateway", roles: ["gateway"], state: "failed", stopped_at: new Date().toISOString(),
-      startup_failure: { code: "agent_key_unavailable", reason: "a declared agent key cannot be decrypted with the configured secrets key (TALON_SECRETS_KEY changed since the key was stored?); agent authentication cannot work" } }),
-    record({ instance_id: "browser-mcp-1", roles: ["mcp_proxy"], agent_keys: { declared: 1, loaded: 0, unloaded: [f.use_case] } }),
-  ]);
+  const cleanup = writeRecords(caseGRecords(f.use_case));
   try {
     await pair(page, "/overview");
     const r = page.getByTestId("readiness");
