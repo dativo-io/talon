@@ -94,7 +94,7 @@ test("Session investigation: allowed, denied-not-dispatched and HR-rejected stay
 test("Tampered and standalone evidence: invalid signature is shown as such; no session is fabricated", async ({ page }) => {
   const f = state().fixture;
   await pair(page, `/evidence/${f.tampered_evidence}`);
-  await expect(page.getByText("Signature invalid")).toBeVisible();
+  await expect(page.getByText("Signature invalid: record changed after signing")).toBeVisible();
   await page.goto(`/evidence/${f.standalone_evidence}`);
   await expect(page.getByText("Signature valid")).toBeVisible();
   await expect(page.getByText("none: a standalone record, not part of a session")).toBeVisible();

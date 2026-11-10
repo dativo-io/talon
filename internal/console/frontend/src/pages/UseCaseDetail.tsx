@@ -1,7 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { Costs as CostsDTO, EvidenceIndex, UseCaseDetail as DetailDTO } from "../api/types";
+import type { CostReport, Costs as CostsDTO, EvidenceIndex, UseCaseDetail as DetailDTO } from "../api/types";
 import { PageHead } from "../components/Layout";
 import {
   AvailabilityNotice,
@@ -21,7 +21,7 @@ import { RoleTable } from "../components/RuntimeStatus";
 import { ActivitySection } from "./Overview";
 import type { Range } from "../components/TimeRange";
 import { isMeasurement } from "../lib/availability";
-import { breakdownRows, fieldValue, warningsFor, type Breakdown } from "../lib/costs";
+import { breakdownRows, budgetUsage, fieldValue, warningsFor, type Breakdown } from "../lib/costs";
 import { goDuration, humanize, integer, money, relative, utc, utcShort } from "../lib/format";
 import { outcomeStory } from "../lib/outcome";
 import { scoped, useScope } from "../lib/scope";
@@ -134,7 +134,7 @@ function SummarySection({ d, tenant }: { d: DetailDTO; tenant: string }) {
                   <CurrencyAmount amount={fieldValue(report, "today_eur")} currency={report.currency} reason={warningsFor(report, ["day window"]).join("; ")} />
                   {" / "}
                   <CurrencyAmount amount={fieldValue(report, "month_eur")} currency={report.currency} reason={warningsFor(report, ["month window"]).join("; ")} />
-                  {report.monthly_budget ? <span className="small muted"> · {Math.round(report.monthly_budget.percent)}% of the monthly cap</span> : null}
+                  <MonthlyCapShare report={report} />
                 </> : <span className="muted">unavailable</span>}
               </dd>
             </dl>
@@ -418,4 +418,14 @@ function Attribution({ tenant, agent, breakdown }: { tenant: string; agent: stri
       ) : null}
     </section>
   );
+}
+
+// MonthlyCapShare: the Summary's share of the monthly cap, only when the
+// backend computed it; a budget listed in unavailable_fields says so instead
+// of showing a percentage (#558 review).
+function MonthlyCapShare({ report }: { report: CostReport }) {
+  const b = budgetUsage(report, "monthly_budget");
+  if (b === undefined) return null;
+  if (b === null) return <span className="small muted"> · share of the monthly cap not computed (spend not comparable with the cap)</span>;
+  return <span className="small muted"> · {Math.round(b.percent)}% of the monthly cap</span>;
 }

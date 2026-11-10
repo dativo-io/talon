@@ -27,7 +27,13 @@ export function EvidencePage() {
     if (r.session_id) crumbs.push({ label: `Session ${r.session_id}`, to: scoped(`/sessions/${encodeURIComponent(r.session_id)}`, r.tenant_id, { agent: r.agent_id }) });
   }
   crumbs.push({ label: `Evidence ${id}` });
-  const story = det ? outcomeStory(det.outcome) : null;
+  // A record whose signature fails tells no story: its outcome is a claim
+  // from an altered record (#558 review).
+  const story = !det
+    ? null
+    : det.verification?.state === "invalid"
+      ? { headline: "Signature invalid — this record's outcome cannot be relied on", detail: "The record changed after it was signed. Its decision, dispatch and destination facts are shown below only as claims; do not act on them.", tone: "error" as const }
+      : outcomeStory(det.outcome);
   return (
     <>
       <Breadcrumbs items={crumbs} />

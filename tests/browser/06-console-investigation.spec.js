@@ -40,6 +40,15 @@ test("AI use case page: four sections, each answering its question", async ({ pa
   }
 });
 
+test("Navigation is grouped: Operate (use-case work) and Installation (setup and runtime)", async ({ page }) => {
+  await pair(page, "/overview");
+  const nav = page.getByRole("navigation", { name: "Console sections" });
+  const operate = nav.getByRole("group", { name: "Operate" });
+  const install = nav.getByRole("group", { name: "Installation" });
+  for (const l of ["Overview", "AI Use Cases", "Sessions", "Costs"]) await expect(operate.getByRole("link", { name: l, exact: true })).toBeVisible();
+  for (const l of ["Configuration", "System"]) await expect(install.getByRole("link", { name: l, exact: true })).toBeVisible();
+});
+
 test("Activity time range lives in the URL: deep link, reload and back keep it", async ({ page }) => {
   const f = state().fixture;
   await pair(page, `/use-cases/${f.use_case}`);
@@ -67,9 +76,12 @@ test("Case D: use case → session → decision → signed evidence, with plain-
   await expect(tl.getByText("Talon denied it — not dispatched")).toBeVisible();
   await expect(tl.getByText("Talon allowed it — dispatched — destination rejected it")).toBeVisible();
   await expect(tl.getByText("This is not a Talon denial.", { exact: false })).toBeVisible();
-  // The session's proof boundaries: decisions verified, the client's session id application-reported.
+  // The session's proof boundaries: decisions Talon-recorded (a summary checks
+  // no signature, so never "signature verified"), the client's session id
+  // application-reported.
   const proof = page.getByTestId("proof-boundary");
-  await expect(proof.getByRole("heading", { name: "Talon-verified" })).toBeVisible();
+  await expect(proof.getByRole("heading", { name: "Talon-recorded", exact: true })).toBeVisible();
+  await expect(proof.getByText("signature verified", { exact: false })).toHaveCount(0);
   await expect(proof.getByRole("heading", { name: "Application-reported" })).toBeVisible();
   await expect(proof.getByRole("heading", { name: "Not independently verified" })).toBeVisible();
   await expect(proof.getByText("refund executed", { exact: false })).toBeVisible();
@@ -80,6 +92,7 @@ test("Case D: use case → session → decision → signed evidence, with plain-
   await expect(story.getByRole("heading", { name: "Talon denied it — not dispatched" })).toBeVisible();
   await expect(story.getByText("never received it", { exact: false })).toBeVisible();
   const ev = page.getByTestId("proof-boundary");
+  await expect(ev.getByRole("heading", { name: "Talon-recorded, signature verified" })).toBeVisible();
   await expect(ev.getByText("Recorded cost: none", { exact: false })).toBeVisible();
   await expect(ev.getByText("Signature: valid", { exact: false })).toBeVisible();
   await expect(ev.getByText("A valid Talon signature proves the integrity of the signed record", { exact: false })).toBeVisible();
@@ -100,11 +113,20 @@ test("Case D: use case → session → decision → signed evidence, with plain-
   await expect(page).toHaveURL(new RegExp(`/use-cases/${f.use_case}\\?tenant=default`));
 });
 
-test("A tampered record: the proof boundary says nothing on it can be relied on", async ({ page }) => {
+test("A tampered record: an invalid signature invalidates the narrative, not just a warning beside it", async ({ page }) => {
   const f = state().fixture;
   await pair(page, `/evidence/${f.tampered_evidence}`);
-  await expect(page.getByTestId("proof-boundary").getByText("The signature does not verify.")).toBeVisible();
-  await expect(page.getByTestId("proof-boundary").getByText("Signature: INVALID", { exact: false })).toBeVisible();
+  // The story card tells no outcome story.
+  const story = page.getByTestId("outcome-story");
+  await expect(story.getByRole("heading", { name: "Signature invalid — this record's outcome cannot be relied on" })).toBeVisible();
+  await expect(story.getByText(/^Talon (allowed|denied) it/)).toHaveCount(0);
+  // Nothing is presented as Talon's facts.
+  const proof = page.getByTestId("proof-boundary");
+  await expect(proof.getByText("The signature does not verify.")).toBeVisible();
+  await expect(proof.getByRole("heading", { name: "Recorded claims — not reliable" })).toBeVisible();
+  await expect(proof.getByRole("heading", { name: /^Talon-(verified|recorded)/ })).toHaveCount(0);
+  await expect(proof.getByText(/^Talon (allowed|denied) it/)).toHaveCount(0);
+  await expect(proof.getByText("Signature: INVALID", { exact: false })).toBeVisible();
 });
 
 test("Case H: Costs with all tenants lists spend per (tenant, use case) and drills into sessions without choosing a use case first", async ({ page }) => {
@@ -112,6 +134,9 @@ test("Case H: Costs with all tenants lists spend per (tenant, use case) and dril
   await pair(page, "/costs");
   const fleet = page.getByTestId("fleet-spend");
   await expect(fleet).toBeVisible();
+  // The table is built from configured fleet rows; it says so (#558 review).
+  await expect(fleet.getByRole("heading", { name: "All tenants: month-to-date spend per configured AI use case" })).toBeVisible();
+  await expect(fleet.getByText("no longer configured is not in this table", { exact: false })).toBeVisible();
   const agents = cli(["agents", "--json"]).agents;
   // One row per (tenant, use case); a name in two tenants is two rows.
   await expect(fleet.getByRole("row", { name: new RegExp(f.use_case) }).first()).toBeVisible();

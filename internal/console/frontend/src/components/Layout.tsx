@@ -8,13 +8,19 @@ import { applyTheme, loadTheme, type Theme } from "../lib/theme";
 import { UseCaseHealth } from "./ui";
 import type { Health } from "../api/types";
 
+// Two groups: what the AI use cases are doing (Operate) and how this
+// installation is set up and running (Installation).
 const NAV = [
-  { to: "/overview", label: "Overview" },
-  { to: "/use-cases", label: "AI Use Cases" },
-  { to: "/sessions", label: "Sessions" },
-  { to: "/costs", label: "Costs" },
-  { to: "/configuration", label: "Configuration" },
-  { to: "/system", label: "System" },
+  { group: "Operate", items: [
+    { to: "/overview", label: "Overview" },
+    { to: "/use-cases", label: "AI Use Cases" },
+    { to: "/sessions", label: "Sessions" },
+    { to: "/costs", label: "Costs" },
+  ] },
+  { group: "Installation", items: [
+    { to: "/configuration", label: "Configuration" },
+    { to: "/system", label: "System" },
+  ] },
 ];
 
 export function Layout({ children, onLogout }: { children: ReactNode; onLogout: () => void }) {
@@ -35,11 +41,16 @@ export function Layout({ children, onLogout }: { children: ReactNode; onLogout: 
             <small>Operations Console</small>
           </span>
         </div>
-        <nav className="nav">
-          {NAV.map((n) => (
-            <NavLink key={n.to} to={scoped(n.to, tenant)} className={({ isActive }) => (isActive ? "active" : "")}>
-              {n.label}
-            </NavLink>
+        <nav className="nav" aria-label="Console sections">
+          {NAV.map((g) => (
+            <div key={g.group} className="nav-group" role="group" aria-labelledby={`nav-${g.group}`}>
+              <div className="nav-group-label" id={`nav-${g.group}`}>{g.group}</div>
+              {g.items.map((n) => (
+                <NavLink key={n.to} to={scoped(n.to, tenant)} className={({ isActive }) => (isActive ? "active" : "")}>
+                  {n.label}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="sidebar-foot">

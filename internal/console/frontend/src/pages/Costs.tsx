@@ -125,9 +125,10 @@ function FleetSpend() {
   return (
     <section className="card" aria-labelledby="fleet-spend" data-testid="fleet-spend">
       <div className="card-head">
-        <h2 id="fleet-spend">All tenants: month-to-date spend per AI use case</h2>
+        <h2 id="fleet-spend">All tenants: month-to-date spend per configured AI use case</h2>
         <span className="small muted">month to date (UTC) · canonical fleet rows, as <code>talon agents</code></span>
       </div>
+      <div className="card-body"><p className="small muted">Only use cases in the current configuration are listed. Spend recorded for a use case that is no longer configured is not in this table; choose a tenant for its full cost report.</p></div>
       {res.error ? <ErrorState error={res.error} what="fleet spend" onRetry={res.reload} /> : null}
       {!res.data && res.loading ? <Loading what="fleet spend" /> : null}
       {res.data ? <AvailabilityNotice a={res.data.use_cases.availability} what="Fleet spend" /> : null}

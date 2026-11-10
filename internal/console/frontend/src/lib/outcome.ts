@@ -24,12 +24,12 @@ export function outcomeStory(o: Outcome | undefined | null): OutcomeStory {
     if (o.decision === "denied") {
       return { headline: "Talon denied it — not dispatched", detail: `Talon blocked ${what} before its dispatch boundary: the destination never received it.`, tone: "error" };
     }
-    return { headline: "Talon allowed it — not dispatched", detail: `Talon allowed ${what}, but it failed before it was handed to the destination: the destination never received it.`, tone: "warn" };
+    return { headline: "Talon allowed it — not dispatched", detail: `Talon allowed ${what}, but it was not handed to the destination: the destination never received it.${recorded(o)}`, tone: "warn" };
   }
   if (o.dispatch === "unknown") {
     return {
       headline: "Outcome unknown",
-      detail: `Talon ${o.decision} ${what} and handed it to the transport, but the evidence does not establish whether the destination received or completed it.`,
+      detail: `Talon ${o.decision} ${what}, but the evidence does not establish whether the destination received it or what it did.${recorded(o)}`,
       tone: "warn",
     };
   }
@@ -50,11 +50,17 @@ export function outcomeStory(o: Outcome | undefined | null): OutcomeStory {
         tone: "warn",
       };
     case "failed":
-      return { headline: "Talon allowed it — dispatched — attempt failed", detail: `The destination was reached (a provider HTTP status was recorded) and the attempt failed.`, tone: "warn" };
+      return { headline: "Talon allowed it — dispatched — attempt failed", detail: `The evidence records that ${what} was dispatched and that the attempt failed.${recorded(o)}`, tone: "warn" };
     case "unknown":
       return { headline: "Dispatched — destination outcome unknown", detail: `${capitalize(what)} was dispatched; the evidence does not establish what the destination did.`, tone: "warn" };
   }
   return { headline: `Talon ${o.decision} it — dispatched`, detail: "No destination outcome is recorded for this record type.", tone: "info" };
+}
+
+// recorded appends the canonical outcome's basis (the recorded fact each axis
+// was read from), so a cautious sentence can still be traced to its source.
+function recorded(o: Outcome): string {
+  return o.basis ? ` Recorded basis: ${o.basis}.` : "";
 }
 
 function capitalize(s: string): string {

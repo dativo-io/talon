@@ -4,11 +4,21 @@ import { outcomeStory } from "./outcome";
 // Facts sorted into the three proof categories of ProofBoundary (#533 PR 2).
 // Only facts the record or summary actually carries are listed; a category
 // with nothing in it says so instead of being filled.
+//
+// trust says how far Talon's own facts are established (#558 review):
+//  - signature_verified: one evidence record whose HMAC this console checked;
+//  - recorded: written by Talon at its boundary, but not signature-checked
+//    here (a session summary is read from evidence summaries without
+//    verifying each record's signature);
+//  - signature_invalid: the record changed after signing, so its facts are
+//    claims that cannot be relied on, not Talon's facts.
+export type ProofTrust = "signature_verified" | "recorded" | "signature_invalid";
+
 export interface ProofLists {
-  verified: string[];
+  trust: ProofTrust;
+  recorded: string[];
   reported: string[];
   notVerified: string[];
-  signatureInvalid: boolean;
 }
 
 const OUTSIDE = [
@@ -26,11 +36,14 @@ interface Orchestration {
 }
 
 export function evidenceProof(r: EvidenceRecord, o: Outcome | undefined, v: Verification | undefined): ProofLists {
+  const trust: ProofTrust = v?.state === "invalid" ? "signature_invalid" : v?.state === "valid" ? "signature_verified" : "recorded";
   const story = outcomeStory(o);
   const verified = [
     `AI use case ${r.agent_id} in tenant ${r.tenant_id}, as Talon resolved it at its boundary.`,
     `Talon's decision: ${r.policy_decision.allowed ? "allowed" : "denied"} (${r.policy_decision.action}).`,
-    `${story.headline}: ${story.detail}`,
+    // A tampered record's outcome is not narrated as a story: only the
+    // recorded axes are listed, as claims.
+    trust === "signature_invalid" ? `Recorded outcome axes (unverified): dispatch ${o?.dispatch ?? "not recorded"}, destination ${o?.downstream ?? "not recorded"}.` : `${story.headline}: ${story.detail}`,
   ];
   if (r.execution.model_used) verified.push(`Recorded model route: ${r.execution.model_used}${r.failover ? ` (${r.failover.role.replace(/_/g, " ")}, provider ${r.failover.provider})` : ""}.`);
   if (r.execution.tools_called && r.execution.tools_called.length > 0) verified.push(`Tool call attempted through Talon: ${r.execution.tools_called.join(", ")}${r.policy_decision.allowed ? "" : " (blocked by Talon)"}.`);
@@ -51,13 +64,13 @@ export function evidenceProof(r: EvidenceRecord, o: Outcome | undefined, v: Veri
 
   const what = o?.tool ? `${o.tool}` : "the request";
   const notVerified = [`What the destination did with ${what} beyond the answer Talon recorded.`, ...OUTSIDE];
-  return { verified, reported, notVerified, signatureInvalid: v?.state === "invalid" };
+  return { trust, recorded: verified, reported, notVerified };
 }
 
 export function sessionProof(s: SessionSummary, managed: boolean, tenant: string): ProofLists {
   const verified = [
     `AI use case${(s.agents ?? []).length === 1 ? "" : "s"} ${(s.agents ?? []).join(", ") || "(none recorded)"} in tenant ${tenant}, as Talon resolved ${(s.agents ?? []).length === 1 ? "it" : "them"} at its boundary.`,
-    `${s.allowed} allowed and ${s.denied} denied decisions by Talon over ${s.record_count} signed records; each timeline row states dispatch and the destination's answer as far as recorded.`,
+    `${s.allowed} allowed and ${s.denied} denied decisions by Talon over ${s.record_count} evidence records; each timeline row states dispatch and the destination's answer as far as recorded.`,
   ];
   if ((s.provider_path ?? []).length > 0) verified.push(`Recorded provider path: ${(s.provider_path ?? []).join(" → ")}${s.fallbacks ? ` (${s.fallbacks} fallback${s.fallbacks === 1 ? "" : "s"})` : ""}.`);
   if (s.tool_calls) verified.push(`${s.tool_calls} intercepted tool call${s.tool_calls === 1 ? "" : "s"}, ${s.tool_calls_denied ?? 0} denied by Talon.`);
@@ -68,5 +81,7 @@ export function sessionProof(s: SessionSummary, managed: boolean, tenant: string
   if (s.session_source === "client_asserted" || s.session_source === "vendor_asserted") {
     reported.push(`Session id ${s.session_id}: ${s.session_source === "vendor_asserted" ? "asserted by the client's adapter" : "asserted by the client"}${s.client ? ` (${s.client})` : ""}. Grouping records under it is attribution, not authentication, and no lifecycle is inferred from it.`);
   }
-  return { verified, reported, notVerified: ["What each destination did beyond the answers Talon recorded.", ...OUTSIDE], signatureInvalid: false };
+  // Summaries are read without checking each record's signature: recorded,
+  // never signature-verified. Each evidence page checks its own record.
+  return { trust: "recorded", recorded: verified, reported, notVerified: ["What each destination did beyond the answers Talon recorded.", ...OUTSIDE] };
 }
