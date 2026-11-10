@@ -199,6 +199,27 @@ func TestBuildServeIdentityRegistryModeMatrix(t *testing.T) {
 		assert.Nil(t, reg)
 	})
 
+	// #557 review P0: a MINTED key that no longer decrypts (TALON_SECRETS_KEY
+	// changed) is a failed configured identity, not onboarding. Degrading it
+	// to a nil registry made tenant-scoped APIs open when TALON_ADMIN_KEY was
+	// unset, so plain serve must refuse to start.
+	t.Run("plain serve refuses to start on an undecryptable minted key", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "s.db")
+		minted, err := secrets.NewSecretStore(path, "0123456789abcdef0123456789abcdef")
+		require.NoError(t, err)
+		require.NoError(t, minted.Set(ctx, "matrix-agent-talon-key", []byte("tk-matrix"), secrets.ACL{}))
+		require.NoError(t, minted.Close())
+		rekeyed, err := secrets.NewSecretStore(path, "fedcba9876543210fedcba9876543210")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = rekeyed.Close() })
+		for _, admin := range []string{"", "some-admin-key"} {
+			reg, err := buildServeIdentityRegistry(ctx, keyedPolicy, "agent.talon.yaml", rekeyed, admin, false, false)
+			require.Error(t, err, "admin key %q", admin)
+			assert.ErrorIs(t, err, secrets.ErrSecretUndecryptable)
+			assert.Nil(t, reg)
+		}
+	})
+
 	t.Run("admin-key collision is terminal even in plain serve", func(t *testing.T) {
 		vault := newVault(t)
 		require.NoError(t, vault.Set(ctx, "matrix-agent-talon-key", []byte("shared-admin-value"), secrets.ACL{}))

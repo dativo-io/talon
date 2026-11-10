@@ -62,7 +62,7 @@ test("Tenant scope: a discoverable selector; it filters use cases and keeps the 
   await expect(page.getByRole("link", { name: f.use_case })).toBeVisible();
 });
 
-test("Case G: gateway failed to start on an undecryptable agent key, MCP proxy heartbeats without the key — never an unqualified healthy installation", async ({ page }) => {
+test("Case G: gateway failed to start on an undecryptable agent key, a running MCP proxy lacks a declared key — never an unqualified healthy installation", async ({ page }) => {
   const f = state().fixture;
   const cleanup = writeRecords(caseGRecords(f.use_case));
   try {
