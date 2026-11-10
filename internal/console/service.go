@@ -37,6 +37,7 @@ const (
 	DefaultTimelineLimit = 200
 	MaxTimelineLimit     = evidence.MaxTimelinePage
 	DefaultActivitySpan  = 24 * time.Hour
+	UseCaseEventsLimit   = 20
 )
 
 // FleetSource yields the attention queue for a tenant ("" = all) and names
@@ -307,11 +308,56 @@ func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDet
 	out.Row = row
 	scope := row.TenantID
 	out.Meta = s.meta(scope)
+	// Installation readiness applies to every use case; the findings are
+	// the installation's plus this use case's own fleet finding.
+	out.Readiness = s.readiness(ctx, uc.Runtime)
+	out.Findings = append(append([]Finding{}, out.Readiness.Findings...), useCaseFindings([]fleet.AgentRow{*row}, s.now())...)
+	sortFindings(out.Findings)
+	out.Issues = []agentcatalog.FleetIssue{}
+	for _, is := range uc.Issues {
+		if is.Agent == name {
+			out.Issues = append(out.Issues, is)
+		}
+	}
+	out.RecentDecisions = s.recentDecisions(ctx, scope, name, UseCaseEventsLimit)
 	out.RecentSessions = s.Sessions(ctx, scope, name, "", session.Cursor{}, evidence.ObservedCursor{}, 10)
 	out.Costs = s.Costs(ctx, scope, name, costs.BreakdownAgents)
 	now := s.now()
 	out.Activity = s.Activity(ctx, scope, name, now.Add(-DefaultActivitySpan), now, time.Hour)
 	return out, nil
+}
+
+// recentDecisions is one use case's newest evidence records as index rows
+// (evidence.IndexOf: the rows `talon audit list --json` prints, with
+// evidence.OutcomeOf), newest first, bounded.
+func (s *Service) recentDecisions(ctx context.Context, tenant, agent string, limit int) DecisionList {
+	out := DecisionList{Records: []evidence.Index{}, Limit: limit}
+	if s.cfg.Evidence == nil {
+		out.Availability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}
+		return out
+	}
+	records, err := s.cfg.Evidence.List(ctx, tenant, agent, time.Time{}, s.now(), limit)
+	if err != nil {
+		out.Availability = unavailable(SourceEvidenceStore, err)
+		return out
+	}
+	for i := range records {
+		out.Records = append(out.Records, evidence.IndexOf(&records[i]))
+	}
+	sort.SliceStable(out.Records, func(i, j int) bool {
+		if !out.Records[i].Timestamp.Equal(out.Records[j].Timestamp) {
+			return out.Records[i].Timestamp.After(out.Records[j].Timestamp)
+		}
+		return out.Records[i].ID > out.Records[j].ID
+	})
+	if len(out.Records) > limit {
+		out.Records = out.Records[:limit]
+	}
+	out.Availability = ok(SourceEvidenceStore, s.now())
+	if len(out.Records) == 0 {
+		out.Availability.State = StateEmpty
+	}
+	return out
 }
 
 // ---------------------------------------------------------------- sessions

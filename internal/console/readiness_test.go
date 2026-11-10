@@ -353,3 +353,35 @@ func TestReadiness_NothingConfigured(t *testing.T) {
 	assert.Equal(t, OverallNotConfigured, r.Overall)
 	assert.Empty(t, r.Findings)
 }
+
+// PR 2 (#533): the use-case detail carries the installation readiness, the
+// installation findings plus its own fleet finding, and only its own recent
+// decisions in its own tenant.
+func TestUseCaseDetail_ReadinessFindingsAndOwnDecisions(t *testing.T) {
+	f := seed(t)
+	svc := readinessService(t, f, true)
+	putProc(t, f, svc, "mcp1", []string{runtimestatus.RoleMCPProxy}, withKeys(1, 1))
+
+	d, err := svc.UseCase(context.Background(), "", "hr-analytics-assistant")
+	require.NoError(t, err)
+	assert.Equal(t, ScopeInstallation, d.Readiness.Scope)
+	assert.Equal(t, OverallDegraded, d.Readiness.Overall, "the configured gateway is not running")
+	assert.Contains(t, codes(d.Findings), "runtime_offline")
+	for _, fd := range d.Findings {
+		if fd.Scope == FindingUseCase {
+			assert.Equal(t, "hr-analytics-assistant", fd.UseCase, "no other use case's finding")
+		}
+	}
+	require.NotEmpty(t, d.RecentDecisions.Records)
+	ids := map[string]bool{}
+	for _, e := range d.RecentDecisions.Records {
+		assert.Equal(t, "hr-analytics-assistant", e.AgentID)
+		assert.Equal(t, "default", e.TenantID, "the acme record of the same name is another tenant's")
+		require.NotNil(t, e.Outcome, "each row carries evidence.OutcomeOf")
+		ids[e.ID] = true
+	}
+	assert.Equal(t, "e_llm", d.RecentDecisions.Records[0].ID, "newest first")
+	assert.True(t, ids["e_export"] && ids["e_agg"] && ids["e_llm"])
+	assert.False(t, ids["e_acme"])
+	assert.NotNil(t, d.Issues)
+}
