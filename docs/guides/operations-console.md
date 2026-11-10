@@ -29,6 +29,51 @@ The browser asks for a one-time pairing code. Read it from the console's own out
 
 Evidence records open from any timeline, event or search result (`/evidence/<id>`).
 
+## Operator walkthrough in pictures
+
+These are **real console screenshots** from the synthetic Playwright test installation, not production customer data. The fixture deliberately introduces an undecryptable agent key and other diagnostic conditions; an offline or degraded runtime is intentional for the failure examples. A fresh screenshot is a view of recorded facts, not independent proof of a downstream business effect.
+
+### 1. Identify what needs attention
+
+![Overview: gateway startup failure, MCP status, tenant-scoped findings, and installation-wide readiness](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/overview-attention.webp)
+
+*Start at Overview: installation readiness is shown separately from the fleet-health assessment; selecting a tenant does not hide shared runtime failures.*
+
+### 2. Inspect the affected AI use case
+
+![HR Analytics Assistant: use-case Summary and operational state](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/use-case-summary.webp)
+
+*One use case combines Summary, Sessions & Activity, Policy & Runtime, and Costs. A healthy fleet projection does not establish runtime readiness.*
+
+### 3. Follow the session to an intercepted decision
+
+![People Analytics session with an allowed aggregate, blocked export, and destination-side SQL rejection](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/session-investigation.webp)
+
+*The three outcomes are different: Talon allowed and dispatched an aggregate; Talon denied an employee export before dispatch; Talon allowed a SQL tool call later rejected by HR. The session is evidence-observed, not a lifecycle Talon invented.*
+
+### 4. Verify signed evidence
+
+![Evidence detail: Talon denied the employee-export tool before dispatch, and the HMAC signature verifies](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/evidence-verification.webp)
+
+*The signature proves the stored record was not changed since signing. It does not prove that no bypass route exists or that an external business outcome completed.*
+
+### Other operator views
+
+![Costs: per-tenant and per-use-case spend with explicit currency-unavailable values](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/costs.webp)
+
+*Costs never silently sum incompatible currencies; unpriced usage and unavailable budgets remain labeled.*
+
+![Configuration: organization baseline, shared MCP proxy settings, and configured AI use cases](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/configuration.webp)
+
+*Configuration shows current file contents; separately reported process activation proves which bytes have actually been loaded.*
+
+![System: startup failure and process heartbeat evidence](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/system-diagnostics.webp)
+
+*System is the diagnostic drill-down for process state, runtime records, activation, and evidence-store access.*
+
+For negative evidence-verification testing, see the [tampered-record example](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/tamper-detection.webp). To reproduce or recapture these images, see [screenshot provenance](https://github.com/dativo-io/talon/blob/main/docs/assets/console/README.md).
+
+
 ## Reading the pages correctly
 
 - **Readiness and fleet health are different questions.** The top of the Overview is *operational readiness*: installation-wide, never filtered by the tenant scope. Each dimension (LLM gateway, MCP proxy, configuration activation, agent authentication, evidence store, session store, runtime records) says *OK*, *Degraded*, *Unverified*, *Unknown* or *Not configured*, its source and when it was established. Below it, *What needs attention* lists findings, most urgent first: what is wrong, what it affects, why it is reported, when that was observed, and a link to continue. Installation findings come first; the use cases that canonical fleet health (`talon agents`) flags follow, in the tenant scope. Fleet health judges budgets, policy and recorded traffic; it can read healthy while the gateway is down, which is why readiness is shown separately and above it.
