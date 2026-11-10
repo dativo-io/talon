@@ -83,3 +83,28 @@ func TestOutcomeOf_RealGatewayRecords(t *testing.T) {
 		assert.Equal(t, evidence.DownstreamUnknown, a.Downstream)
 	})
 }
+
+// Case C (#533): a session that completes a request and is then stopped by
+// the session budget. The denial the gateway writes reads not dispatched,
+// carries zero provider cost, and the provider saw only the first call; the
+// console's outcome sentence relies on exactly these facts.
+func TestOutcomeOf_SessionBudgetDenialIsNotDispatched(t *testing.T) {
+	// Cap 1.5 with a deterministic estimate of 1.0 per request: the first
+	// request fits, the second would exceed it (soft cap).
+	evStore, _, handler, calls := newSessionBudgetGatewayCounting(t, 1.5, sbEstimator)
+	require.Equal(t, http.StatusOK, sbDo(t, handler, "openai", sbTenantKeyA, "sess-case-c").Code)
+	before := calls.openai.Load()
+	deny := sbDo(t, handler, "openai", sbTenantKeyA, "sess-case-c")
+	require.Equal(t, http.StatusForbidden, deny.Code)
+	require.Contains(t, deny.Body.String(), "session_budget_exceeded")
+	assert.Equal(t, before, calls.openai.Load(), "the denied request never reached the provider")
+
+	ev := lastGatewayEvidence(t, evStore, "tenant-a")
+	require.False(t, ev.PolicyDecision.Allowed)
+	assert.Equal(t, "sess-case-c", ev.SessionID)
+	assert.Zero(t, ev.Execution.Cost, "zero provider cost on the denied request")
+	o := evidence.OutcomeOf(ev)
+	assert.Equal(t, "denied", o.Decision)
+	assert.Equal(t, evidence.DispatchNotDispatched, o.Dispatch, "basis: %s", o.Basis)
+	assert.Equal(t, evidence.DownstreamNone, o.Downstream)
+}
