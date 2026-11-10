@@ -39,6 +39,10 @@ var (
 	// ErrInvalidEncryptionKey is returned when the vault encryption key is
 	// not exactly 32 bytes (required for AES-256).
 	ErrInvalidEncryptionKey = errors.New("invalid encryption key")
+	// ErrSecretUndecryptable is returned when a stored secret does not
+	// decrypt with the configured secrets key (the key changed since the
+	// secret was written, or the ciphertext was altered).
+	ErrSecretUndecryptable = errors.New("secret cannot be decrypted with the configured secrets key")
 )
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/secrets")
@@ -267,7 +271,7 @@ func (s *SecretStore) Get(ctx context.Context, name, tenantID, agentID string) (
 	plaintext, err := s.gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("decrypting secret: %w", err)
+		return nil, fmt.Errorf("decrypting secret: %w: %w", ErrSecretUndecryptable, err)
 	}
 
 	now := time.Now()

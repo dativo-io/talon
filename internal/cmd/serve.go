@@ -73,7 +73,7 @@ func init() {
 }
 
 //nolint:gocyclo // orchestration flow is inherently branched
-func runServe(cmd *cobra.Command, args []string) error {
+func runServe(cmd *cobra.Command, args []string) (err error) {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -94,6 +94,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("creating data directory: %w", err)
 	}
 	cfg.WarnIfDefaultKeys()
+	// A process that fails before it publishes leaves one "failed to start"
+	// record with a fixed cause category, so the console says the gateway
+	// failed (and why, by category) instead of "never reported" (#533 PR 1).
+	runtimePublished := false
+	defer func() {
+		if err != nil && !runtimePublished {
+			recordServeStartupFailure(cfg, err)
+		}
+	}()
 
 	// server/discover and every MCP result's serverInfo advertise the real
 	// build version (#367, #447).
@@ -709,9 +718,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		// never what an operator meant.
 		if identityRegistry == nil || identityRegistry.Len() == 0 {
 			if cfg.AgentsDir != "" {
-				return fmt.Errorf("gateway mode requires at least one keyed agent: no agent.talon.yaml found under agents_dir %s (#267)", cfg.AgentsDir)
+				return fmt.Errorf("%w: no agent.talon.yaml found under agents_dir %s (#267)", errNoKeyedAgents, cfg.AgentsDir)
 			}
-			return fmt.Errorf("gateway mode requires at least one keyed agent: add agent.key.secret_name to %s and run `talon secrets set <name> <key>` (#266)", policyPath)
+			return fmt.Errorf("%w: add agent.key.secret_name to %s and run `talon secrets set <name> <key>` (#266)", errNoKeyedAgents, policyPath)
 		}
 		// --gateway flag explicitly opts in; override config's enabled field
 		if !gatewayCfg.Enabled {
@@ -979,6 +988,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Runtime status record for the console (#538): written from now on,
 	// with a final "stopped" record after the listeners shut down.
 	stopRuntimeStatus := startRuntimeStatus(ctx, cfg, fleetView, reloader != nil)
+	runtimePublished = true
 	defer stopRuntimeStatus()
 
 	errCh := make(chan error, 1)

@@ -52,6 +52,16 @@ func ProveProxy(v View, readable bool, proxyConfigDigest string) Loaded {
 	})
 }
 
+// ProveGatewayConfig proves the installation-level gateway configuration:
+// every running gateway loaded the gateway config whose current digest is
+// gatewayConfigDigest. Per-use-case proof (agent file digests) is
+// ProveGateway.
+func ProveGatewayConfig(v View, readable bool, gatewayConfigDigest string) Loaded {
+	return prove(v, readable, RoleGateway, "gateway", func(p *Process) (bool, string) {
+		return configMatches(p.GatewayConfig, gatewayConfigDigest, "gateway config")
+	})
+}
+
 // errUnreported marks a running process that did not report what it loaded:
 // nothing can be compared, so the proof is unknown rather than different.
 const errUnreported = "did not report the digest of the "

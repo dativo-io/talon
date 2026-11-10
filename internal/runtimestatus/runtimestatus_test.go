@@ -268,3 +268,60 @@ func TestAssess_StoppedNewerInstanceDoesNotHideARunningOne(t *testing.T) {
 	assert.Equal(t, Stale, role(v, RoleGateway).State, "a hung older instance is more relevant than a newer stopped one")
 	assert.Equal(t, "a", role(v, RoleGateway).InstanceID)
 }
+
+// A gateway that fails during start-up (an agent key that no longer
+// decrypts) leaves one record: the role reads offline with the fixed cause,
+// not "never reported", and the record carries no raw error text.
+func TestStartupFailure_IsOfflineWithItsCause_AndClearedByAServingProcess(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	fail := StartupFailure{Code: FailureAgentKeyUnavailable, Reason: "a declared agent key cannot be decrypted"}
+	require.NoError(t, WriteStartupFailure(dir, base(RoleGateway), fail, now.Add(-10*time.Second)))
+	// A supervisor restart loop overwrites the same record.
+	require.NoError(t, WriteStartupFailure(dir, base(RoleGateway), fail, now))
+	entries, err := os.ReadDir(filepath.Join(dir, DirName))
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "one record per role set, however often start-up fails")
+
+	r := NewReader()
+	v := r.Assess(dir, Fingerprint(key), map[string]bool{RoleGateway: true}, now)
+	gw := role(v, RoleGateway)
+	assert.Equal(t, Offline, gw.State)
+	assert.Contains(t, gw.Reason, "failed to start")
+	assert.Contains(t, gw.Reason, "cannot be decrypted")
+	require.Len(t, v.Processes, 1)
+	require.NotNil(t, v.Processes[0].StartupFailure)
+	assert.Equal(t, FailureAgentKeyUnavailable, v.Processes[0].StartupFailure.Code)
+
+	// A process serving the gateway role starts: the failure is history.
+	p, err := NewPublisher(dir, time.Second, base(RoleGateway, RoleMCPProxy), nil)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	require.Eventually(t, func() bool {
+		v := r.Assess(dir, Fingerprint(key), map[string]bool{RoleGateway: true}, time.Now())
+		return role(v, RoleGateway).State == Running && len(v.Processes) == 1
+	}, 3*time.Second, 50*time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func TestStartupFailure_NeedsRolesAndInstallation(t *testing.T) {
+	assert.Error(t, WriteStartupFailure(t.TempDir(), Record{Installation: Installation{KeyFingerprint: "x"}}, StartupFailure{}, time.Now()))
+	assert.Error(t, WriteStartupFailure(t.TempDir(), Record{Roles: []string{RoleGateway}}, StartupFailure{}, time.Now()))
+}
+
+func TestAgentKeys_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	rec := base(RoleMCPProxy)
+	rec.InstanceID = "proxy-1"
+	rec.State = StateRunning
+	rec.WrittenAt = time.Now().UTC()
+	rec.AgentKeys = &AgentKeys{Declared: 1, Loaded: 0, Unloaded: []string{"hr-copilot"}}
+	writeRec(t, dir, rec)
+	v := NewReader().Assess(dir, Fingerprint(key), nil, time.Now())
+	require.Len(t, v.Processes, 1)
+	require.NotNil(t, v.Processes[0].AgentKeys)
+	assert.Equal(t, []string{"hr-copilot"}, v.Processes[0].AgentKeys.Unloaded)
+}

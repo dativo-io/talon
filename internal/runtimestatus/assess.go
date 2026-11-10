@@ -188,6 +188,12 @@ func assessProcesses(recs []Record, now time.Time) []Process {
 		}
 		p.AgeSeconds = age.Seconds()
 		switch {
+		case rec.State == StateFailed:
+			why := "the process stopped during start-up"
+			if rec.StartupFailure != nil && rec.StartupFailure.Reason != "" {
+				why = rec.StartupFailure.Reason
+			}
+			p.Assessed, p.Reason = Offline, fmt.Sprintf("failed to start %s ago: %s", round(age), why)
 		case rec.State == StateStopped:
 			p.Assessed, p.Reason = Offline, "stopped: the process recorded a graceful shutdown"
 		case age <= staleBeats*beat:

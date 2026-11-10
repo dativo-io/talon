@@ -35,6 +35,9 @@ const (
 const (
 	StateRunning = "running"
 	StateStopped = "stopped" // written on graceful shutdown
+	// StateFailed is written once by a process that failed during start-up
+	// and never served (see WriteStartupFailure).
+	StateFailed = "failed"
 )
 
 // DirName is the subdirectory of the data directory holding records.
@@ -63,7 +66,47 @@ type Record struct {
 	Catalog       *Catalog   `json:"catalog,omitempty"`
 	ProxyConfig   *ConfigRef `json:"proxy_config,omitempty"`
 	GatewayConfig *ConfigRef `json:"gateway_config,omitempty"`
+
+	// AgentKeys is what the process holds for agent-key authentication in
+	// its active generation (absent from records written before it existed:
+	// readers then report authentication readiness as unverified).
+	AgentKeys *AgentKeys `json:"agent_keys,omitempty"`
+	// StartupFailure is set only on a StateFailed record.
+	StartupFailure *StartupFailure `json:"startup_failure,omitempty"`
 }
+
+// AgentKeys counts the AI use cases of the active generation that declare an
+// agent key (agent.key.secret_name) and those whose key material the process
+// resolved into its identity registry. It carries names and counts only,
+// never a key, a digest of a key or a secret value. Loaded keys mean the
+// process can match a presented key; they do not prove that any client holds
+// the right one.
+type AgentKeys struct {
+	Declared int `json:"declared"`
+	Loaded   int `json:"loaded"`
+	// Unloaded names the use cases that declare a key the process does not
+	// hold (unminted, not readable, not decryptable), bounded.
+	Unloaded []string `json:"unloaded,omitempty"`
+}
+
+// MaxUnloadedNames bounds AgentKeys.Unloaded.
+const MaxUnloadedNames = 20
+
+// StartupFailure is why a process stopped before serving: a fixed category
+// and a fixed sentence chosen by the process, never the raw error text
+// (which can carry configuration content). The process log has the detail.
+type StartupFailure struct {
+	Code   string `json:"code"`
+	Reason string `json:"reason"`
+}
+
+// Startup failure codes.
+const (
+	FailureAgentKeyUnavailable = "agent_key_unavailable" // a declared agent key is not in the vault, not readable or not decryptable
+	FailureNoKeyedAgents       = "no_keyed_agents"       // gateway mode with no keyed agent
+	FailureSecretsStore        = "secrets_store"         // the secrets store cannot be opened with the configured key
+	FailureConfiguration       = "configuration"         // any other start-up error
+)
 
 // Installation identifies the installation a record belongs to without
 // revealing any key: KeyFingerprint is an HMAC of a fixed label under the
