@@ -75,8 +75,12 @@ function runtimeRecord(extra) {
   };
 }
 
-// caseGRecords: the People Analytics failure. The gateway failed to start on
-// an undecryptable agent key; the MCP proxy heartbeats without the key.
+// caseGRecords: a broken runtime. The gateway failed to start on an
+// undecryptable agent key; an MCP proxy runs without a declared key. Since
+// #557's review fix a current proxy refuses to start on an undecryptable key
+// too (TestE2E_ConsoleReadiness_UndecryptableAgentKey), but a running process
+// without a declared key is still reachable: a plain serve whose key was never
+// minted, or a process from an earlier release. The console must flag both.
 function caseGRecords(useCase) {
   return [
     runtimeRecord({ instance_id: "startup-failure-gateway", roles: ["gateway"], state: "failed", stopped_at: new Date().toISOString(),
