@@ -159,20 +159,30 @@ func recordServeStartupFailure(cfg *config.Config, startErr error) {
 func classifyStartupFailure(err error) runtimestatus.StartupFailure {
 	switch {
 	case errors.Is(err, secrets.ErrSecretUndecryptable):
-		return runtimestatus.StartupFailure{Code: runtimestatus.FailureAgentKeyUnavailable,
-			Reason: "a declared agent key cannot be decrypted with the configured secrets key (TALON_SECRETS_KEY changed since the key was stored?); agent authentication cannot work"}
+		return runtimestatus.StartupFailure{
+			Code:   runtimestatus.FailureAgentKeyUnavailable,
+			Reason: "a declared agent key cannot be decrypted with the configured secrets key (TALON_SECRETS_KEY changed since the key was stored?); agent authentication cannot work",
+		}
 	case errors.Is(err, secrets.ErrSecretNotFound), errors.Is(err, secrets.ErrSecretAccessDenied):
-		return runtimestatus.StartupFailure{Code: runtimestatus.FailureAgentKeyUnavailable,
-			Reason: "a declared agent key is not in the vault or not readable by its use case; run talon secrets set for it"}
+		return runtimestatus.StartupFailure{
+			Code:   runtimestatus.FailureAgentKeyUnavailable,
+			Reason: "a declared agent key is not in the vault or not readable by its use case; run talon secrets set for it",
+		}
 	case errors.Is(err, secrets.ErrInvalidEncryptionKey):
-		return runtimestatus.StartupFailure{Code: runtimestatus.FailureSecretsStore,
-			Reason: "the secrets store cannot be opened with the configured secrets key"}
+		return runtimestatus.StartupFailure{
+			Code:   runtimestatus.FailureSecretsStore,
+			Reason: "the secrets store cannot be opened with the configured secrets key",
+		}
 	case errors.Is(err, errNoKeyedAgents):
-		return runtimestatus.StartupFailure{Code: runtimestatus.FailureNoKeyedAgents,
-			Reason: "gateway mode requires at least one use case with an agent key"}
+		return runtimestatus.StartupFailure{
+			Code:   runtimestatus.FailureNoKeyedAgents,
+			Reason: "gateway mode requires at least one use case with an agent key",
+		}
 	}
-	return runtimestatus.StartupFailure{Code: runtimestatus.FailureConfiguration,
-		Reason: "start-up failed; the process log has the error"}
+	return runtimestatus.StartupFailure{
+		Code:   runtimestatus.FailureConfiguration,
+		Reason: "start-up failed; the process log has the error",
+	}
 }
 
 // configRef records a loaded configuration file and the digest of its

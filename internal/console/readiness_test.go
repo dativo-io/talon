@@ -71,8 +71,8 @@ func dim(r Readiness, key string) ReadinessDimension {
 
 func codes(fs []Finding) []string {
 	out := []string{}
-	for _, f := range fs {
-		out = append(out, f.Code)
+	for i := range fs {
+		out = append(out, fs[i].Code)
 	}
 	return out
 }
@@ -97,9 +97,11 @@ func TestReadiness_RunningAndReadyIsOperational_WhateverTheTraffic(t *testing.T)
 	assert.Contains(t, dim(r, DimAgentKeys).Reason, "did not attempt to authenticate")
 
 	// The same runtime over a store with no traffic is still operational.
-	in := readinessInputs{Runtime: svc.runtime(), ProxyConfigured: true, ProxyConfigDigest: fileDigest(svc.cfg.ConfigSources.ProxyConfig),
+	in := readinessInputs{
+		Runtime: svc.runtime(), ProxyConfigured: true, ProxyConfigDigest: fileDigest(svc.cfg.ConfigSources.ProxyConfig),
 		GatewayConfigDigest: fileDigest(svc.cfg.ConfigSources.GatewayConfig), Now: f.now,
-		Evidence: StoreFacts{Availability: ok(SourceEvidenceStore, f.now)}, Sessions: StoreFacts{Availability: ok(SourceSessionStore, f.now)}}
+		Evidence: StoreFacts{Availability: ok(SourceEvidenceStore, f.now)}, Sessions: StoreFacts{Availability: ok(SourceSessionStore, f.now)},
+	}
 	assert.Equal(t, OverallOperational, assessReadiness(in).Overall)
 }
 
@@ -229,6 +231,9 @@ func TestReadiness_PeopleAnalyticsBrokenRuntime(t *testing.T) {
 	assert.Contains(t, codes(r.Findings), "runtime_failed_to_start")
 	assert.Contains(t, codes(r.Findings), "agent_keys_unavailable")
 	assert.Contains(t, dim(r, DimGateway).Reason, "cannot be decrypted")
+	keys := dim(r, DimAgentKeys).Reason
+	assert.Contains(t, keys, "LLM gateway failed to start", "both causes are named")
+	assert.Contains(t, keys, "hr-analytics-assistant (MCP proxy mcp1)")
 	assert.Equal(t, SeverityCritical, r.Findings[0].Severity)
 
 	// A tenant with no traffic and no use cases still sees the outage.
@@ -320,9 +325,11 @@ func TestReadiness_EditedProxyConfigIsNotActive(t *testing.T) {
 
 // Scenario 14: an unreadable store is degraded, never a zero.
 func TestReadiness_UnavailableStores(t *testing.T) {
-	in := readinessInputs{Now: time.Unix(100, 0), Runtime: Runtime{Availability: Availability{State: StateOK, Source: SourceRuntimeRecords}},
+	in := readinessInputs{
+		Now: time.Unix(100, 0), Runtime: Runtime{Availability: Availability{State: StateOK, Source: SourceRuntimeRecords}},
 		Evidence: StoreFacts{Availability: Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: "database is locked"}},
-		Sessions: StoreFacts{Availability: Availability{State: StateUnavailable, Source: SourceSessionStore, Error: "session store is not open"}}}
+		Sessions: StoreFacts{Availability: Availability{State: StateUnavailable, Source: SourceSessionStore, Error: "session store is not open"}},
+	}
 	r := assessReadiness(in)
 	assert.Equal(t, OverallDegraded, r.Overall)
 	assert.Equal(t, ReadyDegraded, dim(r, DimEvidenceStore).State)
@@ -333,9 +340,13 @@ func TestReadiness_UnavailableStores(t *testing.T) {
 
 // Nothing configured to run: the console says so instead of all-clear.
 func TestReadiness_NothingConfigured(t *testing.T) {
-	in := readinessInputs{Now: time.Unix(100, 0), Runtime: Runtime{Availability: Availability{State: StateOK, Source: SourceRuntimeRecords},
-		Roles: []runtimestatus.RoleStatus{{Role: runtimestatus.RoleGateway, State: runtimestatus.NotConfigured}, {Role: runtimestatus.RoleMCPProxy, State: runtimestatus.NotConfigured}}},
-		Evidence: StoreFacts{Availability: ok(SourceEvidenceStore, time.Unix(100, 0))}, Sessions: StoreFacts{Availability: ok(SourceSessionStore, time.Unix(100, 0))}}
+	in := readinessInputs{
+		Now: time.Unix(100, 0), Runtime: Runtime{
+			Availability: Availability{State: StateOK, Source: SourceRuntimeRecords},
+			Roles:        []runtimestatus.RoleStatus{{Role: runtimestatus.RoleGateway, State: runtimestatus.NotConfigured}, {Role: runtimestatus.RoleMCPProxy, State: runtimestatus.NotConfigured}},
+		},
+		Evidence: StoreFacts{Availability: ok(SourceEvidenceStore, time.Unix(100, 0))}, Sessions: StoreFacts{Availability: ok(SourceSessionStore, time.Unix(100, 0))},
+	}
 	r := assessReadiness(in)
 	assert.Equal(t, OverallNotConfigured, r.Overall)
 	assert.Empty(t, r.Findings)

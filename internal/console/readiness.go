@@ -297,61 +297,77 @@ func activationDimension(in readinessInputs, readable bool) (ReadinessDimension,
 		d.State, d.Reason = ReadyUnknown, "runtime records cannot be read, so which configuration runs is unknown"
 		return d, nil
 	}
-	view := runtimestatus.View{Processes: in.Runtime.Processes}
-	type proof struct {
-		label string
-		l     runtimestatus.Loaded
-	}
-	var proofs []proof
-	if in.ProxyConfigured {
-		proofs = append(proofs, proof{"MCP proxy config", runtimestatus.ProveProxy(view, true, in.ProxyConfigDigest)})
-	}
-	if roleExpected(in.Runtime, runtimestatus.RoleGateway) {
-		proofs = append(proofs, proof{"gateway config", runtimestatus.ProveGatewayConfig(view, true, in.GatewayConfigDigest)})
-	}
 	// A rejected reload keeps the last-known-good generation serving: the
 	// files on disk are not what runs.
-	for _, p := range runningDataPlane(in.Runtime) {
-		if p.Catalog != nil && p.Catalog.ReloadRejected {
-			d.State = ReadyDegraded
-			d.Reason = fmt.Sprintf("process %s rejected a configuration reload and keeps serving its previous generation", p.InstanceID)
-			d.ObservedAt = timePtr(p.WrittenAt)
-			why := d.Reason
-			if len(p.Catalog.RejectedCauses) > 0 {
-				why += ": " + strings.Join(p.Catalog.RejectedCauses, "; ")
-			}
-			return d, &Finding{Severity: SeverityWarning, Code: "reload_rejected", Title: "A configuration reload was rejected", Affected: "AI use cases whose agent files changed since the active generation", Why: why, Link: "/configuration"}
+	if p := rejectedReload(in.Runtime); p != nil {
+		d.State = ReadyDegraded
+		d.Reason = fmt.Sprintf("process %s rejected a configuration reload and keeps serving its previous generation", p.InstanceID)
+		d.ObservedAt = timePtr(p.WrittenAt)
+		why := d.Reason
+		if len(p.Catalog.RejectedCauses) > 0 {
+			why += ": " + strings.Join(p.Catalog.RejectedCauses, "; ")
 		}
+		return d, &Finding{Severity: SeverityWarning, Code: "reload_rejected", Title: "A configuration reload was rejected", Affected: "AI use cases whose agent files changed since the active generation", Why: why, Link: "/configuration"}
+	}
+	view := runtimestatus.View{Processes: in.Runtime.Processes}
+	var proofs []configProof
+	if in.ProxyConfigured {
+		proofs = append(proofs, configProof{"MCP proxy config", runtimestatus.ProveProxy(view, true, in.ProxyConfigDigest)})
+	}
+	if roleExpected(in.Runtime, runtimestatus.RoleGateway) {
+		proofs = append(proofs, configProof{"gateway config", runtimestatus.ProveGatewayConfig(view, true, in.GatewayConfigDigest)})
 	}
 	if len(proofs) == 0 {
 		d.State, d.Reason = ReadyNotConfigured, "no gateway or MCP proxy is configured for this installation"
 		return d, nil
 	}
-	var reasons []string
-	worst := ReadyOK
-	for _, pr := range proofs {
-		reasons = append(reasons, pr.label+": "+pr.l.Reason)
-		switch pr.l.State {
-		case runtimestatus.BoundaryDiffers:
-			worst = ReadyDegraded
-		case runtimestatus.BoundaryUnknown:
-			if worst == ReadyOK {
-				worst = ReadyUnverified
-			}
-		case runtimestatus.BoundaryNotRunning:
-			if worst == ReadyOK || worst == ReadyUnverified {
-				worst = ReadyUnknown
-			}
-		}
-	}
-	d.State, d.Reason = worst, strings.Join(reasons, "; ")
+	d.State, d.Reason = worstProof(proofs)
 	if ps := runningDataPlane(in.Runtime); len(ps) > 0 {
 		d.ObservedAt = timePtr(ps[0].WrittenAt)
 	}
-	if worst == ReadyDegraded {
+	if d.State == ReadyDegraded {
 		return d, &Finding{Severity: SeverityWarning, Code: "config_not_active", Title: "A running process does not run the configuration on disk", Affected: "decisions of that process until it restarts", Why: d.Reason, Link: "/configuration"}
 	}
 	return d, nil
+}
+
+type configProof struct {
+	label string
+	l     runtimestatus.Loaded
+}
+
+// worstProof combines boundary proofs: any difference is degraded; a
+// boundary with no running process is unknown; an unreported digest is
+// unverified.
+func worstProof(proofs []configProof) (state, reason string) {
+	rank := map[string]int{ReadyOK: 0, ReadyUnverified: 1, ReadyUnknown: 2, ReadyDegraded: 3}
+	worst := ReadyOK
+	var reasons []string
+	for _, pr := range proofs {
+		reasons = append(reasons, pr.label+": "+pr.l.Reason)
+		st := ReadyOK
+		switch pr.l.State {
+		case runtimestatus.BoundaryDiffers:
+			st = ReadyDegraded
+		case runtimestatus.BoundaryUnknown:
+			st = ReadyUnverified
+		case runtimestatus.BoundaryNotRunning:
+			st = ReadyUnknown
+		}
+		if rank[st] > rank[worst] {
+			worst = st
+		}
+	}
+	return worst, strings.Join(reasons, "; ")
+}
+
+func rejectedReload(rt Runtime) *runtimestatus.Process {
+	for _, p := range runningDataPlane(rt) {
+		if p.Catalog != nil && p.Catalog.ReloadRejected {
+			return p
+		}
+	}
+	return nil
 }
 
 func roleExpected(rt Runtime, role string) bool {
@@ -373,49 +389,35 @@ func agentKeysDimension(rt Runtime, readable bool) (ReadinessDimension, *Finding
 		d.State, d.Reason = ReadyUnknown, "runtime records cannot be read, so whether agent keys are loaded is unknown"
 		return d, nil
 	}
-	// An expected gateway that failed to start for want of an agent key is
-	// the strongest fact available: authentication cannot work there.
-	for _, rs := range rt.Roles {
-		if !rs.Expected || rs.State != runtimestatus.Offline {
-			continue
-		}
-		if p := currentProcess(rt, rs.InstanceID); p != nil && p.StartupFailure != nil && p.StartupFailure.Code == runtimestatus.FailureAgentKeyUnavailable {
-			d.State, d.ObservedAt = ReadyDegraded, timePtr(p.WrittenAt)
-			d.Reason = "the " + roleName(rs.Role) + " failed to start: " + p.StartupFailure.Reason
-			return d, &Finding{Severity: SeverityCritical, Code: "agent_keys_unavailable", Title: "Agent authentication is not functional", Affected: "every use case authenticating through the " + roleName(rs.Role), Why: d.Reason, Link: "/system"}
-		}
-	}
+	// Every fact that makes authentication fail is collected: an expected
+	// role that failed to start for want of an agent key, and running
+	// processes that do not hold a declared key. Neither hides the other.
+	problems, affected, at := startupKeyFailures(rt)
 	procs := runningDataPlane(rt)
-	if len(procs) == 0 {
-		if anyExpected(rt) {
-			d.State, d.Reason = ReadyUnknown, "no gateway or MCP proxy process is running, so no process reports which agent keys it holds"
-		} else {
-			d.State, d.Reason = ReadyNotConfigured, "no gateway or MCP proxy is configured for this installation"
-		}
-		return d, nil
+	kf := keyFactsOf(procs)
+	if kf.at.After(at) {
+		at = kf.at
 	}
-	declared, unreported := 0, 0
-	var missing []string
-	var at time.Time
-	for _, p := range procs {
-		if p.WrittenAt.After(at) {
-			at = p.WrittenAt
-		}
-		if p.AgentKeys == nil {
-			unreported++
-			continue
-		}
-		declared += p.AgentKeys.Declared
-		for _, n := range p.AgentKeys.Unloaded {
-			missing = append(missing, fmt.Sprintf("%s (process %s)", n, p.InstanceID))
-		}
+	declared, unreported := kf.declared, kf.unreported
+	if len(kf.missing) > 0 {
+		problems = append(problems, "a running process does not hold the agent key of "+strings.Join(kf.missing, ", ")+"; requests presenting that key are refused, although its heartbeat is fresh")
+		affected = append(affected, kf.missing...)
 	}
 	d.ObservedAt = timePtr(at)
+	if len(problems) > 0 {
+		d.State, d.Reason = ReadyDegraded, strings.Join(problems, "; ")
+		return d, &Finding{
+			Severity: SeverityCritical, Code: "agent_keys_unavailable", Title: "Agent authentication is not functional", Affected: strings.Join(affected, "; "),
+			Why: d.Reason + ". Check the agent key in the vault and TALON_SECRETS_KEY.", Link: "/system",
+		}
+	}
 	switch {
-	case len(missing) > 0:
-		d.State = ReadyDegraded
-		d.Reason = "a running process does not hold the agent key of " + strings.Join(missing, ", ") + "; requests presenting that key are refused"
-		return d, &Finding{Severity: SeverityCritical, Code: "agent_keys_unavailable", Title: "Agent authentication is not functional for some use cases", Affected: strings.Join(missing, ", "), Why: d.Reason + ". The heartbeat is fresh; that does not make authentication work. Check the vault entry and TALON_SECRETS_KEY.", Link: "/system"}
+	case len(procs) == 0 && anyExpected(rt):
+		d.State, d.Reason = ReadyUnknown, "no gateway or MCP proxy process is running, so no process reports which agent keys it holds"
+		return d, nil
+	case len(procs) == 0:
+		d.State, d.Reason = ReadyNotConfigured, "no gateway or MCP proxy is configured for this installation"
+		return d, nil
 	case unreported > 0:
 		d.State = ReadyUnverified
 		d.Reason = fmt.Sprintf("%d running process(es) do not report which agent keys they hold (an older version?); a fresh heartbeat does not prove that authentication works", unreported)
@@ -428,6 +430,56 @@ func agentKeysDimension(rt Runtime, readable bool) (ReadinessDimension, *Finding
 	d.State = ReadyOK
 	d.Reason = "every running gateway and MCP proxy reports holding the keys of all use cases that declare one; the console did not attempt to authenticate"
 	return d, nil
+}
+
+func startupKeyFailures(rt Runtime) (problems, affected []string, at time.Time) {
+	for _, rs := range rt.Roles {
+		if !rs.Expected || rs.State != runtimestatus.Offline {
+			continue
+		}
+		p := currentProcess(rt, rs.InstanceID)
+		if p == nil || p.StartupFailure == nil || p.StartupFailure.Code != runtimestatus.FailureAgentKeyUnavailable {
+			continue
+		}
+		problems = append(problems, "the "+roleName(rs.Role)+" failed to start: "+p.StartupFailure.Reason)
+		affected = append(affected, "every use case authenticating through the "+roleName(rs.Role))
+		if p.WrittenAt.After(at) {
+			at = p.WrittenAt
+		}
+	}
+	return problems, affected, at
+}
+
+type keyFacts struct {
+	declared, unreported int
+	missing              []string
+	at                   time.Time
+}
+
+func keyFactsOf(procs []*runtimestatus.Process) keyFacts {
+	var k keyFacts
+	for _, p := range procs {
+		if p.WrittenAt.After(k.at) {
+			k.at = p.WrittenAt
+		}
+		if p.AgentKeys == nil {
+			k.unreported++
+			continue
+		}
+		k.declared += p.AgentKeys.Declared
+		for _, n := range p.AgentKeys.Unloaded {
+			k.missing = append(k.missing, fmt.Sprintf("%s (%s %s)", n, strings.Join(rolesLabel(p.Roles), " + "), p.InstanceID))
+		}
+	}
+	return k
+}
+
+func rolesLabel(roles []string) []string {
+	out := make([]string, 0, len(roles))
+	for _, r := range roles {
+		out = append(out, roleName(r))
+	}
+	return out
 }
 
 func anyExpected(rt Runtime) bool {

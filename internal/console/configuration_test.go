@@ -113,6 +113,14 @@ func TestConfiguration_SemanticSummaryFromTheFiles(t *testing.T) {
 
 	scoped := svc.Configuration(context.Background(), "acme")
 	assert.Equal(t, StateEmpty, scoped.UseCases.Availability.State, "no agent file declares tenant acme")
+
+	// An agent file without tenant_id is tenant "default", as in the fleet
+	// projection: the default-tenant view lists it (#533 PR 1 regression).
+	def := svc.Configuration(context.Background(), "default")
+	require.NotEmpty(t, def.UseCases.Items, "files without tenant_id belong to tenant default")
+	for _, u := range def.UseCases.Items {
+		assert.Equal(t, "default", u.TenantID)
+	}
 }
 
 // TestConfiguration_NeverLeaksSecretValues: credentials planted in URLs and

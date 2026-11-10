@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"time"
 )
@@ -46,33 +47,29 @@ func (s *Service) Tenants(ctx context.Context) *Tenants {
 		}
 		return e
 	}
-	var failed []string
-	var errs []string
+	var failed, errs []string
+	fail := func(source, err string) { failed, errs = append(failed, source), append(errs, err) }
 	uc := s.useCases(ctx, "")
 	if uc.Availability.State == StateUnavailable {
-		failed, errs = append(failed, "configured_use_cases"), append(errs, uc.Availability.Error)
+		fail("configured_use_cases", uc.Availability.Error)
 	}
 	for i := range uc.Rows {
 		e := get(uc.Rows[i].TenantID)
 		e.UseCases++
 		e.Configured = true
 	}
-	if s.cfg.Evidence == nil {
-		failed, errs = append(failed, "evidence"), append(errs, noStoreMsg)
-	} else if ids, err := s.cfg.Evidence.ListTenantIDs(ctx, time.Time{}, time.Time{}); err != nil {
-		failed, errs = append(failed, "evidence"), append(errs, err.Error())
+	if ids, err := s.evidenceTenants(ctx); err != nil {
+		fail("evidence", err.Error())
 	} else {
 		for _, id := range ids {
 			get(id).HasEvidence = true
 		}
 	}
-	if s.cfg.Sessions == nil {
-		failed, errs = append(failed, "sessions"), append(errs, "session store is not open")
-	} else if pairs, err := s.cfg.Sessions.DistinctAgents(ctx); err != nil {
-		failed, errs = append(failed, "sessions"), append(errs, err.Error())
+	if ids, err := s.sessionTenants(ctx); err != nil {
+		fail("sessions", err.Error())
 	} else {
-		for _, p := range pairs {
-			get(p[0]).HasSessions = true
+		for _, id := range ids {
+			get(id).HasSessions = true
 		}
 	}
 	for _, e := range byID {
@@ -95,4 +92,26 @@ func (s *Service) Tenants(ctx context.Context) *Tenants {
 		out.Availability.State = StateEmpty
 	}
 	return out
+}
+
+func (s *Service) evidenceTenants(ctx context.Context) ([]string, error) {
+	if s.cfg.Evidence == nil {
+		return nil, errors.New(noStoreMsg)
+	}
+	return s.cfg.Evidence.ListTenantIDs(ctx, time.Time{}, time.Time{})
+}
+
+func (s *Service) sessionTenants(ctx context.Context) ([]string, error) {
+	if s.cfg.Sessions == nil {
+		return nil, errors.New("session store is not open")
+	}
+	pairs, err := s.cfg.Sessions.DistinctAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, p[0])
+	}
+	return out, nil
 }
