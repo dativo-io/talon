@@ -40,6 +40,7 @@ const Prefix = "/console/v1"
 //	/console/v1/system
 //	/console/v1/configuration?tenant=
 //	/console/v1/search?q=&tenant=   (exact ids, use-case name prefix; bounded)
+//	/console/v1/tenants   (tenant identities for the scope selector; not authorization)
 func Handler(svc *console.Service) http.Handler {
 	r := chi.NewRouter()
 	r.Route(Prefix, func(r chi.Router) {
@@ -128,6 +129,9 @@ func Handler(svc *console.Service) http.Handler {
 				from = to.Add(-console.DefaultActivitySpan)
 			}
 			writeJSON(w, http.StatusOK, svc.Activity(req.Context(), q(req, "tenant"), q(req, "agent"), from, to, bucket))
+		})
+		r.Get("/tenants", func(w http.ResponseWriter, req *http.Request) {
+			writeJSON(w, http.StatusOK, svc.Tenants(req.Context()))
 		})
 		r.Get("/system", func(w http.ResponseWriter, req *http.Request) {
 			writeJSON(w, http.StatusOK, svc.System(req.Context()))

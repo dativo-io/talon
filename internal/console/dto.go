@@ -152,12 +152,18 @@ type RecentEvents struct {
 	Limit        int                       `json:"limit"`
 }
 
-// Overview is the Overview page. Every section shares Meta's tenant scope.
+// Overview is the Overview page. UseCases, Today and RecentEvents share
+// Meta's tenant scope; Readiness is installation-wide (Readiness.Scope) and
+// no tenant scope filters it, so a tenant view never hides a shared outage.
 type Overview struct {
 	Meta         Meta         `json:"meta"`
+	Readiness    Readiness    `json:"readiness"`
 	UseCases     UseCases     `json:"use_cases"`
 	Today        Today        `json:"today"`
 	RecentEvents RecentEvents `json:"recent_events"`
+	// Findings are the installation findings followed by the canonical fleet
+	// rows that are not healthy (in Meta's tenant scope), most urgent first.
+	Findings []Finding `json:"findings"`
 }
 
 // UseCaseDetail is one AI use case.
@@ -241,10 +247,11 @@ type StoreHealth struct {
 
 // System is the System page.
 type System struct {
-	Meta    Meta        `json:"meta"`
-	Console Info        `json:"console"`
-	Store   StoreHealth `json:"store"`
-	Runtime Runtime     `json:"runtime"`
+	Meta      Meta        `json:"meta"`
+	Console   Info        `json:"console"`
+	Store     StoreHealth `json:"store"`
+	Runtime   Runtime     `json:"runtime"`
+	Readiness Readiness   `json:"readiness"`
 }
 
 // Info identifies the console process itself.

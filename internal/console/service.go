@@ -122,12 +122,17 @@ const noStoreMsg = "evidence store is not open"
 // tenant, and Meta.TenantScope says so. A named tenant scopes all three to
 // it. Nothing substitutes "default" for an omitted scope.
 func (s *Service) Overview(ctx context.Context, tenant string) *Overview {
-	return &Overview{
+	uc := s.useCases(ctx, tenant)
+	out := &Overview{
 		Meta:         s.meta(tenant),
-		UseCases:     s.useCases(ctx, tenant),
+		Readiness:    s.readiness(ctx, uc.Runtime),
+		UseCases:     uc,
 		Today:        s.today(ctx, tenant),
 		RecentEvents: s.recentEvents(ctx, tenant, DefaultEventsLimit),
 	}
+	out.Findings = append(append([]Finding{}, out.Readiness.Findings...), useCaseFindings(uc.Attention, s.now())...)
+	sortFindings(out.Findings)
+	return out
 }
 
 func (s *Service) useCases(ctx context.Context, tenant string) UseCases {
@@ -571,6 +576,7 @@ func (s *Service) System(ctx context.Context) *System {
 		Store:   StoreHealth{Path: s.cfg.StorePath},
 		Runtime: s.runtime(),
 	}
+	out.Readiness = s.readiness(ctx, out.Runtime)
 	if s.cfg.Evidence == nil {
 		out.Store.Availability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}
 		return out
