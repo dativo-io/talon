@@ -33,7 +33,7 @@ export function evidenceProof(r: EvidenceRecord, o: Outcome | undefined, v: Veri
     `${story.headline}: ${story.detail}`,
   ];
   if (r.execution.model_used) verified.push(`Recorded model route: ${r.execution.model_used}${r.failover ? ` (${r.failover.role.replace(/_/g, " ")}, provider ${r.failover.provider})` : ""}.`);
-  if (r.execution.tools_called && r.execution.tools_called.length > 0) verified.push(`Intercepted tool call: ${r.execution.tools_called.join(", ")}.`);
+  if (r.execution.tools_called && r.execution.tools_called.length > 0) verified.push(`Tool call attempted through Talon: ${r.execution.tools_called.join(", ")}${r.policy_decision.allowed ? "" : " (blocked by Talon)"}.`);
   verified.push(
     r.execution.cost > 0
       ? `Recorded cost: ${r.execution.cost} ${r.execution.currency || "(no currency recorded)"}${r.execution.pricing_known === false ? ", without a pricing-table price" : ""}.`

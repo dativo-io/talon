@@ -27,6 +27,10 @@ for (const theme of ["light", "dark"]) {
       ["08-costs", "/costs"],
       ["09-configuration", "/configuration"],
       ["10-system", "/system"],
+      ["15-use-case-costs", `/use-cases/${f.use_case}#uc-costs`],
+      ["16-evidence-export-denied", `/evidence/${f.export_denied_evidence}`],
+      ["17-costs-all-tenants", "/costs"],
+      ["18-session-proof", `/sessions/${f.session}?agent=${f.use_case}`],
     ];
     for (const [name, url] of pages) {
       await page.goto(url);
