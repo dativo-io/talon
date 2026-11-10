@@ -7,11 +7,13 @@ const { state, pair, cli } = require("./helpers.js");
 
 test.describe.configure({ mode: "serial" });
 
-test("Overview: canonical health, disabled is not a failure, runtime stated as unknown, values match talon agents", async ({ page }) => {
+test("Overview: readiness first, canonical health kept, disabled is not a failure, values match talon agents", async ({ page }) => {
   const f = state().fixture;
   await pair(page, "/overview");
-  await expect(page.getByText("Health projected from persisted data.")).toBeVisible();
-  const queue = page.getByRole("region", { name: "Attention queue" });
+  // No data-plane process runs in this suite while both are configured:
+  // readiness is degraded, never inferred healthy from the readable store.
+  await expect(page.getByTestId("readiness").getByText("Degraded", { exact: true }).first()).toBeVisible();
+  const queue = page.getByRole("region", { name: "Fleet health" });
   await expect(queue).toBeVisible();
   // support-bot is disabled in its file: Talon reports it stopped; the UI labels it Disabled, not failed.
   const bot = queue.getByRole("row", { name: new RegExp(f.disabled_use_case) });

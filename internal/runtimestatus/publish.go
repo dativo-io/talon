@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -71,6 +73,7 @@ func (p *Publisher) InstanceID() string { return p.base.InstanceID }
 // the reader as staleness, which is the truth.
 func (p *Publisher) Run(ctx context.Context) error {
 	p.prune()
+	p.clearStartupFailures()
 	if err := p.write(StateRunning); err != nil {
 		return err
 	}
@@ -100,12 +103,18 @@ func (p *Publisher) write(state string) error {
 		t := rec.WrittenAt
 		rec.StoppedAt = &t
 	}
+	return writeAtomic(p.dir, rec)
+}
+
+// writeAtomic writes rec as <dir>/<instance id>.json by rename, so a reader
+// sees the old or the new record, never a partial one.
+func writeAtomic(dir string, rec Record) error {
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
-	final := filepath.Join(p.dir, rec.InstanceID+".json")
-	tmp, err := os.CreateTemp(p.dir, "."+rec.InstanceID+"-*.tmp")
+	final := filepath.Join(dir, rec.InstanceID+".json")
+	tmp, err := os.CreateTemp(dir, "."+rec.InstanceID+"-*.tmp")
 	if err != nil {
 		return fmt.Errorf("runtime status: %w", err)
 	}
@@ -152,6 +161,84 @@ func (p *Publisher) prune() {
 			continue
 		}
 		if rec.WrittenAt.Before(cutoff) {
+			_ = os.Remove(path)
+		}
+	}
+}
+
+// startupFailurePrefix names the one record per role set a failed start-up
+// leaves behind. The name is deterministic so a supervisor that restarts a
+// failing process in a loop overwrites one record instead of filling the
+// directory.
+const startupFailurePrefix = "startup-failure-"
+
+func startupFailureID(roles []string) string {
+	rs := append([]string(nil), roles...)
+	sort.Strings(rs)
+	return startupFailurePrefix + strings.Join(rs, "+")
+}
+
+// WriteStartupFailure records that a process with base's installation and
+// roles failed during start-up and never served. failure holds a fixed code
+// and sentence (see StartupFailure); the caller keeps the raw error for its
+// log. The record is assessed offline with that reason, so a configured role
+// that cannot start reads "failed to start" instead of "never reported". A
+// later process serving the same roles removes it when it starts.
+func WriteStartupFailure(dataDir string, base Record, failure StartupFailure, now time.Time) error {
+	if len(base.Roles) == 0 || base.Installation.KeyFingerprint == "" {
+		return errors.New("runtime status: a startup failure needs roles and an installation fingerprint")
+	}
+	dir := filepath.Join(dataDir, DirName)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("runtime status: %w", err)
+	}
+	now = now.UTC()
+	rec := base
+	rec.Schema = SchemaVersion
+	rec.InstanceID = startupFailureID(base.Roles)
+	rec.PID = os.Getpid()
+	if h, err := os.Hostname(); err == nil {
+		rec.Host = h
+	}
+	if rec.StartedAt.IsZero() {
+		rec.StartedAt = now
+	}
+	rec.WrittenAt = now
+	rec.StoppedAt = &now
+	// Monotonic across restarts of a failing process, so a reader never
+	// keeps an older failure over a newer one.
+	rec.Sequence = uint64(now.UnixNano()) //nolint:gosec // G115: wall-clock nanoseconds are positive
+	rec.IntervalSeconds = int(DefaultInterval / time.Second)
+	rec.State = StateFailed
+	f := failure
+	rec.StartupFailure = &f
+	return writeAtomic(dir, rec)
+}
+
+// clearStartupFailures removes this installation's startup-failure records
+// whose roles this process now serves.
+func (p *Publisher) clearStartupFailures() {
+	entries, err := os.ReadDir(p.dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, startupFailurePrefix) || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		path := filepath.Join(p.dir, name)
+		rec, err := readRecord(path)
+		if err != nil || rec.Installation.KeyFingerprint != p.base.Installation.KeyFingerprint {
+			continue
+		}
+		covered := true
+		for _, r := range rec.Roles {
+			if !hasRole(p.base.Roles, r) {
+				covered = false
+			}
+		}
+		if covered {
 			_ = os.Remove(path)
 		}
 	}

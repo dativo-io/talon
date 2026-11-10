@@ -404,10 +404,16 @@ func useCaseConfigs(ctx context.Context, src ConfigSources, tenant string, now t
 	}
 	for i := range scan.Agents {
 		a := scan.Agents[i]
-		if tenant != "" && a.TenantID != tenant {
+		// An agent file without tenant_id belongs to tenant "default", as in
+		// the fleet projection (fleetview) and enforcement.
+		t := a.TenantID
+		if t == "" {
+			t = "default"
+		}
+		if tenant != "" && t != tenant {
 			continue
 		}
-		out.Items = append(out.Items, useCaseConfig(a.Name, a.TenantID, a.Path, a.PolicyDigest, a.Enabled, a.Policy))
+		out.Items = append(out.Items, useCaseConfig(a.Name, t, a.Path, a.PolicyDigest, a.Enabled, a.Policy))
 	}
 	sort.Slice(out.Items, func(i, j int) bool { return out.Items[i].Name < out.Items[j].Name })
 	out.Availability = Availability{State: StateOK, Source: SourceConfigFiles, AsOf: now, Note: configNote}

@@ -1,6 +1,6 @@
 # Operations console
 
-The operations console is a read-only browser view of one Talon installation. It answers the questions an operator asks about the AI use cases Talon governs: which need attention and why, what they cost against their caps, what Talon decided for a request and what happened to it, what is configured, and how far the shown data can be trusted.
+The operations console is a read-only browser view of one Talon installation. It answers the questions an operator asks about the installation and the AI use cases Talon governs: whether the installation can serve governed traffic now, which use cases need attention and why, what they cost against their caps, what Talon decided for a request and what happened to it, what is configured, and how far the shown data can be trusted.
 
 Every number on a page comes from the same Go projections the `talon` CLI prints. The browser formats and lays out; it does not compute health, budgets, decisions or sessions. When a source could not be read, or a figure is not a measurement, the page says so instead of showing a zero.
 
@@ -20,17 +20,20 @@ The browser asks for a one-time pairing code. Read it from the console's own out
 
 | Page | Question it answers | Source |
 |---|---|---|
-| **Overview** | Which AI use cases need attention right now, and why? | `talon agents` fleet projection, today's counters, request-class activity buckets, recent operational events |
+| **Overview** | What needs attention across the installation and the selected tenant, and why? | operational readiness (runtime records, configuration digests, agent keys the processes report, store reads), findings, the `talon agents` fleet projection, today's counters, request-class activity buckets, recent operational events |
 | **AI Use Cases** | What AI use cases do we operate, how are they doing, how are they governed? | the same fleet rows, unchanged order; detail adds costs, 24-hour activity and recent sessions |
 | **Sessions** | What happened in this session, what did Talon decide, and was anything sent? | session store rows and evidence-observed session ids, summary and timeline from `talon session show` |
 | **Costs** | How much, where, and are budgets respected? | `talon costs --json` (`costs.Build`) |
 | **Configuration** | What is configured, and what can be proven active? | the gateway, agent and MCP proxy files, summarised server-side |
-| **System** | Can I trust the sources behind this console? | the console process and the evidence store file |
+| **System** | Are Talon's runtimes operating, and can I trust the sources behind this console? | operational readiness, each process's runtime record, the console process and the evidence store file |
 
 Evidence records open from any timeline, event or search result (`/evidence/<id>`).
 
 ## Reading the pages correctly
 
+- **Readiness and fleet health are different questions.** The top of the Overview is *operational readiness*: installation-wide, never filtered by the tenant scope. Each dimension (LLM gateway, MCP proxy, configuration activation, agent authentication, evidence store, session store, runtime records) says *OK*, *Degraded*, *Unverified*, *Unknown* or *Not configured*, its source and when it was established. Below it, *What needs attention* lists findings, most urgent first: what is wrong, what it affects, why it is reported, when that was observed, and a link to continue. Installation findings come first; the use cases that canonical fleet health (`talon agents`) flags follow, in the tenant scope. Fleet health judges budgets, policy and recorded traffic; it can read healthy while the gateway is down, which is why readiness is shown separately and above it.
+- **A heartbeat is not authentication.** Each `talon serve` reports which agent keys it holds (names and counts, never a key). A process that runs but does not hold a use case's key (for example a plain `talon serve` whose key was never minted) is *Degraded* for agent authentication. A gateway or MCP proxy that cannot resolve a declared key (for example because it no longer decrypts after `TALON_SECRETS_KEY` changed) refuses to start, never serving without the key, and leaves a *failed to start* record with a fixed cause; the console never shows the raw error, which stays in the process log. A process that does not report its keys reads *Unverified*. The console never attempts to authenticate.
+- **Nothing configured is not an incident.** A gateway the installation does not configure reads *Not configured*, never offline; an MCP-only installation can be fully operational.
 - **Unavailable is not zero.** A section that could not be read, or a figure the backend marks as not a measurement, is shown as *unavailable* with the reason. A zero is shown only when the source was read and holds nothing.
 - **Health is projected; liveness is the process's own heartbeat.** Use-case health is evaluated from recorded evidence and the configuration files. Whether the MCP proxy and the LLM gateway are running comes from the status record each `talon serve` process writes into the data directory every 5 seconds: *running* while it is fresh, *stale* after three missed heartbeats, *offline* after twelve or a recorded shutdown, *not configured* when this installation does not use that runtime. The System page lists each process with version, active configuration generation and any rejected reload; sessions and evidence stay readable whatever the process state.
 - **Counter windows are stated.** Requests, denials and fallbacks in the use-case table cover the last hour and failed sessions the last 24 hours: the windows Talon's health evaluation uses. Spend uses the UTC day and calendar month. The activity chart's range selector moves only the chart.
@@ -48,7 +51,9 @@ The search box accepts an AI use case name (prefix), an exact session id, an exa
 
 ## Scope
 
-The tenant field in the header scopes every page (`?tenant=` in the URL). Empty means all tenants on Overview, including its activity chart, and on AI Use Cases; Sessions, Costs and search use `default`. Each page states the scope it shows. Filters and scope live in the URL, so a link to an investigation can be shared; no code, cookie or key is ever placed in a URL.
+The **Tenant scope** selector in the header lists the tenants this installation knows: tenants of configured AI use cases (with their count) and tenants seen only in evidence or sessions (*observed only*). It scopes AI use cases, sessions, costs, activity and search (`?tenant=` in the URL), and the scope follows you through the navigation, a reload and the browser's back button. *All tenants* means all tenants on Overview, including its activity chart, and on AI Use Cases; Sessions, Costs and search use `default`. Each page states the scope it shows.
+
+Installation facts are never scoped: operational readiness, the System page and the shared configuration (organization baseline, gateway and providers, MCP proxy) stay visible and are labelled *installation* or *shared*. Talon has no tenant-wide policy: each use case's effective policy is the organization baseline, its own agent file and the hard constraints, and the Configuration page links each use case to that explanation. Selecting a tenant filters what the paired operator may already read; it is not an access control. Filters and scope live in the URL, so a link to an investigation can be shared; no code, cookie or key is ever placed in a URL.
 
 ## What the console does not do
 

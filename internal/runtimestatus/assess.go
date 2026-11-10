@@ -178,25 +178,12 @@ func assessProcesses(recs []Record, now time.Time) []Process {
 	for i := range recs {
 		rec := &recs[i]
 		p := Process{Record: *rec}
-		beat := time.Duration(rec.IntervalSeconds) * time.Second
-		if beat <= 0 {
-			beat = DefaultInterval
-		}
 		age := now.Sub(rec.WrittenAt)
 		if age < 0 {
 			age = 0
 		}
 		p.AgeSeconds = age.Seconds()
-		switch {
-		case rec.State == StateStopped:
-			p.Assessed, p.Reason = Offline, "stopped: the process recorded a graceful shutdown"
-		case age <= staleBeats*beat:
-			p.Assessed, p.Reason = Running, fmt.Sprintf("heartbeat %s ago (every %s)", round(age), beat)
-		case age <= offlineBeats*beat:
-			p.Assessed, p.Reason = Stale, fmt.Sprintf("no heartbeat for %s (expected every %s): hung, overloaded or killed", round(age), beat)
-		default:
-			p.Assessed, p.Reason = Offline, fmt.Sprintf("no heartbeat for %s: the process is not running or cannot write its status", round(age))
-		}
+		p.Assessed, p.Reason = assessOne(rec, age)
 		out = append(out, p)
 	}
 	// Most relevant first: running before stale before offline, newest
@@ -269,6 +256,29 @@ func assessRoles(procs []Process, expected map[string]bool) []RoleStatus {
 		out = append(out, rs)
 	}
 	return out
+}
+
+// assessOne derives one record's state from its own state and heartbeat age.
+func assessOne(rec *Record, age time.Duration) (state, reason string) {
+	beat := time.Duration(rec.IntervalSeconds) * time.Second
+	if beat <= 0 {
+		beat = DefaultInterval
+	}
+	switch {
+	case rec.State == StateFailed:
+		why := "the process stopped during start-up"
+		if rec.StartupFailure != nil && rec.StartupFailure.Reason != "" {
+			why = rec.StartupFailure.Reason
+		}
+		return Offline, fmt.Sprintf("failed to start %s ago: %s", round(age), why)
+	case rec.State == StateStopped:
+		return Offline, "stopped: the process recorded a graceful shutdown"
+	case age <= staleBeats*beat:
+		return Running, fmt.Sprintf("heartbeat %s ago (every %s)", round(age), beat)
+	case age <= offlineBeats*beat:
+		return Stale, fmt.Sprintf("no heartbeat for %s (expected every %s): hung, overloaded or killed", round(age), beat)
+	}
+	return Offline, fmt.Sprintf("no heartbeat for %s: the process is not running or cannot write its status", round(age))
 }
 
 // stateRank orders assessed states by how much they say about a role now.

@@ -11,7 +11,7 @@ import { isMeasurement } from "../lib/availability";
 import { humanize, integer, money, relative, utc, utcShort } from "../lib/format";
 import { scoped, useScope } from "../lib/scope";
 import { rowSpend } from "../lib/costs";
-import { runtimeSummary } from "../components/RuntimeStatus";
+import { FindingsList, ReadinessPanel } from "../components/Readiness";
 
 export function Overview() {
   const { tenant } = useScope();
@@ -20,7 +20,7 @@ export function Overview() {
     <>
       <PageHead
         title="Overview"
-        lede="Which AI use cases need attention right now, and why."
+        lede="What needs attention across the installation and the selected tenant, and why."
         actions={<button type="button" onClick={ov.reload} disabled={ov.loading}>Refresh</button>}
       />
       {ov.error ? <ErrorState error={ov.error} what="the overview" onRetry={ov.reload} /> : null}
@@ -36,20 +36,34 @@ function OverviewBody({ o, tenant }: { o: OverviewDTO; tenant: string }) {
   const attention = uc.attention ?? [];
   const ucMeasured = isMeasurement(uc.availability);
   const scopeLabel = o.meta.tenant_scope === "all_tenants" ? "all tenants" : `tenant ${o.meta.tenant_id}`;
+  const findings = o.findings ?? [];
   return (
     <div className="stack">
-      <RuntimeConfidence o={o} />
-      <AvailabilityNotice a={uc.availability} what="AI use cases" />
-      {ucMeasured && rows.length === 0 ? (
-        <div className="card">
-          <EmptyState title="No AI use case is configured">
-            Talon found no <code>agent.talon.yaml</code> in its configured agents directory. Each agent file is one AI use case; see{" "}
-            <code>talon init</code>.
-          </EmptyState>
+      <ReadinessPanel r={o.readiness} compact />
+      <FindingsList
+        findings={findings}
+        tenant={tenant}
+        title="What needs attention"
+        empty={`Nothing needs attention: readiness found no problem and canonical fleet health flags no AI use case in ${scopeLabel}.`}
+      />
+      <section aria-labelledby="usage-title" className="stack">
+        <div className="section-head">
+          <h2 id="usage-title">AI use cases and usage</h2>
+          <span className="small muted">{scopeLabel}</span>
         </div>
-      ) : null}
-      {ucMeasured && rows.length > 0 ? <AttentionQueue rows={attention} total={rows.length} tenant={tenant} scope={scopeLabel} /> : null}
-      <Summary o={o} configured={ucMeasured ? rows.length : null} attention={ucMeasured ? attention.length : null} />
+        <Summary o={o} configured={ucMeasured ? rows.length : null} attention={ucMeasured ? attention.length : null} />
+        <AvailabilityNotice a={uc.availability} what="AI use cases" />
+        {ucMeasured && rows.length === 0 ? (
+          <div className="card">
+            <EmptyState title={o.meta.tenant_scope === "tenant" ? `No AI use case is configured in tenant ${o.meta.tenant_id}` : "No AI use case is configured"}>
+              Talon found no <code>agent.talon.yaml</code> in scope. Each agent file is one AI use case; see <code>talon init</code>. Installation readiness above is
+              not affected by the tenant scope.
+            </EmptyState>
+          </div>
+        ) : null}
+        {ucMeasured && rows.length > 0 ? <AttentionQueue rows={attention} total={rows.length} tenant={tenant} scope={scopeLabel} /> : null}
+      </section>
+      <CostContext o={o} tenant={tenant} />
       <ActivitySection tenant={o.meta.tenant_id ?? ""} />
       <RecentEvents o={o} tenant={tenant} />
       {uc.issues && uc.issues.length > 0 ? (
@@ -71,18 +85,51 @@ function OverviewBody({ o, tenant }: { o: OverviewDTO; tenant: string }) {
   );
 }
 
-function RuntimeConfidence({ o }: { o: OverviewDTO }) {
-  const projected = o.use_cases.health_basis === "projected_from_store";
+// CostContext: recorded spend today in the configured currency, and the
+// month-to-date spend against each use case's effective cap, as the
+// canonical rows carry them. Nothing is estimated or forecast.
+function CostContext({ o, tenant }: { o: OverviewDTO; tenant: string }) {
+  const t = o.today;
+  const costOk = isMeasurement(t.availability, "cost");
+  const capped = (o.use_cases.rows ?? []).filter((r) => r.monthly_cap > 0);
   return (
-    <div className="notice info" role="note">
-      <div>
-        <strong>{projected ? "Health projected from persisted data." : "Health from the live runtime."}</strong>{" "}
-        {projected
-          ? "States are evaluated from recorded evidence and the configuration files; they are not a liveness check of the gateway or MCP proxy. "
-          : ""}
-        {runtimeSummary(o.use_cases.runtime)}. <Link to="/system">System</Link>
+    <section className="card" aria-labelledby="cost-title">
+      <div className="card-head">
+        <h2 id="cost-title">Costs and budget context</h2>
+        <Link to={scoped("/costs", tenant)} className="small">Open Costs →</Link>
       </div>
-    </div>
+      <div className="card-body stack">
+        <p>
+          Recorded spend today (UTC day from {utcShort(t.window.day_start)}):{" "}
+          <strong>{costOk ? money(t.cost, t.currency) : <span className="muted">unavailable</span>}</strong>
+          {costOk ? null : <span className="small muted"> — {t.availability.note ?? t.availability.error ?? "not a measurement"}</span>}
+        </p>
+        {capped.length > 0 ? (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>AI use case</th><th className="num">Month to date</th><th className="num">Effective monthly cap</th></tr></thead>
+              <tbody>
+                {capped.map((r) => (
+                  <tr key={`${r.tenant_id}/${r.name}`}>
+                    <td><Link to={scoped(`/use-cases/${encodeURIComponent(r.name)}`, r.tenant_id)}>{r.name}</Link> <span className="small muted">{r.tenant_id}</span></td>
+                    <td className="num"><CurrencyAmount amount={rowSpend(r, "spend_month")} currency={r.currency} reason="priced records in another currency: not comparable with the cap" /></td>
+                    <td className="num">{money(r.monthly_cap, r.currency)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : <p className="small muted">No AI use case in scope has an effective monthly cap.</p>}
+        <details>
+          <summary className="small">How these amounts are counted</summary>
+          <p className="small muted">
+            Spend is the sum of recorded execution cost across every record class, in the pricing table's currency. Calls Talon could not price are not counted as
+            zero: a period with records in another currency shows as unavailable. Caps are the effective caps resolved from the organization baseline and each
+            agent's override.
+          </p>
+        </details>
+      </div>
+    </section>
   );
 }
 
@@ -90,14 +137,14 @@ function AttentionQueue({ rows, total, tenant, scope }: { rows: AgentRow[]; tota
   return (
     <section className="card" aria-labelledby="attention-title">
       <div className="card-head">
-        <h2 id="attention-title">Attention queue</h2>
+        <h2 id="attention-title">Fleet health</h2>
         <span className="small muted">Talon's order: health, then name · {scope}</span>
       </div>
       {rows.length === 0 ? (
         <div className="card-body">
           <p>
-            <strong>No AI use case needs attention</strong> among the {total} configured, within the projection's scope: recorded evidence and the
-            current configuration. This does not prove that the gateway or MCP processes are running.
+            <strong>Canonical fleet health flags none of the {total} configured AI use cases.</strong> It judges budgets, policy and recorded traffic; whether
+            the runtimes can serve now is operational readiness, above.
           </p>
         </div>
       ) : (
@@ -147,7 +194,7 @@ function Summary({ o, configured, attention }: { o: OverviewDTO; configured: num
       <h2 id="summary-title" className="visually-hidden">Today</h2>
       <div className="grid stats">
         <Stat label="Configured AI use cases" value={configured === null ? null : integer(configured)} sub="agent files discovered" />
-        <Stat label="Needing attention" value={attention === null ? null : integer(attention)} sub="canonical fleet health" />
+        <Stat label="With fleet-health problems" value={attention === null ? null : integer(attention)} sub="canonical fleet health" />
         <Stat label="Requests today" value={reqOk ? integer(t.requests) : null} sub={`UTC day from ${utcShort(t.window.day_start)}`} />
         <Stat label="Denied today" value={reqOk ? integer(t.denied) : null} sub="request-class records" />
         <Stat
@@ -213,17 +260,21 @@ function ActivitySection({ tenant, agent }: { tenant: string; agent?: string }) 
 }
 export { ActivitySection };
 
+const RECENT_SHOWN = 10;
+
 function RecentEvents({ o, tenant }: { o: OverviewDTO; tenant: string }) {
   const re = o.recent_events;
-  const events = re.events ?? [];
+  const all = re.events ?? [];
+  const [more, setMore] = useState(false);
+  const events = more ? all : all.slice(0, RECENT_SHOWN);
   return (
     <section className="card" aria-labelledby="events-title">
       <div className="card-head">
-        <h2 id="events-title">Recent events</h2>
+        <h2 id="events-title">Recent decisions</h2>
         <SourceFreshness a={re.availability} />
       </div>
-      <AvailabilityNotice a={re.availability} what="Recent events" />
-      {isMeasurement(re.availability) && events.length === 0 ? <EmptyState title="No events recorded yet" /> : null}
+      <AvailabilityNotice a={re.availability} what="Recent decisions" />
+      {isMeasurement(re.availability) && all.length === 0 ? <EmptyState title="No events recorded yet" /> : null}
       {events.length > 0 ? (
         <div className="table-wrap">
           <table>
@@ -246,6 +297,12 @@ function RecentEvents({ o, tenant }: { o: OverviewDTO; tenant: string }) {
               ))}
             </tbody>
           </table>
+          {all.length > RECENT_SHOWN ? (
+            <div className="table-foot">
+              <span className="small muted">{events.length} of {all.length} most recent decisions in this scope · every decision links to its signed evidence</span>
+              <button type="button" onClick={() => setMore((m) => !m)}>{more ? "Show fewer" : `Show all ${all.length}`}</button>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </section>

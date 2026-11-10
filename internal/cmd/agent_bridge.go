@@ -99,7 +99,13 @@ func buildServeIdentityRegistry(ctx context.Context, pol *policy.Policy, policyP
 		agentbridge.LoadedAgentFromPolicy(pol, policyPath),
 	}, vault, adminKey)
 	if err != nil {
-		if gatewayMode || errors.Is(err, gateway.ErrAdminKeyCollision) {
+		// Only an UNMINTED key (the secret was never set) degrades: that is
+		// the single-file onboarding affordance. A key that exists but cannot
+		// be resolved — undecryptable after a TALON_SECRETS_KEY change, denied
+		// by its ACL, an unreadable vault — is a failed CONFIGURED identity,
+		// and degrading it would turn a declared agent key into open access
+		// whenever TALON_ADMIN_KEY is unset (#557 review P0). Terminal.
+		if gatewayMode || !errors.Is(err, secrets.ErrSecretNotFound) {
 			return nil, fmt.Errorf("building agent identity registry: %w", err)
 		}
 		// Registry unavailable (unminted key). With no agent keys AND no

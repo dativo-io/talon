@@ -447,3 +447,20 @@ func TestDeleteNonexistent(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSecretNotFound,
 		"deleting a nonexistent secret must fail — scripts depend on the exit code (#378)")
 }
+
+// A secret written under one secrets key does not decrypt under another;
+// the error is typed so start-up can report the cause without its text.
+func TestGet_WrongSecretsKeyIsUndecryptable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.db")
+	store, err := NewSecretStore(path, "12345678901234567890123456789012")
+	require.NoError(t, err)
+	require.NoError(t, store.Set(context.Background(), "agent-key", []byte("v"), ACL{}))
+	require.NoError(t, store.Close())
+
+	other, err := NewSecretStore(path, "abcdefghijklmnopqrstuvwxyz123456")
+	require.NoError(t, err)
+	defer other.Close()
+	_, err = other.Get(context.Background(), "agent-key", "default", "a")
+	assert.ErrorIs(t, err, ErrSecretUndecryptable)
+}

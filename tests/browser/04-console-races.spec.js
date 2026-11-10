@@ -38,8 +38,7 @@ test("Tenant change: tenant A's use cases are not shown while tenant B loads", a
   await pair(page, "/use-cases");
   await expect(page.getByRole("link", { name: f.use_case })).toBeVisible();
   const release = hold(page, "**/console/v1/use-cases?tenant=acme*");
-  await page.getByLabel("Tenant").fill("acme");
-  await page.getByLabel("Tenant").press("Enter");
+  await page.getByLabel("Tenant scope").selectOption("acme");
   await expect(page).toHaveURL(/tenant=acme/);
   await expect(page.getByText("Loading AI use cases")).toBeVisible();
   await expect(page.getByRole("link", { name: f.use_case })).toHaveCount(0);
@@ -72,8 +71,7 @@ test("Session cursors: changing tenant on an older page starts the new tenant fr
   await expect(observed.getByRole("button", { name: "Newer" })).toBeEnabled();
   const requests = [];
   page.on("request", (r) => { if (r.url().includes("/console/v1/sessions?")) requests.push(r.url()); });
-  await page.getByLabel("Tenant").fill("acme");
-  await page.getByLabel("Tenant").press("Enter");
+  await page.getByLabel("Tenant scope").selectOption("acme");
   await expect(page).toHaveURL(/tenant=acme/);
   await page.waitForLoadState("networkidle");
   const last = new URL(requests[requests.length - 1]);

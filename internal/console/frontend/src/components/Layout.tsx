@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { getJSON, api, ApiError } from "../api/client";
-import type { SearchResults } from "../api/types";
+import type { SearchResults, Tenants } from "../api/types";
+import { useApi } from "../api/useApi";
 import { scoped, useScope } from "../lib/scope";
 import { applyTheme, loadTheme, type Theme } from "../lib/theme";
 import { UseCaseHealth } from "./ui";
@@ -73,21 +74,34 @@ export function Layout({ children, onLogout }: { children: ReactNode; onLogout: 
   );
 }
 
+// TenantScope selects the tenant every scoped page and search uses. The list
+// comes from /console/v1/tenants (configured and observed tenant identities);
+// a tenant named in the URL but not listed is kept and labelled. Selecting a
+// tenant filters views; it is not authorization, and installation-wide facts
+// (runtime readiness, System) are never filtered by it.
 function TenantScope() {
   const { tenant, set } = useScope();
-  const [draft, setDraft] = useState(tenant);
-  useEffect(() => setDraft(tenant), [tenant]);
+  const list = useApi<Tenants>(api("/tenants"));
+  const known = list.data?.tenants ?? [];
+  const listed = known.some((t) => t.tenant_id === tenant);
   return (
-    <form
-      className="row"
-      onSubmit={(e) => {
-        e.preventDefault();
-        set("tenant", draft.trim());
-      }}
-    >
-      <label className="small muted" htmlFor="tenant-input">Tenant</label>
-      <input id="tenant-input" value={draft} placeholder="all / default" size={12} onChange={(e) => setDraft(e.target.value)} />
-    </form>
+    <div className="row tenant-scope">
+      <label className="small muted" htmlFor="tenant-select">Tenant scope</label>
+      <select id="tenant-select" value={tenant} onChange={(e) => set("tenant", e.target.value)} aria-describedby="tenant-scope-note">
+        <option value="">All tenants</option>
+        {known.map((t) => (
+          <option key={t.tenant_id} value={t.tenant_id}>
+            {t.tenant_id}
+            {t.configured ? ` · ${t.use_cases} use case${t.use_cases === 1 ? "" : "s"}` : " · observed only"}
+          </option>
+        ))}
+        {tenant && !listed ? <option value={tenant}>{tenant} · not seen in this installation</option> : null}
+      </select>
+      <span id="tenant-scope-note" className="visually-hidden">
+        Filters AI use cases, sessions, costs and activity. Installation readiness is not filtered. Not an access control.
+      </span>
+      {list.data && list.data.availability.state === "partial" ? <span className="small muted" title={list.data.availability.error}>list partial</span> : null}
+    </div>
   );
 }
 

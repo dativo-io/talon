@@ -1,6 +1,8 @@
 // @ts-check
 const { spawnSync } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
+const path = require("node:path");
 const { expect } = require("@playwright/test");
 const { STATE, CODE_RE } = require("./global-setup.js");
 
@@ -44,4 +46,47 @@ function cli(args) {
   return JSON.parse(r.stdout);
 }
 
-module.exports = { state, freshCode, pair, cli };
+// Runtime records written exactly as `talon serve` writes them (same schema,
+// same installation fingerprint), for readiness states no seeded process
+// produces (#533).
+function fingerprint(signingKey) {
+  return crypto.createHmac("sha256", signingKey).update("talon-installation-fingerprint-v1").digest("hex").slice(0, 32);
+}
+
+// writeRecords writes runtime records and returns a cleanup function.
+function writeRecords(records) {
+  const st = state();
+  const dir = path.join(st.dir, "runtime");
+  fs.mkdirSync(dir, { recursive: true });
+  const files = records.map((r) => {
+    const p = path.join(dir, `${r.instance_id}.json`);
+    fs.writeFileSync(p, JSON.stringify(r));
+    return p;
+  });
+  return () => files.forEach((p) => fs.rmSync(p, { force: true }));
+}
+
+function runtimeRecord(extra) {
+  const st = state();
+  const now = new Date().toISOString();
+  return {
+    schema: 1, installation: { key_fingerprint: fingerprint(st.env.TALON_SIGNING_KEY), store_path: path.join(st.dir, "evidence.db") },
+    version: "browser-test", pid: 4242, started_at: now, written_at: now, sequence: Date.now(), interval_seconds: 5, state: "running", ...extra,
+  };
+}
+
+// caseGRecords: a broken runtime. The gateway failed to start on an
+// undecryptable agent key; an MCP proxy runs without a declared key. Since
+// #557's review fix a current proxy refuses to start on an undecryptable key
+// too (TestE2E_ConsoleReadiness_UndecryptableAgentKey), but a running process
+// without a declared key is still reachable: a plain serve whose key was never
+// minted, or a process from an earlier release. The console must flag both.
+function caseGRecords(useCase) {
+  return [
+    runtimeRecord({ instance_id: "startup-failure-gateway", roles: ["gateway"], state: "failed", stopped_at: new Date().toISOString(),
+      startup_failure: { code: "agent_key_unavailable", reason: "a declared agent key cannot be decrypted with the configured secrets key (TALON_SECRETS_KEY changed since the key was stored?); agent authentication cannot work" } }),
+    runtimeRecord({ instance_id: "browser-mcp-1", roles: ["mcp_proxy"], agent_keys: { declared: 1, loaded: 0, unloaded: [useCase] } }),
+  ];
+}
+
+module.exports = { state, freshCode, pair, cli, writeRecords, runtimeRecord, caseGRecords };

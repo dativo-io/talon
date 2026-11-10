@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { api } from "../api/client";
+import { ReadinessPanel } from "../components/Readiness";
 import { ProcessTable, RoleTable, roleLabel, RuntimeStateBadge } from "../components/RuntimeStatus";
 import { useApi } from "../api/useApi";
 import type { SystemInfo } from "../api/types";
@@ -18,9 +19,10 @@ const COMMANDS = [
   ["New pairing code", "talon ui pair"],
 ];
 
-// What the console can vouch for: that it answers, and what it read from the
-// store file. Gateway and MCP process liveness is not inferred from the
-// store; it stays unknown until the runtime probe (#538).
+// What the console can vouch for: that it answers, what it read from the
+// store file, and what each data-plane process reports in its own runtime
+// record (#538). Liveness is never inferred from the store; operational
+// readiness (#533) combines these sources without merging them.
 // Refresh is bounded: every 10 s while the page is open; an older answer
 // never replaces a newer one (useApi request keys plus the server's
 // per-instance sequence check).
@@ -36,11 +38,12 @@ export function System({ expiresAt, onLogout }: { expiresAt?: string; onLogout: 
   }, [reload]);
   return (
     <>
-      <PageHead title="System" lede="Can you trust the sources behind what this console shows?" actions={<button type="button" onClick={res.reload} disabled={res.loading}>Refresh</button>} />
+      <PageHead title="System" lede="Are Talon's runtimes operating, and can you trust the sources behind what this console shows? Installation-wide: the tenant scope does not apply here." actions={<button type="button" onClick={res.reload} disabled={res.loading}>Refresh</button>} />
       {res.error ? <ErrorState error={res.error} what="system facts" onRetry={res.reload} /> : null}
       {!s && res.loading ? <Loading what="system facts" /> : null}
       {s ? (
         <div className="grid">
+          <ReadinessPanel r={s.readiness} />
           <div className="grid stats">
             <div className="card stat"><div className="label">Console</div><div className="value"><Badge tone="ok">Responding</Badge></div><div className="sub">answered this request</div></div>
             <div className="card stat"><div className="label">Evidence store</div><div className="value">{s.store.availability.state === "ok" ? <Badge tone="ok">Readable</Badge> : <Badge tone="error">{s.store.availability.state}</Badge>}</div><div className="sub">{s.store.read_only ? "read-only connection" : "connection mode unknown"}</div></div>

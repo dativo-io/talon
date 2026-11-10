@@ -210,3 +210,37 @@ pre.json { margin: 0; padding: 12px 14px; background: var(--surface-2); border-r
 .search-results a:hover, .search-results a:focus { background: var(--surface-2); text-decoration: none; }
 
 ul.plain { list-style: none; margin: 0; padding: 0; }
+
+/* section heads inside a page */
+.section-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.section-head h2 { margin: 0; }
+
+/* operational readiness (installation-wide) */
+.readiness { border-left: 4px solid var(--border-strong); }
+.readiness-operational { border-left-color: var(--ok); }
+.readiness-degraded { border-left-color: var(--err); }
+.readiness-unknown, .readiness-unverified { border-left-color: var(--info); }
+.readiness h2 { display: inline-flex; gap: 10px; align-items: center; }
+.readiness-summary { margin-top: 4px; font-size: 15px; font-weight: 500; }
+.dimensions { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.dimension { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.dimension.state-degraded { border-color: var(--err); background: var(--err-soft); }
+.dimension-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.dimension-label { font-weight: 500; }
+.contents { display: contents; }
+details summary { cursor: pointer; color: var(--text-2); }
+details[open] summary { margin-bottom: 6px; }
+
+/* findings */
+.findings { list-style: none; margin: 0; padding: 0; }
+.finding { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; overflow-wrap: anywhere; }
+.finding:last-child { border-bottom: 0; }
+.finding.severity-critical { border-left: 3px solid var(--err); }
+.finding.severity-warning { border-left: 3px solid var(--warn); }
+.finding.severity-info { border-left: 3px solid var(--info); }
+.finding-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.finding-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+.finding-facts dt { color: var(--text-2); }
+.finding-facts dd { margin: 0; }
+@media (max-width: 640px) { .finding-facts { grid-template-columns: 1fr; } }
+.tenant-scope select { max-width: 260px; }
