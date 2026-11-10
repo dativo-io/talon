@@ -27,6 +27,14 @@
 
 **Operate three use cases →** [Product demo](examples/product-demo/) (real providers, ~$0.05) · **Authorize one exact HTTP action →** [Action Gateway](docs/reference/action-gateway.md) · **See it in 60 seconds, no key →** [Quickstart](#try-it-in-60-seconds-no-api-key) · **Deep proof, one session →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot a real use case →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
 
+## See the Operations Console
+
+[![Talon Operations Console — operational readiness, AI use-case investigation, sessions, costs, and signed evidence](docs/assets/console/showcase.webp)](docs/guides/operations-console.md)
+
+*Actual console UI from a **seeded synthetic Playwright fixture**, not a customer deployment. Some runtime failures are intentionally induced to demonstrate truthful degraded states. The collage is assembled from screenshots, not a separate simulated UI.*
+
+Explore [the read-only Operations Console](docs/guides/operations-console.md) or [inspect a governed session and verified evidence](docs/guides/operations-console.md#operator-walkthrough-in-pictures).
+
 ---
 
 ## Where Talon can enforce today
