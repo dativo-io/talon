@@ -705,6 +705,13 @@ export interface UseCaseDetail {
   costs: Costs;
   activity: Activity;
   effective_policy: Availability;
+  // #533 PR 2: installation readiness, installation findings plus this use
+  // case's own fleet finding, its newest records with outcome, and the
+  // configuration issues attributed to its name.
+  readiness?: Readiness;
+  findings?: Finding[];
+  recent_decisions?: { availability: Availability; records: EvidenceIndex[] | null; limit: number };
+  issues?: FleetIssue[];
 }
 
 export interface SearchResults {

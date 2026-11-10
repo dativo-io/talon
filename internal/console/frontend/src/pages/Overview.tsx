@@ -221,8 +221,13 @@ function Stat({ label, value, sub }: { label: string; value: string | null; sub?
   );
 }
 
-function ActivitySection({ tenant, agent }: { tenant: string; agent?: string }) {
-  const [range, setRange] = useState<Range>("24h");
+// ActivitySection: request-class buckets for the scope. When range and
+// onRange are given (the use-case page), the range lives in the URL so a
+// deep link and back/forward keep it; otherwise it is local to the page.
+function ActivitySection({ tenant, agent, range: urlRange, onRange }: { tenant: string; agent?: string; range?: Range; onRange?: (r: Range) => void }) {
+  const [localRange, setLocalRange] = useState<Range>("24h");
+  const range = urlRange ?? localRange;
+  const setRange = onRange ?? setLocalRange;
   const act = useApi<Activity>(api("/activity"), { tenant, agent, ...rangeQuery(range) });
   return (
     <section className="card" aria-labelledby="activity-title">

@@ -1,11 +1,11 @@
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { Costs as CostsDTO } from "../api/types";
+import type { Costs as CostsDTO, Meta, UseCases as UseCasesDTO } from "../api/types";
 import { PageHead } from "../components/Layout";
 import { AvailabilityNotice, Badge, BudgetUtilization, CurrencyAmount, DetailSection, EmptyState, ErrorState, Loading, SourceFreshness } from "../components/ui";
-import { BREAKDOWN_FIELDS, breakdownRows, fieldValue, warningsFor, type Breakdown } from "../lib/costs";
-import { integer, utc } from "../lib/format";
+import { BREAKDOWN_FIELDS, breakdownRows, fieldValue, rowSpend, warningsFor, type Breakdown } from "../lib/costs";
+import { integer, money, utc } from "../lib/format";
 import { scoped, useScope } from "../lib/scope";
 
 // Costs from costs.Build, the projection behind `talon costs --json`. The
@@ -40,6 +40,12 @@ export function Costs() {
           ))}
         </div>
       </div>
+      {!tenant && !agent ? <FleetSpend /> : null}
+      {!tenant ? (
+        <div className="notice info" role="note">
+          <div>The cost report below needs one tenant: with all tenants selected it shows tenant <strong>{r?.tenant_id ?? "default"}</strong>. Pick a tenant in the header to change it.</div>
+        </div>
+      ) : null}
       {res.error ? <ErrorState error={res.error} what="costs" onRetry={res.reload} /> : null}
       {!c && res.loading ? <Loading what="costs" /> : null}
       {c ? <AvailabilityNotice a={c.availability} what="Cost report" /> : null}
@@ -105,6 +111,50 @@ export function Costs() {
         </div>
       ) : null}
     </>
+  );
+}
+
+// FleetSpend: with all tenants selected, the month-to-date spend of every AI
+// use case in every tenant against its effective cap, from the canonical
+// fleet rows (the same as talon agents). Rows are per (tenant, use case), so
+// two tenants' use cases with one name are never merged, and amounts in
+// different currencies are not summed.
+function FleetSpend() {
+  const res = useApi<{ meta: Meta; use_cases: UseCasesDTO }>(api("/use-cases"), {});
+  const rows = [...(res.data?.use_cases.rows ?? [])].sort((a, b) => (rowSpend(b, "spend_month") ?? -1) - (rowSpend(a, "spend_month") ?? -1) || a.name.localeCompare(b.name));
+  return (
+    <section className="card" aria-labelledby="fleet-spend" data-testid="fleet-spend">
+      <div className="card-head">
+        <h2 id="fleet-spend">All tenants: month-to-date spend per AI use case</h2>
+        <span className="small muted">month to date (UTC) · canonical fleet rows, as <code>talon agents</code></span>
+      </div>
+      {res.error ? <ErrorState error={res.error} what="fleet spend" onRetry={res.reload} /> : null}
+      {!res.data && res.loading ? <Loading what="fleet spend" /> : null}
+      {res.data ? <AvailabilityNotice a={res.data.use_cases.availability} what="Fleet spend" /> : null}
+      {rows.length > 0 ? (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>AI use case</th><th>Tenant</th><th className="num">Today</th><th className="num">Month to date</th><th className="num">Effective monthly cap</th><th>Investigate</th></tr></thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={`${row.tenant_id}/${row.name}`}>
+                  <td><Link to={scoped(`/use-cases/${encodeURIComponent(row.name)}`, row.tenant_id)}>{row.name}</Link></td>
+                  <td>{row.tenant_id}</td>
+                  <td className="num"><CurrencyAmount amount={rowSpend(row, "spend_day")} currency={row.currency} reason="priced records in another currency" /></td>
+                  <td className="num"><CurrencyAmount amount={rowSpend(row, "spend_month")} currency={row.currency} reason="priced records in another currency" /></td>
+                  <td className="num">{row.monthly_cap > 0 ? money(row.monthly_cap, row.currency) : <span className="muted">no cap</span>}</td>
+                  <td className="row small">
+                    <Link to={`${scoped(`/use-cases/${encodeURIComponent(row.name)}`, row.tenant_id)}#uc-costs`}>Costs</Link>
+                    <Link to={scoped("/sessions", row.tenant_id, { agent: row.name })}>Sessions</Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      <div className="card-body small muted">Spend across tenants is not added up: each row keeps its own currency and tenant.</div>
+    </section>
   );
 }
 

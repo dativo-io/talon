@@ -16,18 +16,18 @@ test("Session: a valid aggregate, the forbidden export and an aggregate the HR b
   await expect(timeline.locator("li")).toHaveCount(timelineCli.records.length);
 
   const allowed = item(f.evidence.allowed);
-  await expect(allowed.getByText("Talon allowed")).toBeVisible();
-  await expect(allowed.getByText("Destination answered")).toBeVisible();
+  await expect(allowed.getByText("Talon allowed", { exact: true })).toBeVisible();
+  await expect(allowed.getByText("Destination answered", { exact: true })).toBeVisible();
 
   const denied = item(f.evidence.forbidden);
-  await expect(denied.getByText("Talon denied")).toBeVisible();
-  await expect(denied.getByText("Not dispatched")).toBeVisible();
+  await expect(denied.getByText("Talon denied", { exact: true })).toBeVisible();
+  await expect(denied.getByText("Not dispatched", { exact: true })).toBeVisible();
 
   // The same allowed tool, invalid SQL: Talon dispatched it, the HR backend refused it.
   const rejected = item(f.evidence.invalid_sql);
-  await expect(rejected.getByText("Talon allowed")).toBeVisible();
-  await expect(rejected.getByText("Destination rejected")).toBeVisible();
-  await expect(rejected.getByText("Talon denied")).toHaveCount(0);
+  await expect(rejected.getByText("Talon allowed", { exact: true })).toBeVisible();
+  await expect(rejected.getByText("Destination rejected", { exact: true })).toBeVisible();
+  await expect(rejected.getByText("Talon denied", { exact: true })).toHaveCount(0);
 });
 
 test("Evidence: the denied call's record verifies, with the outcome talon audit show prints", async ({ page }) => {
