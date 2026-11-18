@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentcatalog"
@@ -23,6 +25,7 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/runtimestatus"
 	"github.com/dativo-io/talon/internal/secrets"
 )
 
@@ -105,8 +108,11 @@ type agentsAddPlan struct {
 	// AgentsDirMissing: agents_dir does not exist yet; a real registration
 	// creates it, a dry run does not.
 	AgentsDirMissing bool
-	// CompanyPolicy states the company policy in force (or its absence).
+	// CompanyPolicy states what the gateway config declares and whether a
+	// running gateway loaded it.
 	CompanyPolicy string
+	// Activation states whether a running process serves the new use case.
+	Activation string
 	// NoOrganizationPolicy: no gateway config was found, so nothing is
 	// inherited and the new use case has no budget cap of its own.
 	NoOrganizationPolicy bool
@@ -140,6 +146,7 @@ func runAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, name s
 	if err != nil {
 		return err
 	}
+	plan.Activation = fleetActivation(cfg)
 	printAgentsAddResult(out, plan, key)
 	return nil
 }
@@ -149,12 +156,8 @@ func runAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, name s
 func dryRunAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, plan *agentsAddPlan) error {
 	keyState := "generate"
 	if _, statErr := os.Stat(cfg.SecretsDBPath()); statErr == nil {
-		store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-		if err != nil {
-			return fmt.Errorf("opening the secrets vault: %w", err)
-		}
-		defer store.Close()
-		meta, err := store.Metadata(ctx, plan.SecretName)
+		// Read-only: a dry run never initializes or writes an existing vault.
+		meta, err := secrets.MetadataReadOnly(ctx, cfg.SecretsDBPath(), plan.SecretName)
 		switch {
 		case err == nil && !agentsAddUseExisting:
 			return existingKeyError(plan)
@@ -215,6 +218,11 @@ func commitAgentsAdd(ctx context.Context, cfg *config.Config, store *secrets.Sec
 		}
 		if aclErr := existingKeyPermits(meta, plan); aclErr != nil {
 			return "", aclErr
+		}
+		// The binding is verified the way serve resolves it: as this use
+		// case in this tenant, with the configured secrets key.
+		if _, gerr := store.Get(ctx, plan.SecretName, plan.Tenant, plan.Name); gerr != nil {
+			return "", fmt.Errorf("--use-existing-key: vault secret %q cannot be resolved as use case %q in tenant %q with the configured TALON_SECRETS_KEY: %w", plan.SecretName, plan.Name, plan.Tenant, gerr)
 		}
 	} else {
 		key, err = newAgentKey()
@@ -335,13 +343,13 @@ func planAgentsAdd(ctx context.Context, cfg *config.Config, name string) (*agent
 	if _, err := os.Stat(plan.Path); err == nil {
 		return nil, fmt.Errorf("%s already exists", plan.Path)
 	}
-	summary, present, err := companyPolicySummary()
+	cp, err := readCompanyPolicy(cfg)
 	if err != nil {
 		return nil, err
 	}
-	plan.CompanyPolicy, plan.NoOrganizationPolicy = summary, !present
-	if !present && !agentsAddNoCompanyPolicy {
-		return nil, fmt.Errorf("no company policy is active: %s. A use case registered now would inherit nothing (no budget cap, no PII rule, no forbidden actions, no approval rules). Create the gateway config with an organization_policy (starter: examples/pilot/talon.config.yaml) or point TALON_GATEWAY_CONFIG at it; to register without any company policy on purpose, pass --no-company-policy", summary)
+	plan.CompanyPolicy, plan.NoOrganizationPolicy = cp.String(), cp.State != companyPolicyConfigured
+	if cp.State != companyPolicyConfigured && !agentsAddNoCompanyPolicy {
+		return nil, fmt.Errorf("%s. A use case registered now would inherit no company policy (no chosen budget cap, PII rule, forbidden actions or approval rules). Add a gateway.organization_policy block (starter: examples/pilot/talon.config.yaml) or point TALON_GATEWAY_CONFIG at the file that has one; to register without a company policy on purpose, pass --no-company-policy", cp.Configured)
 	}
 	var b strings.Builder
 	if err := template.Must(template.New("agent").Parse(agentsAddTemplate)).Execute(&b, plan); err != nil {
@@ -354,21 +362,89 @@ func planAgentsAdd(ctx context.Context, cfg *config.Config, name string) (*agent
 	return plan, nil
 }
 
-// companyPolicySummary states which company policy a registration would run
-// under, read from the gateway config `talon serve` loads. present is false
-// when that file does not exist; a present but invalid file is an error.
-func companyPolicySummary() (summary string, present bool, err error) {
+// Company policy states of an installation's gateway config.
+const (
+	companyPolicyNone       = "none"       // no gateway config file
+	companyPolicyUnset      = "unset"      // a gateway config without an organization_policy block
+	companyPolicyConfigured = "configured" // an explicit organization_policy block
+)
+
+// companyPolicy is what a registration reports about the company policy:
+// what the FILE says, and separately whether a running process has loaded
+// that file. A configured policy is not called active without that proof.
+type companyPolicy struct {
+	State      string
+	Configured string // what the gateway config declares
+	Runtime    string // whether a running gateway loaded this exact file
+}
+
+func (c companyPolicy) String() string {
+	return c.Configured + ". Runtime: " + c.Runtime
+}
+
+// readCompanyPolicy reads the gateway config `talon serve` loads. A present
+// but invalid file is an error. A file WITHOUT an organization_policy block
+// is not a company policy: the loader's built-in defaults would apply, which
+// nobody chose.
+func readCompanyPolicy(cfg *config.Config) (companyPolicy, error) {
 	path := gatewayConfigPath("")
-	gw, err := gateway.LoadGatewayConfig(path)
+	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return "none (no gateway config at " + path + ")", false, nil
+		return companyPolicy{State: companyPolicyNone, Configured: "no company policy: no gateway config at " + path, Runtime: "nothing to load"}, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("gateway config %s is present but invalid: %w — fix it first (serve refuses to start on this file)", path, err)
+		return companyPolicy{}, fmt.Errorf("reading gateway config %s: %w", path, err)
+	}
+	gw, err := gateway.LoadGatewayConfig(path)
+	if err != nil {
+		return companyPolicy{}, fmt.Errorf("gateway config %s is present but invalid: %w — fix it first (serve refuses to start on this file)", path, err)
+	}
+	var doc struct {
+		Gateway struct {
+			OrganizationPolicy map[string]any `yaml:"organization_policy"`
+		} `yaml:"gateway"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return companyPolicy{}, fmt.Errorf("gateway config %s: %w", path, err)
+	}
+	sum := sha256.Sum256(raw)
+	runtime := gatewayConfigActivation(cfg, hex.EncodeToString(sum[:]))
+	if len(doc.Gateway.OrganizationPolicy) == 0 {
+		return companyPolicy{State: companyPolicyUnset, Configured: "no company policy: " + path + " has no gateway.organization_policy block (only built-in defaults would apply)", Runtime: runtime}, nil
 	}
 	org := gw.OrganizationPolicy
-	return fmt.Sprintf("%s — pii_action %s, daily cost %.2f / monthly %.2f per use case, %d forbidden tool/action pattern(s), %s",
-		path, org.Defaults.PIIAction, org.Defaults.DailyCost, org.Defaults.MonthlyCost, len(org.Constraints.ForbiddenTools), companyApprovalSummary(org.Constraints.ActionApprovals)), true, nil
+	return companyPolicy{
+		State: companyPolicyConfigured,
+		Configured: fmt.Sprintf("configured in %s — pii_action %s, daily cost %.2f / monthly %.2f per use case, %d forbidden tool/action pattern(s), %s",
+			path, org.Defaults.PIIAction, org.Defaults.DailyCost, org.Defaults.MonthlyCost, len(org.Constraints.ForbiddenTools), companyApprovalSummary(org.Constraints.ActionApprovals)),
+		Runtime: runtime,
+	}, nil
+}
+
+// gatewayConfigActivation states whether a running gateway of this
+// installation reports having loaded the gateway config with this digest.
+func gatewayConfigActivation(cfg *config.Config, digest string) string {
+	v := runtimestatus.NewReader().Assess(cfg.DataDir, runtimestatus.Fingerprint(cfg.SigningKey), nil, time.Now())
+	l := runtimestatus.ProveGatewayConfig(v, v.Err == "", digest)
+	if l.State == runtimestatus.LoadedMatchesFile {
+		return "ACTIVE — a running gateway reports this exact file as loaded"
+	}
+	return "NOT PROVEN ACTIVE (" + l.State + ": " + l.Reason + "). The company policy is loaded when 'talon serve' starts; a change to it needs a restart"
+}
+
+// fleetActivation states what is known about whether a running process will
+// serve the newly registered use case.
+func fleetActivation(cfg *config.Config) string {
+	v := runtimestatus.NewReader().Assess(cfg.DataDir, runtimestatus.Fingerprint(cfg.SigningKey), nil, time.Now())
+	if v.Err != "" {
+		return "unknown (runtime records unreadable: " + v.Err + "); check 'talon agents show <name> --effective'"
+	}
+	for i := range v.Processes {
+		if v.Processes[i].Assessed == runtimestatus.Running {
+			return fmt.Sprintf("NOT YET ACTIVE — a Talon process is running and re-scans the fleet every agents_reload_interval (default %s). Confirm with 'talon agents show <name> --effective' (section 2 must read loaded_matches_file); if the reload rejects the fleet, the previous generation keeps serving and this use case is not active", config.DefaultAgentsReloadInterval)
+		}
+	}
+	return "NOT ACTIVE — no Talon process of this installation is running. The use case is served once 'talon serve' starts"
 }
 
 // validateAgentContent runs the strict loader and the effective action
@@ -474,6 +550,7 @@ func printAgentsAddResult(out io.Writer, plan *agentsAddPlan, key string) {
 	fmt.Fprintf(out, "  key:     vault secret %q\n", plan.SecretName)
 	fmt.Fprintf(out, "  evidence: %s (signed, agent_registered)\n", plan.EvidenceID)
 	fmt.Fprintf(out, "  company policy: %s\n", plan.CompanyPolicy)
+	fmt.Fprintf(out, "  activation: %s\n", plan.Activation)
 	if plan.NoOrganizationPolicy {
 		fmt.Fprintf(out, "\nWARNING: registered WITHOUT a company policy (--no-company-policy): this use case has NO budget cap and no company constraints until you add an organization_policy or set policies.cost_limits in its file.\n")
 	}
@@ -494,8 +571,7 @@ Connect the application (it presents the key as a bearer token):
 Next:
   talon agents show %[1]s --effective   # the company policy this use case now runs under, with rule provenance
   talon validate                        # the whole fleet, as 'talon serve' will load it
-A running 'talon serve' loads the new use case within agents_reload_interval (default %[2]s) or on restart.
-`, plan.Name, config.DefaultAgentsReloadInterval)
+`, plan.Name)
 }
 
 func init() {
