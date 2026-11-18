@@ -27,7 +27,7 @@ BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-version_line="$("$BIN" version | head -n1)"
+version_line="$("$BIN" version | sed -n 1p)"
 echo "binary under test: $BIN — $version_line"
 if [ -n "$EXPECT" ] && [ "$version_line" != "Talon ${EXPECT#v}" ]; then
   echo "FAIL published-console-acceptance: expected 'Talon ${EXPECT#v}', the binary reports '$version_line'" >&2
