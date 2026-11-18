@@ -30,7 +30,7 @@ func setupAddFleet(t *testing.T) (cfg *config.Config, agentsDir string) {
 	t.Setenv("TALON_GATEWAY_CONFIG", filepath.Join(dir, "absent.talon.config.yaml"))
 	agentsDir = filepath.Join(dir, "agents")
 	t.Setenv("TALON_AGENTS_DIR", agentsDir)
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "data"), 0o700))
+	// The data directory is deliberately absent: a first registration creates it.
 	d := filepath.Join(agentsDir, "support")
 	require.NoError(t, os.MkdirAll(d, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte("agent:\n  name: support\n  version: \"1.0.0\"\n  key:\n    secret_name: support-talon-key\npolicies:\n  cost_limits: {}\n"), 0o600))
@@ -49,6 +49,9 @@ func resetAgentsAddFlags(t *testing.T) {
 
 func vaultValue(t *testing.T, cfg *config.Config, name string) (string, bool) {
 	t.Helper()
+	if _, err := os.Stat(cfg.SecretsDBPath()); os.IsNotExist(err) {
+		return "", false // nothing was ever written: no vault
+	}
 	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 	require.NoError(t, err)
 	defer store.Close()
@@ -144,6 +147,7 @@ func TestAgentsAdd_RefusesWithoutWriting(t *testing.T) {
 	t.Run("an existing key is never regenerated", func(t *testing.T) {
 		cfg, agentsDir := setupAddFleet(t)
 		resetAgentsAddFlags(t)
+		require.NoError(t, cfg.EnsureDataDir())
 		store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 		require.NoError(t, err)
 		require.NoError(t, store.Set(ctx, "refund-bot-talon-key", []byte("in-use-key-0001"), secrets.ACL{}))

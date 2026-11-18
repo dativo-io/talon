@@ -110,6 +110,10 @@ func runAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, name s
 	if err != nil {
 		return err
 	}
+	// A first registration on a new host: the data directory may not exist yet.
+	if err := cfg.EnsureDataDir(); err != nil {
+		return fmt.Errorf("creating the data directory %s: %w", cfg.DataDir, err)
+	}
 	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if err != nil {
 		return fmt.Errorf("opening the secrets vault: %w", err)
