@@ -97,6 +97,27 @@ side: public downloads, no token, anonymous image pulls, `install.sh` under `sh`
 scratch directory, the installed binary byte-identical to the verified one, the public
 bytes identical to the draft's.
 
+**Operations Console acceptance on the released artifacts (#533).** Before publication the
+release workflow also proves the console on what customers get, not on a source build:
+
+- `release-console-acceptance` takes the linux executable out of the draft's archive
+  (checksum-verified) and runs `scripts/published-console-acceptance.sh` with it as the
+  system under test: the packaged console in Chromium (pairing, session expiry, the six
+  pages, read-only boundary, signature verification, tamper detection, tenant scoping), the
+  People Analytics real-process contract (#545: allowed call dispatched, forbidden export
+  never reaches the HR backend, backend rejection is not a Talon denial, console = CLI =
+  browser) and the console e2e. Tests and fixtures come from the tag's checkout; Go compiles
+  the test harness only.
+- `release-verify` runs `scripts/console-compose-smoke.sh` against
+  `ghcr.io/dativo-io/talon:<version>` (pairing from the container log, the six pages' read
+  endpoints, console/CLI signature parity, no legacy dashboard route, loopback-only
+  publication, restart independence).
+
+`release-verify` publishes only when both passed. After publication,
+`gh workflow run install-smoke.yml -f tag=<tag>` repeats both from the customer's side
+(`console-acceptance`: the archive downloaded anonymously; `console-compose`: the image
+pulled anonymously). Locally: `scripts/published-console-acceptance.sh <talon-binary> [version]`.
+
 **Supported-platform guarantee (#359 MVP).** The gated installer path is **linux/amd64**: its
 archive is required, verified before publication and installed by `install.sh`. The darwin
 archives (arm64, amd64) are **best effort**: present when the macOS job built them, absent
