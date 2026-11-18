@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -408,4 +409,94 @@ func TestAgentsAdd_RollbackRemovesOnlyItsOwnKey(t *testing.T) {
 	require.Equal(t, "replaced-by-someone-else", string(got.Value))
 	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
 	require.True(t, os.IsNotExist(statErr))
+}
+
+// The --use-existing-key failure path (#567 review): a registration that
+// fails AFTER its agent file was written is rolled back without touching the
+// existing key (same value, same ACL: it was never this registration's), the
+// file is gone, the rollback is recorded with its cause and no completion
+// record exists. A fleet scan taken while the file existed (what a running
+// server's reload would load in that window) sees the use case; the next
+// scan does not.
+func TestAgentsAdd_ExistingKeyFailureAfterTheFileIsWritten(t *testing.T) {
+	ctx := context.Background()
+	cfg, agentsDir := setupAddFleet(t)
+	resetAgentsAddFlags(t)
+	agentsAddTenant, agentsAddUseExisting = "acme", true
+	require.NoError(t, cfg.EnsureDataDir())
+	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+	require.NoError(t, err)
+	acl := secrets.ACL{Tenants: []string{"acme"}, Agents: []string{"refund-bot"}}
+	require.NoError(t, store.Set(ctx, "refund-bot-talon-key", []byte("the-key-the-application-already-uses"), acl))
+	before, err := store.Metadata(ctx, "refund-bot-talon-key")
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
+	scanHas := func() bool {
+		scan, err := agentcatalog.DiscoverAgents(ctx, agentsDir)
+		require.NoError(t, err)
+		for i := range scan.Agents {
+			if scan.Agents[i].Name == "refund-bot" {
+				return true
+			}
+		}
+		return false
+	}
+	loadedInTheWindow := false
+	real := verifyFleetAfterAddFn
+	verifyFleetAfterAddFn = func(ctx context.Context, cfg *config.Config, plan *agentsAddPlan) error {
+		require.NoError(t, real(ctx, cfg, plan), "the file is valid; the failure is injected after it")
+		loadedInTheWindow = scanHas()
+		return errors.New("injected failure after the agent file was written")
+	}
+	t.Cleanup(func() { verifyFleetAfterAddFn = real })
+
+	var out bytes.Buffer
+	err = runAgentsAdd(ctx, &out, cfg, "refund-bot")
+	require.ErrorContains(t, err, "injected failure after the agent file was written")
+	require.ErrorContains(t, err, "nothing of this registration was left behind")
+	require.NotContains(t, out.String()+err.Error(), "the-key-the-application-already-uses", "an existing key is never printed")
+
+	require.True(t, loadedInTheWindow, "between the file write and the rollback a reload would load the use case")
+	require.False(t, scanHas(), "after the rollback the next reload no longer finds it")
+	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
+	require.True(t, os.IsNotExist(statErr), "the agent file and its directory are removed")
+
+	// The existing key is untouched: value, ACL and creation time.
+	got, ok := vaultValue(t, cfg, "refund-bot-talon-key")
+	require.True(t, ok, "the existing key must survive a rollback")
+	require.Equal(t, "the-key-the-application-already-uses", got)
+	store, err = secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+	require.NoError(t, err)
+	defer store.Close()
+	after, err := store.Metadata(ctx, "refund-bot-talon-key")
+	require.NoError(t, err)
+	require.Equal(t, before.ACL, after.ACL)
+	require.Equal(t, before.CreatedAt, after.CreatedAt)
+
+	// Signed evidence: intent and rollback (with the cause), no completion.
+	ev, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	require.NoError(t, err)
+	defer ev.Close()
+	kinds := map[string]int{}
+	rows, err := ev.DB().QueryContext(ctx, `SELECT invocation_type, evidence_json FROM evidence WHERE agent_id = 'refund-bot'`)
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var kind, raw string
+		require.NoError(t, rows.Scan(&kind, &raw))
+		kinds[kind]++
+		require.NotContains(t, raw, "the-key-the-application-already-uses")
+		require.Contains(t, raw, "key: bound to existing vault secret refund-bot-talon-key")
+		if kind == "agent_registration_rolled_back" {
+			require.Contains(t, raw, "injected failure after the agent file was written")
+		}
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, map[string]int{"agent_registration_intent": 1, "agent_registration_rolled_back": 1}, kinds)
+
+	// The name is free again: the same registration now succeeds.
+	verifyFleetAfterAddFn = real
+	require.NoError(t, runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot"))
+	require.True(t, scanHas())
 }

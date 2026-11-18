@@ -5,6 +5,7 @@ package e2e
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -94,6 +95,82 @@ func TestE2E_AgentsAdd_SecondUseCaseWhileServing(t *testing.T) {
 	t.Logf("effective policy of refund-bot:\n%s", out)
 	if out, stderr, code = RunTalon(t, dir, env, "validate"); code != 0 {
 		t.Fatalf("talon validate after two registrations: %d\n%s\n%s", code, out, stderr)
+	}
+}
+
+// The runtime side of a rolled-back registration with --use-existing-key
+// (#567 review). A failed registration removes its agent file; a running
+// server that loaded the use case while the file existed must drop it on its
+// next reload, and the existing key, which the registration never owned,
+// stays in the vault. The command's own rollback is proven in
+// TestAgentsAdd_ExistingKeyFailureAfterTheFileIsWritten; here the file is
+// removed exactly as that rollback removes it, against a real `talon serve`.
+// Until the reload the key still authenticates: that window is the bounded
+// limitation documented for --use-existing-key.
+func TestE2E_AgentsAdd_RolledBackUseCaseIsDroppedOnReload(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	env := map[string]string{"TALON_AGENTS_DIR": agentsDir}
+	if out, stderr, code := RunTalon(t, dir, env, "agents", "add", "support-bot", "--tenant", "acme", "--no-company-policy"); code != 0 {
+		t.Fatalf("agents add support-bot: %d\n%s\n%s", code, out, stderr)
+	}
+	const existingKey = "talon_uc_existing_key_of_the_application_0001"
+	if out, stderr, code := RunTalon(t, dir, env, "secrets", "set", "refund-bot-talon-key", existingKey, "--tenant", "acme", "--agent", "refund-bot"); code != 0 {
+		t.Fatalf("secrets set: %d\n%s\n%s", code, out, stderr)
+	}
+	port := freePort(t)
+	stop := startServeWithEnv(t, dir, port, map[string]string{
+		"TALON_AGENTS_DIR": agentsDir, "TALON_ADMIN_KEY": "admin-e2e-agents-add-0002", "TALON_AGENTS_RELOAD_INTERVAL": "1s",
+	})
+	defer stop()
+	status := func() int {
+		req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/v1/action-operations", port), strings.NewReader(`{"operation_id":"op-1","action":"x","arguments":{}}`))
+		req.Header.Set("Authorization", "Bearer "+existingKey)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	waitFor := func(want int, what string) time.Duration {
+		start := time.Now()
+		for status() != want {
+			if time.Since(start) > 20*time.Second {
+				t.Fatalf("%s: still HTTP %d after 20s, want %d", what, status(), want)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		return time.Since(start)
+	}
+	if st := status(); st != http.StatusUnauthorized {
+		t.Fatalf("a key in the vault without a registered use case must not authenticate: %d", st)
+	}
+
+	out, stderr, code := RunTalon(t, dir, env, "agents", "add", "refund-bot", "--tenant", "acme", "--use-existing-key", "--no-company-policy")
+	if code != 0 || strings.Contains(out, existingKey) {
+		t.Fatalf("agents add --use-existing-key (must succeed and print no key): %d\n%s\n%s", code, out, stderr)
+	}
+	waitFor(http.StatusNotFound, "the server loads the use case bound to the existing key") // authenticated, no catalog
+
+	// The rollback's effect on disk: the agent file and its directory go.
+	agentFile := filepath.Join(agentsDir, "refund-bot", "agent.talon.yaml")
+	if err := os.Remove(agentFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Dir(agentFile)); err != nil {
+		t.Fatal(err)
+	}
+	window := waitFor(http.StatusUnauthorized, "the server drops the rolled-back use case on its next reload")
+	t.Logf("the existing key kept authenticating for %s after the file was removed (reload interval 1s)", window.Round(100*time.Millisecond))
+
+	// The existing key is still in the vault, and the other use case still validates.
+	if out, stderr, code := RunTalon(t, dir, env, "secrets", "list"); code != 0 || !strings.Contains(out, "refund-bot-talon-key") {
+		t.Fatalf("the existing key must stay in the vault: %d\n%s\n%s", code, out, stderr)
+	}
+	if out, stderr, code := RunTalon(t, dir, env, "validate"); code != 0 {
+		t.Fatalf("talon validate after the rollback: %d\n%s\n%s", code, out, stderr)
 	}
 }
 

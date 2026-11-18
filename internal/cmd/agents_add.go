@@ -203,9 +203,14 @@ func existingKeyPermits(meta *secrets.SecretMetadata, plan *agentsAddPlan) error
 //  5. the signed completion record.
 //
 // A failure undoes only what THIS call created: its own key version (never a
-// key someone else stored under the name) and its own file. A running server
-// may have loaded the use case between steps 3 and a rollback; it drops it
-// on its next reload, and the rollback is recorded.
+// key someone else stored under the name) and its own file. An existing key
+// bound with --use-existing-key is not this call's: a rollback leaves it
+// exactly as it was. A running server may have loaded the use case between
+// step 3 and a rollback; it drops it on its next reload, and the rollback is
+// recorded. Until that reload the server still authenticates the use case's
+// key: a generated key was never printed, but an existing key is known to
+// whoever holds it, so with --use-existing-key the rolled-back use case can
+// be served for up to one reload interval.
 func commitAgentsAdd(ctx context.Context, cfg *config.Config, store *secrets.SecretStore, plan *agentsAddPlan) (key string, err error) {
 	var own secrets.Ownership
 	if agentsAddUseExisting {
@@ -267,7 +272,7 @@ func commitAgentsAdd(ctx context.Context, cfg *config.Config, store *secrets.Sec
 	if err := writeAgentFileAtomically(plan); err != nil {
 		return "", undo(false, err)
 	}
-	if err := verifyFleetAfterAdd(ctx, cfg, plan); err != nil {
+	if err := verifyFleetAfterAddFn(ctx, cfg, plan); err != nil {
 		return "", undo(true, fmt.Errorf("the fleet does not validate with the new use case: %w", err))
 	}
 	id, err := record("agent_registered")
@@ -505,6 +510,10 @@ func writeAgentFileAtomically(plan *agentsAddPlan) error {
 	}
 	return os.Remove(tmpName)
 }
+
+// verifyFleetAfterAddFn is the post-write fleet check; a variable so a test
+// can fail the registration after the agent file exists (the rollback path).
+var verifyFleetAfterAddFn = verifyFleetAfterAdd
 
 func verifyFleetAfterAdd(ctx context.Context, cfg *config.Config, plan *agentsAddPlan) error {
 	scan, err := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
