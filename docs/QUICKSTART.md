@@ -12,7 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/quicks
 
 Needs Docker and `curl`. Replace `X.Y.Z` with a published release; the script never assumes `latest`. It pulls `ghcr.io/dativo-io/talon:X.Y.Z` anonymously, starts it on `127.0.0.1:18080` with a small company policy, and sends three requests: one carrying an IBAN and an email address (blocked: `pii_policy_violation`), one for a model the policy does not allow (denied: `model_not_allowed`) and one with an unknown key (refused: `401`). No model provider exists in this setup, so both decisions are Talon's own, made before any provider call. It then verifies the signature of both evidence records with `talon audit verify`, prints the image digest it ran and the elapsed time, and removes its container and volume (`TALON_QUICKSTART_KEEP=1` keeps them). `TALON_IMAGE` takes a digest pin instead of a version.
 
-What it does not show: a model answer, a redaction, the console, or a business action. For those, continue with the paths below or the [production pilot runbook](guides/production-pilot.md).
+What it does not show: a model answer, a redaction, the console, or a business action. For those, continue with the paths below: the [Operations Console from the published image](../examples/docker-compose/README.md) shows the same kind of decisions in the browser, and [add Talon to your existing app](guides/add-talon-to-existing-app.md) puts your own application behind it. The script prints both links for the version it ran.
 
 ---
 
