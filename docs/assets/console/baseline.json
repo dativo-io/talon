@@ -10,7 +10,7 @@
     "internal/cmd/agents_root.go": "93b4b47f0b8a1849e76477fc9a5090a43294aa71",
     "internal/cmd/agents_toggle.go": "4ab15fb70150aed30df78a043d5be5a1b1b1f2d4",
     "internal/cmd/costs.go": "20cf19b087fdc6e67ea3fd4fa7fa87a139cc79e5",
-    "internal/cmd/serve.go": "8e516db40f7c66d04e47b54e195e5b813e095ce5",
+    "internal/cmd/serve.go": "525af5be9cbb4034b0079545ec98d181b1fbee4f",
     "internal/cmd/serve_runtime_status.go": "19e497b8455ebcc11bfac62d015e584f5a924d12",
     "internal/cmd/ui.go": "5a3864e3bdd4810b64ce7f66194c422172b45b04",
     "internal/cmd/ui_signal_other.go": "c5877f5e0d2f74f122cef2b051963a2c46bb52f7",
