@@ -983,6 +983,25 @@ type ApprovalsConfig struct {
 	// Duration string; default 1h.
 	ExpiresAfter string                        `yaml:"expires_after,omitempty" json:"expires_after,omitempty"`
 	Rules        map[string]ApprovalRuleConfig `yaml:"rules,omitempty" json:"rules,omitempty"`
+	// AmountLimits (#205) are typed numeric rules on one trusted argument
+	// of matching actions: up to allow_up_to no restriction, up to
+	// approval_up_to approval by approver_groups, above it DENY.
+	AmountLimits map[string]AmountLimitConfig `yaml:"amount_limits,omitempty" json:"amount_limits,omitempty"`
+}
+
+// AmountLimitConfig is one amount limit (#205), in an agent file
+// (policies.approvals.amount_limits) or the company policy
+// (organization_policy.constraints.action_approvals.amount_limits).
+// Amounts are exact decimals with at most two fractional digits, written
+// as strings ("50.00"); compared as integer minor units.
+type AmountLimitConfig struct {
+	Actions          []string `yaml:"actions" json:"actions"`
+	AmountArgument   string   `yaml:"amount_argument" json:"amount_argument"`
+	CurrencyArgument string   `yaml:"currency_argument" json:"currency_argument"`
+	Currency         string   `yaml:"currency" json:"currency"`
+	AllowUpTo        string   `yaml:"allow_up_to" json:"allow_up_to"`
+	ApprovalUpTo     string   `yaml:"approval_up_to" json:"approval_up_to"`
+	ApproverGroups   []string `yaml:"approver_groups" json:"approver_groups"`
 }
 
 // ApprovalRuleConfig requires approval for matching actions. Actions are

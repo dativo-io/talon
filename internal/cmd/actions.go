@@ -145,6 +145,10 @@ var actionsShowCmd = &cobra.Command{
 		for _, r := range dv.ApprovalRules {
 			fmt.Fprintf(w, "Approval rule:      %s (%s; groups: %s)\n", r.ID, r.Source, strings.Join(r.ApproverGroups, ", "))
 		}
+		for _, l := range dv.AmountLimits {
+			fmt.Fprintf(w, "Amount limit:       %s (%s): %s %s — allow up to %s, approval (groups: %s) up to %s, deny above\n",
+				l.ID, l.Source, l.AmountArgument, l.Currency, l.AllowUpTo, strings.Join(l.ApproverGroups, ", "), l.ApprovalUpTo)
+		}
 		fmt.Fprintf(w, "Schema:             %s\n", string(dv.Schema))
 		return nil
 	},
@@ -161,6 +165,9 @@ type actionsValidateResult struct {
 	Review           map[string]json.RawMessage `json:"review,omitempty"`
 	Verdict          string                     `json:"verdict"`
 	MatchedRuleID    string                     `json:"matched_rule_id,omitempty"`
+	// Reason is the verdict's policy reason; with valid arguments it is
+	// evaluated with them (amount limits, #205).
+	Reason string `json:"reason,omitempty"`
 }
 
 var actionsValidateCmd = &cobra.Command{
@@ -197,7 +204,9 @@ var actionsValidateCmd = &cobra.Command{
 			res.Valid = true
 			res.ArgumentsDigest = action.Digest(canonical)
 			res.Review = def.ReviewProjection(canonical)
+			verdict = cc.approvals.EvaluateArguments(def.Name, canonical)
 		}
+		res.Verdict, res.MatchedRuleID, res.Reason = verdict.Outcome, verdict.RuleID, verdict.Reason
 		if actionsJSON {
 			if werr := writeActionsJSON(cmd.OutOrStdout(), res); werr != nil {
 				return werr
@@ -227,6 +236,9 @@ var actionsValidateCmd = &cobra.Command{
 				fmt.Fprintf(w, " (rule %s)", res.MatchedRuleID)
 			}
 			fmt.Fprintln(w)
+			if res.Reason != "" {
+				fmt.Fprintf(w, "Reason:             %s\n", res.Reason)
+			}
 		}
 		if !res.Valid {
 			return fmt.Errorf("arguments do not satisfy the trusted definition of %q", def.Name)

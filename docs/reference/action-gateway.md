@@ -83,6 +83,66 @@ gateway:
 
 **Activation is a restart boundary.** The company policy is loaded once at process start and frozen into every runtime generation the process builds; agent-file hot reloads keep that snapshot. A changed company policy activates at the next restart as a new effective generation (the generation id folds in the company digest): a pending approval established before it is invalidated at its next decision (`409 approval_binding_stale`, approval `invalidated`), an approved-but-unclaimed operation is refused at claim with the same code, historical evidence stays valid under the policy digest it was signed with, and the changed requirement needs a new operation.
 
+## Amount limits (#205)
+
+An **amount limit** is one typed numeric comparison on a trusted argument of matching actions: one amount argument, one currency, two thresholds. It splits a call into three bands, using the argument values the caller sent:
+
+| Amount | Verdict from this limit |
+|---|---|
+| `<= allow_up_to` | no restriction (other rules still apply) |
+| `> allow_up_to` and `<= approval_up_to` | `REQUIRE_APPROVAL` by `approver_groups` |
+| `> approval_up_to` | `DENY` |
+
+It is declared in either layer, with the same fields:
+
+```yaml
+# agent.talon.yaml
+policies:
+  approvals:
+    expires_after: 30m
+    amount_limits:
+      refund-bands:
+        actions: [create_refund_request]   # exact names or trailing-* prefixes
+        amount_argument: amount            # top-level argument holding the amount
+        currency_argument: currency        # top-level string argument holding the currency
+        currency: EUR                      # the only currency this limit authorizes
+        allow_up_to: "50.00"
+        approval_up_to: "500.00"
+        approver_groups: [support-leads]
+
+# talon.config.yaml (company layer; restart-required like the rest of the company action policy)
+gateway:
+  organization_policy:
+    constraints:
+      action_approvals:
+        amount_limits:
+          refund-bands: { actions: [create_refund_request], amount_argument: amount, currency_argument: currency,
+                          currency: EUR, allow_up_to: "50.00", approval_up_to: "500.00", approver_groups: [finance_leads] }
+```
+
+The refund bands are an example policy, not a built-in rule.
+
+**Money.** An amount is an exact decimal with at most two fractional digits: a JSON string (`"75.00"`) or a JSON number written the same way (`75.00`). It is compared as integer minor units, never as a float. Thresholds use the same spelling (`"50"` and `"50.00"` are the same threshold and the same digest).
+
+**Fail closed.** A matching limit **denies** a call whose amount argument is missing, `null`, negative, written with an exponent or a leading zero, has more than two fractional digits or more than 15 integer digits, or is not a string or number. It also denies a call whose currency argument is missing, not a string, or not exactly `currency` (case-sensitive). The amount the policy depends on is not established, so nothing is authorized. Pair the limit with an input schema that already constrains the arguments: the schema rejects malformed input as `action_schema_invalid`, and the limit is the policy's own guard.
+
+**Composition.** Limits compile in the same one compiler as rules, and the result is `DENY > REQUIRE_APPROVAL > ALLOW` across forbidden patterns, rules and every matching limit:
+- **Precedence:** a company `forbidden_tools` match denies whatever the amount. A company limit's approval and deny bands stand whatever a use case declares. A use case can **tighten** with its own limit (the stricter band wins) but never lift a company band.
+- **Unambiguous groups:** a limit's approval band and an overlapping rule or limit must name the same approver groups, otherwise the configuration is refused at load.
+- **Unique ids:** a limit may not reuse a rule id of its layer. Company limits carry `company:<id>`.
+
+**Binding and re-check.** The verdict at establish uses the call's canonical arguments.
+- **Approval:** an approval binds the exact digest of those arguments, so a different amount under the same `operation_id` is `operation_conflict` and needs a new operation.
+- **Policy digest:** limits are part of the approval-relevant `policy_digest`, so moving a threshold by one cent invalidates approvals granted under the old one (`approval_binding_stale`). A policy without limits keeps its digest byte for byte, and the company encoding stays version 1 unless it carries limits.
+- **Before a claim:** the policy is re-evaluated against the operation's sealed arguments before anything is claimed. An operation allowed under an earlier policy that now falls in a deny band is refused `policy_denied`; one that now needs approval is refused `approval_required`. Either way, zero dispatch.
+
+**Inspection.**
+- `talon actions show <action>` lists each matching limit with its bands. Its `verdict` is the name-only verdict, because a call's arguments decide the band.
+- `talon actions validate --action <a> --input <file>` prints the band verdict for those exact arguments and its reason, for example `REQUIRE_APPROVAL (rule refund-bands)` with `Reason: use_case amount limit refund-bands: 75.00 EUR is above 50.00 and at most 500.00, so it requires approval`.
+- The lifecycle evidence records the matched rule id and that reason.
+
+**Not supported:** more than one amount argument per limit, nested argument paths, currencies with zero or three minor digits, conversion between currencies, and conditions on non-amount arguments. These are refused or denied; they are not silently approximated.
+
 ## Trusted MCP sources (`actions.sources`)
 
 A definition may be **discovered** from a trusted MCP source instead of declared with its own schema. Everything with authority stays Talon-configured: the source id, the endpoint, the credential reference, the canonical action name, the upstream-name mapping and the reviewer classification. The upstream supplies **bounded source metadata** only — tool name, description, `inputSchema`, `x-mcp-header` declarations, cache hints, informational `serverInfo` — and can never define approval requirements, approver groups, materiality, execution posture, tenant, agent, source URL, credentials or a destination outside its configured source.
