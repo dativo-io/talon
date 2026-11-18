@@ -184,25 +184,27 @@ func (l *AmountLimit) matches(action string) bool {
 // band evaluates the limit over canonical arguments. It never returns
 // ALLOW for an unestablished argument.
 func (l *AmountLimit) band(canonical []byte) Verdict {
+	// Reasons are written into signed lifecycle evidence, which outlives the
+	// sealed payload: they name the band and the policy's thresholds, never
+	// the argument values of the call.
 	label := l.Source + " amount limit " + l.ID
 	amount, currency, problem := materialAmount(canonical, l.AmountArgument, l.CurrencyArgument)
 	if problem != "" {
 		return Verdict{Outcome: VerdictDeny, Source: l.Source, RuleID: l.ID, Reason: label + ": " + problem + "; the amount this policy depends on is not established"}
 	}
 	if currency != l.Currency {
-		return Verdict{Outcome: VerdictDeny, Source: l.Source, RuleID: l.ID, Reason: fmt.Sprintf("%s: currency %q is not %s, the only currency this limit supports", label, currency, l.Currency)}
+		return Verdict{Outcome: VerdictDeny, Source: l.Source, RuleID: l.ID, Reason: fmt.Sprintf("%s: the currency is not %s, the only currency this limit supports", label, l.Currency)}
 	}
-	amt := formatMinorUnits(amount) + " " + l.Currency
 	switch {
 	case amount <= l.AllowUpTo:
-		return Verdict{Outcome: VerdictAllow, Reason: fmt.Sprintf("%s: %s is within the allow band (up to %s)", label, amt, formatMinorUnits(l.AllowUpTo))}
+		return Verdict{Outcome: VerdictAllow, Reason: fmt.Sprintf("%s: the amount is within the allow band (up to %s %s)", label, formatMinorUnits(l.AllowUpTo), l.Currency)}
 	case amount <= l.ApprovalUpTo:
 		return Verdict{
 			Outcome: VerdictRequireApproval, Source: l.Source, RuleID: l.ID, ApproverGroups: append([]string(nil), l.ApproverGroups...),
-			Reason: fmt.Sprintf("%s: %s is above %s and at most %s, so it requires approval", label, amt, formatMinorUnits(l.AllowUpTo), formatMinorUnits(l.ApprovalUpTo)),
+			Reason: fmt.Sprintf("%s: the amount is above %s and at most %s %s, so it requires approval", label, formatMinorUnits(l.AllowUpTo), formatMinorUnits(l.ApprovalUpTo), l.Currency),
 		}
 	default:
-		return Verdict{Outcome: VerdictDeny, Source: l.Source, RuleID: l.ID, Reason: fmt.Sprintf("%s: %s is above %s, the most this policy can authorize", label, amt, formatMinorUnits(l.ApprovalUpTo))}
+		return Verdict{Outcome: VerdictDeny, Source: l.Source, RuleID: l.ID, Reason: fmt.Sprintf("%s: the amount is above %s %s, the most this policy can authorize", label, formatMinorUnits(l.ApprovalUpTo), l.Currency)}
 	}
 }
 
@@ -233,7 +235,7 @@ func materialAmount(canonical []byte, amountArg, currencyArg string) (amount int
 	}
 	amount, ok := parseMinorUnits(text)
 	if !ok {
-		return 0, "", fmt.Sprintf("argument %q (%q) is not a non-negative decimal with at most two fractional digits", amountArg, text)
+		return 0, "", fmt.Sprintf("argument %q is not a non-negative decimal with at most two fractional digits", amountArg)
 	}
 	cur, present := obj[currencyArg]
 	if !present || cur == nil {

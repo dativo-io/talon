@@ -138,8 +138,9 @@ The refund bands are an example policy, not a built-in rule.
 
 **Inspection.**
 - `talon actions show <action>` lists each matching limit with its bands. Its `verdict` is the name-only verdict, because a call's arguments decide the band.
-- `talon actions validate --action <a> --input <file>` prints the band verdict for those exact arguments and its reason, for example `REQUIRE_APPROVAL (rule refund-bands)` with `Reason: use_case amount limit refund-bands: 75.00 EUR is above 50.00 and at most 500.00, so it requires approval`.
-- The lifecycle evidence records the matched rule id and that reason.
+- `talon actions validate --action <a> --input <file>` prints the band verdict for those exact arguments and its reason, for example `REQUIRE_APPROVAL (rule refund-bands)` with `Reason: use_case amount limit refund-bands: the amount is above 50.00 and at most 500.00 EUR, so it requires approval`.
+- `talon actions list` shows `BY AMOUNT` for a limited action, because the name alone does not decide it.
+- The lifecycle evidence records the matched rule id and that reason. A reason names the band and the policy's thresholds, never the amount or currency of the call: evidence outlives the sealed payload.
 
 **Not supported:** more than one amount argument per limit, nested argument paths, currencies with zero or three minor digits, conversion between currencies, and conditions on non-amount arguments. These are refused or denied; they are not silently approximated.
 
