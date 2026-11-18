@@ -447,7 +447,7 @@ jobs:
           set -euo pipefail
           bash scripts/release-capabilities.sh "$RELEASE_TAG" | tee -a "$GITHUB_OUTPUT"
           if ! grep -q '^console=true$' "$GITHUB_OUTPUT"; then
-            echo "### Operations console from the released image: NOT APPLICABLE — $RELEASE_TAG predates the operations console (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Operations console from the released image and published-image quickstart: NOT APPLICABLE — $RELEASE_TAG predates them (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Check out the release's own Compose stack and smoke
         if: steps.cap.outputs.console == 'true'
@@ -459,6 +459,7 @@ jobs:
           sparse-checkout: |
             examples/docker-compose
             scripts/console-compose-smoke.sh
+            scripts/quickstart.sh
           sparse-checkout-cone-mode: false
       - name: Operations console from the released image (Compose, pairing)
         if: steps.cap.outputs.console == 'true'
@@ -468,6 +469,16 @@ jobs:
           TALON_IMAGE="ghcr.io/dativo-io/talon:${VERSION}" TALON_PULL_POLICY=always TALON_EXPECT_VERSION="$VERSION" \
             bash release-src/scripts/console-compose-smoke.sh 2>&1 | tee "$RUNNER_TEMP/console-compose.log"
           { echo '### Operations console from the released image'; echo '```'; grep -E '^(PASS|FAIL)' "$RUNNER_TEMP/console-compose.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # The advertised no-clone quickstart (#463) against the image about to
+      # be published: a governed decision and verified evidence, no provider.
+      # The script is the release's own (release-src), as for the console
+      # smoke; NOT APPLICABLE for a release that predates it.
+      - name: Published-image quickstart (no provider, no key)
+        if: steps.cap.outputs.quickstart == 'true'
+        run: |
+          set -euo pipefail
+          TALON_VERSION="${RELEASE_TAG#v}" bash release-src/scripts/quickstart.sh 2>&1 | tee "$RUNNER_TEMP/quickstart.log"
+          { echo '### Published-image quickstart'; echo '```'; grep -E '^(PASS|FAIL|Image|Digest|Talon)' "$RUNNER_TEMP/quickstart.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # Publication is the point of no return: everything that can be verified
       # has been. The two steps after it (alias promotion, anonymous
       # re-download) never touch release assets, are idempotent, and are

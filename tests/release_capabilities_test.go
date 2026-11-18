@@ -12,17 +12,18 @@ import (
 // contract of the console release gates (#533): a release before v1.17.0
 // has no operations console, so an audit of it reports NOT APPLICABLE; from
 // v1.17.0 on (candidates included) the gates are mandatory; a tag that is
-// not a release tag is an error, never a skip.
+// not a release tag is an error, never a skip. The published-image
+// quickstart (#463) follows the same rule.
 func TestReleaseCapabilities_ConsoleApplicability(t *testing.T) {
 	script := filepath.Join("..", "scripts", "release-capabilities.sh")
 	for tag, want := range map[string]string{
-		"v1.15.4":      "console=false",
-		"v1.16.1":      "console=false",
-		"v1.16.9-rc.3": "console=false",
-		"v1.17.0-rc.1": "console=true",
-		"v1.17.0":      "console=true",
-		"v1.20.3":      "console=true",
-		"v2.0.0":       "console=true",
+		"v1.15.4":      "console=false\nquickstart=false",
+		"v1.16.1":      "console=false\nquickstart=false",
+		"v1.16.9-rc.3": "console=false\nquickstart=false",
+		"v1.17.0-rc.1": "console=true\nquickstart=true",
+		"v1.17.0":      "console=true\nquickstart=true",
+		"v1.20.3":      "console=true\nquickstart=true",
+		"v2.0.0":       "console=true\nquickstart=true",
 	} {
 		out, err := exec.CommandContext(t.Context(), "bash", script, tag).Output()
 		if err != nil {
@@ -65,8 +66,12 @@ func TestReleaseWorkflows_ConsoleGatesFollowTheApplicabilityRule(t *testing.T) {
 		if gates != 2 {
 			t.Errorf("%s: expected 2 console gates (Compose image, released binary), found %d", rel, gates)
 		}
-		if strings.Count(text, "bash scripts/release-capabilities.sh") != 2 {
+		if strings.Count(text, "bash scripts/release-capabilities.sh") < 2 {
 			t.Errorf("%s: each console job must compute applicability with scripts/release-capabilities.sh", rel)
+		}
+		// The published-image quickstart (#463) follows the same rule.
+		if !strings.Contains(text, "if: steps.cap.outputs.quickstart == 'true'") {
+			t.Errorf("%s: the quickstart gate must be conditioned on steps.cap.outputs.quickstart", rel)
 		}
 		for _, skip := range []string{"hashFiles('scripts/console", "[ -f scripts/", "continue-on-error: true"} {
 			if strings.Contains(text, skip) {
