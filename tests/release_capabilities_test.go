@@ -24,7 +24,7 @@ func TestReleaseCapabilities_ConsoleApplicability(t *testing.T) {
 		"v1.20.3":      "console=true",
 		"v2.0.0":       "console=true",
 	} {
-		out, err := exec.Command("bash", script, tag).Output()
+		out, err := exec.CommandContext(t.Context(), "bash", script, tag).Output()
 		if err != nil {
 			t.Fatalf("%s: %v", tag, err)
 		}
@@ -33,7 +33,7 @@ func TestReleaseCapabilities_ConsoleApplicability(t *testing.T) {
 		}
 	}
 	for _, tag := range []string{"latest", "1.17.0", "v1.17", "main", "v1.17.0 ", ""} {
-		if out, err := exec.Command("bash", script, tag).Output(); err == nil {
+		if out, err := exec.CommandContext(t.Context(), "bash", script, tag).Output(); err == nil {
 			t.Errorf("%q must be refused, got %q", tag, out)
 		}
 	}
@@ -50,36 +50,54 @@ func TestReleaseWorkflows_ConsoleGatesFollowTheApplicabilityRule(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		lines := strings.Split(string(raw), "\n")
+		text := string(raw)
+		lines := strings.Split(text, "\n")
 		gates := 0
 		for i, line := range lines {
-			if !strings.Contains(line, "bash ") || !(strings.Contains(line, "console-compose-smoke.sh") || strings.Contains(line, "published-console-acceptance.sh")) {
+			if !isConsoleGate(line) {
 				continue
 			}
 			gates++
-			// Walk back to the step header and require the version condition.
-			guarded := false
-			for j := i; j >= 0 && !strings.HasPrefix(strings.TrimSpace(lines[j]), "- name:"); j-- {
-				if strings.TrimSpace(lines[j]) == "if: steps.cap.outputs.console == 'true'" {
-					guarded = true
-				}
-			}
-			if !guarded {
+			if !stepIsVersionGuarded(lines, i) {
 				t.Errorf("%s:%d: console gate is not conditioned on steps.cap.outputs.console", rel, i+1)
 			}
 		}
 		if gates != 2 {
 			t.Errorf("%s: expected 2 console gates (Compose image, released binary), found %d", rel, gates)
 		}
-		text := string(raw)
 		if strings.Count(text, "bash scripts/release-capabilities.sh") != 2 {
 			t.Errorf("%s: each console job must compute applicability with scripts/release-capabilities.sh", rel)
 		}
-		if strings.Contains(text, "hashFiles('scripts/console") || strings.Contains(text, "[ -f scripts/") || strings.Contains(text, "continue-on-error: true") {
-			t.Errorf("%s: a console gate must not be skipped because a file is missing or allowed to fail", rel)
+		for _, skip := range []string{"hashFiles('scripts/console", "[ -f scripts/", "continue-on-error: true"} {
+			if strings.Contains(text, skip) {
+				t.Errorf("%s: a console gate must not be skipped because a file is missing or allowed to fail (%q)", rel, skip)
+			}
 		}
 		if strings.Count(text, "ref: refs/tags/") < 2 {
 			t.Errorf("%s: console fixtures must be checked out from the release's own tag", rel)
 		}
 	}
+}
+
+// isConsoleGate reports whether a workflow line runs a console acceptance script.
+func isConsoleGate(line string) bool {
+	if !strings.Contains(line, "bash ") {
+		return false
+	}
+	return strings.Contains(line, "console-compose-smoke.sh") || strings.Contains(line, "published-console-acceptance.sh")
+}
+
+// stepIsVersionGuarded walks back from line i to its step header and
+// requires the version condition on the way.
+func stepIsVersionGuarded(lines []string, i int) bool {
+	for j := i; j >= 0; j-- {
+		l := strings.TrimSpace(lines[j])
+		if l == "if: steps.cap.outputs.console == 'true'" {
+			return true
+		}
+		if strings.HasPrefix(l, "- name:") {
+			return false
+		}
+	}
+	return false
 }
