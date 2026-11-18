@@ -21,6 +21,7 @@ import (
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 )
@@ -42,6 +43,9 @@ var (
 	agentsAddOwner       string
 	agentsAddUseExisting bool
 	agentsAddDryRun      bool
+	// agentsAddNoCompanyPolicy permits a registration when no gateway config
+	// (and so no organization policy) exists.
+	agentsAddNoCompanyPolicy bool
 )
 
 var agentNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
@@ -98,7 +102,11 @@ type agentsAddPlan struct {
 	Name, Tenant, Description, Owner, SecretName string
 	Dir, Path                                    string
 	Content                                      []byte
-	CreatedAgentsDir                             bool
+	// AgentsDirMissing: agents_dir does not exist yet; a real registration
+	// creates it, a dry run does not.
+	AgentsDirMissing bool
+	// CompanyPolicy states the company policy in force (or its absence).
+	CompanyPolicy string
 	// NoOrganizationPolicy: no gateway config was found, so nothing is
 	// inherited and the new use case has no budget cap of its own.
 	NoOrganizationPolicy bool
@@ -106,11 +114,20 @@ type agentsAddPlan struct {
 }
 
 func runAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, name string) error {
+	// Planning reads only: nothing below this call has been written yet.
 	plan, err := planAgentsAdd(ctx, cfg, name)
 	if err != nil {
 		return err
 	}
-	// A first registration on a new host: the data directory may not exist yet.
+	if agentsAddDryRun {
+		return dryRunAgentsAdd(ctx, out, cfg, plan)
+	}
+	if plan.AgentsDirMissing {
+		// The first registration of a new agents_dir installation.
+		if err := os.MkdirAll(cfg.AgentsDir, 0o755); err != nil {
+			return fmt.Errorf("creating agents_dir %s: %w", cfg.AgentsDir, err)
+		}
+	}
 	if err := cfg.EnsureDataDir(); err != nil {
 		return fmt.Errorf("creating the data directory %s: %w", cfg.DataDir, err)
 	}
@@ -119,22 +136,7 @@ func runAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, name s
 		return fmt.Errorf("opening the secrets vault: %w", err)
 	}
 	defer store.Close()
-	exists, err := secretExists(ctx, store, plan.SecretName)
-	if err != nil {
-		return fmt.Errorf("reading the secrets vault: %w", err)
-	}
-	if exists && !agentsAddUseExisting {
-		return fmt.Errorf("vault secret %q already exists; refusing to overwrite a key that may be in use. Pass --use-existing-key to bind it, or remove it deliberately with 'talon secrets delete %s'", plan.SecretName, plan.SecretName)
-	}
-	if !exists && agentsAddUseExisting {
-		return fmt.Errorf("--use-existing-key: vault secret %q does not exist", plan.SecretName)
-	}
-	if agentsAddDryRun {
-		fmt.Fprintf(out, "Dry run: would create %s and %s the key secret %q.\n\n%s", plan.Path, map[bool]string{true: "bind", false: "generate"}[exists], plan.SecretName, plan.Content)
-		return nil
-	}
-
-	key, err := commitAgentsAdd(ctx, cfg, store, plan, exists)
+	key, err := commitAgentsAdd(ctx, cfg, store, plan)
 	if err != nil {
 		return err
 	}
@@ -142,75 +144,160 @@ func runAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, name s
 	return nil
 }
 
-// commitAgentsAdd stores a new key (unless one exists and is bound), then
-// writes the file, then re-scans the fleet; each failure undoes what this
-// call wrote. It returns the generated key ("" when an existing one is bound).
-func commitAgentsAdd(ctx context.Context, cfg *config.Config, store *secrets.SecretStore, plan *agentsAddPlan, exists bool) (string, error) {
-	var key string
-	if !exists {
-		var err error
+// dryRunAgentsAdd reports what a registration would do. It creates no
+// directory, no vault and no evidence store, on a fresh installation too.
+func dryRunAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, plan *agentsAddPlan) error {
+	keyState := "generate"
+	if _, statErr := os.Stat(cfg.SecretsDBPath()); statErr == nil {
+		store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+		if err != nil {
+			return fmt.Errorf("opening the secrets vault: %w", err)
+		}
+		defer store.Close()
+		meta, err := store.Metadata(ctx, plan.SecretName)
+		switch {
+		case err == nil && !agentsAddUseExisting:
+			return existingKeyError(plan)
+		case err == nil:
+			if aclErr := existingKeyPermits(meta, plan); aclErr != nil {
+				return aclErr
+			}
+			keyState = "bind the existing"
+		case !errors.Is(err, secrets.ErrSecretNotFound):
+			return fmt.Errorf("reading the secrets vault: %w", err)
+		}
+	}
+	if keyState == "generate" && agentsAddUseExisting {
+		return fmt.Errorf("--use-existing-key: vault secret %q does not exist", plan.SecretName)
+	}
+	fmt.Fprintf(out, "Dry run: nothing was written. A registration would create %s and %s key secret %q.\n", plan.Path, keyState, plan.SecretName)
+	fmt.Fprintf(out, "Company policy: %s\n\n%s", plan.CompanyPolicy, plan.Content)
+	return nil
+}
+
+func existingKeyError(plan *agentsAddPlan) error {
+	return fmt.Errorf("vault secret %q already exists (a key that may be in use, or another registration of %q in progress); refusing to overwrite it. Pass --use-existing-key to bind it, or remove it deliberately with 'talon secrets delete %s'", plan.SecretName, plan.Name, plan.SecretName)
+}
+
+// existingKeyPermits checks that the ACL of a key bound with
+// --use-existing-key lets this use case, in this tenant, resolve it:
+// otherwise the registration would validate now and fail at serve.
+func existingKeyPermits(meta *secrets.SecretMetadata, plan *agentsAddPlan) error {
+	if meta.ACL.CheckAccess(plan.Tenant, plan.Name) {
+		return nil
+	}
+	return fmt.Errorf("--use-existing-key: the ACL of vault secret %q does not permit use case %q in tenant %q; set it deliberately with 'talon secrets set %s <key> --tenants %s --agents %s'", plan.SecretName, plan.Name, plan.Tenant, plan.SecretName, plan.Tenant, plan.Name)
+}
+
+// commitAgentsAdd performs the registration. Order and ownership:
+//
+//  1. the key: a NEW key is created atomically (create-if-absent; of
+//     concurrent registrations of one name exactly one gets past this
+//     step), or an existing one is bound after its ACL is checked;
+//  2. a signed intent record;
+//  3. the agent file, created without overwriting;
+//  4. the fleet re-scan;
+//  5. the signed completion record.
+//
+// A failure undoes only what THIS call created: its own key version (never a
+// key someone else stored under the name) and its own file. A running server
+// may have loaded the use case between steps 3 and a rollback; it drops it
+// on its next reload, and the rollback is recorded.
+func commitAgentsAdd(ctx context.Context, cfg *config.Config, store *secrets.SecretStore, plan *agentsAddPlan) (key string, err error) {
+	var own secrets.Ownership
+	if agentsAddUseExisting {
+		meta, merr := store.Metadata(ctx, plan.SecretName)
+		if errors.Is(merr, secrets.ErrSecretNotFound) {
+			return "", fmt.Errorf("--use-existing-key: vault secret %q does not exist", plan.SecretName)
+		}
+		if merr != nil {
+			return "", fmt.Errorf("reading the secrets vault: %w", merr)
+		}
+		if aclErr := existingKeyPermits(meta, plan); aclErr != nil {
+			return "", aclErr
+		}
+	} else {
 		key, err = newAgentKey()
 		if err != nil {
 			return "", err
 		}
-		// Readable only as this use case in its tenant: another use case's
-		// identity can never resolve this key.
+		// Readable only as this use case in its tenant.
 		acl := secrets.ACL{Tenants: []string{plan.Tenant}, Agents: []string{plan.Name}}
-		if err := store.Set(ctx, plan.SecretName, []byte(key), acl); err != nil {
+		own, err = store.Create(ctx, plan.SecretName, []byte(key), acl)
+		if errors.Is(err, secrets.ErrSecretExists) {
+			return "", existingKeyError(plan)
+		}
+		if err != nil {
 			return "", fmt.Errorf("storing the key in the vault (nothing else was written): %w", err)
 		}
 	}
+	evStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if err != nil {
+		return "", undoAgentsAdd(ctx, store, nil, plan, own, false, fmt.Errorf("opening the evidence store: %w", err))
+	}
+	defer evStore.Close()
+	correlation := "al_" + uuid.New().String()[:12]
+	keyNote := "key: generated, vault secret " + plan.SecretName
+	if agentsAddUseExisting {
+		keyNote = "key: bound to existing vault secret " + plan.SecretName
+	}
+	record := func(kind string, extra ...string) (string, error) {
+		id := "al_" + uuid.New().String()[:12]
+		reasons := append([]string{"config: " + plan.Path, keyNote, "company policy: " + plan.CompanyPolicy}, extra...)
+		return id, evStore.Store(ctx, &evidence.Evidence{
+			ID: id, CorrelationID: correlation, Timestamp: time.Now().UTC(), TenantID: plan.Tenant, AgentID: plan.Name,
+			InvocationType: kind, RequestSourceID: operatorID(),
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: kind, Reasons: reasons},
+		})
+	}
+	undo := func(fileCreated bool, cause error) error {
+		return undoAgentsAdd(ctx, store, record, plan, own, fileCreated, cause)
+	}
+	if _, err := record("agent_registration_intent"); err != nil {
+		return "", undo(false, fmt.Errorf("recording the registration intent as signed evidence: %w", err))
+	}
 	if err := writeAgentFileAtomically(plan); err != nil {
-		if !exists {
-			if derr := store.Delete(ctx, plan.SecretName); derr != nil {
-				return "", fmt.Errorf("%w; ALSO failed to remove the key just stored as %q (remove it with 'talon secrets delete %s'): %v", err, plan.SecretName, plan.SecretName, derr)
-			}
-		}
-		return "", err
+		return "", undo(false, err)
 	}
 	if err := verifyFleetAfterAdd(ctx, cfg, plan); err != nil {
-		_ = os.Remove(plan.Path)
-		_ = os.Remove(plan.Dir)
-		if !exists {
-			_ = store.Delete(ctx, plan.SecretName)
-		}
-		return "", fmt.Errorf("the fleet does not validate with the new use case, so it was removed again: %w", err)
+		return "", undo(true, fmt.Errorf("the fleet does not validate with the new use case: %w", err))
 	}
-	// The registration is an operator event like enable/disable: one signed
-	// record in the use case's tenant. A registration that cannot be
-	// recorded is undone.
-	if err := recordAgentRegistered(ctx, cfg, plan, exists); err != nil {
-		_ = os.Remove(plan.Path)
-		_ = os.Remove(plan.Dir)
-		if !exists {
-			_ = store.Delete(ctx, plan.SecretName)
-		}
-		return "", fmt.Errorf("recording the registration as signed evidence failed, so it was removed again: %w", err)
+	id, err := record("agent_registered")
+	if err != nil {
+		return "", undo(true, fmt.Errorf("recording the registration as signed evidence: %w", err))
 	}
+	plan.EvidenceID = id
 	return key, nil
 }
 
-func recordAgentRegistered(ctx context.Context, cfg *config.Config, plan *agentsAddPlan, boundExisting bool) error {
-	evStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
-	if err != nil {
-		return err
+// undoAgentsAdd removes what this registration created and reports, in the
+// returned error, anything it could not remove: a failed registration never
+// leaves an undisclosed key or file behind.
+func undoAgentsAdd(ctx context.Context, store *secrets.SecretStore, record func(string, ...string) (string, error), plan *agentsAddPlan, own secrets.Ownership, fileCreated bool, cause error) error {
+	var left []string
+	if fileCreated {
+		if err := os.Remove(plan.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			left = append(left, fmt.Sprintf("the agent file %s could not be removed (%v): remove it by hand, a running server will otherwise load it", plan.Path, err))
+		}
+		_ = os.Remove(plan.Dir) // only when empty
 	}
-	defer evStore.Close()
-	keyNote := "key: generated, vault secret " + plan.SecretName
-	if boundExisting {
-		keyNote = "key: bound to existing vault secret " + plan.SecretName
+	if _, err := store.DeleteOwned(ctx, own); err != nil {
+		left = append(left, fmt.Sprintf("the key stored as vault secret %q could not be removed (%v): remove it with 'talon secrets delete %s'", plan.SecretName, err, plan.SecretName))
 	}
-	id := "al_" + uuid.New().String()[:12]
-	plan.EvidenceID = id
-	return evStore.Store(ctx, &evidence.Evidence{
-		ID: id, CorrelationID: id, Timestamp: time.Now().UTC(), TenantID: plan.Tenant, AgentID: plan.Name,
-		InvocationType: "agent_registered", RequestSourceID: operatorID(),
-		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "agent_registered", Reasons: []string{"config: " + plan.Path, keyNote}},
-	})
+	if record != nil {
+		if _, err := record("agent_registration_rolled_back", "cause: "+cause.Error()); err != nil {
+			left = append(left, fmt.Sprintf("the rollback could not be recorded as evidence (%v)", err))
+		}
+	}
+	if len(left) > 0 {
+		return fmt.Errorf("%w; the registration was NOT fully undone: %s", cause, strings.Join(left, "; "))
+	}
+	return fmt.Errorf("%w; nothing of this registration was left behind", cause)
 }
 
 // planAgentsAdd validates everything that needs no write: the installation
-// mode, the existing fleet, the name, and the rendered file.
+// mode, the existing fleet, the name, the company policy in force and the
+// rendered file. It creates nothing.
 func planAgentsAdd(ctx context.Context, cfg *config.Config, name string) (*agentsAddPlan, error) {
 	if !agentNameRe.MatchString(name) {
 		return nil, fmt.Errorf("invalid use case name %q: lower-case letters, digits, '-' and '_', starting with a letter or digit, at most 63 characters", name)
@@ -218,21 +305,18 @@ func planAgentsAdd(ctx context.Context, cfg *config.Config, name string) (*agent
 	if strings.TrimSpace(cfg.AgentsDir) == "" {
 		return nil, errors.New("agents_dir is not configured: 'talon agents add' registers use cases in an agents_dir fleet. Set agents_dir in talon.config.yaml (or TALON_AGENTS_DIR), move an existing agent.talon.yaml to <agents_dir>/<name>/agent.talon.yaml, then retry")
 	}
-	created := false
+	missing := false
 	if _, err := os.Stat(cfg.AgentsDir); os.IsNotExist(err) {
-		// The first registration of a new agents_dir installation.
-		if err := os.MkdirAll(cfg.AgentsDir, 0o755); err != nil {
-			return nil, fmt.Errorf("creating agents_dir %s: %w", cfg.AgentsDir, err)
+		missing = true // a first registration: no fleet to validate yet
+	} else {
+		scan, err := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
+		if err != nil {
+			return nil, fmt.Errorf("the existing fleet under %s does not validate, so nothing was added (fix it first; 'talon validate --dir %s'): %w", cfg.AgentsDir, cfg.AgentsDir, err)
 		}
-		created = true
-	}
-	scan, err := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
-	if err != nil {
-		return nil, fmt.Errorf("the existing fleet under %s does not validate, so nothing was added (fix it first; 'talon validate --dir %s'): %w", cfg.AgentsDir, cfg.AgentsDir, err)
-	}
-	for i := range scan.Agents {
-		if scan.Agents[i].Name == name {
-			return nil, fmt.Errorf("use case %q is already registered (%s)", name, scan.Agents[i].Path)
+		for i := range scan.Agents {
+			if scan.Agents[i].Name == name {
+				return nil, fmt.Errorf("use case %q is already registered (%s)", name, scan.Agents[i].Path)
+			}
 		}
 	}
 	tenant := strings.TrimSpace(agentsAddTenant)
@@ -245,24 +329,46 @@ func planAgentsAdd(ctx context.Context, cfg *config.Config, name string) (*agent
 	}
 	plan := &agentsAddPlan{
 		Name: name, Tenant: tenant, Description: desc, Owner: strings.TrimSpace(agentsAddOwner), SecretName: name + "-talon-key",
-		Dir: filepath.Join(cfg.AgentsDir, name), CreatedAgentsDir: created,
+		Dir: filepath.Join(cfg.AgentsDir, name), AgentsDirMissing: missing,
 	}
 	plan.Path = filepath.Join(plan.Dir, agentcatalog.AgentConfigFilename)
 	if _, err := os.Stat(plan.Path); err == nil {
 		return nil, fmt.Errorf("%s already exists", plan.Path)
+	}
+	summary, present, err := companyPolicySummary()
+	if err != nil {
+		return nil, err
+	}
+	plan.CompanyPolicy, plan.NoOrganizationPolicy = summary, !present
+	if !present && !agentsAddNoCompanyPolicy {
+		return nil, fmt.Errorf("no company policy is active: %s. A use case registered now would inherit nothing (no budget cap, no PII rule, no forbidden actions, no approval rules). Create the gateway config with an organization_policy (starter: examples/pilot/talon.config.yaml) or point TALON_GATEWAY_CONFIG at it; to register without any company policy on purpose, pass --no-company-policy", summary)
 	}
 	var b strings.Builder
 	if err := template.Must(template.New("agent").Parse(agentsAddTemplate)).Execute(&b, plan); err != nil {
 		return nil, err
 	}
 	plan.Content = []byte(b.String())
-	if _, err := os.Stat(gatewayConfigPath("")); errors.Is(err, os.ErrNotExist) {
-		plan.NoOrganizationPolicy = true
-	}
 	if err := validateAgentContent(ctx, plan.Content); err != nil {
 		return nil, fmt.Errorf("the generated agent file does not validate (nothing was written): %w", err)
 	}
 	return plan, nil
+}
+
+// companyPolicySummary states which company policy a registration would run
+// under, read from the gateway config `talon serve` loads. present is false
+// when that file does not exist; a present but invalid file is an error.
+func companyPolicySummary() (summary string, present bool, err error) {
+	path := gatewayConfigPath("")
+	gw, err := gateway.LoadGatewayConfig(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "none (no gateway config at " + path + ")", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("gateway config %s is present but invalid: %w — fix it first (serve refuses to start on this file)", path, err)
+	}
+	org := gw.OrganizationPolicy
+	return fmt.Sprintf("%s — pii_action %s, daily cost %.2f / monthly %.2f per use case, %d forbidden tool/action pattern(s), %s",
+		path, org.Defaults.PIIAction, org.Defaults.DailyCost, org.Defaults.MonthlyCost, len(org.Constraints.ForbiddenTools), companyApprovalSummary(org.Constraints.ActionApprovals)), true, nil
 }
 
 // validateAgentContent runs the strict loader and the effective action
@@ -360,15 +466,16 @@ func newAgentKey() (string, error) {
 }
 
 func printAgentsAddResult(out io.Writer, plan *agentsAddPlan, key string) {
-	if plan.CreatedAgentsDir {
+	if plan.AgentsDirMissing {
 		fmt.Fprintf(out, "Created agents_dir %s (it did not exist).\n", filepath.Dir(plan.Dir))
 	}
 	fmt.Fprintf(out, "Registered AI use case %q (tenant %s)\n", plan.Name, plan.Tenant)
 	fmt.Fprintf(out, "  config:  %s\n", plan.Path)
 	fmt.Fprintf(out, "  key:     vault secret %q\n", plan.SecretName)
 	fmt.Fprintf(out, "  evidence: %s (signed, agent_registered)\n", plan.EvidenceID)
+	fmt.Fprintf(out, "  company policy: %s\n", plan.CompanyPolicy)
 	if plan.NoOrganizationPolicy {
-		fmt.Fprintf(out, "\nWARNING: no gateway config (%s) was found, so there is no organization policy to inherit: this use case has NO budget cap and no company constraints until you add an organization_policy or set policies.cost_limits in its file.\n", gatewayConfigPath(""))
+		fmt.Fprintf(out, "\nWARNING: registered WITHOUT a company policy (--no-company-policy): this use case has NO budget cap and no company constraints until you add an organization_policy or set policies.cost_limits in its file.\n")
 	}
 	if key != "" {
 		fmt.Fprintf(out, "\nTalon key (shown ONCE; store it in the application's secret manager, never in source):\n  %s\n", key)
@@ -397,5 +504,14 @@ func init() {
 	agentsAddCmd.Flags().StringVar(&agentsAddOwner, "owner", "", "accountable owner (identifier or contact)")
 	agentsAddCmd.Flags().BoolVar(&agentsAddUseExisting, "use-existing-key", false, "bind the existing vault secret <name>-talon-key instead of generating a key")
 	agentsAddCmd.Flags().BoolVar(&agentsAddDryRun, "dry-run", false, "validate and print the file that would be written; write nothing")
+	agentsAddCmd.Flags().BoolVar(&agentsAddNoCompanyPolicy, "no-company-policy", false, "register although no gateway config with an organization policy exists (the use case then inherits nothing)")
 	agentsCmd.AddCommand(agentsAddCmd)
+}
+
+// companyApprovalSummary counts the company approval requirements.
+func companyApprovalSummary(aa *gateway.ActionApprovalsConstraint) string {
+	if aa == nil {
+		return "0 approval rule(s)"
+	}
+	return fmt.Sprintf("%d approval rule(s)", len(aa.Rules))
 }
