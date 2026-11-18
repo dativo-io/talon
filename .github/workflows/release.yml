@@ -260,22 +260,49 @@ jobs:
   # contract (#545) and the console e2e. Tests and fixtures come from the
   # tag's checkout; Go compiles the test harness only. Publication waits for
   # this job.
+  #
+  # Audit mode (workflow_dispatch): the job runs too, against the PUBLISHED
+  # archive, and its tests and fixtures are the audited tag's own, never the
+  # dispatching branch's. A release that predates the console (before
+  # v1.17.0, scripts/release-capabilities.sh) reports NOT APPLICABLE; on a
+  # console-enabled release nothing here is conditional on a file existing,
+  # so a missing script or asset fails the job.
   release-console-acceptance:
     name: Console acceptance on the released binary
     needs: release
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
     # Pinned image: the pinned Playwright only installs Chromium on the OS
     # releases it knows (see ci.yml `browser`).
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Does this release ship the operations console?
+        id: cap
+        run: |
+          set -euo pipefail
+          bash scripts/release-capabilities.sh "$RELEASE_TAG" | tee -a "$GITHUB_OUTPUT"
+          if ! grep -q '^console=true$' "$GITHUB_OUTPUT"; then
+            echo "### Console acceptance: NOT APPLICABLE — $RELEASE_TAG predates the operations console (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # A push runs on the tag already. An audit is dispatched from a branch:
+      # replace the workspace with the audited release's own tree.
+      - name: Check out the audited release's own tests and fixtures
+        if: steps.cap.outputs.console == 'true' && github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
       - uses: actions/setup-go@v5
+        if: steps.cap.outputs.console == 'true'
         with:
           go-version-file: go.mod
       - uses: actions/setup-node@v4
+        if: steps.cap.outputs.console == 'true'
         with:
           node-version: '22'
-      - name: Download the released talon archive from the draft and verify it
+      - name: Download the released talon archive and verify it
+        if: steps.cap.outputs.console == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -287,11 +314,13 @@ jobs:
           (cd "$RUNNER_TEMP/assets" && grep -F " $ARCHIVE" checksums.txt | sha256sum -c -)
           tar -C "$RUNNER_TEMP/talon" -xzf "$RUNNER_TEMP/assets/$ARCHIVE" talon
       - name: Install Playwright (pinned) and Chromium
+        if: steps.cap.outputs.console == 'true'
         working-directory: tests/browser
         run: |
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
       - name: Browser suite, People Analytics (#545) and console e2e on the released binary
+        if: steps.cap.outputs.console == 'true'
         run: |
           set -euo pipefail
           bash scripts/published-console-acceptance.sh "$RUNNER_TEMP/talon/talon" "$RELEASE_TAG" 2>&1 | tee "$RUNNER_TEMP/console-acceptance.log"
@@ -405,15 +434,39 @@ jobs:
           docker pull "ghcr.io/dativo-io/talon:${VERSION}"
           [ "$(docker run --rm "ghcr.io/dativo-io/talon:${VERSION}" version | head -n1)" = "Talon $VERSION" ]
       # The released image must also serve the paired read-only console over
-      # the shared store (#533): pairing from the container log, the six
-      # pages' read endpoints, console/CLI signature verification parity, no
-      # legacy dashboard, loopback-only publication, restart independence.
+      # the shared store (#533): no source-build fallback, both services on
+      # the released image, pairing from the container log, the six pages'
+      # read endpoints, console/CLI signature verification parity, no legacy
+      # dashboard, loopback-only publication, restart independence. The
+      # Compose stack and the smoke are the RELEASE's own files (in an audit
+      # this job's checkout is the dispatching branch). A release that
+      # predates the console reports NOT APPLICABLE.
+      - name: Does this release ship the operations console?
+        id: cap
+        run: |
+          set -euo pipefail
+          bash scripts/release-capabilities.sh "$RELEASE_TAG" | tee -a "$GITHUB_OUTPUT"
+          if ! grep -q '^console=true$' "$GITHUB_OUTPUT"; then
+            echo "### Operations console from the released image: NOT APPLICABLE — $RELEASE_TAG predates the operations console (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Check out the release's own Compose stack and smoke
+        if: steps.cap.outputs.console == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          path: release-src
+          persist-credentials: false
+          sparse-checkout: |
+            examples/docker-compose
+            scripts/console-compose-smoke.sh
+          sparse-checkout-cone-mode: false
       - name: Operations console from the released image (Compose, pairing)
+        if: steps.cap.outputs.console == 'true'
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
           TALON_IMAGE="ghcr.io/dativo-io/talon:${VERSION}" TALON_PULL_POLICY=always TALON_EXPECT_VERSION="$VERSION" \
-            bash scripts/console-compose-smoke.sh 2>&1 | tee "$RUNNER_TEMP/console-compose.log"
+            bash release-src/scripts/console-compose-smoke.sh 2>&1 | tee "$RUNNER_TEMP/console-compose.log"
           { echo '### Operations console from the released image'; echo '```'; grep -E '^(PASS|FAIL)' "$RUNNER_TEMP/console-compose.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # The advertised no-clone quickstart (#463) against the image about to
       # be published: a governed decision and verified evidence, no provider.

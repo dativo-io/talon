@@ -44,7 +44,7 @@ See the [README install matrix](../README.md#install). Summary:
 | **linux/amd64 server** (verified installer path) | `curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh \| sh` — checksum-verified published archive, `TALON_VERSION=vX.Y.Z` to pin, `INSTALL_DIR` to choose the directory; or the release tarball + `checksums.txt` by hand |
 | **macOS** | The darwin archives on the release page (best effort, per-file `.sha256`; the same installer verifies them), or `git clone … && make install` / `go install github.com/dativo-io/talon/cmd/talon@latest` |
 | **arm64 Linux** | `git clone … && make install` or `go install …@latest` (no published archive; the installer refuses to build from source unless `TALON_INSTALL_ALLOW_SOURCE=1`) |
-| **No install** | [Docker Compose demo](../examples/docker-compose/README.md) — with `TALON_IMAGE=ghcr.io/dativo-io/talon:<version> TALON_PULL_POLICY=always` it runs the published image, data plane and console, without building Talon — or `docker pull ghcr.io/dativo-io/talon:<version>` |
+| **No install** | [Docker Compose demo](../examples/docker-compose/README.md) — with `TALON_IMAGE=ghcr.io/dativo-io/talon:<version>` and the `docker-compose.published.yml` override it runs the published image, data plane and console, without building Talon — or `docker pull ghcr.io/dativo-io/talon:<version>` |
 
 To check a published release before trusting it: `scripts/verify-release.sh --tag vX.Y.Z` (curl, jq, tar, sha256sum; no Go, no token) verifies checksums, the executable's version and commit against the tag, the OpenShell showcase manifest and bundle, and that both images are pullable anonymously.
 
