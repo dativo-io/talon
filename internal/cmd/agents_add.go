@@ -513,5 +513,5 @@ func companyApprovalSummary(aa *gateway.ActionApprovalsConstraint) string {
 	if aa == nil {
 		return "0 approval rule(s)"
 	}
-	return fmt.Sprintf("%d approval rule(s)", len(aa.Rules))
+	return fmt.Sprintf("%d approval rule(s), %d amount limit(s)", len(aa.Rules), len(aa.AmountLimits))
 }

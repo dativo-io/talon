@@ -85,7 +85,7 @@ func TestE2E_PilotJourney(t *testing.T) {
 	// company forbids.
 	addOut := run(nil, "agents", "add", "refund-bot", "--tenant", "acme", "--owner", "support-ops")
 	refundKey := ucKey.FindString(addOut)
-	if refundKey == "" || strings.Contains(addOut, "WARNING: no gateway config") {
+	if refundKey == "" || strings.Contains(addOut, "WARNING") || !strings.Contains(addOut, "pii_action block") || !strings.Contains(addOut, "2 forbidden tool/action pattern(s), 0 approval rule(s), 1 amount limit(s)") {
 		t.Fatalf("registration under the company policy:\n%s", addOut)
 	}
 	agentFile := filepath.Join(agentsDir, "refund-bot", "agent.talon.yaml")
@@ -236,10 +236,26 @@ policies:
 		}
 	}
 	stop = serve()
+	// A restored installation holds dispatch until the operator has
+	// reconciled and resumed; nothing happened after this backup, so no
+	// operation is kept held.
+	if st, res := establish("T-40", "40.00"); st >= 300 || dig(res, "operation", "verdict") != "ALLOW" {
+		t.Fatalf("establish after restore: %d %v", st, res)
+	}
+	if st, res := c.do("POST", "/v1/action-operations/T-40/attempts", refundKey, ""); st != 503 || errCode(res) != "recovery_hold" {
+		t.Fatalf("a restored installation must hold dispatch: %d %v", st, res)
+	}
+	calls(2, "held after restore")
+	if out := run(nil, "backup", "resume", "--reconciled"); !strings.Contains(out, "Resumed: 1 hold(s) ended") {
+		t.Fatalf("backup resume:\n%s", out)
+	}
 	if st := claim("T-75"); st != 409 {
 		t.Fatalf("a restored, succeeded refund must not dispatch again: %d", st)
 	}
-	calls(2, "after restore")
+	if claim("T-40") != 200 {
+		t.Fatal("dispatch after resume")
+	}
+	calls(3, "after resume")
 
 	// 7. A second use case, registered while serving, inherits the company policy.
 	hrKey := ucKey.FindString(run(nil, "agents", "add", "hr-copilot", "--tenant", "acme"))
