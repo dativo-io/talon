@@ -8,6 +8,10 @@ Wants=network-online.target
 Type=simple
 User=talon
 Group=talon
+# Configuration lives in /etc/talon (talon.config.yaml, agents/), state in
+# /var/lib/talon: ProtectHome=yes hides the talon user's home, so neither the
+# default data directory (~/.talon) nor ~/.talon/talon.config.yaml is usable.
+WorkingDirectory=/etc/talon
 ExecStart=/usr/local/bin/talon serve --port 8080 --gateway
 Restart=on-failure
 RestartSec=5
@@ -23,6 +27,7 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 
 # Environment
+Environment=TALON_DATA_DIR=/var/lib/talon
 Environment=TALON_LOG_LEVEL=info
 Environment=TALON_LOG_FORMAT=json
 EnvironmentFile=-/etc/talon/talon.env
