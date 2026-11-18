@@ -306,6 +306,70 @@ func TestArgumentRules_CompanyLayering(t *testing.T) {
 		require.Equal(t, VerdictDeny, v.Outcome)
 		require.Equal(t, CompanyDenyRuleID, v.RuleID)
 	})
+	t.Run("explicit company guards restrict a domain in every use case", func(t *testing.T) {
+		// Company-wide restrictions on values the action's schema leaves
+		// open: deployments only to named environments, no real deletion.
+		// Both are ordinary rules (string ne, boolean eq), no domain code.
+		guards := &CompanyActionPolicy{Source: "test", ArgumentRules: map[string]policy.ArgumentRuleConfig{
+			"staging-only":     rule("deploy_*", "environment", ArgTypeString, OpNe, "staging", EffectDeny),
+			"no-real-deletion": rule("delete_records", "dry_run", ArgTypeBoolean, OpEq, false, EffectDeny),
+		}}
+		pol := useCase(nil)
+		ap, err := CompileEffectiveActionPolicy(pol, guards)
+		require.NoError(t, err)
+		cat, err := CompileCatalog(pol.Actions, nil)
+		require.NoError(t, err)
+		require.NoError(t, ap.ValidateAgainstCatalog(cat))
+
+		require.Equal(t, VerdictAllow, ap.EvaluateArguments("deploy_service", []byte(`{"service":"api","environment":"staging"}`)).Outcome)
+		for _, env := range []string{"production", "Staging", ""} {
+			v := ap.EvaluateArguments("deploy_service", []byte(`{"service":"api","environment":"`+env+`"}`))
+			require.Equal(t, VerdictDeny, v.Outcome, env)
+			require.Equal(t, "company:staging-only", v.RuleID, env)
+			require.Equal(t, PolicySourceCompany, v.Source, env)
+			require.Equal(t, ReasonArgumentRuleDeny, v.Code, env)
+		}
+		// The guard's argument not established: denied, attributed to the guard.
+		v := ap.EvaluateArguments("deploy_service", []byte(`{"service":"api"}`))
+		require.Equal(t, VerdictDeny, v.Outcome)
+		require.Equal(t, ReasonArgumentNotEstablished, v.Code)
+		require.Equal(t, PolicySourceCompany, v.Source)
+
+		require.Equal(t, VerdictAllow, ap.EvaluateArguments("delete_records", []byte(`{"table":"t","count":1,"dry_run":true}`)).Outcome)
+		v = ap.EvaluateArguments("delete_records", []byte(`{"table":"t","count":1,"dry_run":false}`))
+		require.Equal(t, VerdictDeny, v.Outcome)
+		require.Equal(t, "company:no-real-deletion", v.RuleID)
+
+		// The use case's own approval rule for production does not soften
+		// the company deny, and inspection names the company layer.
+		pol = useCase(map[string]policy.ArgumentRuleConfig{
+			"prod-deploy-needs-approval": rule("deploy_service", "environment", ArgTypeString, OpEq, "production", EffectRequireApproval, "support-leads"),
+		})
+		ap, err = CompileEffectiveActionPolicy(pol, guards)
+		require.NoError(t, err)
+		v = ap.EvaluateArguments("deploy_service", []byte(`{"service":"api","environment":"production"}`))
+		require.Equal(t, VerdictDeny, v.Outcome)
+		require.Equal(t, "company:staging-only", v.RuleID)
+		d := ap.Decision("deploy_service")
+		require.Equal(t, DecisionByArguments, d.DecisionBasis)
+		sources := map[string]string{}
+		for _, r := range d.ArgumentRules {
+			sources[r.ID] = r.Source
+		}
+		require.Equal(t, map[string]string{"company:staging-only": PolicySourceCompany, "prod-deploy-needs-approval": PolicySourceUseCase}, sources)
+
+		// A use case whose action cannot establish the guard's argument is
+		// refused at load, naming the company rule.
+		open := useCase(nil)
+		def := open.Actions.Definitions["deploy_service"]
+		def.InputSchema = map[string]any{"type": "object", "additionalProperties": false, "required": []any{"service"}, "properties": map[string]any{"service": map[string]any{"type": "string"}, "environment": map[string]any{"type": "string"}}}
+		open.Actions.Definitions["deploy_service"] = def
+		ap, err = CompileEffectiveActionPolicy(open, guards)
+		require.NoError(t, err)
+		cat, err = CompileCatalog(open.Actions, nil)
+		require.NoError(t, err)
+		require.ErrorContains(t, ap.ValidateAgainstCatalog(cat), `company argument rule "company:staging-only" on action "deploy_service"`)
+	})
 	t.Run("a company name rule is reported over a use-case argument rule; deny still wins", func(t *testing.T) {
 		withRule := &CompanyActionPolicy{Source: "test", Rules: map[string]CompanyApprovalRule{"all-refunds": {Actions: []string{"create_refund_request"}, ApproverGroups: []string{"support-leads"}}}}
 		ap, err := CompileEffectiveActionPolicy(useCase(refundRules()), withRule)

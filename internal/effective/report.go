@@ -361,11 +361,23 @@ func actionBoundary(agent *policy.Policy, baseline gateway.OrganizationPolicy, g
 		b.Basis = "the effective action policy does not compile from the current files; a process started from them refuses to start"
 		return b
 	}
+	if cerr := checkAgainstDeclaredCatalog(agent, ap); cerr != nil {
+		b.Error, b.ProvenActive = cerr.Error(), false
+		b.Proof = runtimestatus.Loaded{State: runtimestatus.BoundaryUnknown, Reason: "the action policy is refused at load from the current files, so there is nothing to compare a running process with"}
+		b.Basis = "the effective action policy is refused at load from the current files; a process started from them refuses to start"
+		return b
+	}
 	if b.ProvenActive {
 		b.Basis = "compiled by action.CompileEffectiveActionPolicy from the current files; " + proof.Reason
 	} else {
 		b.Basis = "compiled by action.CompileEffectiveActionPolicy from the current files; not proven to be what a running process enforces (" + proof.Reason + ")"
 	}
+	describeActionPolicy(b, agent, ap)
+	return b
+}
+
+// describeActionPolicy fills the boundary from the compiled policy.
+func describeActionPolicy(b *ActionBoundary, agent *policy.Policy, ap *action.ApprovalPolicy) {
 	b.PolicyDigest, b.ForbiddenTools = ap.Digest, ap.ForbiddenTools
 	if ap.ExpiresAfter > 0 {
 		b.ExpiresAfter = ap.ExpiresAfter.String()
@@ -387,7 +399,26 @@ func actionBoundary(agent *policy.Policy, baseline gateway.OrganizationPolicy, g
 	for i := range views {
 		b.ArgumentRules = append(b.ArgumentRules, ActionArgumentRule{ArgumentRuleView: views[i].ArgumentRuleView, Actions: views[i].Actions})
 	}
-	return b
+}
+
+// checkAgainstDeclaredCatalog resolves the argument rules against the
+// declared catalog exactly as `talon validate` and `talon serve` do: a rule
+// that could not be evaluated truthfully is refused at load, so it is never
+// shown as the effective policy. Definitions discovered from MCP sources are
+// not read here (no I/O); serve checks them when it builds the generation.
+func checkAgainstDeclaredCatalog(agent *policy.Policy, ap *action.ApprovalPolicy) error {
+	if agent.Actions == nil || len(agent.Actions.Definitions) == 0 {
+		return nil
+	}
+	cat, err := action.CompileCatalog(agent.Actions, nil)
+	if err != nil {
+		var undiscovered *action.SourceNotDiscoveredError
+		if errors.As(err, &undiscovered) {
+			return nil
+		}
+		return fmt.Errorf("action catalog: %w", err)
+	}
+	return ap.ValidateAgainstCatalog(cat)
 }
 
 // proveMCP proves the MCP boundary independently of the gateway: a running

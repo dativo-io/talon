@@ -177,8 +177,8 @@ Argument rules compile in the same one compiler as forbidden patterns and name-b
 |---|---|
 | `POST /v1/action-operations` (`operation`) | `verdict`, `matched_rule_id`, `matched_rule_source` (`company` \| `use_case`), `approval.approver_groups` |
 | `talon actions show <action> [--json]` | `decision_basis`: `name` (the verdict holds for every call) or `arguments` (argument rules apply; a call can be stricter than `verdict`, never looser), and `argument_rules[]`: `id`, `source`, `argument`, `type`, `operator`, `value`, `condition`, `effect`, `approver_groups`. The text form prints `BY ARGUMENTS`. A consumer must not read `verdict: ALLOW` with `decision_basis: arguments` as unconditional |
-| `talon actions validate --action <a> --input <file> [--json]` | for arguments that satisfy the action's definition: the verdict for those exact arguments, `matched_rule_id`, `reason`, and `reason_code` (`argument_rule_approval`, `argument_rule_deny` or `argument_not_established`). For arguments that do not (missing, malformed, wrong type, undeclared): `valid: false`, `verdict: REFUSED`, `reason_code: arguments_invalid` and a non-zero exit. Invalid arguments never show the action's name-only verdict, so they can never read as `ALLOW` |
-| `talon agents show <name> --effective [--json]` and the console's use-case page | `action_boundary`: every action the agent file defines with `verdict`, `decision_basis` and the rules that apply, plus all `approval_rules` and `argument_rules` of both layers with their `source`. The console's Configuration page lists the company rules, and its evidence detail shows the verdict and matched rule of an action lifecycle record |
+| `talon actions validate --action <a> --input <file> [--json]` | for arguments that satisfy the action's definition: the verdict for those exact arguments, `matched_rule_id`, `matched_rule_source` (`company` \| `use_case`), `approver_groups` (when approval is required), `reason`, and `reason_code` (`argument_rule_approval`, `argument_rule_deny` or `argument_not_established`). For arguments that do not (missing, malformed, wrong type, undeclared): `valid: false`, `verdict: REFUSED`, `reason_code: arguments_invalid` and a non-zero exit. Invalid arguments never show the action's name-only verdict, so they can never read as `ALLOW` |
+| `talon agents show <name> --effective [--json]` and the console's use-case page | `action_boundary`: every action the agent file defines with `verdict`, `decision_basis` and the rules that apply, plus all `approval_rules` and `argument_rules` of both layers with their `source`. A policy that `talon validate` and `talon serve` refuse (for example a company rule whose argument this use case's action does not require) is reported as `action_boundary.error` with no actions or rules, never as the effective policy. The console's Configuration page lists the company rules, and its evidence detail shows the verdict and matched rule of an action lifecycle record |
 | signed lifecycle evidence | `matched_rule_id`, `matched_rule_source` and the reason |
 
 **Inspection reason codes are not HTTP error codes.** `reason_code` and the `REFUSED` verdict exist only in the output of `talon actions validate`. They explain a pre-flight check to an operator or a script and are not part of the wire contract. The Action Gateway answers with the registered governance codes (`internal/govcode`, listed in the [MCP governance extension registry](mcp-governance-extension.md) and in the route table below), which are what clients key on:
@@ -194,7 +194,19 @@ Argument rules compile in the same one compiler as forbidden patterns and name-b
 
 ### Not supported (see #570)
 
-Nested argument paths, several arguments in one rule, `and`/`or`, set membership, pattern matching, time- or history-dependent conditions, cumulative limits, and any `allow` effect. Corporate approval flows (chat, ticketing) are outside the OSS scope; the local reviewer path below is the supported one.
+Nested argument paths, several arguments in one rule, `and`/`or`, set membership, pattern matching, time- or history-dependent conditions, cumulative limits, and any `allow` effect. Corporate approval flows (chat, ticketing) are outside the OSS scope.
+
+### Approving a conditional action: what the operator does
+
+The approval path of an argument rule is the existing approval API; nothing else is needed, and nothing else exists in this release.
+
+1. **Create the reviewer once:** `talon approver add --name <name> --tenant <tenant> --groups <group>` prints an approver credential (shown once). The group must be one the rule names.
+2. **The application calls** `POST /v1/action-operations`. When a rule requires approval the answer is `202` with `operation.verdict: REQUIRE_APPROVAL`, `matched_rule_id`, `matched_rule_source` and the approval (`approval.id`, `approval.approver_groups`, expiry). Nothing is dispatched.
+3. **The application hands the approval id to a reviewer** through whatever channel the team uses. Talon does not notify anyone and has no list of pending approvals: the calling application is the only holder of the id.
+4. **The reviewer decides:** the application reads `GET /v1/approvals/{approval_id}` with its agent key (the approval and the reviewer projection of the exact arguments) and shows it to the reviewer; the reviewer sends `POST /v1/approvals/{approval_id}/decisions` with the approver credential and `{"decision": "approve" | "reject", "reason": "..."}` records the decision. A decision dispatches nothing.
+5. **The application claims** with `POST /v1/action-operations/{operation_id}/attempts`; only then is the approved call dispatched, exactly once.
+
+The Operations Console is read-only: it shows the rules (use-case page, Configuration) and the signed lifecycle records of an operation (evidence detail), and it cannot approve, reject or list pending approvals.
 
 ## Trusted MCP sources (`actions.sources`)
 
