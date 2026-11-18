@@ -17,7 +17,7 @@ import (
 //
 // The console renders this projection; it never classifies records itself.
 type Outcome struct {
-	Decision   string `json:"decision"`   // allowed | denied
+	Decision   string `json:"decision"`   // allowed | denied | approval_required
 	Dispatch   string `json:"dispatch"`   // see Dispatch* constants
 	Downstream string `json:"downstream"` // see Downstream* constants
 	// ResponseWithheld: the destination answered but Talon did not return the
@@ -26,6 +26,19 @@ type Outcome struct {
 	Tool             string `json:"tool,omitempty"`
 	Basis            string `json:"basis"`
 }
+
+// DecisionApprovalRequired is the decision of an Action Gateway operation
+// that waits for an authorized reviewer (verdict REQUIRE_APPROVAL, status
+// awaiting_approval). The signed record's policy_decision.allowed is true
+// there (the operation was established, not refused); reading that as
+// "Talon allowed it" would overstate it: nothing may be dispatched yet.
+const DecisionApprovalRequired = "approval_required"
+
+// Action operation states this projection reads (internal/action writes them).
+const (
+	actionOpAwaitingApproval = "awaiting_approval"
+	actionOpDenied           = "denied"
+)
 
 // Dispatch states.
 const (
@@ -51,7 +64,11 @@ const (
 //   - action_lifecycle records: the attempt's result provenance
 //     (observed / not_dispatched / unknown) and attempt status, as recorded
 //     by the action dispatcher; an authorization_refused event dispatched
-//     nothing.
+//     nothing. A record whose operation status is awaiting_approval reads
+//     approval_required and not dispatched (nothing is dispatched before an
+//     authorized decision and a claim); one whose status is denied reads
+//     not dispatched (a denied operation retains no payload and is never
+//     claimed).
 //   - proxy_tool_blocked: written only on the MCP proxy's pre-dispatch deny
 //     path (internal/mcp/proxy.go), so nothing reached the upstream.
 //   - proxy_upstream_error: status "unknown" means the request was handed to
@@ -126,6 +143,13 @@ func actionOutcome(ev *Evidence, out *Outcome) {
 			out.Downstream = DownstreamCompleted
 		}
 		out.Basis = "action lifecycle: result observed, attempt " + al.AttemptStatus
+	case al.OperationStatus == actionOpAwaitingApproval:
+		out.Decision = DecisionApprovalRequired
+		out.Dispatch, out.Downstream = DispatchNotDispatched, DownstreamNone
+		out.Basis = "action lifecycle: operation status awaiting_approval; nothing is dispatched before an authorized reviewer decides and the operation is claimed"
+	case al.OperationStatus == actionOpDenied:
+		out.Dispatch, out.Downstream = DispatchNotDispatched, DownstreamNone
+		out.Basis = "action lifecycle: operation status denied; a denied operation is never dispatched"
 	default:
 		out.Basis = "action lifecycle event " + al.Event + " carries no attempt result"
 	}

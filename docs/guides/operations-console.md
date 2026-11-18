@@ -67,6 +67,14 @@ These are **real console screenshots** from the synthetic Playwright test instal
 
 *Configuration shows current file contents; separately reported process activation proves which bytes have actually been loaded.*
 
+![Effective policy, Action Gateway: refund-bot's refund depends on its arguments; one company rule denies, one use-case rule requires approval](../assets/console/action-policy.webp)
+
+*Each use case's effective policy lists its Action Gateway actions. An action with argument rules reads "Depends on arguments", never "Allowed"; every rule names the layer that declared it. "Proven active" appears only when every running `talon serve` reports this agent file and the gateway config it read the company action policy from.*
+
+![Evidence detail of a refund that needed a reviewer: approval required, not dispatched, the matched use-case rule, signature valid](../assets/console/action-evidence.webp)
+
+*An action lifecycle record shows the actual verdict, the matched rule and who declared it, and the operation's status. A refund waiting for a reviewer reads "Approval required — not dispatched", not "allowed". The record names the rule, never the call's argument values.*
+
 ![System: startup failure and process heartbeat evidence](../assets/console/system-diagnostics.webp)
 
 *System is the diagnostic drill-down for process state, runtime records, activation, and evidence-store access.*

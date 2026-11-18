@@ -177,9 +177,18 @@ Argument rules compile in the same one compiler as forbidden patterns and name-b
 |---|---|
 | `POST /v1/action-operations` (`operation`) | `verdict`, `matched_rule_id`, `matched_rule_source` (`company` \| `use_case`), `approval.approver_groups` |
 | `talon actions show <action> [--json]` | `decision_basis`: `name` (the verdict holds for every call) or `arguments` (argument rules apply; a call can be stricter than `verdict`, never looser), and `argument_rules[]`: `id`, `source`, `argument`, `type`, `operator`, `value`, `condition`, `effect`, `approver_groups`. The text form prints `BY ARGUMENTS`. A consumer must not read `verdict: ALLOW` with `decision_basis: arguments` as unconditional |
-| `talon actions validate --action <a> --input <file> [--json]` | the verdict for those exact arguments, `matched_rule_id`, `reason`, and `reason_code`: `argument_rule_approval`, `argument_rule_deny` or `argument_not_established` |
+| `talon actions validate --action <a> --input <file> [--json]` | for arguments that satisfy the action's definition: the verdict for those exact arguments, `matched_rule_id`, `reason`, and `reason_code` (`argument_rule_approval`, `argument_rule_deny` or `argument_not_established`). For arguments that do not (missing, malformed, wrong type, undeclared): `valid: false`, `verdict: REFUSED`, `reason_code: arguments_invalid` and a non-zero exit. Invalid arguments never show the action's name-only verdict, so they can never read as `ALLOW` |
 | `talon agents show <name> --effective [--json]` and the console's use-case page | `action_boundary`: every action the agent file defines with `verdict`, `decision_basis` and the rules that apply, plus all `approval_rules` and `argument_rules` of both layers with their `source`. The console's Configuration page lists the company rules, and its evidence detail shows the verdict and matched rule of an action lifecycle record |
 | signed lifecycle evidence | `matched_rule_id`, `matched_rule_source` and the reason |
+
+**Inspection reason codes are not HTTP error codes.** `reason_code` and the `REFUSED` verdict exist only in the output of `talon actions validate`. They explain a pre-flight check to an operator or a script and are not part of the wire contract. The Action Gateway answers with the registered governance codes (`internal/govcode`, listed in the [MCP governance extension registry](mcp-governance-extension.md) and in the route table below), which are what clients key on:
+
+| Inspection (`talon actions validate`) | What the Action Gateway answers for the same call |
+|---|---|
+| `verdict: REFUSED`, `reason_code: arguments_invalid` | `422 action_schema_invalid`; no operation is established |
+| `verdict: DENY`, `reason_code: argument_rule_deny` or `argument_not_established` | `403` with `operation.verdict: DENY` and `matched_rule_id`; a claim is refused `policy_denied` |
+| `verdict: REQUIRE_APPROVAL`, `reason_code: argument_rule_approval` | `202` with `operation.verdict: REQUIRE_APPROVAL`; a claim before the decision is refused `approval_pending` |
+| `verdict: ALLOW` | `201`/`200` with `operation.verdict: ALLOW` |
 
 **No argument values in reasons.** A reason names the rule and its argument (`use_case argument rule refund-needs-approval: its condition on argument "amount" holds; approval is required`). It never repeats a value of the call or the rule's operand: evidence outlives the sealed payload.
 

@@ -428,6 +428,33 @@ policies:
 	require.Empty(t, b.Error)
 	assert.False(t, b.ProvenActive, "no running process: compiled from the files only")
 	assert.Contains(t, b.Basis, "not proven")
+	assert.Equal(t, runtimestatus.BoundaryUnknown, b.Proof.State, "no runtime view was given")
+
+	// Activation is the ACTION policy's own proof. A running gateway that
+	// loaded this agent file and this gateway config proves it; the same
+	// gateway beside a serve that does not report the config it read the
+	// company action policy from does not, although the LLM gateway's own
+	// proof still holds.
+	agentDigest, gwDigestNow := r.CurrentFiles.PolicyDigest, r.CurrentFiles.GatewayConfig.Digest
+	proc := func(id, role string, withConfig bool) runtimestatus.Process {
+		p := runtimestatus.Process{Record: runtimestatus.Record{InstanceID: id, Roles: []string{role}, Catalog: &runtimestatus.Catalog{Agents: []runtimestatus.Agent{{Name: "hr-analytics-assistant", PolicyDigest: agentDigest}}}}, Assessed: runtimestatus.Running, Current: true}
+		if withConfig {
+			p.GatewayConfig = &runtimestatus.ConfigRef{Digest: gwDigestNow}
+		}
+		return p
+	}
+	in := f.inputs()
+	in.Runtime, in.RuntimeReadable = &runtimestatus.View{Processes: []runtimestatus.Process{proc("gw", runtimestatus.RoleGateway, true)}}, true
+	proven, err := Build(ctx, in)
+	require.NoError(t, err)
+	assert.True(t, proven.ActionBoundary.ProvenActive, proven.ActionBoundary.Proof.Reason)
+	in.Runtime = &runtimestatus.View{Processes: []runtimestatus.Process{proc("gw", runtimestatus.RoleGateway, true), proc("native", runtimestatus.RoleNative, false)}}
+	mixed, err := Build(ctx, in)
+	require.NoError(t, err)
+	assert.True(t, mixed.Effective.ProvenActive, "the LLM gateway boundary is still proven")
+	assert.False(t, mixed.ActionBoundary.ProvenActive, "the action policy is not: one serve does not report its company policy source")
+	assert.Equal(t, runtimestatus.BoundaryUnknown, mixed.ActionBoundary.Proof.State)
+	assert.Contains(t, mixed.ActionBoundary.Basis, "not proven")
 	assert.NotEmpty(t, b.PolicyDigest)
 	assert.Equal(t, "30m0s", b.ExpiresAfter)
 

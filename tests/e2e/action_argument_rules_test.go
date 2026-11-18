@@ -335,6 +335,13 @@ policies:
 			t.Fatalf("verify %s: code=%d\n%s\n%s", opID, code, out, stderr)
 		}
 	}
+	// With TALON_ACTION_BROWSER=1: the same installation in Chromium. The
+	// records were written by this test's real `talon serve` over HTTP, the
+	// approvals decided with a real approver credential.
+	if os.Getenv("TALON_ACTION_BROWSER") == "1" {
+		runActionEvidenceBrowser(t, dir)
+	}
+
 	// The signed evidence names the rule, never the call's argument values.
 	db, err := sql.Open("sqlite3", filepath.Join(dir, "evidence.db")+"?mode=ro&_busy_timeout=5000")
 	if err != nil {
@@ -396,4 +403,40 @@ func reviewRefundViaCLI(t *testing.T, dir, base, leadKey, approvalID, downstream
 	if out, _, _ = RunTalon(t, dir, reviewerEnv, "approvals", "list", url); !strings.Contains(out, "No pending approvals") {
 		t.Fatalf("a decided approval leaves the list:\n%s", out)
 	}
+}
+
+// runActionEvidenceBrowser starts the console over this installation and
+// runs tests/browser/live/action-evidence.spec.js: the Action decision block
+// of each lifecycle record against `talon audit show`, and the use case's
+// Action Gateway policy against `talon agents show --effective`.
+func runActionEvidenceBrowser(t *testing.T, dir string) {
+	t.Helper()
+	db, err := sql.Open("sqlite3", filepath.Join(dir, "evidence.db")+"?mode=ro&_busy_timeout=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	record := func(op, event string) string {
+		var id string
+		err := db.QueryRow(`SELECT id FROM evidence WHERE invocation_type = 'action_lifecycle' AND json_extract(evidence_json, '$.action_lifecycle.operation_id') = ? AND json_extract(evidence_json, '$.action_lifecycle.event') = ? ORDER BY rowid LIMIT 1`, op, event).Scan(&id)
+		if err != nil {
+			t.Fatalf("lifecycle record %s/%s: %v", op, event, err)
+		}
+		return id
+	}
+	cfg := filepath.Join(dir, "talon.config.yaml")
+	ui := startConsoleUI(t, dir, freePort(t), "--gateway-config", cfg)
+	runLiveBrowserSpec(t, dir, ui, "live/action-evidence.spec.js", map[string]string{"TALON_GATEWAY_CONFIG": cfg}, map[string]any{
+		"use_case": agAgent,
+		"records": map[string]string{
+			"allowed":          record("op-refund-30", "operation_established"),
+			"company_approval": record("op-refund-75", "operation_established"),
+			"company_decided":  record("op-refund-75", "approval_decided"),
+			"company_attempt":  record("op-refund-75", "attempt_completed"),
+			"company_denied":   record("op-refund-900", "operation_established"),
+			"usecase_approval": record("op-delete-real", "operation_established"),
+			"usecase_denied":   record("op-delete-mass", "operation_established"),
+		},
+		"approved_operation": "op-refund-75",
+	})
 }

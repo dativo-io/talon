@@ -57,3 +57,45 @@ func TestProveGatewayAndProxy(t *testing.T) {
 		})
 	}
 }
+
+// The Action Gateway is served by every talon serve, so its proof covers
+// every running serve process, and loading the gateway's files is not
+// enough: the process must report the gateway config it read the company
+// action policy from.
+func TestProveActionPolicy(t *testing.T) {
+	serve := func(id, role, state, agentDigest, cfgDigest string) Process {
+		p := Process{Record: Record{InstanceID: id, Roles: []string{role}, Catalog: &Catalog{Agents: []Agent{{Name: "refund-bot", TenantID: "acme", PolicyDigest: agentDigest}}}}, Assessed: state, Current: true}
+		if cfgDigest != "" {
+			p.GatewayConfig = &ConfigRef{Digest: cfgDigest}
+		}
+		return p
+	}
+	console := Process{Record: Record{InstanceID: "ui", Roles: []string{RoleMCPProxy}, ProxyConfig: &ConfigRef{Digest: "p1"}}, Assessed: Running}
+	for _, tc := range []struct {
+		name     string
+		procs    []Process
+		readable bool
+		want     string
+	}{
+		{"records unreadable", nil, false, BoundaryUnknown},
+		{"nothing serves", []Process{console}, true, BoundaryNotRunning},
+		{"a stale serve proves nothing", []Process{serve("a", RoleGateway, Stale, "d1", "g1")}, true, BoundaryNotRunning},
+		{"agent file and company policy source match", []Process{serve("a", RoleGateway, Running, "d1", "g1")}, true, BoundaryProven},
+		{"company policy edited, process not restarted", []Process{serve("a", RoleGateway, Running, "d1", "g0")}, true, BoundaryDiffers},
+		{"agent file edited, not reloaded", []Process{serve("a", RoleGateway, Running, "d0", "g1")}, true, BoundaryDiffers},
+		{"a native serve does not report the config it read", []Process{serve("n", RoleNative, Running, "d1", "")}, true, BoundaryUnknown},
+		{"a proven gateway beside an unreported native serve is not proven", []Process{serve("a", RoleGateway, Running, "d1", "g1"), serve("n", RoleNative, Running, "d1", "")}, true, BoundaryUnknown},
+		{"a proven gateway beside a serve on an older company policy", []Process{serve("a", RoleGateway, Running, "d1", "g1"), serve("b", RoleMCPProxy, Running, "d1", "g0")}, true, BoundaryDiffers},
+		{"use case missing from a serve's generation", []Process{{Record: Record{InstanceID: "a", Roles: []string{RoleGateway}, Catalog: &Catalog{}, GatewayConfig: &ConfigRef{Digest: "g1"}}, Assessed: Running}}, true, BoundaryDiffers},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ProveActionPolicy(View{Processes: tc.procs}, tc.readable, "refund-bot", "acme", "d1", "g1")
+			assert.Equal(t, tc.want, got.State, got.Reason)
+			assert.NotEmpty(t, got.Reason)
+		})
+	}
+	// The gateway proof alone would have called the mixed case proven.
+	mixed := View{Processes: []Process{serve("a", RoleGateway, Running, "d1", "g1"), serve("n", RoleNative, Running, "d1", "")}}
+	assert.Equal(t, BoundaryProven, ProveGateway(mixed, true, "refund-bot", "acme", "d1", "g1").State)
+	assert.NotEqual(t, BoundaryProven, ProveActionPolicy(mixed, true, "refund-bot", "acme", "d1", "g1").State)
+}

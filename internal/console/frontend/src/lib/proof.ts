@@ -40,7 +40,7 @@ export function evidenceProof(r: EvidenceRecord, o: Outcome | undefined, v: Veri
   const story = outcomeStory(o);
   const verified = [
     `AI use case ${r.agent_id} in tenant ${r.tenant_id}, as Talon resolved it at its boundary.`,
-    `${trust === "signature_invalid" ? "Decision the record claims" : "Talon's decision"}: ${r.policy_decision.allowed ? "allowed" : "denied"} (${r.policy_decision.action}).`,
+    `${trust === "signature_invalid" ? "Decision the record claims" : "Talon's decision"}: ${o?.decision === "approval_required" ? "approval required" : r.policy_decision.allowed ? "allowed" : "denied"} (${r.policy_decision.action}).`,
     // A tampered record's outcome is not narrated as a story: only the
     // recorded axes are listed, as claims.
     trust === "signature_invalid" ? `Recorded outcome axes (unverified): dispatch ${o?.dispatch ?? "not recorded"}, destination ${o?.downstream ?? "not recorded"}.` : `${story.headline}: ${story.detail}`,

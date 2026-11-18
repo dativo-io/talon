@@ -161,7 +161,11 @@ export function DecisionOutcome({ o, compact }: { o: Outcome | undefined; compac
   const s = DOWNSTREAM[o.downstream] ?? DOWNSTREAM.not_recorded!;
   return (
     <span className="outcome" title={o.basis}>
-      <Badge tone={o.decision === "allowed" ? "ok" : "error"}>Talon {o.decision}</Badge>
+      {o.decision === "approval_required" ? (
+        <Badge tone="warn">Approval required</Badge>
+      ) : (
+        <Badge tone={o.decision === "allowed" ? "ok" : "error"}>Talon {o.decision}</Badge>
+      )}
       <span className="arrow" aria-hidden="true">→</span>
       <Badge tone={d.tone} plain>{d.label}</Badge>
       {s.label ? (

@@ -186,15 +186,26 @@ type actionsValidateResult struct {
 	DefinitionDigest string                     `json:"definition_digest"`
 	ArgumentsDigest  string                     `json:"arguments_digest,omitempty"`
 	Review           map[string]json.RawMessage `json:"review,omitempty"`
-	Verdict          string                     `json:"verdict"`
-	MatchedRuleID    string                     `json:"matched_rule_id,omitempty"`
-	// Reason is the verdict's policy reason; with valid arguments it is
-	// evaluated with them (argument rules, #205).
-	Reason string `json:"reason,omitempty"`
-	// ReasonCode is the machine-readable reason of an argument-rule verdict:
-	// argument_rule_deny | argument_rule_approval | argument_not_established.
+	// Verdict is ALLOW, REQUIRE_APPROVAL or DENY for valid arguments,
+	// evaluated WITH them (argument rules, #205). For invalid arguments it is
+	// REFUSED: the Action Gateway rejects them before any policy decision, so
+	// no policy verdict exists and none is shown — never the action's
+	// name-only verdict, which could read ALLOW.
+	Verdict       string `json:"verdict"`
+	MatchedRuleID string `json:"matched_rule_id,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	// ReasonCode is an INSPECTION code of this command, not an HTTP
+	// governance error code: argument_rule_deny | argument_rule_approval |
+	// argument_not_established | arguments_invalid.
 	ReasonCode string `json:"reason_code,omitempty"`
 }
+
+// Inspection-only values of `talon actions validate` (not wire codes).
+const (
+	validateVerdictRefused      = "REFUSED"
+	validateReasonArgsInvalid   = "arguments_invalid"
+	validateReasonArgsInvalidTx = "the arguments do not satisfy the action's trusted definition: the Action Gateway refuses them before any policy decision (HTTP 422 action_schema_invalid); nothing is bound or dispatched"
+)
 
 var actionsValidateCmd = &cobra.Command{
 	Use:   "validate --action <name> --input <file>",
@@ -218,21 +229,22 @@ var actionsValidateCmd = &cobra.Command{
 			return fmt.Errorf("action %q is not in agent %q's catalog (actions: %s)", actionsValidateFor, cc.agent.Name, strings.Join(cc.catalog.Names(), ", "))
 		}
 		res := actionsValidateResult{Candidate: cc.candidateLabel(), Action: def.Name, DefinitionDigest: def.DefinitionDigest}
-		verdict := cc.approvals.Evaluate(def.Name)
-		res.Verdict, res.MatchedRuleID = verdict.Outcome, verdict.RuleID
 		canonical, err := action.Canonicalize(raw)
 		if err == nil {
 			err = def.ValidateArguments(canonical)
 		}
 		if err != nil {
+			// No policy verdict for arguments the gateway would refuse: the
+			// name-only verdict must not stand in for one.
 			res.Error = err.Error()
+			res.Verdict, res.Reason, res.ReasonCode = validateVerdictRefused, validateReasonArgsInvalidTx, validateReasonArgsInvalid
 		} else {
 			res.Valid = true
 			res.ArgumentsDigest = action.Digest(canonical)
 			res.Review = def.ReviewProjection(canonical)
-			verdict = cc.approvals.EvaluateArguments(def.Name, canonical)
+			verdict := cc.approvals.EvaluateArguments(def.Name, canonical)
+			res.Verdict, res.MatchedRuleID, res.Reason, res.ReasonCode = verdict.Outcome, verdict.RuleID, verdict.Reason, verdict.Code
 		}
-		res.Verdict, res.MatchedRuleID, res.Reason, res.ReasonCode = verdict.Outcome, verdict.RuleID, verdict.Reason, verdict.Code
 		if actionsJSON {
 			if werr := writeActionsJSON(cmd.OutOrStdout(), res); werr != nil {
 				return werr
