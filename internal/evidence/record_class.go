@@ -61,18 +61,13 @@ var nonRequestClass = map[string]RecordClass{
 	"proxy_shadow_violation": ClassProviderAttempt,
 
 	// Operator / control-plane actions.
-	"agent_enabled":    ClassOperatorEvent,
-	"agent_disabled":   ClassOperatorEvent,
-	"agent_registered": ClassOperatorEvent,
-	// `talon agents add` (#472): intent before the agent file appears, and a
-	// terminal rolled-back record when the registration is undone.
-	"agent_registration_intent":      ClassOperatorEvent,
-	"agent_registration_rolled_back": ClassOperatorEvent,
-	"mode_change":                    ClassOperatorEvent, // LEGACY (#442): written by the removed `talon enforce`; kept for historical rows
-	"plan_review":                    ClassOperatorEvent,
-	"plan_dispatch":                  ClassOperatorEvent,
-	"plan_dispatch_manual":           ClassOperatorEvent,
-	"control_plane":                  ClassOperatorEvent,
+	"agent_enabled":        ClassOperatorEvent,
+	"agent_disabled":       ClassOperatorEvent,
+	"mode_change":          ClassOperatorEvent, // LEGACY (#442): written by the removed `talon enforce`; kept for historical rows
+	"plan_review":          ClassOperatorEvent,
+	"plan_dispatch":        ClassOperatorEvent,
+	"plan_dispatch_manual": ClassOperatorEvent,
+	"control_plane":        ClassOperatorEvent,
 	// Budget warning-threshold crossing (#144): a control-plane fact recorded
 	// once per crossing during some triggering request — counting it as a
 	// request would double that request in traffic queries.
@@ -85,6 +80,12 @@ var nonRequestClass = map[string]RecordClass{
 	CacheEventEviction:      ClassToolEvent,
 	CacheEventErasureTenant: ClassToolEvent,
 	CacheEventErasureUser:   ClassToolEvent,
+
+	// `talon agents add` (#472): intent before the agent file appears, the
+	// completed registration, and a terminal record when it is undone.
+	"agent_registration_intent":      ClassOperatorEvent,
+	"agent_registered":               ClassOperatorEvent,
+	"agent_registration_rolled_back": ClassOperatorEvent,
 }
 
 // toolActionType is the closed registry of request-class invocation types that
