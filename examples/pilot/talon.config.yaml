@@ -1,0 +1,60 @@
+# Company baseline policy starter for a Talon production pilot.
+# Copy to /etc/talon/talon.config.yaml, adjust the marked values, then
+# 'talon validate' and 'talon doctor'. Every AI use case registered with
+# 'talon agents add' inherits this file: defaults are starting values a use
+# case may replace within the constraints; constraints are hard bounds no
+# use case can lift.
+
+# One agent.talon.yaml per AI use case lives under this directory.
+agents_dir: /etc/talon/agents
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+
+  # Model providers your applications may reach through Talon. The key is a
+  # vault secret NAME: store the value with
+  #   talon secrets set openai-api-key <provider key>
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"          # ADJUST: your provider endpoint
+      allowed_models: ["gpt-4o-mini", "gpt-4o"]    # ADJUST: models the company permits
+
+  organization_policy:
+    # Starting values for every use case.
+    defaults:
+      pii_action: "block"        # block | redact | warn | allow — what to do with PII in a request
+      daily_cost: 25.00          # per use case, in the pricing table's currency; an estimate-based
+      monthly_cost: 500.00       #   admission cap checked before each call, not an invoice ceiling
+
+    # Hard bounds for every use case.
+    constraints:
+      max_daily_cost: 100.00     # no use case may raise its own daily cap above this
+      max_monthly_cost: 2000.00
+      # Actions and tools no use case may perform, whatever its own file says.
+      forbidden_tools: ["delete_customer", "export_all_*"]
+      # Business actions decided by amount, for every use case that declares
+      # the action. EXAMPLE POLICY — set your own thresholds and groups:
+      # up to 50.00 EUR allowed, up to 500.00 EUR approval by support-leads,
+      # above that denied. A use case can tighten these bands, never lift them.
+      action_approvals:
+        amount_limits:
+          refund-bands:
+            actions: ["create_refund_request"]
+            amount_argument: "amount"
+            currency_argument: "currency"
+            currency: "EUR"
+            allow_up_to: "50.00"
+            approval_up_to: "500.00"
+            approver_groups: ["support-leads"]
+
+  rate_limits:
+    global_requests_per_min: 300
+    per_agent_requests_per_min: 60
+
+  timeouts:
+    connect_timeout: 10s
+    request_timeout: 60s
+    stream_idle_timeout: 30s

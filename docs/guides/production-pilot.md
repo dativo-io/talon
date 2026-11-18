@@ -33,15 +33,13 @@ The installer downloads the release archive and checks it against the release's 
 
 For production, follow [single-node production](single-node-production.md): the `talon` system user, `/etc/talon`, `/var/lib/talon`, the systemd unit, and `talon doctor`.
 
-**Image path:**
+**See it work first (no clone, no provider key):**
 
 ```bash
-docker pull ghcr.io/dativo-io/talon:X.Y.Z
-cd examples/docker-compose
-TALON_IMAGE=ghcr.io/dativo-io/talon:X.Y.Z TALON_PULL_POLICY=always docker compose up
+curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/quickstart.sh | TALON_VERSION=X.Y.Z bash
 ```
 
-This no-key demo stack runs the published image for the data plane and the console, with a mock model provider.
+This pulls the published image, gets two real policy decisions from it with no model provider anywhere, verifies their signed evidence and prints the image digest and the elapsed time. Details: [Quick Start](../QUICKSTART.md).
 
 ## 2. Open the Operations Console
 
@@ -57,13 +55,18 @@ The company policy lives in `talon.config.yaml` under `gateway.organization_poli
 - **defaults** every use case starts from: budgets, PII handling;
 - **constraints** no use case can lift: allowed providers and models, forbidden tools and actions, approval rules, and amount limits.
 
-Start from `talon init --scaffold` and set `agents_dir: /etc/talon/agents`.
+Start from the baseline in [`examples/pilot/talon.config.yaml`](../../examples/pilot/talon.config.yaml). It defines one provider, PII blocked, per-use-case budgets with company ceilings, two forbidden actions, the example refund amount bands, and `agents_dir: /etc/talon/agents`. Copy it to `/etc/talon/talon.config.yaml`, adjust the lines marked `ADJUST`, and store the provider key in the vault:
+
+```bash
+talon secrets set openai-api-key <provider key>
+talon validate && talon doctor
+```
 
 ```bash
 talon agents add support-assistant --tenant acme --owner support-ops@acme.example
 ```
 
-The command writes `/etc/talon/agents/support-assistant/agent.talon.yaml` with only the use case's identity and key binding, so every policy is the company's. It stores a new key in the vault and prints it **once**: put it in your application's secret manager. It refuses, writing nothing, on an invalid fleet, a taken name or an existing key. [Configuration: `talon agents add`](../reference/configuration.md).
+The command writes `/etc/talon/agents/support-assistant/agent.talon.yaml` with only the use case's identity and key binding, so every policy is the company's. It stores a new key in the vault (readable only as this use case), records a signed `agent_registered` event, and prints the key **once**: put it in your application's secret manager. It refuses, writing nothing, on an invalid fleet, a taken name or an existing key. [Configuration: `talon agents add`](../reference/configuration.md).
 
 ```bash
 talon agents show support-assistant --effective   # the policy it runs under, with the layer each rule comes from
@@ -83,19 +86,20 @@ Talon applies the company and use-case policy before each provider call: models,
 
 ## 5. Govern one consequential business action
 
-Declare the action in the use case's file, with its schema, its reviewer view and the destination Talon calls. Then set the policy that decides it by amount. This example allows up to 50 EUR, sends up to 500 EUR to a reviewer, and denies anything above. It is an example policy, not a built-in rule. The file to copy is [`examples/n8n-refund/agent.talon.yaml`](../../examples/n8n-refund/agent.talon.yaml).
+Declare the action in the use case's file, with its schema, its reviewer view and the destination Talon calls. The policy that decides it by amount is the company's: the baseline from step 3 already carries the refund bands for every use case (up to 50 EUR allowed, up to 500 EUR to a reviewer, above that denied; an example policy, not a built-in rule). A use case can tighten them in its own file, as below, and can never lift them. An action definition to copy is in [`examples/n8n-refund/agent.talon.yaml`](../../examples/n8n-refund/agent.talon.yaml).
 
 ```yaml
+# optional, in the use case's file: tighter than the company bands
 policies:
   approvals:
     amount_limits:
-      refund-bands:
+      refund-tighter:
         actions: [create_refund_request]
         amount_argument: amount
         currency_argument: currency
         currency: EUR
-        allow_up_to: "50.00"
-        approval_up_to: "500.00"
+        allow_up_to: "20.00"
+        approval_up_to: "200.00"
         approver_groups: [support-leads]
 ```
 
