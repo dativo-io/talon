@@ -20,6 +20,30 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "e2e TestMain: mkdir temp: %v\n", err)
 		os.Exit(1)
 	}
+	// TALON_E2E_BINARY runs the suite against an EXISTING talon binary —
+	// the executable from a release archive — instead of building one from
+	// this checkout (#533 published-artifact acceptance). The test code and
+	// fixtures still come from the checkout, which must be the release's tag.
+	if external := os.Getenv("TALON_E2E_BINARY"); external != "" {
+		abs, err := filepath.Abs(external)
+		if err == nil {
+			_, err = os.Stat(abs)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "e2e TestMain: TALON_E2E_BINARY=%s: %v\n", external, err)
+			os.Exit(1)
+		}
+		out, err := exec.Command(abs, "version").Output()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "e2e TestMain: TALON_E2E_BINARY=%s does not run: %v\n", abs, err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "e2e: binary under test is %s (%s)\n", abs, strings.SplitN(string(out), "\n", 2)[0])
+		binaryPath = abs
+		code := m.Run()
+		os.RemoveAll(dir)
+		os.Exit(code)
+	}
 	binaryPath = filepath.Join(dir, "talon")
 	cmd := exec.Command("go", "build", "-o", binaryPath, "../../cmd/talon")
 	env := os.Environ()

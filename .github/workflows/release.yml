@@ -254,10 +254,59 @@ jobs:
   # forward; a darwin job that succeeded without leaving an archive stops
   # the publication. The release page carries a "Platform assets" section
   # stating which archives this version ships and why the others are absent.
+  # Operations Console acceptance against the RELEASED executable (#533):
+  # the linux archive from the draft, checksum-verified, is the system under
+  # test for the console's browser suite, the People Analytics real-process
+  # contract (#545) and the console e2e. Tests and fixtures come from the
+  # tag's checkout; Go compiles the test harness only. Publication waits for
+  # this job.
+  release-console-acceptance:
+    name: Console acceptance on the released binary
+    needs: release
+    # Pinned image: the pinned Playwright only installs Chromium on the OS
+    # releases it knows (see ci.yml `browser`).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Download the released talon archive from the draft and verify it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          ARCHIVE="talon_${VERSION}_linux_amd64.tar.gz"
+          mkdir -p "$RUNNER_TEMP/assets" "$RUNNER_TEMP/talon"
+          gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/assets" -p "$ARCHIVE" -p checksums.txt
+          (cd "$RUNNER_TEMP/assets" && grep -F " $ARCHIVE" checksums.txt | sha256sum -c -)
+          tar -C "$RUNNER_TEMP/talon" -xzf "$RUNNER_TEMP/assets/$ARCHIVE" talon
+      - name: Install Playwright (pinned) and Chromium
+        working-directory: tests/browser
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Browser suite, People Analytics (#545) and console e2e on the released binary
+        run: |
+          set -euo pipefail
+          bash scripts/published-console-acceptance.sh "$RUNNER_TEMP/talon/talon" "$RELEASE_TAG" 2>&1 | tee "$RUNNER_TEMP/console-acceptance.log"
+          { echo '### Console acceptance on the released binary'; echo '```'; grep -E '^(binary under test|== |PASS|FAIL|ok )|passed|failed' "$RUNNER_TEMP/console-acceptance.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: release-console-acceptance-traces
+          path: tests/browser/test-results
+          if-no-files-found: ignore
+
   release-verify:
     name: Verify from the release, then publish
-    needs: [release-showcase-bundle, release-darwin]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release-showcase-bundle.result == 'success') }}
+    needs: [release-showcase-bundle, release-darwin, release-console-acceptance]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (needs.release-showcase-bundle.result == 'success' && needs.release-console-acceptance.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     defaults:
