@@ -420,6 +420,30 @@ func TestCheckLLMKeys_RecognizesLocalProviders(t *testing.T) {
 	assert.Contains(t, res.Message, "ollama")
 
 	// No providers and no cloud key → still fails closed.
+	t.Setenv("TALON_GATEWAY_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+	assert.Equal(t, "fail", checkLLMKeys(&config.Config{}).Status)
+}
+
+// The production pilot profile declares its provider under gateway.providers
+// with a vault-backed credential: that is a configured provider, not "no LLM
+// provider". A disabled gateway or a disabled provider is not.
+func TestCheckLLMKeys_RecognizesGatewayProviders(t *testing.T) {
+	for _, k := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_PROFILE"} {
+		t.Setenv(k, "")
+	}
+	write := func(body string) {
+		p := filepath.Join(t.TempDir(), "talon.config.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TALON_GATEWAY_CONFIG", p)
+	}
+	write("gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      secret_name: openai-api-key\n      base_url: \"https://api.openai.com\"\n")
+	res := checkLLMKeys(&config.Config{})
+	assert.Equal(t, "pass", res.Status)
+	assert.Contains(t, res.Message, "openai (gateway.providers)")
+
+	write("gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: false\n      secret_name: openai-api-key\n      base_url: \"https://api.openai.com\"\n")
 	assert.Equal(t, "fail", checkLLMKeys(&config.Config{}).Status)
 }
 

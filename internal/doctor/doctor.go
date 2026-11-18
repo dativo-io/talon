@@ -368,17 +368,45 @@ func checkLLMKeys(cfg *config.Config) CheckResult {
 			sources = append(sources, providerType+" (llm.providers)")
 		}
 	}
+	// A gateway installation declares its providers under gateway.providers
+	// with vault-backed credentials (the production pilot profile). They are
+	// provider paths too; whether each secret resolves is reported by the
+	// gateway_secrets_<provider> checks.
+	sources = append(sources, gatewayProviderSources()...)
 	if len(sources) == 0 {
 		return CheckResult{
 			Name: "llm_keys", Category: "config", Status: "fail",
-			Message: "No LLM provider configured (no OPENAI_API_KEY/ANTHROPIC_API_KEY/AWS credentials and no llm.providers)",
-			Fix:     "Set a provider key (env or vault) or declare a local provider (e.g. Ollama) in llm.providers",
+			Message: "No LLM provider configured (no OPENAI_API_KEY/ANTHROPIC_API_KEY/AWS credentials, no llm.providers and no enabled gateway.providers)",
+			Fix:     "Set a provider key (env or vault), declare a local provider (e.g. Ollama) in llm.providers, or enable a provider under gateway.providers",
 		}
 	}
 	return CheckResult{
 		Name: "llm_keys", Category: "config", Status: "pass",
 		Message: "LLM providers available: " + strings.Join(sources, ", "),
 	}
+}
+
+// gatewayProviderSources lists the enabled providers of the gateway config
+// `talon serve --gateway` would load ($TALON_GATEWAY_CONFIG, default
+// talon.config.yaml). An absent or invalid file contributes nothing here;
+// gateway_config_valid reports an invalid one.
+func gatewayProviderSources() []string {
+	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
+	if path == "" {
+		path = "talon.config.yaml"
+	}
+	gw, err := gateway.LoadGatewayConfig(path)
+	if err != nil || !gw.Enabled {
+		return nil
+	}
+	names := make([]string, 0, len(gw.Providers))
+	for name := range gw.Providers {
+		if gw.Providers[name].Enabled {
+			names = append(names, name+" (gateway.providers)")
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func checkCryptoKeys(cfg *config.Config) []CheckResult {
