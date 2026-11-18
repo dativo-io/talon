@@ -1,0 +1,123 @@
+name: Console screenshots
+
+on:
+  pull_request:
+    branches: [main, 'feat/**', 'fix/**', 'docs/**']
+    paths:
+      - 'internal/console/**'
+      - 'internal/fleet/**'
+      - 'internal/fleetview/**'
+      - 'internal/runtimestatus/**'
+      - 'internal/effective/**'
+      - 'internal/evidence/**'
+      - 'internal/session/**'
+      - 'internal/costs/**'
+      - 'internal/pricing/**'
+      - 'internal/config/**'
+      - 'internal/policy/**'
+      - 'internal/cmd/ui*'
+      - 'internal/cmd/serve*'
+      - 'internal/cmd/agents*'
+      - 'internal/cmd/costs*'
+      - 'internal/cmd/agent_bridge*'
+      - 'go.mod'
+      - 'go.sum'
+      - 'tests/browser/**'
+      - 'scripts/console-browser-smoke.sh'
+      - 'scripts/generate-console-visuals.py'
+      - 'scripts/console-visual-baseline.py'
+      - 'scripts/test-console-visual-baseline.py'
+      - 'docs/assets/console/**'
+      - '.github/workflows/console-screenshots.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'internal/console/**'
+      - 'internal/fleet/**'
+      - 'internal/fleetview/**'
+      - 'internal/runtimestatus/**'
+      - 'internal/effective/**'
+      - 'internal/evidence/**'
+      - 'internal/session/**'
+      - 'internal/costs/**'
+      - 'internal/pricing/**'
+      - 'internal/config/**'
+      - 'internal/policy/**'
+      - 'internal/cmd/ui*'
+      - 'internal/cmd/serve*'
+      - 'internal/cmd/agents*'
+      - 'internal/cmd/costs*'
+      - 'internal/cmd/agent_bridge*'
+      - 'go.mod'
+      - 'go.sum'
+      - 'tests/browser/**'
+      - 'scripts/console-browser-smoke.sh'
+      - 'scripts/generate-console-visuals.py'
+      - 'scripts/console-visual-baseline.py'
+      - 'scripts/test-console-visual-baseline.py'
+      - 'docs/assets/console/**'
+      - '.github/workflows/console-screenshots.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    name: Capture and check console screenshot baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TZ: UTC
+      CONSOLE_SCREENSHOTS: ${{ runner.temp }}/console-visuals/raw
+      TALON_BINARY: ${{ runner.temp }}/talon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.10'
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install renderer dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev fonts-dejavu-core
+          python3 -m pip install Pillow==11.3.0
+      - name: Test baseline freshness logic
+        run: python3 scripts/test-console-visual-baseline.py
+      - name: Build packaged console
+        run: go build -o "$TALON_BINARY" ./cmd/talon/
+      - name: Install pinned Playwright and Chromium
+        working-directory: tests/browser
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Capture light, dark and mobile console views
+        run: |
+          mkdir -p "$CONSOLE_SCREENSHOTS"
+          bash scripts/console-browser-smoke.sh 03-screenshots.spec.js
+      - name: Generate curated screenshots and collage
+        run: |
+          candidate="$RUNNER_TEMP/console-visuals/curated"
+          python3 scripts/generate-console-visuals.py "$CONSOLE_SCREENSHOTS" "$candidate"
+          python3 scripts/console-visual-baseline.py write --assets "$candidate"
+          python3 scripts/console-visual-baseline.py compare --candidate "$candidate" --output "$RUNNER_TEMP/console-visuals/visual-diff.json"
+          echo 'Fresh console screenshots (synthetic data), curated assets and an informational image comparison are in the artifact. For refreshes, review and copy the curated WebP files and baseline.json into docs/assets/console/.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload review and refresh artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-screenshots
+          path: ${{ runner.temp }}/console-visuals
+          if-no-files-found: warn
+          retention-days: 14
+      # Manual dispatch produces a candidate even when the committed baseline is stale.
+      # PR/push checks fail for stale inputs or assets, not volatile pixel differences.
+      - name: Verify committed screenshot baseline
+        if: github.event_name != 'workflow_dispatch'
+        run: python3 scripts/console-visual-baseline.py check
