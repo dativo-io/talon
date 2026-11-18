@@ -235,11 +235,32 @@ jobs:
           set -euo pipefail
           if [ "$TAG" = latest ]; then TAG="$(gh release view --json tagName -q .tagName)"; fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-      - name: curl … | TALON_VERSION=<version> bash
+      # Only the applicability rule is checked out (from this workflow's ref);
+      # the quickstart itself is fetched from the release's tag and run from
+      # an empty directory, exactly as advertised.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/release-capabilities.sh
+          sparse-checkout-cone-mode: false
+      - name: Does this release ship the quickstart?
+        id: cap
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
+          bash scripts/release-capabilities.sh "$TAG" | tee -a "$GITHUB_OUTPUT"
+          if ! grep -q '^quickstart=true$' "$GITHUB_OUTPUT"; then
+            echo "### Published-image quickstart: NOT APPLICABLE — $TAG predates scripts/quickstart.sh (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: curl … | TALON_VERSION=<version> bash
+        if: steps.cap.outputs.quickstart == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/quickstart" && cd "$RUNNER_TEMP/quickstart"
           curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/scripts/quickstart.sh" | TALON_VERSION="${TAG#v}" bash 2>&1 | tee quickstart.log
           grep -q '^PASS talon quickstart' quickstart.log
           { echo "### Quickstart against ${TAG}"; echo '```'; grep -E '^(PASS|FAIL|Image|Digest|Talon)' quickstart.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
