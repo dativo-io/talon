@@ -40,15 +40,8 @@ The capture suite uses `tests/browser/03-screenshots.spec.js`; the renderer `scr
 
 ## Publish approved console visuals to dativo.io
 
-The website repository (`dativo-io/talon-www`) consumes the reviewed WebPs and guide from the same Talon checkout during its existing Cloudflare Workers Builds production build. It does not run a browser, maintain duplicate image baselines, or automatically publish screenshot candidates.
+Talon is the canonical source of screenshots. The website (`dativo-io/talon-www`) maintains a reviewed lock of the complete screenshot set, identified by file name and content hash, without duplicating the binary assets.
 
-One-time setup (after both the Talon screenshot and website publication changes are merged):
+Every website PR checks its lock against the actual images on Talon `main`. A new, removed, renamed or changed screenshot fails website CI until the website maintainer reviews the changes and refreshes the lock in a website PR. Changes to this README or to Talon's visual-baseline metadata alone do not require website synchronization.
 
-1. In Cloudflare, open **Workers & Pages → talon-www → Settings → Builds → Deploy Hooks**.
-2. Create a hook named `talon-console-docs-refresh` for the website's production branch, `main`.
-3. In **dativo-io/talon → Settings → Secrets and variables → Actions**, add repository secret `TALON_WWW_DEPLOY_HOOK_URL` containing the generated Workers Builds hook URL. Treat the full URL as a credential; never put it in source, issues, logs or chat.
-4. In Talon's Actions, manually run **Refresh website console visuals** on `main` to verify that Cloudflare accepts the hook. Check the Cloudflare build and deployment result and the public website separately.
-
-After setup, pushes to Talon `main` that change the approved WebPs or Operations Console guide request a website rebuild. A baseline-only change does not trigger a rebuild. PRs and unreviewed CI screenshot artifacts cannot request production builds. If the secret is absent, the workflow warns and sends no request. A successful hook call proves request acceptance, not a successful production deployment. If a request fails or times out, check Cloudflare before rerunning the workflow.
-
-[Cloudflare Workers Builds deploy hooks](https://developers.cloudflare.com/workers/ci-cd/builds/deploy-hooks/)
+The website build uses the same verified Talon checkout for technical docs and approved images. Talon never triggers a website deployment. Website publishing remains the responsibility of the existing website Git/Cloudflare build process. See the [website README](https://github.com/dativo-io/talon-www#console-screenshot-publication) for the update command.
