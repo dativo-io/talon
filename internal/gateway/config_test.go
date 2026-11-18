@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -396,4 +398,33 @@ func TestRegistryMetricsTenantScope(t *testing.T) {
 			t.Fatalf("MetricsTenantScope() = %q, want empty for multi-tenant", got)
 		}
 	})
+}
+
+// Company amount limits (#205) load from the gateway config, with or without
+// approval rules; an empty action_approvals block and an invalid limit are
+// load errors.
+func TestLoadGatewayConfig_CompanyAmountLimits(t *testing.T) {
+	write := func(t *testing.T, approvals string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "talon.config.yaml")
+		body := "gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      secret_name: openai-api-key\n      base_url: \"https://api.openai.com\"\n  organization_policy:\n    constraints:\n      action_approvals:\n" + approvals
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+		return path
+	}
+	limit := func(currency string) string {
+		return "        amount_limits:\n          refund-bands:\n            actions: [create_refund_request]\n            amount_argument: amount\n            currency_argument: currency\n            currency: " + currency + "\n            allow_up_to: \"50.00\"\n            approval_up_to: \"500.00\"\n            approver_groups: [support-leads]\n"
+	}
+
+	cfg, err := LoadGatewayConfig(write(t, limit("EUR")))
+	require.NoError(t, err, "amount_limits without rules is a valid company policy")
+	cp := cfg.OrganizationPolicy.CompanyActionPolicy("test")
+	require.NotNil(t, cp)
+	require.Contains(t, cp.AmountLimits, "refund-bands")
+	require.NotEmpty(t, cp.Digest())
+
+	_, err = LoadGatewayConfig(write(t, "        {}\n"))
+	require.ErrorContains(t, err, "rules or amount_limits are required")
+
+	_, err = LoadGatewayConfig(write(t, limit("euro")))
+	require.ErrorContains(t, err, "currency")
 }
