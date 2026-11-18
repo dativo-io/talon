@@ -73,14 +73,16 @@ func (ap *ApprovalPolicy) DescribeRule(ruleID string) string {
 	if ap == nil || ruleID == "" {
 		return ""
 	}
-	for i := range ap.Limits {
-		l := &ap.Limits[i]
-		if l.ID != ruleID {
+	for i := range ap.ArgumentRules {
+		r := &ap.ArgumentRules[i]
+		if r.ID != ruleID {
 			continue
 		}
-		return fmt.Sprintf("%s amount limit %s on %s: %s amounts (argument %q) up to %s are allowed, above %s and up to %s require approval by %s, above %s are denied",
-			l.Source, l.ID, strings.Join(l.Actions, ", "), l.Currency, l.AmountArgument, formatMinorUnits(l.AllowUpTo),
-			formatMinorUnits(l.AllowUpTo), formatMinorUnits(l.ApprovalUpTo), strings.Join(l.ApproverGroups, " or "), formatMinorUnits(l.ApprovalUpTo))
+		effect := "is denied"
+		if r.Effect == EffectRequireApproval {
+			effect = "requires approval by " + strings.Join(r.ApproverGroups, " or ")
+		}
+		return fmt.Sprintf("%s argument rule %s: a call of %s where %s (%s) %s", r.Source, r.ID, strings.Join(r.Actions, ", "), r.Condition(), r.Type, effect)
 	}
 	for _, r := range ap.Rules {
 		if r.ID == ruleID {

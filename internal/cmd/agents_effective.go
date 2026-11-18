@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/effective"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -103,6 +104,7 @@ func renderEffective(w io.Writer, r *effective.Report) {
 			fmt.Fprintf(w, "   tool %-24s %s\n", d.Tool, verdict)
 		}
 	}
+	renderActionBoundary(w, r.ActionBoundary)
 	fmt.Fprintln(w, "\n4. Last recorded decision")
 	if d := r.LastDecision; d != nil {
 		if d.Verification != "valid" {
@@ -140,4 +142,44 @@ func short(s string) string {
 		return s[:12]
 	}
 	return s
+}
+
+// renderActionBoundary prints the effective action policy: each action's
+// baseline verdict (marked when a call's arguments can make it stricter)
+// and every rule with the layer that declared it.
+func renderActionBoundary(w io.Writer, b *effective.ActionBoundary) {
+	if b == nil {
+		return
+	}
+	fmt.Fprintln(w, "\n   Action Gateway")
+	fmt.Fprintf(w, "   basis: %s\n", b.Basis)
+	if b.Error != "" {
+		fmt.Fprintf(w, "   unavailable: %s\n", b.Error)
+		return
+	}
+	for i := range b.Actions {
+		d := &b.Actions[i]
+		verdict := d.Verdict
+		if d.VerdictSource != "" {
+			verdict += " (" + d.VerdictSource + ")"
+		}
+		if d.DecisionBasis == action.DecisionByArguments {
+			verdict = "BY ARGUMENTS — " + verdict + " by name; a call can be stricter"
+		}
+		fmt.Fprintf(w, "   action %-22s %s\n", d.Action, verdict)
+	}
+	for _, r := range b.ApprovalRules {
+		fmt.Fprintf(w, "   approval rule %s (%s): %s → require approval (groups: %s)\n", r.ID, r.Source, strings.Join(r.Actions, ", "), strings.Join(r.ApproverGroups, ", "))
+	}
+	for i := range b.ArgumentRules {
+		r := &b.ArgumentRules[i]
+		effect := "deny"
+		if r.Effect == action.EffectRequireApproval {
+			effect = "require approval (groups: " + strings.Join(r.ApproverGroups, ", ") + ")"
+		}
+		fmt.Fprintf(w, "   argument rule %s (%s): %s when %s [%s] → %s\n", r.ID, r.Source, strings.Join(r.Actions, ", "), r.Condition, r.Type, effect)
+	}
+	for _, n := range b.Notes {
+		fmt.Fprintf(w, "   note: %s\n", n)
+	}
 }

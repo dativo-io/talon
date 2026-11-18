@@ -121,6 +121,12 @@ func buildActionCatalog(ctx context.Context, ca CatalogAgent, deps BundleDeps, r
 	if err != nil {
 		return fmt.Errorf("agent %q (%s): effective action policy: %w", ca.Name, ca.Path, err)
 	}
+	// Argument rules are resolved against the trusted catalog (#205): a rule
+	// whose argument is undeclared, optional or of another type is refused
+	// at load, never evaluated loosely at request time.
+	if err := ap.ValidateAgainstCatalog(cat); err != nil {
+		return fmt.Errorf("agent %q (%s): effective action policy: %w", ca.Name, ca.Path, err)
+	}
 	ra.Actions, ra.Approvals = cat, ap
 	return nil
 }

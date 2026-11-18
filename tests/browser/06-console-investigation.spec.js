@@ -40,6 +40,30 @@ test("AI use case page: four sections, each answering its question", async ({ pa
   }
 });
 
+test("Effective policy shows the Action Gateway's argument rules with their origin; a baseline ALLOW is not shown as unconditional", async ({ page }) => {
+  await pair(page, "/use-cases/support-bot?tenant=default");
+  const block = page.getByTestId("action-boundary");
+  await expect(block).toBeVisible();
+  // Same projection as the CLI.
+  const report = cli(["agents", "show", "support-bot", "--effective", "--json"]);
+  const refund = report.action_boundary.actions.find((a) => a.action === "create_refund_request");
+  expect(refund.verdict).toBe("ALLOW");
+  expect(refund.decision_basis).toBe("arguments");
+  const refundRow = block.getByRole("row").filter({ hasText: "create_refund_request" }).first();
+  await expect(refundRow.getByText("Depends on arguments")).toBeVisible();
+  await expect(refundRow.getByText("Allowed for every call")).toHaveCount(0);
+  const notifyRow = block.getByRole("row").filter({ hasText: "notify_customer" }).first();
+  await expect(notifyRow.getByText("Allowed for every call")).toBeVisible();
+  for (const r of report.action_boundary.argument_rules) {
+    const row = block.getByRole("row").filter({ hasText: r.id }).last();
+    await expect(row.getByText(r.condition, { exact: true })).toBeVisible();
+    await expect(row.getByText("use case", { exact: true })).toBeVisible();
+    await expect(row.getByText(r.effect === "deny" ? "Deny" : `Require approval by ${r.approver_groups.join(", ")}`, { exact: true })).toBeVisible();
+  }
+  // Not proven active: nothing running loaded this file as an action policy.
+  await expect(block.getByText("Compiled from current files, not proven active")).toBeVisible();
+});
+
 test("Navigation is grouped: Operate (use-case work) and Installation (setup and runtime)", async ({ page }) => {
   await pair(page, "/overview");
   const nav = page.getByRole("navigation", { name: "Console sections" });

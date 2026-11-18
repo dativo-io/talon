@@ -18,17 +18,21 @@
 # never weaken a company rule, the reviewer matrix (wrong group, other
 # tenant, revoked and rotated credentials, admin and agent keys) refuses with
 # zero dispatch, a restart under a changed company rule invalidates the
-# pending approval with signed evidence, and the lifecycle verifies. One
+# pending approval with signed evidence, and the lifecycle verifies. And the
+# argument rules (#205): one typed rule form decides a refund amount
+# (decimal), a deletion count with a dry-run flag (integer, boolean) and a
+# deployment environment (string) — allow, approval and deny for each, with
+# company rules from talon.config.yaml and the same counting downstream. One
 # assertion: the Go smoke's exit status. A failure is counted in the
 # consolidated summary and makes the suite exit non-zero.
 # -----------------------------------------------------------------------------
 test_section_41_action_gateway() {
   echo ""
-  echo "=== SECTION 41 — Exact governed action and one company action policy (#458, #425) ==="
+  echo "=== SECTION 41 — Exact governed action, one company action policy and argument rules (#458, #425, #205) ==="
   cd "$REPO_ROOT" || exit 1
   # Build-and-run inside the e2e harness: the Go test builds its own binary
   # (TestMain) and uses isolated temp data dirs and ports, so this section
   # needs no port, provider key or shared state from the other sections.
-  assert_pass "TestE2E_ActionGateway_*: exact action proof + ACME company policy over two use cases (scripts/action-smoke.sh)" \
+  assert_pass "TestE2E_ActionGateway_*: exact action proof + ACME company policy over two use cases + argument rules over three actions (scripts/action-smoke.sh)" \
     bash scripts/action-smoke.sh
 }
