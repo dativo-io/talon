@@ -41,9 +41,10 @@ func setupAddFleet(t *testing.T) (cfg *config.Config, agentsDir string) {
 
 func resetAgentsAddFlags(t *testing.T) {
 	t.Helper()
-	agentsAddTenant, agentsAddDescription, agentsAddOwner, agentsAddUseExisting, agentsAddDryRun = "default", "", "", false, false
+	// setupAddFleet has no gateway config: these registrations state that on purpose.
+	agentsAddTenant, agentsAddDescription, agentsAddOwner, agentsAddUseExisting, agentsAddDryRun, agentsAddNoCompanyPolicy = "default", "", "", false, false, true
 	t.Cleanup(func() {
-		agentsAddTenant, agentsAddDescription, agentsAddOwner, agentsAddUseExisting, agentsAddDryRun = "default", "", "", false, false
+		agentsAddTenant, agentsAddDescription, agentsAddOwner, agentsAddUseExisting, agentsAddDryRun, agentsAddNoCompanyPolicy = "default", "", "", false, false, false
 	})
 }
 
@@ -92,7 +93,8 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 	require.Contains(t, string(content), `secret_name: "refund-bot-talon-key"`)
 	require.Contains(t, string(content), "cost_limits: {}", "no budget of its own: the company defaults apply")
 	require.NotContains(t, string(content), key1, "the key never lands in the file")
-	require.Contains(t, out.String(), "WARNING: no gateway config", "without an organization policy the missing budget cap is stated")
+	require.Contains(t, out.String(), "WARNING: registered WITHOUT a company policy", "without an organization policy the missing budget cap is stated")
+	require.Contains(t, out.String(), "company policy: none (no gateway config")
 
 	// The key is readable only as this use case in its tenant.
 	vault, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
@@ -108,10 +110,14 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 	require.NoError(t, err)
 	rows, err := evStore.List(ctx, "acme", "refund-bot", time.Time{}, time.Time{}, 10)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	require.Equal(t, "agent_registered", rows[0].InvocationType)
-	require.True(t, evStore.VerifyRecord(&rows[0]))
-	require.NotContains(t, rows[0].PolicyDecision.Reasons[1], key1)
+	require.Len(t, rows, 2, "intent and completion")
+	kinds := []string{rows[0].InvocationType, rows[1].InvocationType}
+	require.ElementsMatch(t, []string{"agent_registration_intent", "agent_registered"}, kinds)
+	for i := range rows {
+		require.True(t, evStore.VerifyRecord(&rows[i]))
+		require.NotContains(t, strings.Join(rows[i].PolicyDecision.Reasons, " "), key1)
+		require.Equal(t, rows[0].CorrelationID, rows[i].CorrelationID)
+	}
 	require.NoError(t, evStore.Close())
 
 	out.Reset()
@@ -232,4 +238,94 @@ func TestAgentsAdd_DryRunWritesNothing(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr))
 	_, ok := vaultValue(t, cfg, "refund-bot-talon-key")
 	require.False(t, ok)
+}
+
+// A registration without any company policy is refused unless the operator
+// states it; with one, the policy actually in force is reported.
+func TestAgentsAdd_CompanyPolicyIsRequiredAndReported(t *testing.T) {
+	ctx := context.Background()
+	cfg, agentsDir := setupAddFleet(t)
+	resetAgentsAddFlags(t)
+	agentsAddNoCompanyPolicy = false
+	err := runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot")
+	require.ErrorContains(t, err, "no company policy is active")
+	require.ErrorContains(t, err, "--no-company-policy")
+	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
+	require.True(t, os.IsNotExist(statErr))
+	_, ok := vaultValue(t, cfg, "refund-bot-talon-key")
+	require.False(t, ok)
+
+	gw := filepath.Join(t.TempDir(), "talon.config.yaml")
+	require.NoError(t, os.WriteFile(gw, []byte("gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      secret_name: openai-api-key\n      base_url: \"https://api.openai.com\"\n  organization_policy:\n    defaults:\n      pii_action: block\n      daily_cost: 25\n    constraints:\n      forbidden_tools: [delete_customer]\n"), 0o600))
+	t.Setenv("TALON_GATEWAY_CONFIG", gw)
+	var out bytes.Buffer
+	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
+	require.Contains(t, out.String(), "company policy: "+gw+" — pii_action block, daily cost 25.00")
+	require.Contains(t, out.String(), "1 forbidden tool/action pattern(s)")
+	require.NotContains(t, out.String(), "WARNING")
+}
+
+// A dry run writes nothing at all, on an installation that does not exist yet.
+func TestAgentsAdd_DryRunOnAFreshInstallationCreatesNothing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", filepath.Join(dir, "data"))
+	t.Setenv("TALON_SIGNING_KEY", testutil.TestSigningKey)
+	t.Setenv("TALON_SECRETS_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("TALON_GATEWAY_CONFIG", filepath.Join(dir, "absent.yaml"))
+	t.Setenv("TALON_AGENTS_DIR", filepath.Join(dir, "agents"))
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	resetAgentsAddFlags(t)
+	agentsAddDryRun = true
+	var out bytes.Buffer
+	require.NoError(t, runAgentsAdd(context.Background(), &out, cfg, "refund-bot"))
+	require.Contains(t, out.String(), "Dry run: nothing was written")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Empty(t, entries, "no data directory, no agents_dir, no vault, no evidence store")
+}
+
+// Binding an existing key checks that its ACL lets this use case resolve it.
+func TestAgentsAdd_UseExistingKeyChecksItsACL(t *testing.T) {
+	ctx := context.Background()
+	cfg, agentsDir := setupAddFleet(t)
+	resetAgentsAddFlags(t)
+	agentsAddTenant, agentsAddUseExisting = "acme", true
+	require.NoError(t, cfg.EnsureDataDir())
+	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+	require.NoError(t, err)
+	require.NoError(t, store.Set(ctx, "refund-bot-talon-key", []byte("someone-elses-key"), secrets.ACL{Tenants: []string{"acme"}, Agents: []string{"another-bot"}}))
+	require.NoError(t, store.Close())
+
+	err = runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot")
+	require.ErrorContains(t, err, "does not permit use case")
+	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
+	require.True(t, os.IsNotExist(statErr))
+	agentsAddDryRun = true
+	require.ErrorContains(t, runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot"), "does not permit use case")
+}
+
+// A rollback removes only this registration's own key version: a key someone
+// else stored under the name in the meantime survives, and the failure says
+// what happened.
+func TestAgentsAdd_RollbackRemovesOnlyItsOwnKey(t *testing.T) {
+	ctx := context.Background()
+	cfg, agentsDir := setupAddFleet(t)
+	resetAgentsAddFlags(t)
+	require.NoError(t, cfg.EnsureDataDir())
+	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+	require.NoError(t, err)
+	defer store.Close()
+	plan, err := planAgentsAdd(ctx, cfg, "refund-bot")
+	require.NoError(t, err)
+	own, err := store.Create(ctx, plan.SecretName, []byte("this-registration"), secrets.ACL{})
+	require.NoError(t, err)
+	require.NoError(t, store.Set(ctx, plan.SecretName, []byte("replaced-by-someone-else"), secrets.ACL{}))
+	err = undoAgentsAdd(ctx, store, nil, plan, own, false, os.ErrPermission)
+	require.ErrorContains(t, err, "nothing of this registration was left behind")
+	got, err := store.Get(ctx, plan.SecretName, "acme", "refund-bot")
+	require.NoError(t, err)
+	require.Equal(t, "replaced-by-someone-else", string(got.Value))
+	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
+	require.True(t, os.IsNotExist(statErr))
 }
