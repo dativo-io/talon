@@ -1,9 +1,11 @@
 package tests
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,11 +18,14 @@ import (
 // artifact. Its safety properties are checked here so an edit cannot quietly
 // add a path that refunds without Talon's authorization:
 //   - stock nodes only (no community or custom node);
+//   - the webhook requires a header credential; only a validated request
+//     reaches Talon;
 //   - every HTTP call goes to Talon's Action Gateway — never the refund service;
-//   - the key is a referenced n8n credential, never inline;
+//   - the keys are referenced n8n credentials, never inline;
 //   - the operation id is derived from the ticket, so a retry resumes it;
 //   - the claim is reachable only from ALLOW and from an authorized approval;
 //   - Talon being unreachable stops the workflow (no continue-on-fail).
+// These are static checks. The live behaviour is scripts/n8n-refund-live.sh.
 // The example agent file compiles to the documented bands.
 
 type n8nWorkflow struct {
@@ -60,13 +65,20 @@ func TestN8nRefundWorkflow_SafetyProperties(t *testing.T) {
 	if strings.Contains(raw, "Bearer") || strings.Contains(raw, "talon_uc_") || strings.Contains(raw, "talon_appr_") {
 		t.Fatal("the workflow must not carry a key: use the referenced n8n Header Auth credential")
 	}
-	if !strings.Contains(raw, `operation_id: \"refund-\" + $json.body.ticket_id`) {
+	if !strings.Contains(raw, `'refund-' + (typeof ($json.body || {}).ticket_id === 'string' ? $json.body.ticket_id : 'invalid')`) {
 		t.Error("the operation id must be derived from the ticket so a retry resumes the same operation")
+	}
+	if strings.Contains(raw, "$env.") {
+		t.Error("the workflow must not read $env: n8n 2.x blocks it in expressions by default")
+	}
+	if !strings.Contains(raw, "encodeURIComponent(") {
+		t.Error("operation ids must be URL-encoded in request paths")
 	}
 	if v, _ := wf.Settings["executionTimeout"].(float64); v <= 0 {
 		t.Error("an undecided approval must not poll forever: set settings.executionTimeout")
 	}
 	checkN8nNodes(t, &wf)
+	checkN8nIngress(t, &wf)
 	checkN8nClaimReachability(t, &wf)
 	checkN8nFirstOutput(t, &wf, "Talon verdict", "allow")
 	checkN8nFirstOutput(t, &wf, "Approval state", "authorized")
@@ -78,7 +90,7 @@ func checkN8nNodes(t *testing.T, wf *n8nWorkflow) {
 	t.Helper()
 	stock := map[string]bool{
 		"n8n-nodes-base.webhook": true, "n8n-nodes-base.httpRequest": true, "n8n-nodes-base.switch": true,
-		"n8n-nodes-base.wait": true, "n8n-nodes-base.respondToWebhook": true, "n8n-nodes-base.stopAndError": true,
+		"n8n-nodes-base.wait": true, "n8n-nodes-base.respondToWebhook": true, "n8n-nodes-base.set": true,
 	}
 	httpNodes := 0
 	for i := range wf.Nodes {
@@ -95,7 +107,7 @@ func checkN8nNodes(t *testing.T, wf *n8nWorkflow) {
 		httpNodes++
 		var url string
 		_ = json.Unmarshal(n.Parameters["url"], &url)
-		if !strings.HasPrefix(url, "={{ $env.TALON_URL }}/v1/action-operations") {
+		if !strings.HasPrefix(url, "={{ $('Config').first().json.talon_url }}/v1/action-operations") {
 			t.Errorf("HTTP node %q calls %q: every call must go to Talon's Action Gateway", n.Name, url)
 		}
 		if _, ok := n.Credentials["httpHeaderAuth"]; !ok {
@@ -129,6 +141,62 @@ func checkN8nClaimReachability(t *testing.T, wf *n8nWorkflow) {
 	}
 	if len(into) != 2 {
 		t.Errorf("the claim is reachable from %v; only ALLOW and an authorized approval may lead to it", into)
+	}
+}
+
+// checkN8nIngress: the webhook requires a header credential, and nothing
+// reaches Talon before the request was validated.
+func checkN8nIngress(t *testing.T, wf *n8nWorkflow) {
+	t.Helper()
+	for i := range wf.Nodes {
+		n := &wf.Nodes[i]
+		if n.Type != "n8n-nodes-base.webhook" {
+			continue
+		}
+		var auth string
+		_ = json.Unmarshal(n.Parameters["authentication"], &auth)
+		if auth != "headerAuth" {
+			t.Errorf("the webhook %q must require authentication (headerAuth), got %q", n.Name, auth)
+		}
+		if _, ok := n.Credentials["httpHeaderAuth"]; !ok {
+			t.Errorf("the webhook %q has no Header Auth credential reference", n.Name)
+		}
+	}
+	// The only way into the first Talon call is the "valid" output of the
+	// request check.
+	var into []string
+	for from, c := range wf.Connections {
+		for i, out := range c.Main {
+			for _, to := range out {
+				if to.Node == "Talon: establish operation" {
+					into = append(into, from+"#"+string(rune('0'+i)))
+				}
+			}
+		}
+	}
+	if len(into) != 1 || into[0] != "Request valid#0" {
+		t.Errorf("Talon must be called only for a validated request; establish is reached from %v", into)
+	}
+	checkN8nFirstOutput(t, wf, "Request valid", "valid")
+}
+
+// The committed workflow is exactly what the generator writes.
+func TestN8nRefundWorkflow_MatchesGenerator(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "wf.json")
+	cmd := exec.CommandContext(context.Background(), "python3", filepath.Join("..", "examples", "n8n-refund", "generate-workflow.py"), out)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("running the generator (python3 is required): %v\n%s", err, b)
+	}
+	want, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join("..", "examples", "n8n-refund", "refund-approval.workflow.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("examples/n8n-refund/refund-approval.workflow.json differs from the generator's output: run python3 examples/n8n-refund/generate-workflow.py")
 	}
 }
 
