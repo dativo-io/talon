@@ -7,7 +7,7 @@ An importable n8n workflow (`refund-approval.workflow.json`) for one consequenti
 
 It uses stock n8n nodes only (Webhook 2, HTTP Request 4.2, Switch 3.2, Wait 1.1, Respond to Webhook 1.1, Stop and Error 1). There is no community or custom node.
 
-> **Status:** the workflow's structure and safety properties are checked in Talon's CI (`go test ./tests -run TestN8nRefundWorkflow`). The Talon behaviour it relies on is proven over the real binary (`TestE2E_ActionGateway_AmountBands`). It has **not** been executed inside a running n8n by Talon's CI.
+> **Status: experimental.** This workflow has **not** been imported into or executed by a running n8n, and it is not tied to a tested n8n release: the node `typeVersion`s above are what the JSON declares. Import it into your n8n version and run the [check table](#check-it) before relying on it; if a node fails to import, rebuild that node from the flow below, which is the contract. What Talon's CI does check: the workflow's structure and safety properties (`go test ./tests -run TestN8nRefundWorkflow`), and the Talon behaviour it relies on over the real binary (`TestE2E_ActionGateway_AmountBands`).
 
 ## What happens
 
