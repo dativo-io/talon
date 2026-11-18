@@ -5,6 +5,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "talon-refund",
+        "authentication": "headerAuth",
         "responseMode": "responseNode",
         "options": {}
       },
@@ -15,12 +16,111 @@
         0,
         300
       ],
-      "webhookId": "talon-refund"
+      "webhookId": "talon-refund",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "refund-webhook-caller",
+          "name": "Refund webhook caller"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "talon-url",
+              "name": "talon_url",
+              "type": "string",
+              "value": "http://127.0.0.1:8080"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "valid",
+              "name": "valid",
+              "type": "boolean",
+              "value": "={{ typeof $json.body === 'object' && $json.body !== null && typeof $json.body.ticket_id === 'string' && /^[A-Z]{1,10}-[0-9]{1,12}$/.test($json.body.ticket_id) && typeof $json.body.amount === 'string' && /^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$/.test($json.body.amount) && typeof $json.body.currency === 'string' && /^[A-Z]{3}$/.test($json.body.currency) }}"
+            },
+            {
+              "id": "opid",
+              "name": "operation_id",
+              "type": "string",
+              "value": "={{ 'refund-' + (typeof ($json.body || {}).ticket_id === 'string' ? $json.body.ticket_id : 'invalid') }}"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "name": "Validate request",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "outputKey": "valid",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ String($json.valid) }}",
+                    "rightValue": "true",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "other"
+        }
+      },
+      "name": "Request valid",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        600,
+        300
+      ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.TALON_URL }}/v1/action-operations",
+        "url": "={{ $('Config').first().json.talon_url }}/v1/action-operations",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -34,18 +134,18 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ operation_id: \"refund-\" + $json.body.ticket_id, action: \"create_refund_request\", arguments: { ticket_id: $json.body.ticket_id, amount: $json.body.amount, currency: $json.body.currency } }) }}"
+        "jsonBody": "={{ JSON.stringify({ operation_id: $json.operation_id, action: \"create_refund_request\", arguments: { ticket_id: $json.body.ticket_id, amount: $json.body.amount, currency: $json.body.currency } }) }}"
       },
       "name": "Talon: establish operation",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        220,
+        820,
         300
       ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "id": "talon-refund-bot-key",
           "name": "Talon refund-bot key"
         }
       }
@@ -66,7 +166,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body.operation ? $json.body.operation.verdict : 'NONE' }}",
+                    "leftValue": "={{ $json.body && $json.body.operation ? String($json.body.operation.verdict) : 'NONE' }}",
                     "rightValue": "ALLOW",
                     "operator": {
                       "type": "string",
@@ -88,7 +188,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body.operation ? $json.body.operation.verdict : 'NONE' }}",
+                    "leftValue": "={{ $json.body && $json.body.operation ? String($json.body.operation.verdict) : 'NONE' }}",
                     "rightValue": "REQUIRE_APPROVAL",
                     "operator": {
                       "type": "string",
@@ -110,7 +210,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body.operation ? $json.body.operation.verdict : 'NONE' }}",
+                    "leftValue": "={{ $json.body && $json.body.operation ? String($json.body.operation.verdict) : 'NONE' }}",
                     "rightValue": "DENY",
                     "operator": {
                       "type": "string",
@@ -131,20 +231,20 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
-        440,
+        1040,
         300
       ]
     },
     {
       "parameters": {
-        "amount": 1,
-        "unit": "minutes"
+        "amount": 5,
+        "unit": "seconds"
       },
       "name": "Wait for reviewer",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        660,
+        1260,
         420
       ],
       "webhookId": "talon-refund-wait"
@@ -152,7 +252,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ $env.TALON_URL }}/v1/action-operations/refund-{{ $('Refund request').item.json.body.ticket_id }}",
+        "url": "={{ $('Config').first().json.talon_url }}/v1/action-operations/{{ encodeURIComponent($('Validate request').first().json.operation_id) }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -169,12 +269,12 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        880,
+        1480,
         420
       ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "id": "talon-refund-bot-key",
           "name": "Talon refund-bot key"
         }
       }
@@ -195,7 +295,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body.operation ? $json.body.operation.operation_status : 'NONE' }}",
+                    "leftValue": "={{ !($json.body && $json.body.operation) ? 'NONE' : ($json.body.operation.operation_status !== 'awaiting_approval' ? String($json.body.operation.operation_status) : (($json.body.operation.approval && new Date($json.body.operation.approval.expires_at) > new Date()) ? 'awaiting_approval' : 'expired')) }}",
                     "rightValue": "authorized",
                     "operator": {
                       "type": "string",
@@ -217,7 +317,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body.operation ? $json.body.operation.operation_status : 'NONE' }}",
+                    "leftValue": "={{ !($json.body && $json.body.operation) ? 'NONE' : ($json.body.operation.operation_status !== 'awaiting_approval' ? String($json.body.operation.operation_status) : (($json.body.operation.approval && new Date($json.body.operation.approval.expires_at) > new Date()) ? 'awaiting_approval' : 'expired')) }}",
                     "rightValue": "awaiting_approval",
                     "operator": {
                       "type": "string",
@@ -238,14 +338,14 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
-        1100,
+        1700,
         420
       ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.TALON_URL }}/v1/action-operations/refund-{{ $('Refund request').item.json.body.ticket_id }}/attempts",
+        "url": "={{ $('Config').first().json.talon_url }}/v1/action-operations/{{ encodeURIComponent($('Validate request').first().json.operation_id) }}/attempts",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -262,12 +362,12 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1320,
+        1920,
         300
       ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "id": "talon-refund-bot-key",
           "name": "Talon refund-bot key"
         }
       }
@@ -288,7 +388,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ ($json.body.operation || ($json.body.error || {}).operation || {}).operation_status || 'NONE' }}",
+                    "leftValue": "={{ $json.body && $json.body.operation ? String($json.body.operation.operation_status) : ($json.body && $json.body.error && $json.body.error.operation ? String($json.body.error.operation.operation_status) : 'NONE') }}",
                     "rightValue": "succeeded",
                     "operator": {
                       "type": "string",
@@ -310,7 +410,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ ($json.body.operation || ($json.body.error || {}).operation || {}).operation_status || 'NONE' }}",
+                    "leftValue": "={{ $json.body && $json.body.operation ? String($json.body.operation.operation_status) : ($json.body && $json.body.error && $json.body.error.operation ? String($json.body.error.operation.operation_status) : 'NONE') }}",
                     "rightValue": "unknown",
                     "operator": {
                       "type": "string",
@@ -331,14 +431,14 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
-        1540,
+        2140,
         300
       ]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ result: \"refunded\", operation_id: $json.body.operation.operation_id, evidence: \"talon audit verify --operation \" + $json.body.operation.operation_id }) }}",
+        "responseBody": "={{ JSON.stringify({ result: \"refunded\", operation_id: $('Validate request').first().json.operation_id, verify: \"talon audit verify --operation \" + $('Validate request').first().json.operation_id }) }}",
         "options": {
           "responseCode": 200
         }
@@ -347,14 +447,14 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        1760,
+        2360,
         200
       ]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ result: \"unknown\", operation_id: ($json.body.error || {}).operation ? $json.body.error.operation.operation_id : \"\", note: \"The refund may or may not have happened. Do not retry; reconcile with the refund system.\" }) }}",
+        "responseBody": "={{ JSON.stringify({ result: \"unknown\", operation_id: $('Validate request').first().json.operation_id, note: \"Talon dispatched the refund and could not observe the outcome. It may or may not have happened. Do not retry; reconcile with the refund system.\" }) }}",
         "options": {
           "responseCode": 202
         }
@@ -363,14 +463,30 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        1760,
+        2360,
         320
       ]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ result: \"denied\", reason: $json.body.operation.verdict, operation_id: $json.body.operation.operation_id }) }}",
+        "responseBody": "={{ JSON.stringify({ result: \"not_completed\", operation_id: $('Validate request').first().json.operation_id, talon_status: $json.statusCode, talon_code: (($json.body || {}).error || {}).code || null, note: \"Talon did not report a completed refund. Read the operation before assuming that nothing was dispatched.\" }) }}",
+        "options": {
+          "responseCode": 409
+        }
+      },
+      "name": "Respond: claim not completed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2360,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: \"denied\", operation_id: $('Validate request').first().json.operation_id }) }}",
         "options": {
           "responseCode": 403
         }
@@ -379,14 +495,14 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        660,
+        1260,
         560
       ]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ result: \"not_approved\", status: $json.body.operation ? $json.body.operation.operation_status : \"unknown\" }) }}",
+        "responseBody": "={{ JSON.stringify({ result: \"not_approved\", operation_id: $('Validate request').first().json.operation_id, status: $json.body && $json.body.operation ? $json.body.operation.operation_status : \"unknown\" }) }}",
         "options": {
           "responseCode": 409
         }
@@ -395,32 +511,40 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        1320,
+        1920,
         560
       ]
     },
     {
       "parameters": {
-        "errorMessage": "={{ 'Talon did not authorize this refund (HTTP ' + $json.statusCode + ': ' + (($json.body.error || {}).code || 'no verdict') + '). Nothing was dispatched by this workflow.' }}"
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: \"not_authorized\", operation_id: $('Validate request').first().json.operation_id, talon_status: $json.statusCode, talon_code: (($json.body || {}).error || {}).code || null, note: \"Talon returned no verdict (conflict, schema or authentication error). Nothing was dispatched by this run.\" }) }}",
+        "options": {
+          "responseCode": 409
+        }
       },
-      "name": "Stop: not authorized",
-      "type": "n8n-nodes-base.stopAndError",
-      "typeVersion": 1,
+      "name": "Respond: not authorized by Talon",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
       "position": [
-        660,
+        1260,
         180
       ]
     },
     {
       "parameters": {
-        "errorMessage": "={{ 'Talon refused or failed the claim (HTTP ' + $json.statusCode + ': ' + (($json.body.error || {}).code || 'unexpected') + '). Do not retry blindly; inspect the operation.' }}"
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: \"invalid_request\", note: \"ticket_id must look like ABC-123, amount must be a decimal string with at most two fractional digits, currency a three-letter code. Nothing was sent to Talon.\" }) }}",
+        "options": {
+          "responseCode": 400
+        }
       },
-      "name": "Stop: claim failed",
-      "type": "n8n-nodes-base.stopAndError",
-      "typeVersion": 1,
+      "name": "Respond: invalid request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
       "position": [
-        1760,
-        440
+        820,
+        520
       ]
     }
   ],
@@ -429,7 +553,47 @@
       "main": [
         [
           {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Validate request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate request": {
+      "main": [
+        [
+          {
+            "node": "Request valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request valid": {
+      "main": [
+        [
+          {
             "node": "Talon: establish operation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: invalid request",
             "type": "main",
             "index": 0
           }
@@ -472,7 +636,7 @@
         ],
         [
           {
-            "node": "Stop: not authorized",
+            "node": "Respond: not authorized by Talon",
             "type": "main",
             "index": 0
           }
@@ -555,7 +719,7 @@
         ],
         [
           {
-            "node": "Stop: claim failed",
+            "node": "Respond: claim not completed",
             "type": "main",
             "index": 0
           }
@@ -572,7 +736,7 @@
     "talon": {
       "contract": "Action Gateway /v1/action-operations (#458, #205)",
       "action": "create_refund_request",
-      "n8n_node_versions": "webhook 2, httpRequest 4.2, switch 3.2, wait 1.1, respondToWebhook 1.1, stopAndError 1"
+      "generated_by": "examples/n8n-refund/generate-workflow.py"
     }
   }
 }
