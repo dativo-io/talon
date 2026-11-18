@@ -260,6 +260,11 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 		return runtimestatus.ProveGateway(v, in.RuntimeReadable, in.Name, tenant, digest, gwDigest)
 	})
 	r.Effective.ProvenActive = r.Effective.Proof.State == runtimestatus.BoundaryProven
+
+	// 3a. Action Gateway boundary: its own proof, over every running serve.
+	r.ActionBoundary = actionBoundary(agent, baseline, r.CurrentFiles.GatewayConfig, proveBoundary(in, func(v runtimestatus.View) runtimestatus.Loaded {
+		return runtimestatus.ProveActionPolicy(v, in.RuntimeReadable, in.Name, tenant, digest, gwDigest)
+	}))
 	switch {
 	case r.Effective.ProvenActive:
 		r.Effective.Basis = "compiled by gateway.ResolveEffectivePolicy from the current files; every running gateway loaded this agent file and this gateway config"
@@ -269,9 +274,6 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 	if !r.Effective.BaselinePresent {
 		r.Notes = append(r.Notes, "no organization baseline was read (no or invalid gateway config): the effective values are the use case's own")
 	}
-
-	// 3a. Action Gateway boundary
-	r.ActionBoundary = actionBoundary(agent, baseline, r.CurrentFiles.GatewayConfig, r.Effective)
 
 	// 3b. MCP boundary
 	r.MCPBoundary = mcpBoundary(ctx, in.ProxyConfig, agent, &r.CurrentFiles)
@@ -299,8 +301,14 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 // verdict is only the baseline (decision_basis "arguments"): a call can be
 // stricter, never looser.
 type ActionBoundary struct {
-	Basis        string `json:"basis"`
-	ProvenActive bool   `json:"proven_active"`
+	Basis string `json:"basis"`
+	// ProvenActive is true only when Proof is proven: every running talon
+	// serve (each serves the Action Gateway) reports this agent file in its
+	// active generation AND the gateway config it read the company action
+	// policy from (runtimestatus.ProveActionPolicy). It is not the LLM
+	// gateway's proof.
+	ProvenActive bool                 `json:"proven_active"`
+	Proof        runtimestatus.Loaded `json:"proof"`
 	// PolicyDigest is the approval-relevant digest approvals are bound to.
 	PolicyDigest   string   `json:"policy_digest,omitempty"`
 	ExpiresAfter   string   `json:"approval_expires_after,omitempty"`
@@ -328,12 +336,12 @@ type ActionArgumentRule struct {
 	Actions []string `json:"actions"`
 }
 
-func actionBoundary(agent *policy.Policy, baseline gateway.OrganizationPolicy, gwFile *File, gw Effective) *ActionBoundary {
+func actionBoundary(agent *policy.Policy, baseline gateway.OrganizationPolicy, gwFile *File, proof runtimestatus.Loaded) *ActionBoundary {
 	declaresActions := agent.Actions != nil && (len(agent.Actions.Definitions) > 0 || len(agent.Actions.Sources) > 0)
 	if !declaresActions && agent.Policies.Approvals == nil {
 		return nil
 	}
-	b := &ActionBoundary{Actions: []action.DecisionView{}, ProvenActive: gw.ProvenActive}
+	b := &ActionBoundary{Actions: []action.DecisionView{}, Proof: proof, ProvenActive: proof.State == runtimestatus.BoundaryProven}
 	source := ""
 	if gwFile != nil {
 		source = gwFile.Path
@@ -341,6 +349,7 @@ func actionBoundary(agent *policy.Policy, baseline gateway.OrganizationPolicy, g
 			// Never show the use case's own rules as the effective policy
 			// when the company layer could not be read.
 			b.Error, b.ProvenActive = "the gateway config cannot be loaded, so the company action policy is unknown: "+gwFile.Error, false
+			b.Proof = runtimestatus.Loaded{State: runtimestatus.BoundaryUnknown, Reason: "the gateway config cannot be loaded, so no action policy is shown or proved"}
 			b.Basis = "not compiled: the company layer of the action policy is unreadable"
 			return b
 		}
@@ -348,13 +357,14 @@ func actionBoundary(agent *policy.Policy, baseline gateway.OrganizationPolicy, g
 	ap, err := action.CompileEffectiveActionPolicy(agent, baseline.CompanyActionPolicy(source))
 	if err != nil {
 		b.Error, b.ProvenActive = err.Error(), false
+		b.Proof = runtimestatus.Loaded{State: runtimestatus.BoundaryUnknown, Reason: "the action policy does not compile from the current files, so there is nothing to compare a running process with"}
 		b.Basis = "the effective action policy does not compile from the current files; a process started from them refuses to start"
 		return b
 	}
 	if b.ProvenActive {
-		b.Basis = "compiled by action.CompileEffectiveActionPolicy from the current files; every running gateway loaded this agent file and this gateway config"
+		b.Basis = "compiled by action.CompileEffectiveActionPolicy from the current files; " + proof.Reason
 	} else {
-		b.Basis = "compiled by action.CompileEffectiveActionPolicy from the current files; not proven to be what a running process enforces (" + gw.Proof.Reason + ")"
+		b.Basis = "compiled by action.CompileEffectiveActionPolicy from the current files; not proven to be what a running process enforces (" + proof.Reason + ")"
 	}
 	b.PolicyDigest, b.ForbiddenTools = ap.Digest, ap.ForbiddenTools
 	if ap.ExpiresAfter > 0 {

@@ -152,6 +152,7 @@ func renderActionBoundary(w io.Writer, b *effective.ActionBoundary) {
 		return
 	}
 	fmt.Fprintln(w, "\n   Action Gateway")
+	fmt.Fprintf(w, "   action boundary: %s — %s\n", b.Proof.State, b.Proof.Reason)
 	fmt.Fprintf(w, "   basis: %s\n", b.Basis)
 	if b.Error != "" {
 		fmt.Fprintf(w, "   unavailable: %s\n", b.Error)

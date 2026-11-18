@@ -41,27 +41,101 @@ test("AI use case page: four sections, each answering its question", async ({ pa
 });
 
 test("Effective policy shows the Action Gateway's argument rules with their origin; a baseline ALLOW is not shown as unconditional", async ({ page }) => {
-  await pair(page, "/use-cases/support-bot?tenant=default");
+  const a = state().fixture.action;
+  await pair(page, `/use-cases/${a.use_case}?tenant=default`);
   const block = page.getByTestId("action-boundary");
   await expect(block).toBeVisible();
   // Same projection as the CLI.
-  const report = cli(["agents", "show", "support-bot", "--effective", "--json"]);
-  const refund = report.action_boundary.actions.find((a) => a.action === "create_refund_request");
+  const report = cli(["agents", "show", a.use_case, "--effective", "--json"]);
+  const refund = report.action_boundary.actions.find((x) => x.action === "create_refund_request");
   expect(refund.verdict).toBe("ALLOW");
   expect(refund.decision_basis).toBe("arguments");
   const refundRow = block.getByRole("row").filter({ hasText: "create_refund_request" }).first();
   await expect(refundRow.getByText("Depends on arguments")).toBeVisible();
-  await expect(refundRow.getByText("Allowed for every call")).toHaveCount(0);
+  await expect(refundRow.getByText("Allowed by policy")).toHaveCount(0);
   const notifyRow = block.getByRole("row").filter({ hasText: "notify_customer" }).first();
-  await expect(notifyRow.getByText("Allowed for every call")).toBeVisible();
+  await expect(notifyRow.getByText("Allowed by policy")).toBeVisible();
+  // One rule from each layer, each shown with the layer that declared it.
+  const sources = report.action_boundary.argument_rules.map((r) => r.source).sort();
+  expect(sources).toEqual(["company", "use_case"]);
   for (const r of report.action_boundary.argument_rules) {
     const row = block.getByRole("row").filter({ hasText: r.id }).last();
     await expect(row.getByText(r.condition, { exact: true })).toBeVisible();
-    await expect(row.getByText("use case", { exact: true })).toBeVisible();
+    await expect(row.getByText(r.source === "company" ? "company" : "use case", { exact: true })).toBeVisible();
     await expect(row.getByText(r.effect === "deny" ? "Deny" : `Require approval by ${r.approver_groups.join(", ")}`, { exact: true })).toBeVisible();
   }
-  // Not proven active: nothing running loaded this file as an action policy.
+  // Activation is the action policy's own proof: no talon serve runs in this
+  // fixture, so nothing enforces it now, and the page says so with the CLI's reason.
+  expect(report.action_boundary.proven_active).toBe(false);
+  expect(report.action_boundary.proof.state).toBe("no_running_process");
   await expect(block.getByText("Compiled from current files, not proven active")).toBeVisible();
+  await expect(block.getByText(report.action_boundary.proof.reason, { exact: true })).toBeVisible();
+  await expect(block.getByText("Proven active", { exact: true })).toHaveCount(0);
+});
+
+// The lifecycle below was produced by the production action service in the
+// seed (establish, reviewer decision, claim, dispatch to a counting refund
+// service), and signed by the store. Each page must say what `talon audit
+// show` says about the same record.
+test("Evidence: the Action decision block shows the actual verdict, the matched rule and its origin, operation and approval status, with the signature check", async ({ page }) => {
+  const a = state().fixture.action;
+  expect(a.downstream_calls).toBe(2); // 30.00 and the approved 75.00; 900.00 never left Talon
+  const block = page.getByRole("region", { name: "Action decision", exact: true });
+  const fact = (label) => block.locator("dt", { hasText: new RegExp(`^${label}$`) }).locator("xpath=following-sibling::dd[1]");
+  const open = async (id) => {
+    const d = cli(["audit", "show", id, "--json"]);
+    expect(d.verification.state).toBe("valid");
+    await page.goto(`/evidence/${id}?tenant=default`);
+    await expect(page.getByText("Signature valid").first()).toBeVisible();
+    await expect(block).toBeVisible();
+    const l = d.record.action_lifecycle;
+    await expect(fact("Action")).toHaveText(l.action);
+    await expect(fact("Operation")).toContainText(l.operation_id);
+    await expect(fact("Verdict")).toHaveText(l.verdict);
+    await expect(fact("Operation status")).toHaveText(l.operation_status.replace(/_/g, " "));
+    return l;
+  };
+
+  await pair(page, `/evidence/${a.approval_evidence}?tenant=default`);
+  // 75.00: approval required by the USE CASE's rule.
+  let l = await open(a.approval_evidence);
+  expect([l.verdict, l.matched_rule_id, l.matched_rule_source, l.operation_status]).toEqual(["REQUIRE_APPROVAL", "refund-needs-approval", "use_case", "awaiting_approval"]);
+  await expect(fact("Matched rule")).toHaveText("refund-needs-approval (declared by use case)");
+  // Waiting for a reviewer is not told as an allow: nothing is dispatched yet.
+  expect(cli(["audit", "show", a.approval_evidence, "--json"]).outcome).toMatchObject({ decision: "approval_required", dispatch: "not_dispatched" });
+  await expect(page.getByText("Approval required — not dispatched").first()).toBeVisible();
+  await expect(page.getByText("Talon allowed it", { exact: false })).toHaveCount(0);
+  // The reviewer's decision: approved, by the authenticated principal, nothing dispatched by it.
+  l = await open(a.approval_decided_evidence);
+  expect([l.approval_status, l.operation_status]).toEqual(["approved", "authorized"]);
+  await expect(fact("Approval")).toContainText("approved");
+  await expect(fact("Reviewer")).toContainText(l.reviewer_principal);
+  // The dispatch after the approval.
+  l = await open(a.approval_attempt_evidence);
+  expect(l.operation_status).toBe("succeeded");
+  await expect(fact("Matched rule")).toHaveText("refund-needs-approval (declared by use case)");
+  // 900.00: denied by the COMPANY's rule, never dispatched.
+  l = await open(a.denied_evidence);
+  expect([l.verdict, l.matched_rule_id, l.matched_rule_source, l.operation_status]).toEqual(["DENY", "company:refund-too-large", "company", "denied"]);
+  await expect(fact("Matched rule")).toHaveText("company:refund-too-large (declared by company)");
+  // A denied operation is never dispatched; the refund service's own count
+  // above (2 calls) agrees.
+  await expect(page.getByText("Talon denied it — not dispatched").first()).toBeVisible();
+  // 30.00: allowed, no rule matched.
+  l = await open(a.allowed_evidence);
+  expect(l.verdict).toBe("ALLOW");
+  expect(l.matched_rule_id ?? "").toBe("");
+  await expect(fact("Matched rule")).toHaveText("none recorded");
+  // No page of the lifecycle carries the call's argument values.
+  for (const id of [a.approval_evidence, a.approval_decided_evidence, a.approval_attempt_evidence, a.denied_evidence]) {
+    await page.goto(`/evidence/${id}?tenant=default`);
+    await expect(block).toBeVisible();
+    const text = await page.locator("main").innerText();
+    for (const value of ["75.00", "900.00", "T-refund-75", "T-refund-900"]) expect(text).not.toContain(value);
+  }
+  // The whole operation verifies offline, as the page's hint says.
+  await page.goto(`/evidence/${a.approval_attempt_evidence}?tenant=default`);
+  await expect(block.getByText(`talon audit verify --operation ${a.approved_operation}`)).toBeVisible();
 });
 
 test("Navigation is grouped: Operate (use-case work) and Installation (setup and runtime)", async ({ page }) => {

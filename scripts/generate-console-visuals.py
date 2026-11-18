@@ -23,6 +23,10 @@ SHOTS = {
     'system-diagnostics': ('light-14-system-case-g.png', 0, 1100),
     'tamper-detection': ('light-07-evidence-tampered.png', 0, 960),
     'overview-mobile': ('light-12-overview-mobile.png', 0, 1400),
+    # Action Gateway (#205): refund-bot's composed argument rules, and the
+    # signed record of a refund that needed a reviewer.
+    'action-policy': ('light-19-action-policy.png', 0, 100000),
+    'action-evidence': ('light-20-action-evidence.png', 0, 1800),
 }
 for name, (filename, y0, y1) in SHOTS.items():
     original = Image.open(SRC / filename).convert('RGB')
