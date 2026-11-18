@@ -37,3 +37,18 @@ python3 scripts/console-visual-baseline.py check
 ```
 
 The capture suite uses `tests/browser/03-screenshots.spec.js`; the renderer `scripts/generate-console-visuals.py` crops the actual browser screenshots without modifying their in-app statuses or labels. The generated `showcase.webp` adds section headings and visual framing around these real source images. Do not replace these with fabricated UI mockups.
+
+## Publish approved console visuals to dativo.io
+
+The website repository (`dativo-io/talon-www`) consumes the reviewed WebPs and guide from the same Talon checkout during its existing Cloudflare Workers Builds production build. It does not run a browser, maintain duplicate image baselines, or automatically publish screenshot candidates.
+
+One-time setup (after both the Talon screenshot and website publication changes are merged):
+
+1. In Cloudflare, open **Workers & Pages → talon-www → Settings → Builds → Deploy Hooks**.
+2. Create a hook named `talon-console-docs-refresh` for the website's production branch, `main`.
+3. In **dativo-io/talon → Settings → Secrets and variables → Actions**, add repository secret `TALON_WWW_DEPLOY_HOOK_URL` containing the generated Workers Builds hook URL. Treat the full URL as a credential; never put it in source, issues, logs or chat.
+4. In Talon's Actions, manually run **Refresh website console visuals** on `main` to verify that Cloudflare accepts the hook. Check the Cloudflare build and deployment result and the public website separately.
+
+After setup, pushes to Talon `main` that change the approved WebPs or Operations Console guide request a website rebuild. A baseline-only change does not trigger a rebuild. PRs and unreviewed CI screenshot artifacts cannot request production builds. If the secret is absent, the workflow warns and sends no request. A successful hook call proves request acceptance, not a successful production deployment. If a request fails or times out, check Cloudflare before rerunning the workflow.
+
+[Cloudflare Workers Builds deploy hooks](https://developers.cloudflare.com/workers/ci-cd/builds/deploy-hooks/)
