@@ -4,8 +4,15 @@ v1.17 replaces both legacy browser dashboards with the read-only [operations con
 
 ## Before you upgrade
 
-1. **Back up the data directory** (`~/.talon`, or the `talon-data` Compose volume): `evidence.db`, `sessions.db`, `secrets.db` and their `-wal`/`-shm` files, with the processes stopped. v1.17 only adds an index and a `runtime/` directory, but returning to v1.16 after v1.17 has written to the stores has not been tested. Treat a restore of this backup as the rollback path.
-2. **Keep the same `TALON_SECRETS_KEY` and `TALON_SIGNING_KEY`.** A different secrets key makes the vault undecryptable (see the security change below), and a different signing key makes existing evidence fail verification.
+The supported backup is a **cold** one: taken with the Talon processes stopped. Restoring it is the rollback path.
+
+1. **Stop every Talon process of the installation**: `talon serve` (LLM gateway, MCP proxy, Action Gateway) and, if one runs, `talon ui`. With Compose: `docker compose stop` (do not use `down -v`, which deletes the data volume). A copy taken while a process writes can be inconsistent.
+2. **Back up the persistent state**: the whole data directory (`~/.talon`, or the `talon-data` Compose volume), including `evidence.db`, `sessions.db`, `secrets.db` and any `-wal`/`-shm` files beside them.
+3. **Back up the deployment and policy configuration** you run with: `talon.config.yaml`, the agent files (`agent.talon.yaml`, or the `agents_dir` tree), the MCP proxy config if you use one, your pricing table if you changed it, and the Compose file, environment file or service unit that starts Talon.
+4. **Preserve the signing key and the vault key** (`TALON_SIGNING_KEY`, `TALON_SECRETS_KEY`) the way you already keep them, in your secret manager or protected environment file. Do not copy them in clear text into the backup of the data directory. Without the same vault key the vault is undecryptable (see the security change below); without the same signing key existing evidence fails verification. Leaving both unset before and after (the derived default, as in the demo stack) is also "the same key".
+5. Upgrade, then start the processes again.
+
+**Rollback is a restore**: stop the processes, put back the data directory and configuration from this backup, and start the previous version with the same keys. v1.17 only adds an index and a `runtime/` directory, but running a v1.16 binary on stores that v1.17 has written to has **not been tested**; do not treat a binary downgrade in place as a supported rollback.
 
 ## Breaking changes and what to do
 
@@ -22,8 +29,10 @@ v1.17 replaces both legacy browser dashboards with the read-only [operations con
 
 The console is its own process with its own port (`127.0.0.1:8787`). It holds no provider, admin, vault or agent key.
 
-- **Compose:** the `talon-ui` service starts with the stack. Read the one-time pairing code with `docker compose logs talon-ui`, open `http://127.0.0.1:8787/` and enter it. Reissue a code with `docker compose exec talon-ui talon ui pair`.
-- **Binary:** `talon ui serve` prints the code; `talon ui` also opens the browser.
+- **Compose:** the `talon-ui` service starts with the stack. Read the one-time pairing code with `docker compose logs talon-ui`, open `http://127.0.0.1:8787/` and enter it. `docker compose exec talon-ui talon ui pair` makes the running console print a fresh code to its own output: read it with `docker compose logs talon-ui` again (the `pair` command itself prints no code).
+- **Binary:** `talon ui serve` prints the code; `talon ui` also opens the browser. `talon ui pair` (in another terminal) makes that running process print a fresh code in its own terminal.
+
+Keep the console's output out of shared or central logging systems: whoever reads a valid pairing code can pair. Pairing secures the console only; it does nothing for the data-plane API on port 8080 ([console access](../reference/console-access.md)).
 
 **Volume mounts:** the console opens the stores through a read-only SQLite connection, but SQLite's WAL mode needs the reader to create the shared-memory file. Mount the data volume **read-write** at the filesystem level, as `examples/docker-compose` does. A read-only mount (`:ro`) is not supported. Details: [console access](../reference/console-access.md).
 
@@ -31,14 +40,15 @@ The console is its own process with its own port (`127.0.0.1:8787`). It holds no
 
 ## Run the published image instead of building
 
-`examples/docker-compose` builds both Talon services from the checkout by default. To run the published release image, pulled anonymously from GHCR:
+`examples/docker-compose` builds both Talon services from the checkout by default. To run a published release image, pulled anonymously from GHCR, add the override file:
 
 ```bash
 cd examples/docker-compose
-TALON_IMAGE=ghcr.io/dativo-io/talon:<version> TALON_PULL_POLICY=always docker compose up
+TALON_IMAGE=ghcr.io/dativo-io/talon:<version> \
+  docker compose -f docker-compose.yml -f docker-compose.published.yml up
 ```
 
-Only the stack's mock provider is built locally. The same image runs both the data plane and the console.
+Only the stack's mock provider is built locally. The same image runs both the data plane and the console, and an image that cannot be pulled stops the stack instead of falling back to a source build. Use an explicit version (or its digest) for production and reproducible demos; details in the [stack's README](../../examples/docker-compose/README.md).
 
 ## Verify the upgrade
 

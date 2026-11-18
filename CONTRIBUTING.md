@@ -113,6 +113,19 @@ release workflow also proves the console on what customers get, not on a source 
   endpoints, console/CLI signature parity, no legacy dashboard route, loopback-only
   publication, restart independence).
 
+The Compose smoke runs the published-image path (`docker-compose.published.yml`: no Talon
+build section, so a failed pull can never become a source build) and first proves that an
+unresolvable image stops the stack and that both services run the named image. Contributors
+keep the source build: plain `docker compose up` in `examples/docker-compose`.
+
+**Releases that predate the console.** `scripts/release-capabilities.sh <tag>` is the
+applicability rule: the console ships from v1.17.0 (candidates included). An audit of an
+older release (`gh workflow run release.yml -f tag=v1.16.1`, or `install-smoke.yml`) reports
+the console gates as NOT APPLICABLE in the job summary. The rule is the version, never the
+presence of a file: on a console-enabled release a missing script or asset fails the gate.
+In an audit the console's tests, fixtures and Compose stack are checked out from the audited
+tag, not from the dispatching branch (`TestReleaseWorkflows_ConsoleGatesFollowTheApplicabilityRule`).
+
 `release-verify` publishes only when both passed. After publication,
 `gh workflow run install-smoke.yml -f tag=<tag>` repeats both from the customer's side
 (`console-acceptance`: the archive downloaded anonymously; `console-compose`: the image

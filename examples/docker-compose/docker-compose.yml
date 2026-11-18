@@ -16,11 +16,15 @@
 #   # the one-time pairing code from:
 #   docker compose logs talon-ui
 #
-# By default both Talon services are built from this checkout. To run the
-# PUBLISHED release image instead (no Go toolchain, no Talon build; only the
-# small mock provider is built locally):
+# This file BUILDS both Talon services from this checkout (contributors,
+# development CI). To run a PUBLISHED release image instead, with no Talon
+# build at all, add docker-compose.published.yml (see README.md):
 #
-#   TALON_IMAGE=ghcr.io/dativo-io/talon:<version> TALON_PULL_POLICY=always docker compose up
+#   TALON_IMAGE=ghcr.io/dativo-io/talon:<version> \
+#     docker compose -f docker-compose.yml -f docker-compose.published.yml up
+#
+# The two paths are separate files on purpose: when a service has a `build:`
+# section, Compose answers a failed image pull by building from source.
 
 services:
   mock-openai:
@@ -37,8 +41,7 @@ services:
   talon:
     build:
       context: ../../
-    image: ${TALON_IMAGE:-talon-demo:local}
-    pull_policy: ${TALON_PULL_POLICY:-build}
+    image: talon-demo:local
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -82,8 +85,7 @@ services:
   talon-ui:
     build:
       context: ../../
-    image: ${TALON_IMAGE:-talon-demo:local}
-    pull_policy: ${TALON_PULL_POLICY:-build}
+    image: talon-demo:local
     command: ui serve --listen 0.0.0.0:8787 --allow-non-loopback --gateway-config /etc/talon/talon.config.yaml
     ports:
       - "127.0.0.1:8787:8787"
