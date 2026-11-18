@@ -280,6 +280,8 @@ Operating AI is the job; proving it is often the trigger. Talon is a single self
 
 ## Install
 
+**Running a production pilot?** Follow the [production pilot runbook](docs/guides/production-pilot.md): published release → console → first AI use case → one governed business action with local approval → verified evidence → backup and restore → second use case, with a customer acceptance checklist. The supported topology is [one single-node installation](docs/guides/single-node-production.md).
+
 **Published binary (linux/amd64, the verified installer path):** the installer downloads the release archive, checks its sha256 against the release's published digest, checks that the executable reports exactly the requested version, prints both digests and only then installs. It never builds from source and fails closed on anything it cannot verify. Pin a version with `TALON_VERSION`.
 
 ```bash
