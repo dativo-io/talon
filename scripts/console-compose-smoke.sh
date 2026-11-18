@@ -9,7 +9,11 @@
 #
 # Image under test (#533 release acceptance):
 #   (default)                       build both Talon services from this checkout
-#   TALON_IMAGE=<ref>               run that image instead, never built here:
+#                                   (docker-compose.yml alone)
+#   TALON_IMAGE=<ref>               run that image instead, never built here
+#                                   (adds docker-compose.published.yml, which
+#                                   removes the build sections, so a failed
+#                                   pull can never turn into a source build):
 #                                   the release image built from
 #                                   Dockerfile.goreleaser in PR CI, or the
 #                                   published ghcr.io/dativo-io/talon:<version>
@@ -22,7 +26,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE=(docker compose -f "$REPO_ROOT/examples/docker-compose/docker-compose.yml" --project-name talon-console-smoke)
+STACK="$REPO_ROOT/examples/docker-compose"
+COMPOSE=(docker compose -f "$STACK/docker-compose.yml")
+if [ -n "${TALON_IMAGE:-}" ]; then
+  COMPOSE+=(-f "$STACK/docker-compose.published.yml")
+fi
+COMPOSE+=(--project-name talon-console-smoke)
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/console-compose-smoke.XXXXXX")"
 UI="http://127.0.0.1:8787"
 DP="http://127.0.0.1:8080"
@@ -76,6 +85,20 @@ if [ -n "${TALON_IMAGE:-}" ]; then
   export TALON_IMAGE
   export TALON_PULL_POLICY="${TALON_PULL_POLICY:-always}"
   echo "image under test: $TALON_IMAGE (pull_policy=$TALON_PULL_POLICY)"
+  # No fallback to a source build: an image that cannot be resolved stops the
+  # stack, and nothing is built under its name. (The base file alone would
+  # build here: Compose ignores a pull failure when a build section exists.)
+  repo="${TALON_IMAGE%@*}"
+  case "${repo##*/}" in *:*) repo="${repo%:*}" ;; esac
+  missing="$repo:talon-smoke-no-such-tag-$$"
+  if TALON_IMAGE="$missing" "${COMPOSE[@]}" up -d --no-deps talon >"$WORK/missing.log" 2>&1; then
+    echo "FAIL: an unresolvable image must stop the stack"; failures=$((failures + 1))
+    TALON_IMAGE="$missing" "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  else
+    echo "PASS: an unresolvable image stops the stack"
+  fi
+  check "nothing was built in place of the unresolvable image" bash -c "! docker image inspect '$missing' >/dev/null 2>&1"
+  check "the published path declares no Talon build" bash -c "! TALON_IMAGE='$TALON_IMAGE' TALON_PULL_POLICY='$TALON_PULL_POLICY' docker compose -f '$STACK/docker-compose.yml' -f '$STACK/docker-compose.published.yml' config --format json | jq -e '.services.talon.build or .services[\"talon-ui\"].build' >/dev/null"
   # Only the mock provider is built; the Talon services run the given image.
   "${COMPOSE[@]}" build mock-openai
   "${COMPOSE[@]}" up -d
@@ -88,6 +111,15 @@ wait_http "$UI/healthz" 60
 
 running_version="$("${COMPOSE[@]}" exec -T talon talon version | sed -n 1p)"
 echo "running: $running_version"
+if [ -n "${TALON_IMAGE:-}" ]; then
+  # Data plane and console run the same resolved image, and it is the one named.
+  want_id="$(docker image inspect --format '{{.Id}}' "$TALON_IMAGE")"
+  dp_id="$(docker inspect --format '{{.Image}}' "$("${COMPOSE[@]}" ps -q talon)")"
+  ui_id="$(docker inspect --format '{{.Image}}' "$("${COMPOSE[@]}" ps -q talon-ui)")"
+  check "the data plane runs the named image ($want_id)" [ "$dp_id" = "$want_id" ]
+  check "the console runs the same image as the data plane" [ "$ui_id" = "$dp_id" ]
+  echo "image digest(s): $(docker image inspect --format '{{join .RepoDigests ", "}}' "$TALON_IMAGE")"
+fi
 if [ -n "${TALON_EXPECT_VERSION:-}" ]; then
   check "the data plane runs the expected release ($running_version)" [ "$running_version" = "Talon $TALON_EXPECT_VERSION" ]
   ui_version="$("${COMPOSE[@]}" exec -T talon-ui talon version | sed -n 1p)"
