@@ -86,11 +86,11 @@ fi
 wait_http "$DP/health" 120
 wait_http "$UI/healthz" 60
 
-running_version="$("${COMPOSE[@]}" exec -T talon talon version | head -n1)"
+running_version="$("${COMPOSE[@]}" exec -T talon talon version | sed -n 1p)"
 echo "running: $running_version"
 if [ -n "${TALON_EXPECT_VERSION:-}" ]; then
   check "the data plane runs the expected release ($running_version)" [ "$running_version" = "Talon $TALON_EXPECT_VERSION" ]
-  ui_version="$("${COMPOSE[@]}" exec -T talon-ui talon version | head -n1)"
+  ui_version="$("${COMPOSE[@]}" exec -T talon-ui talon version | sed -n 1p)"
   check "the console runs the expected release ($ui_version)" [ "$ui_version" = "Talon $TALON_EXPECT_VERSION" ]
 fi
 
