@@ -154,7 +154,8 @@ function ActionBoundarySection({ b }: { b: ActionBoundary }) {
       <h4>Action Gateway</h4>
       <p>
         <strong className="small">Action Gateway: </strong>
-        {b.proven_active ? <Badge tone="ok">Proven active</Badge> : <Badge tone="info">Compiled from current files, not proven active</Badge>}
+        {b.proven_active ? <Badge tone="ok">Proven active</Badge> : <Badge tone="info">Compiled from current files, not proven active</Badge>}{" "}
+        <span className="small muted">{b.proof.reason}</span>
       </p>
       <p className="small muted">{b.basis}</p>
       {b.error ? <div className="notice warn" role="status"><div>Effective action policy unavailable: {b.error}</div></div> : null}
@@ -234,7 +235,7 @@ function ActionVerdict({ a }: { a: ActionDecision }) {
   }
   if (a.verdict === "DENY") return <Badge tone="error">Denied{from}</Badge>;
   if (a.verdict === "REQUIRE_APPROVAL") return <Badge tone="warn">Approval required{from}</Badge>;
-  return <Badge tone="ok" plain>Allowed for every call</Badge>;
+  return <Badge tone="ok" plain>Allowed by policy</Badge>;
 }
 
 function RuleLine({ r }: { r: ActionArgumentRule }) {
