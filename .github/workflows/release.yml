@@ -366,6 +366,13 @@ jobs:
           TALON_IMAGE="ghcr.io/dativo-io/talon:${VERSION}" TALON_PULL_POLICY=always TALON_EXPECT_VERSION="$VERSION" \
             bash scripts/console-compose-smoke.sh 2>&1 | tee "$RUNNER_TEMP/console-compose.log"
           { echo '### Operations console from the released image'; echo '```'; grep -E '^(PASS|FAIL)' "$RUNNER_TEMP/console-compose.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # The advertised no-clone quickstart (#463) against the image about to
+      # be published: a governed decision and verified evidence, no provider.
+      - name: Published-image quickstart (no provider, no key)
+        run: |
+          set -euo pipefail
+          TALON_VERSION="${RELEASE_TAG#v}" bash scripts/quickstart.sh 2>&1 | tee "$RUNNER_TEMP/quickstart.log"
+          { echo '### Published-image quickstart'; echo '```'; grep -E '^(PASS|FAIL|Image|Digest|Talon)' "$RUNNER_TEMP/quickstart.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # Publication is the point of no return: everything that can be verified
       # has been. The two steps after it (alias promotion, anonymous
       # re-download) never touch release assets, are idempotent, and are

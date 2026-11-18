@@ -472,3 +472,13 @@ jobs:
           TALON_PULL_POLICY: never
           TALON_EXPECT_VERSION: 0.0.0-ci
         run: bash scripts/console-compose-smoke.sh
+
+      # The no-clone quickstart (#463) on the release image shape: two real
+      # pre-provider decisions and their verified evidence, no provider, no
+      # key. release.yml and install-smoke.yml run the same script against
+      # the published image.
+      - name: Published-image quickstart on the release image (no provider, no key)
+        env:
+          TALON_IMAGE: talon:release-ci
+          TALON_QUICKSTART_NO_PULL: "1"
+        run: bash scripts/quickstart.sh
