@@ -38,14 +38,22 @@ policies:
   cost_limits: {}
   approvals:
     expires_after: 30m
-    # Example policy, not a built-in rule: up to 50.00 EUR allow, up to
-    # 500.00 EUR approval by support-leads, above that deny.
-    amount_limits:
-      refund-bands:
+    # Example policy, not a built-in rule: a refund above 50.00 needs
+    # approval by support-leads, above 500.00 it is denied. EUR only and cent
+    # precision are constraints of the action's input_schema above.
+    argument_rules:
+      refund-needs-approval:
         actions: [create_refund_request]
-        amount_argument: amount
-        currency_argument: currency
-        currency: EUR
-        allow_up_to: "50.00"
-        approval_up_to: "500.00"
+        argument: amount
+        type: decimal
+        operator: gt
+        value: "50.00"
+        effect: require_approval
         approver_groups: [support-leads]
+      refund-too-large:
+        actions: [create_refund_request]
+        argument: amount
+        type: decimal
+        operator: gt
+        value: "500.00"
+        effect: deny

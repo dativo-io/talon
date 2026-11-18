@@ -41,7 +41,7 @@ POST /webhook/talon-refund  {ticket_id, amount, currency}     header credential 
 
 ## Set up
 
-1. **Talon.** Register the use case, then merge the catalog and the amount limits from [`agent.talon.yaml`](agent.talon.yaml) into its file, with your refund service's URL. Add a reviewer.
+1. **Talon.** Register the use case, then merge the catalog and the argument rules from [`agent.talon.yaml`](agent.talon.yaml) into its file, with your refund service's URL. Add a reviewer.
    ```bash
    talon agents add refund-bot --tenant acme          # prints the use-case key once
    talon approver add --name lead-1 --tenant acme --groups support-leads   # prints the reviewer credential once

@@ -26,7 +26,7 @@ import (
 //   - the claim is reachable only from ALLOW and from an authorized approval;
 //   - Talon being unreachable stops the workflow (no continue-on-fail).
 // These are static checks. The live behaviour is scripts/n8n-refund-live.sh.
-// The example agent file compiles to the documented bands.
+// The example agent file compiles to the documented verdicts.
 
 type n8nWorkflow struct {
 	Nodes []struct {
@@ -226,12 +226,16 @@ func TestN8nRefundWorkflow_ExamplePolicyCompiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("example agent file: %v", err)
 	}
-	if _, err := action.CompileCatalog(pol.Actions, nil); err != nil {
+	cat, err := action.CompileCatalog(pol.Actions, nil)
+	if err != nil {
 		t.Fatalf("example catalog: %v", err)
 	}
 	ap, err := action.CompileApprovalPolicy(pol)
 	if err != nil {
 		t.Fatalf("example policy: %v", err)
+	}
+	if err := ap.ValidateAgainstCatalog(cat); err != nil {
+		t.Fatalf("example rules against the example catalog: %v", err)
 	}
 	for amount, want := range map[string]string{"30.00": action.VerdictAllow, "75.00": action.VerdictRequireApproval, "900.00": action.VerdictDeny} {
 		v := ap.EvaluateArguments("create_refund_request", []byte(`{"amount":"`+amount+`","currency":"EUR","ticket_id":"T-1"}`))
