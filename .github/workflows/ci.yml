@@ -69,8 +69,32 @@ jobs:
       - name: Run repository guard tests
         run: go test ./tests
 
+      # The previous stable release, checksum-verified, for the in-place
+      # upgrade test (#467 narrow slice): TestE2E_UpgradeFromPreviousStable
+      # lets it write state and the binary under test take it over. Bump
+      # PREVIOUS_STABLE when a new stable release is cut.
+      - name: Fetch the previous stable release (checksum-verified)
+        env:
+          PREVIOUS_STABLE: "1.16.1"
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/previous-stable"; mkdir -p "$D"; cd "$D"
+          BASE="https://github.com/dativo-io/talon/releases/download/v${PREVIOUS_STABLE}"
+          curl -fsSL --retry 3 -o "talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz" "$BASE/talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o checksums.txt "$BASE/checksums.txt"
+          grep " talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz\$" checksums.txt | sha256sum -c -
+          tar xzf "talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz" talon
+          [ "$(./talon version | head -n1)" = "Talon ${PREVIOUS_STABLE}" ]
+          echo "TALON_PREVIOUS_STABLE_BINARY=$D/talon" >> "$GITHUB_ENV"
+
       - name: Run e2e tests
-        run: go test -tags=e2e -timeout 5m ./tests/e2e/...
+        run: go test -tags=e2e -timeout 8m ./tests/e2e/...
+
+      - name: The upgrade test ran (a skip is not a pass)
+        run: |
+          set -euo pipefail
+          go test -tags=e2e ./tests/e2e -run TestE2E_UpgradeFromPreviousStable -count=1 -v | tee "$RUNNER_TEMP/upgrade.log"
+          grep -q -- '--- PASS: TestE2E_UpgradeFromPreviousStable' "$RUNNER_TEMP/upgrade.log"
 
       - name: MCP governance-contract smoke (#372, offline, no keys)
         # Named PR gate for the governance extension's truth semantics:
