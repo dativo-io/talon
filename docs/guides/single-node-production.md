@@ -123,7 +123,7 @@ talon backup resume --reconciled --hold-operation refund-T-1842 --hold-operation
 ```
 
 - **Configuration:** if the company policy or agent files now differ from those captured with the backup, the resume is refused until you have reviewed them and pass `--accept-config-change`. A restore must not silently change which policy is enforced.
-- **Record:** the resume is written as a signed `recovery_resumed` evidence record with the backup id, the number of open operations and the held ids.
+- **Record:** the held operation ids, the end of the hold and a signed `recovery_resumed` evidence record (backup id, number of open operations, held ids) are committed in one transaction. If the record cannot be written, nothing changes: the hold stays active and dispatch stays refused.
 
 **What Talon guarantees after a restore, and what it does not:**
 - Until you resume: no governed action is dispatched.
@@ -153,9 +153,16 @@ The recovery path is exercised over real processes:
 
 Upgrade with the same binary path. Back up and verify first. Stop the service, replace the binary, run `talon doctor`, start the service, and check `talon version` and a recent `talon audit verify`. Read the release's upgrade notes in `CHANGELOG.md` (and the version's upgrade guide where one exists) before you start.
 
-The in-place upgrade from the previous stable release (v1.16.1) is exercised by `TestE2E_UpgradeFromPreviousStable`: the released v1.16.1 binary writes a succeeded action, a pending approval, evidence, the vault and an approver; the new binary takes the same data directory over; the old evidence verifies, the old succeeded action is refused a second claim, the old pending approval is decided with the old approver credential and dispatched once, and a backup of the upgraded stores verifies.
+The in-place upgrade from the **immediately preceding stable release** is the release gate: CI resolves that release from the published releases (`scripts/previous-stable.sh`), downloads its checksum-verified binary, and `TestE2E_UpgradeFromPreviousStable` lets it write state that the new binary takes over. v1.16.1 additionally runs as a historical compatibility check (`TestE2E_UpgradeFromHistoricalReleases`) when it is not the preceding release itself. In the test the earlier binary writes a succeeded action, a pending approval, evidence, the vault and an approver; the new binary takes the same data directory over; the old evidence verifies, the old succeeded action is refused a second claim, the old pending approval is decided with the old approver credential and dispatched once, and a backup of the upgraded stores verifies.
 
-**Rollback is restore.** Returning to an older binary after the new one has written to the stores is not tested. To roll back, stop the service, put the old binary back and restore the pre-upgrade backup. Everything recorded after the upgrade is then lost, and the reconciliation and resume from [Restore](#restore) apply. A release older than this one does not know the recovery hold: after rolling back to it, reconcile before you start the service.
+**Rollback is restore.** Returning to an older binary after the new one has written to the stores is not tested. To roll back, stop the service, put the old binary back and restore the pre-upgrade backup. Everything recorded after the upgrade is then lost, and the reconciliation and resume from [Restore](#restore) apply. **A release older than this one does not know the recovery hold and will dispatch from the restored ledger as soon as it serves.** When you roll back to such a release, isolate it first and reconcile before it can dispatch:
+
+1. Keep the service stopped, or start it with the action destinations unreachable (for example block outbound traffic from the host to your refund service).
+2. Run the reconciliation from [Restore](#restore) by hand: in the downstream system, find every action executed after the backup was taken.
+3. For each such action still open in the restored ledger, make sure the application will not claim it again (remove or complete it in the calling application's queue).
+4. Only then let the older release serve consequential actions.
+
+The older release cannot hold operations for you; this isolation and reconciliation is the whole safeguard.
 
 ## Limits
 

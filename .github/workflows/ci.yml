@@ -69,23 +69,22 @@ jobs:
       - name: Run repository guard tests
         run: go test ./tests
 
-      # The previous stable release, checksum-verified, for the in-place
-      # upgrade test (#467 narrow slice): TestE2E_UpgradeFromPreviousStable
-      # lets it write state and the binary under test take it over. Bump
-      # PREVIOUS_STABLE when a new stable release is cut.
-      - name: Fetch the previous stable release (checksum-verified)
+      # The N-1 upgrade gate (#467 narrow slice): the stable release that
+      # immediately precedes the one being built — resolved from the published
+      # releases, never a fixed version — writes state, and the binary under
+      # test takes it over (TestE2E_UpgradeFromPreviousStable). v1.16.1 stays
+      # as a historical compatibility run when it is not N-1 itself.
+      - name: Fetch the preceding stable release and the historical v1.16.1 (checksum-verified)
         env:
-          PREVIOUS_STABLE: "1.16.1"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          D="$RUNNER_TEMP/previous-stable"; mkdir -p "$D"; cd "$D"
-          BASE="https://github.com/dativo-io/talon/releases/download/v${PREVIOUS_STABLE}"
-          curl -fsSL --retry 3 -o "talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz" "$BASE/talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz"
-          curl -fsSL --retry 3 -o checksums.txt "$BASE/checksums.txt"
-          grep " talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz\$" checksums.txt | sha256sum -c -
-          tar xzf "talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz" talon
-          [ "$(./talon version | head -n1)" = "Talon ${PREVIOUS_STABLE}" ]
-          echo "TALON_PREVIOUS_STABLE_BINARY=$D/talon" >> "$GITHUB_ENV"
+          PREV="$(bash scripts/previous-stable.sh)"
+          echo "preceding stable release: $PREV"
+          echo "TALON_PREVIOUS_STABLE_BINARY=$(bash scripts/fetch-release-binary.sh "$PREV" "$RUNNER_TEMP/previous-stable/$PREV")" >> "$GITHUB_ENV"
+          if [ "$PREV" != "1.16.1" ]; then
+            echo "TALON_COMPAT_BINARIES=$(bash scripts/fetch-release-binary.sh 1.16.1 "$RUNNER_TEMP/previous-stable/1.16.1")" >> "$GITHUB_ENV"
+          fi
 
       - name: Run e2e tests
         run: go test -tags=e2e -timeout 8m ./tests/e2e/...

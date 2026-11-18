@@ -253,6 +253,28 @@ func TestBackup_ResumeAfterRestore(t *testing.T) {
 	require.Contains(t, out.String(), "CONFIGURATION CHANGED")
 
 	backupResumeAcceptDrift, backupResumeHoldOps = true, []string{"op-executed-after-backup"}
+
+	// Failure injection: the evidence store refuses the signed record of the
+	// resume. The hold must stay active and no operation id may be held:
+	// dispatch is never re-enabled without evidence of the decision.
+	inject, err := sql.Open("sqlite3", cfg.EvidenceDBPath())
+	require.NoError(t, err)
+	_, err = inject.ExecContext(ctx, `CREATE TRIGGER fail_resume_evidence BEFORE INSERT ON evidence BEGIN SELECT RAISE(ABORT, 'injected evidence failure'); END`)
+	require.NoError(t, err)
+	out.Reset()
+	err = resumeAfterRestore(ctx, &out, cfg)
+	require.ErrorContains(t, err, "the recovery hold is still active")
+	require.NotContains(t, out.String(), "Resumed:")
+	held, err := action.ActiveRecoveryHolds(ctx, inject)
+	require.NoError(t, err)
+	require.Len(t, held, 1, "the hold survives a failed evidence write")
+	var heldOps int
+	require.NoError(t, inject.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_held_operations`).Scan(&heldOps))
+	require.Zero(t, heldOps)
+	_, err = inject.ExecContext(ctx, `DROP TRIGGER fail_resume_evidence`)
+	require.NoError(t, err)
+	require.NoError(t, inject.Close())
+
 	out.Reset()
 	require.NoError(t, resumeAfterRestore(ctx, &out, cfg))
 	require.Contains(t, out.String(), "Resumed: 1 hold(s) ended, 1 operation id(s) held for good")

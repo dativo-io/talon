@@ -12,10 +12,10 @@ import (
 	"testing"
 )
 
-// Upgrade from the previous stable release (#467 narrow slice, #465):
-// state written by the PREVIOUS released binary — a succeeded governed
-// action, a pending approval, signed evidence, the vault and an approver
-// principal — is taken over by the binary under test, in place:
+// Upgrade from an earlier release (#467 narrow slice, #465): state written
+// by a PREVIOUS released binary — a succeeded governed action, a pending
+// approval, signed evidence, the vault and an approver principal — is taken
+// over by the binary under test, in place:
 //
 //	previous binary: init, key, approver, serve, one approved+dispatched
 //	refund, one pending approval → stop
@@ -24,19 +24,43 @@ import (
 //	approval is decided with the old approver credential and dispatched once;
 //	a backup of the upgraded stores verifies.
 //
-// The previous binary is supplied by TALON_PREVIOUS_STABLE_BINARY (CI
-// downloads the checksum-verified release archive). Without it the test is
-// skipped, which is NOT RUN, not a pass. Downgrading afterwards is not
-// tested: rollback is restoring the pre-upgrade backup.
+// Two different gates use it:
+//
+//   - TestE2E_UpgradeFromPreviousStable is the N-1 RELEASE GATE: the binary
+//     in TALON_PREVIOUS_STABLE_BINARY must be the stable release immediately
+//     preceding the one under test (CI resolves it with
+//     scripts/previous-stable.sh; it is NOT a fixed version).
+//   - TestE2E_UpgradeFromHistoricalReleases runs the same takeover from each
+//     older binary listed in TALON_COMPAT_BINARIES (path-list separated):
+//     historical compatibility, useful, but never the N-1 gate.
+//
+// Without its variable a test is skipped, which is NOT RUN, not a pass.
+// Downgrading afterwards is not tested: rollback is restoring the
+// pre-upgrade backup.
 func TestE2E_UpgradeFromPreviousStable(t *testing.T) {
 	prev := os.Getenv("TALON_PREVIOUS_STABLE_BINARY")
 	if prev == "" {
-		t.Skip("TALON_PREVIOUS_STABLE_BINARY is not set: the upgrade from the previous stable release was NOT RUN")
+		t.Skip("TALON_PREVIOUS_STABLE_BINARY is not set: the upgrade from the immediately preceding stable release was NOT RUN")
 	}
+	upgradeFrom(t, prev)
+}
+
+func TestE2E_UpgradeFromHistoricalReleases(t *testing.T) {
+	list := os.Getenv("TALON_COMPAT_BINARIES")
+	if list == "" {
+		t.Skip("TALON_COMPAT_BINARIES is not set: historical upgrade compatibility was NOT RUN")
+	}
+	for _, prev := range filepath.SplitList(list) {
+		t.Run(filepath.Base(filepath.Dir(prev)), func(t *testing.T) { upgradeFrom(t, prev) })
+	}
+}
+
+func upgradeFrom(t *testing.T, prev string) {
+	t.Helper()
 	if out, err := exec.Command(prev, "version").Output(); err != nil {
 		t.Fatalf("previous binary %s does not run: %v", prev, err)
 	} else {
-		t.Logf("previous stable: %s", strings.SplitN(string(out), "\n", 2)[0])
+		t.Logf("upgrading from: %s", strings.SplitN(string(out), "\n", 2)[0])
 	}
 	current := binaryPath
 	usePrevious := func() { binaryPath = prev }
