@@ -118,6 +118,18 @@ release workflow also proves the console on what customers get, not on a source 
 (`console-acceptance`: the archive downloaded anonymously; `console-compose`: the image
 pulled anonymously). Locally: `scripts/published-console-acceptance.sh <talon-binary> [version]`.
 
+**First Production Pilot acceptance on the released artifacts (#561).** `release-pilot-acceptance`
+runs `scripts/pilot-acceptance.sh` with the draft's linux executable as the system under test:
+the customer journey (`TestE2E_PilotJourney`: company baseline policy, `talon agents add`, model
+traffic through a deterministic local provider, refund allow / approval / deny with an
+independent counter, the paired console, evidence verification, backup, restore with the
+recovery hold, a second use case), the action, registration and recovery suites, the in-place
+upgrade from the previous stable release, and `scripts/quickstart.sh` against the released
+image. `release-verify` waits for it. `install-smoke.yml` (`pilot-acceptance`) repeats it on
+the published artifacts. A real-provider request is optional and reported `NOT RUN` unless
+`PILOT_LIVE_PROVIDER=1` and a key are set. Bump `PREVIOUS_STABLE` in `ci.yml`, `release.yml`
+and `install-smoke.yml` when a new stable release is cut.
+
 **Supported-platform guarantee (#359 MVP).** The gated installer path is **linux/amd64**: its
 archive is required, verified before publication and installed by `install.sh`. The darwin
 archives (arm64, amd64) are **best effort**: present when the macOS job built them, absent

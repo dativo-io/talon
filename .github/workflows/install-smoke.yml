@@ -196,3 +196,55 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/scripts/quickstart.sh" | TALON_VERSION="${TAG#v}" bash 2>&1 | tee quickstart.log
           grep -q '^PASS talon quickstart' quickstart.log
           { echo "### Quickstart against ${TAG}"; echo '```'; grep -E '^(PASS|FAIL|Image|Digest|Talon)' quickstart.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  # First Production Pilot acceptance on the PUBLISHED artifacts (#561): the
+  # archive is downloaded anonymously and checksum-verified, then the customer
+  # journey runs with it as the system under test, with the in-place upgrade
+  # from the previous stable release and the quickstart against the published
+  # image. No provider key: the model provider is a deterministic local server.
+  pilot-acceptance:
+    name: Pilot acceptance on the published binary and image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve the release tag
+        id: tag
+        env:
+          TAG: ${{ inputs.tag || 'latest' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$TAG" = latest ]; then TAG="$(gh release view --json tagName -q .tagName)"; fi
+          [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = false ] || { echo "::error::$TAG is not a published release"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Download the published archive and the previous stable release (checksum-verified)
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          PREVIOUS_STABLE: "1.16.1"
+        run: |
+          set -euo pipefail
+          fetch() { # fetch <version> <dir>
+            local v="$1" d="$2" base="https://github.com/${GITHUB_REPOSITORY}/releases/download/v$1"
+            mkdir -p "$d"
+            curl -fsSL --retry 3 -o "$d/talon_${v}_linux_amd64.tar.gz" "$base/talon_${v}_linux_amd64.tar.gz"
+            curl -fsSL --retry 3 -o "$d/checksums.txt" "$base/checksums.txt"
+            (cd "$d" && grep -F " talon_${v}_linux_amd64.tar.gz" checksums.txt | sha256sum -c - && tar xzf "talon_${v}_linux_amd64.tar.gz" talon)
+          }
+          fetch "${TAG#v}" "$RUNNER_TEMP/talon"
+          fetch "$PREVIOUS_STABLE" "$RUNNER_TEMP/previous-stable"
+          echo "TALON_PREVIOUS_STABLE_BINARY=$RUNNER_TEMP/previous-stable/talon" >> "$GITHUB_ENV"
+      - name: Pilot acceptance (no provider key)
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          TALON_IMAGE="ghcr.io/dativo-io/talon:${TAG#v}" bash scripts/pilot-acceptance.sh "$RUNNER_TEMP/talon/talon" "$TAG" 2>&1 | tee pilot-acceptance.log
+          { echo "### Pilot acceptance on the published ${TAG} artifacts"; echo '```'; sed -n '/^pilot-acceptance summary/,$p' pilot-acceptance.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

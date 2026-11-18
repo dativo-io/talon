@@ -27,14 +27,20 @@ import (
 //	→ a model request reaches the provider once; a request with PII never does
 //	→ allow / approval (CLI reviewer) / deny by the COMPANY bands, forbidden
 //	action denied, with an independent refund counter
-//	→ verify every lifecycle → online backup + verify → restore: no replay
+//	→ verify every lifecycle → pair the Operations Console: it lists the use
+//	  case and verifies the action's evidence as the CLI does
+//	→ online backup + verify → restore: dispatch held until resumed, no replay
 //	→ register a second use case while serving: it inherits the same company
 //	policy (model request allowed, PII blocked, forbidden action listed).
 //
-// Not in this test: the published artifact and the console. Those are run
-// by scripts/console-compose-smoke.sh and scripts/quickstart.sh on the
-// release image in PR CI and on the published image in release.yml and
-// install-smoke.yml. The model provider here is a local test server.
+// The binary under test is the one built from this checkout, or — with
+// TALON_E2E_BINARY — an existing released executable: that is how
+// scripts/pilot-acceptance.sh runs this journey against a release
+// candidate and a published release. The model provider is a local
+// deterministic test server (no provider key); a real-provider run is a
+// separate, optional check. The console's browser acceptance and the image
+// are covered by scripts/published-console-acceptance.sh,
+// scripts/console-compose-smoke.sh and scripts/quickstart.sh.
 func TestE2E_PilotJourney(t *testing.T) {
 	down := startRefundService(t)
 	var providerCalls atomic.Int64
@@ -61,6 +67,9 @@ func TestE2E_PilotJourney(t *testing.T) {
 	if err := os.WriteFile(gwConfig, []byte(strings.Replace(string(starter), `"https://api.openai.com"`, `"`+provider.URL+`"`, 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Every process of the journey (CLI, serve, console) is one installation.
+	t.Setenv("TALON_AGENTS_DIR", agentsDir)
+	t.Setenv("TALON_GATEWAY_CONFIG", gwConfig)
 	env := map[string]string{"TALON_AGENTS_DIR": agentsDir, "TALON_GATEWAY_CONFIG": gwConfig}
 	ucKey := regexp.MustCompile(`talon_uc_[0-9a-f]{48}`)
 	run := func(e map[string]string, args ...string) string {
@@ -216,6 +225,48 @@ policies:
 		}
 	}
 
+	// 5b. The Operations Console of the same binary, paired from its own
+	// output, shows the use case and verifies the action's evidence exactly
+	// as the CLI does. It holds no admin, agent or vault key.
+	ui := startConsoleUI(t, dir, freePort(t), "--gateway-config", gwConfig)
+	cc := newConsoleClient(t, ui.base)
+	if st, _, _ := cc.do(http.MethodGet, "/console/v1/use-cases?tenant=acme", "", nil); st != http.StatusUnauthorized {
+		t.Fatalf("an unpaired console read must be refused: %d", st)
+	}
+	if st, body := cc.pair(ui.waitCodes(t, 1)[0]); st != http.StatusOK {
+		t.Fatalf("pairing: %d %s", st, body)
+	}
+	if st, body, _ := cc.do(http.MethodGet, "/console/v1/use-cases?tenant=acme", "", nil); st != http.StatusOK || !strings.Contains(body, `"refund-bot"`) {
+		t.Fatalf("the console must list the registered use case: %d %s", st, body)
+	}
+	if st, body, _ := cc.do(http.MethodGet, "/console/v1/system", "", nil); st != http.StatusOK || !strings.Contains(body, `"running"`) {
+		t.Fatalf("the console must show the running process: %d %s", st, body)
+	}
+	var listed any
+	talonJSON(t, dir, &listed, "audit", "list", "--json", "--tenant", "acme", "--limit", "200")
+	lifecycleID := firstEvidenceID(listed, "action_lifecycle")
+	if lifecycleID == "" {
+		t.Fatalf("no action lifecycle record in the CLI listing: %v", listed)
+	}
+	var consoleEv struct {
+		Detail struct {
+			Verification struct {
+				State string `json:"state"`
+			} `json:"verification"`
+		} `json:"detail"`
+	}
+	consoleGet(t, cc, "/console/v1/evidence/"+lifecycleID+"?tenant=acme", &consoleEv)
+	var cliEv struct {
+		Verification struct {
+			State string `json:"state"`
+		} `json:"verification"`
+	}
+	talonJSON(t, dir, &cliEv, "audit", "show", lifecycleID, "--json")
+	if consoleEv.Detail.Verification.State != "valid" || cliEv.Verification.State != "valid" {
+		t.Fatalf("the action's evidence must verify in the console (%q) and the CLI (%q)", consoleEv.Detail.Verification.State, cliEv.Verification.State)
+	}
+	ui.stop()
+
 	// 6. Online backup, verified; restore; no replay.
 	backup := filepath.Join(t.TempDir(), "pilot-backup")
 	run(nil, "backup", "create", backup)
@@ -284,4 +335,29 @@ policies:
 		t.Fatalf("the first use case after the second was added: %d %v", st, res)
 	}
 	run(nil, "validate")
+}
+
+// firstEvidenceID finds the id of the first row of an `audit list --json`
+// answer with the given invocation type, whatever the envelope.
+func firstEvidenceID(v any, invocationType string) string {
+	switch x := v.(type) {
+	case []any:
+		for _, e := range x {
+			if id := firstEvidenceID(e, invocationType); id != "" {
+				return id
+			}
+		}
+	case map[string]any:
+		if t, _ := x["invocation_type"].(string); t == invocationType {
+			if id, _ := x["id"].(string); id != "" {
+				return id
+			}
+		}
+		for _, e := range x {
+			if id := firstEvidenceID(e, invocationType); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
 }

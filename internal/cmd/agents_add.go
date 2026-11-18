@@ -186,7 +186,7 @@ func existingKeyPermits(meta *secrets.SecretMetadata, plan *agentsAddPlan) error
 	if meta.ACL.CheckAccess(plan.Tenant, plan.Name) {
 		return nil
 	}
-	return fmt.Errorf("--use-existing-key: the ACL of vault secret %q does not permit use case %q in tenant %q; set it deliberately with 'talon secrets set %s <key> --tenants %s --agents %s'", plan.SecretName, plan.Name, plan.Tenant, plan.SecretName, plan.Tenant, plan.Name)
+	return fmt.Errorf("--use-existing-key: the ACL of vault secret %q does not permit use case %q in tenant %q; set it deliberately with 'talon secrets set %s <key> --tenant %s --agent %s'", plan.SecretName, plan.Name, plan.Tenant, plan.SecretName, plan.Tenant, plan.Name)
 }
 
 // commitAgentsAdd performs the registration. Order and ownership:
