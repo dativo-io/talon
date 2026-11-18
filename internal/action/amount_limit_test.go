@@ -3,10 +3,12 @@ package action
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -387,4 +389,149 @@ func TestAmountLimit_ApprovalAuthorityAndSingleClaim(t *testing.T) {
 	wg.Wait()
 	require.Equal(t, int64(1), succeeded.Load(), "exactly one claim wins")
 	require.Equal(t, int64(1), down.calls.Load(), "one effect")
+}
+
+func limitHarness(t *testing.T) *harness {
+	t.Helper()
+	down := newDownstream(t)
+	store, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return newHarnessWith(t, down, store, limitPolicy(down.srv.URL), testVaultKey)
+}
+
+// A band-required approval that is rejected, expires undecided, or expires
+// after being granted dispatches nothing.
+func TestAmountLimit_RejectedAndExpiredApprovalsNeverDispatch(t *testing.T) {
+	ctx := context.Background()
+	h := limitHarness(t)
+	const args = `{"ticket_id":"T-9","amount":75.00,"currency":"EUR"}`
+
+	rej := h.establish(t, "op-rejected", "create_refund_request", args)
+	_, err := h.svc.Decide(ctx, DecideRequest{ApprovalID: rej.Operation.Approval.ID, Approve: false, Reason: "duplicate", Reviewer: lead("lead-1")})
+	require.NoError(t, err)
+	_, err = h.svc.Execute(ctx, "op-rejected")
+	require.Equal(t, CodeApprovalRejected, CodeOf(err))
+
+	undecided := h.establish(t, "op-undecided", "create_refund_request", args)
+	granted := h.establish(t, "op-granted", "create_refund_request", args)
+	h.approve(t, granted, lead("lead-1"))
+	h.now = h.now.Add(31 * time.Minute) // expires_after: 30m
+	_, err = h.svc.Decide(ctx, DecideRequest{ApprovalID: undecided.Operation.Approval.ID, Approve: true, Reviewer: lead("lead-1")})
+	require.Equal(t, CodeApprovalExpired, CodeOf(err))
+	for _, op := range []string{"op-undecided", "op-granted"} {
+		_, err = h.svc.Execute(ctx, op)
+		require.Equal(t, CodeApprovalExpired, CodeOf(err), op)
+	}
+	require.Equal(t, int64(0), h.down.calls.Load())
+}
+
+// The signed lifecycle of a band-approved refund verifies; with a record
+// omitted or two records swapped it does not verify as valid.
+func TestAmountLimit_LifecycleOmissionAndReorderAreDetected(t *testing.T) {
+	ctx := context.Background()
+	h := limitHarness(t)
+	res := h.establish(t, "op-mid", "create_refund_request", `{"ticket_id":"T-9","amount":75.00,"currency":"EUR"}`)
+	h.approve(t, res, lead("lead-1"))
+	_, err := h.svc.Execute(ctx, "op-mid")
+	require.NoError(t, err)
+	recs := h.lifecycle(t, "op-mid")
+	require.Equal(t, LifecycleValid, VerifyLifecycle(recs, h.store.VerifyRecord).Verdict)
+	require.GreaterOrEqual(t, len(recs), 5)
+
+	for i := range recs {
+		omitted := append(append([]*evidence.Evidence{}, recs[:i]...), recs[i+1:]...)
+		f := VerifyLifecycle(omitted, h.store.VerifyRecord)
+		require.NotEqual(t, LifecycleValid, f.Verdict, "omitting %s must not verify as valid", recs[i].ActionLifecycle.Event)
+	}
+	// The order is the signed sequence number, not the order records are
+	// presented in: shuffling the list changes nothing...
+	reversed := make([]*evidence.Evidence, len(recs))
+	for i, r := range recs {
+		reversed[len(recs)-1-i] = r
+	}
+	require.Equal(t, LifecycleValid, VerifyLifecycle(reversed, h.store.VerifyRecord).Verdict)
+	// ...and exchanging the sequence numbers of two transitions breaks their signatures.
+	for i := 0; i+1 < len(recs); i++ {
+		swapped := make([]*evidence.Evidence, len(recs))
+		for j, r := range recs {
+			cp := *r
+			l := *r.ActionLifecycle
+			cp.ActionLifecycle = &l
+			swapped[j] = &cp
+		}
+		swapped[i].ActionLifecycle.Sequence, swapped[i+1].ActionLifecycle.Sequence = swapped[i+1].ActionLifecycle.Sequence, swapped[i].ActionLifecycle.Sequence
+		f := VerifyLifecycle(swapped, h.store.VerifyRecord)
+		require.Equal(t, LifecycleInvalid, f.Verdict, "reordering %s and %s must be detected", recs[i].ActionLifecycle.Event, recs[i+1].ActionLifecycle.Event)
+	}
+}
+
+// A crash after the dispatch was armed leaves the outcome unknown: the
+// restart closes the attempt as UNKNOWN and nothing retries it.
+func TestAmountLimit_RestartAfterArmedDispatchIsUnknown(t *testing.T) {
+	ctx := context.Background()
+	h := limitHarness(t)
+	res := h.establish(t, "op-small", "create_refund_request", `{"ticket_id":"T-9","amount":30.00,"currency":"EUR"}`)
+	require.Equal(t, VerdictAllow, res.Operation.Verdict)
+	h.down.lossy.Store(true) // the request is consumed, no response comes back
+	exec, err := h.svc.Execute(ctx, "op-small")
+	require.NoError(t, err)
+	require.Equal(t, AttemptUnknown, exec.Attempt.Status)
+	require.Equal(t, int64(1), h.down.calls.Load())
+	h.down.lossy.Store(false)
+
+	// "Restart": a new service over the same store recovers and still refuses.
+	h2 := newHarnessWith(t, h.down, h.store, limitPolicy(h.down.srv.URL), testVaultKey)
+	_, err = h2.svc.RecoverInterrupted(ctx)
+	require.NoError(t, err)
+	_, err = h2.svc.Execute(ctx, "op-small")
+	require.Equal(t, CodeOperationOutcomeUnknown, CodeOf(err))
+	require.Equal(t, int64(1), h.down.calls.Load(), "an unknown outcome is never retried")
+}
+
+// The reviewer view shows the declared material fields and nothing else of
+// the payload: a non-material field's value never appears in it.
+func TestReview_ShowsDeclaredFieldsOnly(t *testing.T) {
+	ctx := context.Background()
+	h := limitHarness(t)
+	res := h.establish(t, "op-mid", "create_refund_request", `{"ticket_id":"T-9","amount":75.00,"currency":"EUR","iban":"DE89370400440532013000","note":"internal-remark-do-not-show"}`)
+	view, err := h.svc.Review(ctx, res.Operation.Approval.ID)
+	require.NoError(t, err)
+	raw, err := json.Marshal(view)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"amount":75.00`)
+	require.Contains(t, string(raw), "DE89370400440532013000", "a declared material field is shown exactly")
+	require.NotContains(t, string(raw), "internal-remark-do-not-show", "a non-material field is not shown to the reviewer")
+	require.Equal(t, "support-bot", view.UseCase)
+	require.Contains(t, view.Rule, "require approval by support-leads")
+}
+
+// Approvals of other groups never push an eligible approval out of a
+// reviewer's listing, and a listing that is not complete says so.
+func TestPendingApprovals_FilterBeforeBoundAndReportMore(t *testing.T) {
+	ctx := context.Background()
+	h := limitHarness(t)
+	const n = MaxPendingList + 5
+	for i := 0; i < n; i++ {
+		h.establish(t, fmt.Sprintf("op-%03d", i), "create_refund_request", `{"ticket_id":"T-9","amount":75.00,"currency":"EUR"}`)
+		h.now = h.now.Add(time.Second)
+	}
+	// Everything but the NEWEST approval belongs to another group.
+	_, err := h.store.DB().ExecContext(ctx, `UPDATE action_approvals SET groups_json = '["finance"]' WHERE id NOT IN (SELECT id FROM action_approvals ORDER BY created_at DESC, id DESC LIMIT 1)`)
+	require.NoError(t, err)
+
+	list, more, err := h.repo.PendingApprovals(ctx, "acme", []string{"support-leads"}, MaxPendingList)
+	require.NoError(t, err)
+	require.Len(t, list, 1, "the one eligible approval is listed although %d others are older", n-1)
+	require.False(t, more)
+
+	list, more, err = h.repo.PendingApprovals(ctx, "acme", []string{"finance"}, MaxPendingList)
+	require.NoError(t, err)
+	require.Len(t, list, MaxPendingList)
+	require.True(t, more, "an incomplete listing reports that more exist")
+
+	list, more, err = h.repo.PendingApprovals(ctx, "other-tenant", []string{"finance", "support-leads"}, MaxPendingList)
+	require.NoError(t, err)
+	require.Empty(t, list)
+	require.False(t, more)
 }

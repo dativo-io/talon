@@ -233,11 +233,11 @@ A decision dispatches nothing. The AI use case's runtime claims the approved ope
 
 | Route | Credential | Answer |
 |---|---|---|
-| `GET /v1/reviews` | approver only | `{tenant, reviews: [ReviewerView]}`: pending approvals of the credential's tenant that share at least one approver group, oldest first, at most 200 |
+| `GET /v1/reviews` | approver only | `{tenant, reviews: [ReviewerView], more}`: pending approvals of the credential's tenant that share at least one approver group, oldest first, at most 200. The group filter is applied before the bound, so other groups' approvals never hide an eligible one. `more: false` means the listing is complete; `more: true` means older ones are shown and further eligible approvals exist (decide, then list again) |
 | `GET /v1/reviews/{approval_id}` | approver only | `ReviewerView`: `operation` (the projection), `use_case`, `tenant`, `target`, `rule`, `policy_current`, `definition_current`; `404 not_found` for another tenant's approval or one none of the reviewer's groups may decide |
 | `POST /v1/approvals/{approval_id}/decisions` | approver only | the decision (unchanged) |
 
-Admin keys, agent keys, revoked and rotated-away credentials get `401 approval_not_authorized` on every reviewer route. Reads never change an operation, an approval or the evidence. *(Backed by `TestReviewerReads_ScopedToTenantAndGroup`, `TestE2E_ActionGateway_AmountBands`.)*
+Admin keys, agent keys, revoked and rotated-away credentials get `401 approval_not_authorized` on every reviewer route. Reads never change an operation, an approval or the evidence. The view shows the declared `review.fields` exactly and nothing else of the payload: a field declared `non_material` never appears in it. *(Backed by `TestReviewerReads_ScopedToTenantAndGroup`, `TestReview_ShowsDeclaredFieldsOnly`, `TestPendingApprovals_FilterBeforeBoundAndReportMore`, `TestE2E_ActionGateway_AmountBands`.)*
 
 ## Endpoints
 

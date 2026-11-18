@@ -70,9 +70,10 @@ type ApproverResolver interface {
 	IsActive(ctx context.Context, principalID, credentialID string) (bool, error)
 }
 
-// PendingApprovalLister lists the pending approvals of one tenant (oldest
-// first, bounded) for the reviewer listing.
-type PendingApprovalLister func(ctx context.Context, tenantScope string, limit int) ([]action.PendingApproval, error)
+// PendingApprovalLister lists the pending approvals of one tenant that one
+// of the given groups may decide (oldest first, bounded), and whether more
+// eligible ones exist beyond the bound.
+type PendingApprovalLister func(ctx context.Context, tenantScope string, groups []string, limit int) ([]action.PendingApproval, bool, error)
 
 // WithApprovalLister enables GET /v1/reviews.
 func WithApprovalLister(l PendingApprovalLister) Option {
@@ -419,7 +420,7 @@ func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	pending, err := s.pendingApprovals(r.Context(), principal.TenantScope, action.MaxPendingList)
+	pending, more, err := s.pendingApprovals(r.Context(), principal.TenantScope, principal.Groups, action.MaxPendingList)
 	if err != nil {
 		writeActionError(w, http.StatusServiceUnavailable, action.CodeStoreUnavailable, "reading pending approvals", nil)
 		return
@@ -440,5 +441,7 @@ func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
 		}
 		reviews = append(reviews, view)
 	}
-	writeActionJSON(w, http.StatusOK, map[string]any{"tenant": principal.TenantScope, "reviews": reviews})
+	// more is the completeness contract: false means every pending approval
+	// this reviewer may decide is in the answer.
+	writeActionJSON(w, http.StatusOK, map[string]any{"tenant": principal.TenantScope, "reviews": reviews, "more": more})
 }
