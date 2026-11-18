@@ -115,6 +115,8 @@ The restore path is exercised by `TestE2E_BackupRestore_SingleNode`:
 
 Upgrade with the same binary path. Back up and verify first. Stop the service, replace the binary, run `talon doctor`, start the service, and check `talon version` and a recent `talon audit verify`. Read the release's upgrade notes in `CHANGELOG.md` (and the version's upgrade guide where one exists) before you start.
 
+The in-place upgrade from the previous stable release (v1.16.1) is exercised by `TestE2E_UpgradeFromPreviousStable`: the released v1.16.1 binary writes a succeeded action, a pending approval, evidence, the vault and an approver; the new binary takes the same data directory over; the old evidence verifies, the old succeeded action is refused a second claim, the old pending approval is decided with the old approver credential and dispatched once, and a backup of the upgraded stores verifies.
+
 **Rollback is restore.** Returning to an older binary after the new one has written to the stores is not tested. To roll back, stop the service, put the old binary back and restore the pre-upgrade backup. Everything recorded after the upgrade is then lost, and the downstream reconciliation from [Restore](#restore) applies.
 
 ## Limits
