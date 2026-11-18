@@ -2,7 +2,7 @@
 
 **Status:** reference for the OSS operations console epic (#533). It records what the two removed browser dashboards showed, which Go projection or endpoint was the source of each number, and what operator surface carries that fact today. It is the inventory output of #534 and the input to the console's data layer (#535). It describes shipped behaviour as of the removal; it promises nothing about the console.
 
-The dashboards were removed, not deprecated: `GET|HEAD /`, `GET|HEAD /dashboard`, `GET /gateway/dashboard` and `GET /v1/dashboard/*` return a plain `404` with or without the admin key (`TestRoutes_NoLegacyDashboardRoutes`, smoke section 12). See [LIMITATIONS §11](../../LIMITATIONS.md#11-operator-ui-boundary-legacy-dashboards-removed-replacement-console-tracked-in-533).
+The dashboards were removed, not deprecated: `GET|HEAD /`, `GET|HEAD /dashboard`, `GET /gateway/dashboard` and `GET /v1/dashboard/*` return a plain `404` with or without the admin key (`TestRoutes_NoLegacyDashboardRoutes`, smoke section 12). See [LIMITATIONS §11](../../LIMITATIONS.md#11-operator-ui-boundary-legacy-dashboards-removed-read-only-operations-console-shipped).
 
 ## Rules this map encodes
 

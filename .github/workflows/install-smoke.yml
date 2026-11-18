@@ -1,6 +1,7 @@
 name: Install Smoke
 
-# The customer's installation path against a PUBLISHED release (#359): a
+# The customer's installation path against a PUBLISHED release (#359). Job
+# `install-smoke`: a
 # clean runner with no Go, no Docker, anonymous downloads and no checkout
 # beyond the two scripts it runs — scripts/verify-release.sh (public assets, every
 # digest, the executable's version and commit against the tag, the showcase
@@ -71,3 +72,147 @@ jobs:
           name: install-smoke-${{ inputs.tag || 'latest' }}
           path: artifacts
           if-no-files-found: ignore
+
+  # The published image serves the paired read-only operations console over a
+  # clean Compose installation (#533 release acceptance): the stack and the
+  # smoke come from the release's own tag, the Talon image is pulled
+  # anonymously from GHCR (no login step in this job), and only the mock
+  # provider is built. A release that predates the console (before v1.17.0,
+  # scripts/release-capabilities.sh) reports NOT APPLICABLE; on a
+  # console-enabled release a missing script or asset fails the job.
+  console-compose:
+    name: Operations console from the published image (Compose, pairing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve the release tag
+        id: tag
+        env:
+          TAG: ${{ inputs.tag || 'latest' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$TAG" = latest ]; then TAG="$(gh release view --json tagName -q .tagName)"; fi
+          [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = false ] || { echo "::error::$TAG is not a published release"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      # The applicability rule comes from the workflow's own ref (the audited
+      # release may predate the script); the tests and fixtures below come
+      # from the release's tag.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/release-capabilities.sh
+          sparse-checkout-cone-mode: false
+      - name: Does this release ship the operations console?
+        id: cap
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-capabilities.sh "$TAG" | tee -a "$GITHUB_OUTPUT"
+          if ! grep -q '^console=true$' "$GITHUB_OUTPUT"; then
+            echo "### Operations console from the published image: NOT APPLICABLE — $TAG predates the operations console (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cap.outputs.console == 'true'
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+          sparse-checkout: |
+            examples/docker-compose
+            scripts/console-compose-smoke.sh
+          sparse-checkout-cone-mode: false
+      - name: Pair with the console of the published image and read the installation
+        if: steps.cap.outputs.console == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          TALON_IMAGE="ghcr.io/dativo-io/talon:${VERSION}" TALON_PULL_POLICY=always TALON_EXPECT_VERSION="$VERSION" \
+            bash scripts/console-compose-smoke.sh 2>&1 | tee console-compose.log
+          { echo "### Operations console from ghcr.io/dativo-io/talon:${VERSION}"; echo '```'; grep -E '^(PASS|FAIL)' console-compose.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  # Operations Console acceptance on the PUBLISHED executable (#533): the
+  # release archive is downloaded anonymously and checksum-verified, then the
+  # browser suite, the People Analytics real-process contract (#545) and the
+  # console e2e run with it as the system under test. The checkout is the
+  # release's own tag. NOT APPLICABLE before v1.17.0, as above.
+  console-acceptance:
+    name: Console acceptance on the published binary (browser, People Analytics)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Resolve the release tag
+        id: tag
+        env:
+          TAG: ${{ inputs.tag || 'latest' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$TAG" = latest ]; then TAG="$(gh release view --json tagName -q .tagName)"; fi
+          [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = false ] || { echo "::error::$TAG is not a published release"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      # The applicability rule comes from the workflow's own ref (the audited
+      # release may predate the script); the tests and fixtures below come
+      # from the release's tag.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/release-capabilities.sh
+          sparse-checkout-cone-mode: false
+      - name: Does this release ship the operations console?
+        id: cap
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-capabilities.sh "$TAG" | tee -a "$GITHUB_OUTPUT"
+          if ! grep -q '^console=true$' "$GITHUB_OUTPUT"; then
+            echo "### Console acceptance on the published binary: NOT APPLICABLE — $TAG predates the operations console (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cap.outputs.console == 'true'
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        if: steps.cap.outputs.console == 'true'
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        if: steps.cap.outputs.console == 'true'
+        with:
+          node-version: '22'
+      - name: Download the published archive anonymously and verify it
+        if: steps.cap.outputs.console == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          ARCHIVE="talon_${VERSION}_linux_amd64.tar.gz"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          mkdir -p "$RUNNER_TEMP/assets" "$RUNNER_TEMP/talon"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/assets/$ARCHIVE" "$BASE/$ARCHIVE"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/assets/checksums.txt" "$BASE/checksums.txt"
+          (cd "$RUNNER_TEMP/assets" && grep -F " $ARCHIVE" checksums.txt | sha256sum -c -)
+          tar -C "$RUNNER_TEMP/talon" -xzf "$RUNNER_TEMP/assets/$ARCHIVE" talon
+      - name: Install Playwright (pinned) and Chromium
+        if: steps.cap.outputs.console == 'true'
+        working-directory: tests/browser
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Browser suite, People Analytics (#545) and console e2e on the published binary
+        if: steps.cap.outputs.console == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash scripts/published-console-acceptance.sh "$RUNNER_TEMP/talon/talon" "$TAG" 2>&1 | tee console-acceptance.log
+          { echo "### Console acceptance on the published ${TAG} binary"; echo '```'; grep -E '^(binary under test|== |PASS|FAIL|ok )|passed|failed' console-acceptance.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
