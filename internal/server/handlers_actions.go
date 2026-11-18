@@ -70,6 +70,15 @@ type ApproverResolver interface {
 	IsActive(ctx context.Context, principalID, credentialID string) (bool, error)
 }
 
+// PendingApprovalLister lists the pending approvals of one tenant (oldest
+// first, bounded) for the reviewer listing.
+type PendingApprovalLister func(ctx context.Context, tenantScope string, limit int) ([]action.PendingApproval, error)
+
+// WithApprovalLister enables GET /v1/reviews.
+func WithApprovalLister(l PendingApprovalLister) Option {
+	return func(s *Server) { s.pendingApprovals = l }
+}
+
 // WithActionGateway mounts the Action Gateway routes.
 func WithActionGateway(services ActionServiceResolver, owners ApprovalOwnerResolver, approvers ApproverResolver) Option {
 	return func(s *Server) {
@@ -293,18 +302,8 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approvals are not configured", nil)
 		return
 	}
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer talon_appr_") {
-		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, "an approver credential (Authorization: Bearer talon_appr_…) is required; admin and agent keys carry no approval authority", nil)
-		return
-	}
-	principal, err := s.approvers.ResolvePrincipal(r.Context(), strings.TrimPrefix(auth, "Bearer "))
-	if err != nil || principal == nil {
-		msg := "unknown, revoked or inactive approver credential"
-		if errors.Is(err, approver.ErrLegacyCredential) {
-			msg = err.Error()
-		}
-		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, msg, nil)
+	principal, ok := s.authenticateReviewer(w, r)
+	if !ok {
 		return
 	}
 	var body decisionBody
@@ -342,4 +341,104 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeActionJSON(w, http.StatusOK, map[string]any{"operation": proj, "approval": proj.Approval})
+}
+
+// authenticateReviewer resolves the approver credential of a reviewer
+// request. Only `Authorization: Bearer talon_appr_…` is accepted: an admin
+// key, an agent key, a header name or a body field never makes a reviewer.
+func (s *Server) authenticateReviewer(w http.ResponseWriter, r *http.Request) (*approver.Principal, bool) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer talon_appr_") {
+		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, "an approver credential (Authorization: Bearer talon_appr_…) is required; admin and agent keys carry no approval authority", nil)
+		return nil, false
+	}
+	principal, err := s.approvers.ResolvePrincipal(r.Context(), strings.TrimPrefix(auth, "Bearer "))
+	if err != nil || principal == nil {
+		msg := "unknown, revoked or inactive approver credential"
+		if errors.Is(err, approver.ErrLegacyCredential) {
+			msg = err.Error()
+		}
+		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, msg, nil)
+		return nil, false
+	}
+	return principal, true
+}
+
+// sharesGroup reports whether the reviewer holds one of the groups an
+// approval names.
+func sharesGroup(principalGroups, approvalGroups []string) bool {
+	for _, a := range approvalGroups {
+		for _, p := range principalGroups {
+			if a == p {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// handleReviewGet returns what a reviewer reads before deciding one
+// approval (#433). An approval outside the reviewer's tenant, or one none
+// of the reviewer's groups may decide, is "not found": approval ids stay
+// opaque and review fields are shown only to someone who could decide.
+func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
+	if s.approvers == nil || s.approvalOwners == nil {
+		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approvals are not configured", nil)
+		return
+	}
+	principal, ok := s.authenticateReviewer(w, r)
+	if !ok {
+		return
+	}
+	approvalID := chi.URLParam(r, "approval_id")
+	svc, ok := s.approvalOwners(r.Context(), principal.TenantScope, approvalID)
+	if !ok {
+		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approval not found", nil)
+		return
+	}
+	view, err := svc.Review(r.Context(), approvalID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if view.Operation == nil || view.Operation.Approval == nil || !sharesGroup(principal.Groups, view.Operation.Approval.Groups) {
+		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approval not found", nil)
+		return
+	}
+	writeActionJSON(w, http.StatusOK, view)
+}
+
+// handleReviewList lists the pending approvals the reviewer may decide:
+// the reviewer's tenant, at least one shared approver group, oldest first.
+func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
+	if s.approvers == nil || s.approvalOwners == nil || s.pendingApprovals == nil {
+		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approvals are not configured", nil)
+		return
+	}
+	principal, ok := s.authenticateReviewer(w, r)
+	if !ok {
+		return
+	}
+	pending, err := s.pendingApprovals(r.Context(), principal.TenantScope, action.MaxPendingList)
+	if err != nil {
+		writeActionError(w, http.StatusServiceUnavailable, action.CodeStoreUnavailable, "reading pending approvals", nil)
+		return
+	}
+	reviews := make([]*action.ReviewerView, 0, len(pending))
+	for i := range pending {
+		p := &pending[i]
+		if !sharesGroup(principal.Groups, p.Groups) {
+			continue
+		}
+		svc, ok := s.approvalOwners(r.Context(), principal.TenantScope, p.ID)
+		if !ok {
+			continue // the owning use case no longer declares a catalog
+		}
+		view, err := svc.Review(r.Context(), p.ID)
+		if err != nil {
+			continue
+		}
+		reviews = append(reviews, view)
+	}
+	writeActionJSON(w, http.StatusOK, map[string]any{"tenant": principal.TenantScope, "reviews": reviews})
 }

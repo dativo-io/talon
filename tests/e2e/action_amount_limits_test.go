@@ -141,10 +141,47 @@ policies:
 		t.Fatalf("claim before approval: %d %v", st, res)
 	}
 	calls(1, "approval band before a decision")
-	if st, res = c.do("POST", "/v1/approvals/"+approvalID+"/decisions", leadKey, `{"decision":"approve","reason":"customer verified"}`); st != 200 || dig(res, "approval", "status") != "approved" {
-		t.Fatalf("approve: %d %v", st, res)
+	// The local reviewer path (#433): the approver reads exactly what they
+	// approve and decides through the CLI; the credential is in the
+	// environment, never on the command line.
+	reviewerEnv := map[string]string{"TALON_APPROVER_KEY": leadKey}
+	url := "--url=" + c.base
+	if _, stderr, code := RunTalon(t, dir, nil, "approvals", "list", url); code == 0 || !strings.Contains(stderr, "TALON_APPROVER_KEY is not set") {
+		t.Fatalf("approvals without a credential must refuse: code=%d %s", code, stderr)
+	}
+	if _, stderr, code := RunTalon(t, dir, map[string]string{"TALON_APPROVER_KEY": agAgentKey}, "approvals", "list", url); code == 0 || !strings.Contains(stderr, "does not hold an approver credential") {
+		t.Fatalf("an agent key is no approver credential: code=%d %s", code, stderr)
+	}
+	out, stderr, code = RunTalon(t, dir, reviewerEnv, "approvals", "list", url)
+	if code != 0 || !strings.Contains(out, approvalID) || !strings.Contains(out, "amount=75.00") || !strings.Contains(out, "op op-75") {
+		t.Fatalf("approvals list: code=%d\n%s\n%s", code, out, stderr)
+	}
+	out, stderr, code = RunTalon(t, dir, reviewerEnv, "approvals", "show", approvalID, url)
+	for _, want := range []string{
+		"Action:            create_refund_request",
+		"Target:            POST " + down.srv.URL + "/refunds",
+		"Verdict:           REQUIRE_APPROVAL (rule refund-bands, use_case policy)",
+		"Why:               use_case amount limit refund-bands on create_refund_request: EUR amounts (argument \"amount\") up to 50.00 are allowed, above 50.00 and up to 500.00 require approval by support-leads, above 500.00 are denied",
+		"amount           75.00", `currency         "EUR"`, `ticket_id        "T-2"`,
+	} {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Fatalf("approvals show missing %q: code=%d\n%s\n%s", want, code, out, stderr)
+		}
+	}
+	if strings.Contains(out, "WARNING") {
+		t.Fatalf("a current policy must not warn:\n%s", out)
+	}
+	if _, stderr, code := RunTalon(t, dir, reviewerEnv, "approvals", "approve", approvalID, url); code == 0 || !strings.Contains(stderr, "--reason is required") {
+		t.Fatalf("a decision needs a reason: code=%d %s", code, stderr)
+	}
+	out, stderr, code = RunTalon(t, dir, reviewerEnv, "approvals", "approve", approvalID, "--reason", "customer verified", url)
+	if code != 0 || !strings.Contains(out, "approved by apr_") || !strings.Contains(out, "is now authorized; nothing was dispatched") {
+		t.Fatalf("approvals approve: code=%d\n%s\n%s", code, out, stderr)
 	}
 	calls(1, "the approval itself")
+	if out, _, _ = RunTalon(t, dir, reviewerEnv, "approvals", "list", url); !strings.Contains(out, "No pending approvals") {
+		t.Fatalf("a decided approval leaves the list:\n%s", out)
+	}
 	if st, res = establish("op-75", `{"ticket_id":"T-2","amount":450.00,"currency":"EUR"}`); st != 409 || errCode(res) != "operation_conflict" {
 		t.Fatalf("changed amount must not reuse the approval: %d %v", st, res)
 	}

@@ -206,6 +206,38 @@ All three read the one shared projection (`action.CatalogView`) the runtime gene
 
 An MCP-sourced definition presented to this HTTP adapter is refused with `501 execution_unsupported` before anything is bound or persisted (its execution is #431).
 
+## Reviewing approvals (`talon approvals`, #433)
+
+A reviewer is a local approver principal (`talon approver add --name lead-1 --tenant acme --groups support-leads`). The command prints a `talon_appr_…` credential once. The reviewer exports it as `TALON_APPROVER_KEY`, which is never passed as a flag, and works against the running server (`--url`, default `http://localhost:8080`):
+
+```bash
+export TALON_APPROVER_KEY=...              # the credential from 'talon approver add'
+talon approvals list                      # pending approvals of my tenant that one of my groups may decide
+talon approvals show apr_...              # exactly what I would authorize
+talon approvals approve apr_... --reason "customer verified"
+talon approvals reject  apr_... --reason "duplicate refund"
+```
+
+`show` prints:
+- the action and operation;
+- the **target**: the trusted catalog destination Talon itself will call;
+- the verdict with its rule id and layer;
+- **why**: the matched rule as the current policy states it, for example the amount bands;
+- the **exact** material argument values from the reviewer projection, with the digest that binds them;
+- the approval's groups and expiry.
+
+It warns when the policy or the action definition changed since the operation was established, because an approval could then not be used.
+
+A decision dispatches nothing. The AI use case's runtime claims the approved operation afterwards, and Talon re-checks the binding, the policy and the amount bands before any claim. `--reason` is required and recorded in the signed approval evidence. `--json` prints the server's answer.
+
+| Route | Credential | Answer |
+|---|---|---|
+| `GET /v1/reviews` | approver only | `{tenant, reviews: [ReviewerView]}`: pending approvals of the credential's tenant that share at least one approver group, oldest first, at most 200 |
+| `GET /v1/reviews/{approval_id}` | approver only | `ReviewerView`: `operation` (the projection), `target`, `rule`, `policy_current`, `definition_current`; `404 not_found` for another tenant's approval or one none of the reviewer's groups may decide |
+| `POST /v1/approvals/{approval_id}/decisions` | approver only | the decision (unchanged) |
+
+Admin keys, agent keys, revoked and rotated-away credentials get `401 approval_not_authorized` on every reviewer route. Reads never change an operation, an approval or the evidence. *(Backed by `TestReviewerReads_ScopedToTenantAndGroup`, `TestE2E_ActionGateway_AmountBands`.)*
+
 ## Endpoints
 
 Runtime routes take the AI use case's **agent key** (`Authorization: Bearer <agent key>`); admin keys are refused. Every agent-key route answers `409 generation_changed` when the runtime generation changed between authentication and resolution (see above). The decision route takes a **tenant-scoped approver credential** only (`talon approver add --name <subject> --tenant <tenant> --groups <g1,g2>`): a 256-bit credential of the form `talon_appr_<credential_id>.<secret>` whose raw value is stored nowhere. A decision is authorized when the principal's tenant scope equals the operation's tenant, one of its groups is an approver group of the matched rule, and the principal and credential are active — rechecked inside the decision transaction. Admin keys, agent keys, workload identities and legacy role approvers (`--role`, no tenant scope) are refused. Evidence records the principal id, tenant, subject, matched group, credential id and version — never a token or hash.
