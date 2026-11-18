@@ -86,7 +86,7 @@ Choose the shortest path for your situation:
 
 | Doc | Pillar | Description |
 |-----|--------|-------------|
-| [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-agent.md) | Cost | Fast path to agent-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
+| [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-agent.md) | Cost | Fast path to agent-level daily/monthly admission caps (estimate-based, fail-closed, not invoice ceilings), budget-deny proof, and evidence-backed cost attribution. |
 | [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Cost | Ticket summarization with PII and cost controls. |
 | [Incident response playbook](guides/incident-response-playbook.md) | Reliability | Common operational scenarios when running AI agents. |
 | [How to govern coding agents](guides/governing-coding-agents.md) | Sessions | Govern a fleet of coding agents; orchestration metadata contract, session attribution, cost rollups. |
@@ -133,6 +133,7 @@ Choose the shortest path for your situation:
 | [Gateway metrics API](reference/gateway-metrics-api.md) | Metrics JSON/SSE endpoints, snapshot fields, CLI parity, and authentication. |
 | [Legacy dashboard migration map](reference/legacy-dashboard-migration-map.md) | What the removed dashboards showed, the Go projection or route that owns each number, the CLI surface today, and the recorded gaps for the console epic (#533). |
 | [Operations console](guides/operations-console.md) | The six read-only pages, where each number comes from, how to read unavailable versus zero, decision versus dispatch, fixed cost windows, and what the console does not do. |
+| [Upgrading from v1.16 to v1.17](guides/upgrading-to-1.17.md) | Removed dashboards and dashboard API, admin-key carriers, the unresolvable-agent-key start-up refusal, starting and pairing the console, the WAL mount rule, running the published image, and how to verify the upgrade. |
 | [Console process and browser access](reference/console-access.md) | `talon ui` / `talon ui serve` / `talon ui pair` (#536): fail-closed resolution, read-only store, loopback default, Compose `talon-ui`; one-time pairing and the read-only browser session (#537): code, exchange, cookie, host/origin checks, what the credential can and cannot reach, threat model, tests. |
 | [Console read contract: concept map](reference/console-read-contract.md) | Target contract for the OSS operations console (#535): each operational concept, the Go projection that owns it, its CLI and HTTP surface today, the console DTO, known discrepancies and the parity test plan. |
 | [Operational control plane](reference/operational-control-plane.md) | Run management (list/kill/pause/resume), tenant lockdown, runtime overrides, tool approval gates. |

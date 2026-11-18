@@ -6,6 +6,19 @@
 # wrote to, cannot reach any privileged route through the console, and a
 # console restart leaves the data plane serving. Needs Docker; no provider
 # key. Run by `make test-console-compose-smoke` and the CI Docker job.
+#
+# Image under test (#533 release acceptance):
+#   (default)                       build both Talon services from this checkout
+#   TALON_IMAGE=<ref>               run that image instead, never built here:
+#                                   the release image built from
+#                                   Dockerfile.goreleaser in PR CI, or the
+#                                   published ghcr.io/dativo-io/talon:<version>
+#                                   in release verification and install smoke
+#   TALON_PULL_POLICY=always|never  default `always` with TALON_IMAGE (pull the
+#                                   published image anonymously); `never` for a
+#                                   locally built tag
+#   TALON_EXPECT_VERSION=<x.y.z>    fail unless the running image reports
+#                                   "Talon <x.y.z>"
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -59,9 +72,27 @@ status_of() { # status_of <method> <url> [curl args...]
   curl -sS -o "$WORK/body" -w '%{http_code}' -X "$method" "$url" "$@"
 }
 
-"${COMPOSE[@]}" up -d --build
+if [ -n "${TALON_IMAGE:-}" ]; then
+  export TALON_IMAGE
+  export TALON_PULL_POLICY="${TALON_PULL_POLICY:-always}"
+  echo "image under test: $TALON_IMAGE (pull_policy=$TALON_PULL_POLICY)"
+  # Only the mock provider is built; the Talon services run the given image.
+  "${COMPOSE[@]}" build mock-openai
+  "${COMPOSE[@]}" up -d
+else
+  echo "image under test: built from this checkout"
+  "${COMPOSE[@]}" up -d --build
+fi
 wait_http "$DP/health" 120
 wait_http "$UI/healthz" 60
+
+running_version="$("${COMPOSE[@]}" exec -T talon talon version | head -n1)"
+echo "running: $running_version"
+if [ -n "${TALON_EXPECT_VERSION:-}" ]; then
+  check "the data plane runs the expected release ($running_version)" [ "$running_version" = "Talon $TALON_EXPECT_VERSION" ]
+  ui_version="$("${COMPOSE[@]}" exec -T talon-ui talon version | head -n1)"
+  check "the console runs the expected release ($ui_version)" [ "$ui_version" = "Talon $TALON_EXPECT_VERSION" ]
+fi
 
 # Port scope: console AND data plane are published on the host loopback only.
 # The data plane of this no-key stack is development-open; console pairing
@@ -95,6 +126,24 @@ check "overview reports today's request count for tenant demo" grep -Eq '"reques
 # The console reads the very session the data plane just wrote (shared store, read-only connection).
 check "session written by the data plane is readable through the console" [ "$(status_of GET "$UI/console/v1/sessions/compose-smoke?tenant=demo" -b "$WORK/jar")" = "200" ]
 check "session summary counts the governed request" grep -Eq '"requests":1' "$WORK/body"
+# The six pages read from these endpoints; each answers the paired browser.
+for page in "overview?tenant=demo" "use-cases?tenant=demo" "use-cases/demo-agent?tenant=demo" "use-cases/demo-agent/effective-policy?tenant=demo" "sessions?tenant=demo" "costs?tenant=demo" "configuration" "system" "tenants"; do
+  check "paired GET /console/v1/$page is 200" [ "$(status_of GET "$UI/console/v1/$page" -b "$WORK/jar")" = "200" ]
+done
+# Signed evidence: the console verifies the record the data plane signed, and
+# says the same as `talon audit show --json` inside the data-plane container.
+status_of GET "$UI/console/v1/sessions/compose-smoke/timeline?tenant=demo" -b "$WORK/jar" >/dev/null
+evidence_id="$(jq -r '.timeline.records[0].id // empty' "$WORK/body")"
+check "the session timeline names its evidence record ($evidence_id)" [ -n "$evidence_id" ]
+check "evidence record readable through the console" [ "$(status_of GET "$UI/console/v1/evidence/$evidence_id?tenant=demo" -b "$WORK/jar")" = "200" ]
+console_verdict="$(jq -r '.detail.verification.state // empty' "$WORK/body")"
+cli_verdict="$("${COMPOSE[@]}" exec -T talon talon audit show "$evidence_id" --json | jq -r '.verification.state // empty')"
+check "console verifies the signature ($console_verdict)" [ "$console_verdict" = "valid" ]
+check "console and CLI verify the record the same way (console $console_verdict, CLI $cli_verdict)" [ "$console_verdict" = "$cli_verdict" ]
+# Legacy dashboards were removed (#534): neither process serves them.
+for legacy in /dashboard /gateway/dashboard /v1/dashboard/tenants-summary; do
+  check "no legacy dashboard on the data plane ($legacy 404)" [ "$(status_of GET "$DP$legacy")" = "404" ]
+done
 check "write verb on the read API is 405" [ "$(status_of POST "$UI/console/v1/overview" -b "$WORK/jar" -H 'Content-Type: application/json' -d '{}')" = "405" ]
 # The demo data plane runs without TALON_ADMIN_KEY, so the admin route's
 # answer depends on that configuration, not on the console. The claim here is

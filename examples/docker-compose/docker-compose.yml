@@ -15,6 +15,12 @@
 #   # Read-only console in the browser: open http://127.0.0.1:8787/ and enter
 #   # the one-time pairing code from:
 #   docker compose logs talon-ui
+#
+# By default both Talon services are built from this checkout. To run the
+# PUBLISHED release image instead (no Go toolchain, no Talon build; only the
+# small mock provider is built locally):
+#
+#   TALON_IMAGE=ghcr.io/dativo-io/talon:<version> TALON_PULL_POLICY=always docker compose up
 
 services:
   mock-openai:
@@ -31,6 +37,8 @@ services:
   talon:
     build:
       context: ../../
+    image: ${TALON_IMAGE:-talon-demo:local}
+    pull_policy: ${TALON_PULL_POLICY:-build}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -74,6 +82,8 @@ services:
   talon-ui:
     build:
       context: ../../
+    image: ${TALON_IMAGE:-talon-demo:local}
+    pull_policy: ${TALON_PULL_POLICY:-build}
     command: ui serve --listen 0.0.0.0:8787 --allow-non-loopback --gateway-config /etc/talon/talon.config.yaml
     ports:
       - "127.0.0.1:8787:8787"

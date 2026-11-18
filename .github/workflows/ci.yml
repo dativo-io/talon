@@ -436,3 +436,15 @@ jobs:
           cp Dockerfile.goreleaser "$CTX/"
           docker build -f "$CTX/Dockerfile.goreleaser" -t talon:release-ci "$CTX"
           [ "$(docker run --rm talon:release-ci version | head -n1)" = "Talon 0.0.0-ci" ]
+
+      # The console on the RELEASE image shape (#533 release acceptance): the
+      # same Compose smoke, with both Talon services running the
+      # Dockerfile.goreleaser image built above instead of the alpine
+      # development image (glibc binary, debian base, uid 1000 home, shared
+      # SQLite WAL volume read by the console's read-only connection).
+      - name: Console Compose smoke on the release image (Dockerfile.goreleaser)
+        env:
+          TALON_IMAGE: talon:release-ci
+          TALON_PULL_POLICY: never
+          TALON_EXPECT_VERSION: 0.0.0-ci
+        run: bash scripts/console-compose-smoke.sh

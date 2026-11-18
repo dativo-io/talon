@@ -26,6 +26,16 @@ docker compose exec talon /usr/local/bin/talon audit list
 You'll see an evidence record with PII detected (email, IBAN), cost tracked,
 and HMAC signature.
 
+## Run the published release image
+
+By default both Talon services (`talon`, `talon-ui`) are built from this checkout. To run a published release instead (pulled anonymously from GHCR; only the mock provider is built locally):
+
+```bash
+TALON_IMAGE=ghcr.io/dativo-io/talon:<version> TALON_PULL_POLICY=always docker compose up
+```
+
+The same image runs the data plane and the read-only console. `scripts/console-compose-smoke.sh` takes the same `TALON_IMAGE` variable and checks pairing, the six pages, signature verification parity with the CLI and loopback-only publication against it.
+
 ## Run the Full Demo
 
 ```bash

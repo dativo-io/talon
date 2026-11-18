@@ -355,6 +355,17 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           docker pull "ghcr.io/dativo-io/talon:${VERSION}"
           [ "$(docker run --rm "ghcr.io/dativo-io/talon:${VERSION}" version | head -n1)" = "Talon $VERSION" ]
+      # The released image must also serve the paired read-only console over
+      # the shared store (#533): pairing from the container log, the six
+      # pages' read endpoints, console/CLI signature verification parity, no
+      # legacy dashboard, loopback-only publication, restart independence.
+      - name: Operations console from the released image (Compose, pairing)
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          TALON_IMAGE="ghcr.io/dativo-io/talon:${VERSION}" TALON_PULL_POLICY=always TALON_EXPECT_VERSION="$VERSION" \
+            bash scripts/console-compose-smoke.sh 2>&1 | tee "$RUNNER_TEMP/console-compose.log"
+          { echo '### Operations console from the released image'; echo '```'; grep -E '^(PASS|FAIL)' "$RUNNER_TEMP/console-compose.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # Publication is the point of no return: everything that can be verified
       # has been. The two steps after it (alias promotion, anonymous
       # re-download) never touch release assets, are idempotent, and are
