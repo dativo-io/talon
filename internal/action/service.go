@@ -790,10 +790,10 @@ func (s *Service) authorizeClaim(ctx context.Context, tx *sql.Tx, w *evidence.Tx
 	return &claimAuthorization{op: op, def: def, approval: ap, payload: payload}, nil
 }
 
-// recheckWithArguments applies the amount limits (#205), which read the
+// recheckWithArguments applies the argument rules (#205), which read the
 // material arguments only the sealed payload holds, before anything is
-// claimed: a band that now denies, or now needs an approval this operation
-// does not hold, refuses with zero dispatch.
+// claimed: a rule that now denies, or now requires an approval this
+// operation does not hold, refuses with zero dispatch.
 func (s *Service) recheckWithArguments(ctx context.Context, tx *sql.Tx, w *evidence.TxWriter, op *Operation, ap *Approval, payload []byte, approvalChecked bool) error {
 	v := s.Policy.EvaluateArguments(op.Action, payload)
 	if v.Outcome == VerdictDeny {

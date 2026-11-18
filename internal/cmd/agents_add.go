@@ -32,7 +32,7 @@ import (
 // `talon agents add` (#472): register one more AI use case in an existing
 // agents_dir installation without hand-editing YAML. The new agent file
 // declares only identity and ownership: every policy — budgets, PII,
-// models, tools, forbidden actions, approval rules and amount limits — is
+// models, tools, forbidden actions, approval rules and argument rules — is
 // the company's organization policy until the use case's own file adds a
 // restriction. Order is fail-safe: nothing is written when the fleet is
 // invalid or the name is taken; the key is stored BEFORE the file appears,
@@ -56,7 +56,7 @@ var agentNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 const agentsAddTemplate = `# AI use case {{ printf "%q" .Name }} — registered with 'talon agents add'.
 # Every policy not set here is the company's organization policy
 # (talon.config.yaml gateway.organization_policy): budgets, PII handling,
-# models, tools, forbidden actions, approval rules and amount limits.
+# models, tools, forbidden actions, approval rules and argument rules.
 # Add a block below only to tighten it for this use case; company
 # constraints and denials cannot be lifted from this file.
 agent:
@@ -589,5 +589,5 @@ func companyApprovalSummary(aa *gateway.ActionApprovalsConstraint) string {
 	if aa == nil {
 		return "0 approval rule(s)"
 	}
-	return fmt.Sprintf("%d approval rule(s), %d amount limit(s)", len(aa.Rules), len(aa.AmountLimits))
+	return fmt.Sprintf("%d approval rule(s), %d argument rule(s)", len(aa.Rules), len(aa.ArgumentRules))
 }
