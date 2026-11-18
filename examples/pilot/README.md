@@ -1,6 +1,6 @@
 # Production pilot starter
 
-`talon.config.yaml` is a company baseline policy to start a pilot from: one provider, PII blocked, per-use-case budgets with company ceilings, two forbidden actions, and the example refund amount bands (allow up to 50 EUR, approval up to 500 EUR, deny above). Copy it to `/etc/talon/talon.config.yaml`, adjust the lines marked `ADJUST` and the thresholds, then follow the [production pilot runbook](../../docs/guides/production-pilot.md).
+`talon.config.yaml` is a company baseline policy to start a pilot from: one provider, PII blocked, per-use-case budgets with company ceilings, two forbidden actions, and example argument rules for a refund (above 50.00 approval, above 500.00 deny). Copy it to `/etc/talon/talon.config.yaml`, adjust the lines marked `ADJUST` and the thresholds, then follow the [production pilot runbook](../../docs/guides/production-pilot.md).
 
 Every AI use case registered with `talon agents add` inherits it. A use case's own file can add restrictions; it cannot lift a constraint.
 

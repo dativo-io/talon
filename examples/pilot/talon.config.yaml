@@ -35,20 +35,29 @@ gateway:
       max_monthly_cost: 2000.00
       # Actions and tools no use case may perform, whatever its own file says.
       forbidden_tools: ["delete_customer", "export_all_*"]
-      # Business actions decided by amount, for every use case that declares
-      # the action. EXAMPLE POLICY — set your own thresholds and groups:
-      # up to 50.00 EUR allowed, up to 500.00 EUR approval by support-leads,
-      # above that denied. A use case can tighten these bands, never lift them.
+      # Business actions decided by the value of one of their arguments, for
+      # every use case that declares the action. EXAMPLE POLICY — set your
+      # own thresholds and groups: a refund above 50.00 needs approval by
+      # support-leads, above 500.00 it is denied. A rule only restricts; a
+      # use case can add rules, never lift these. The currency and precision
+      # of an amount are constraints of the action's input_schema.
       action_approvals:
-        amount_limits:
-          refund-bands:
+        argument_rules:
+          refund-needs-approval:
             actions: ["create_refund_request"]
-            amount_argument: "amount"
-            currency_argument: "currency"
-            currency: "EUR"
-            allow_up_to: "50.00"
-            approval_up_to: "500.00"
+            argument: "amount"
+            type: "decimal"            # integer | decimal | string | boolean
+            operator: "gt"             # eq ne gt gte lt lte
+            value: "50.00"             # a decimal operand is a quoted string
+            effect: "require_approval"
             approver_groups: ["support-leads"]
+          refund-too-large:
+            actions: ["create_refund_request"]
+            argument: "amount"
+            type: "decimal"
+            operator: "gt"
+            value: "500.00"
+            effect: "deny"
 
   rate_limits:
     global_requests_per_min: 300

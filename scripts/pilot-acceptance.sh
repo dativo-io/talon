@@ -82,7 +82,7 @@ journey() {
 
 run "customer journey (registration, policy, model traffic, allow/approval/deny, console, evidence, backup/restore/resume, second use case)" journey
 [ -n "$sdk_dir" ] || missing "application client check with the OpenAI Node SDK (node and npm are needed)"
-run "exact action governance and amount limits" e2e '^TestE2E_ActionGateway'
+run "exact action governance and argument rules" e2e '^TestE2E_ActionGateway'
 run "use-case registration, including concurrent registrations" e2e '^TestE2E_AgentsAdd'
 run "backup, restore and the recovery hold" e2e '^TestE2E_BackupRestore_SingleNode$|^TestE2E_Restore_'
 run "no-key quickstart script over this binary" e2e '^TestE2E_QuickstartScript_LocalBinary$'

@@ -72,7 +72,7 @@ t() { sudo -u talon env $(sudo cat /etc/talon/talon.env | xargs) sh -c 'cd /etc/
 
 The company policy lives in `/etc/talon/talon.config.yaml` under `gateway.organization_policy`:
 - **defaults** every use case starts from: budgets, PII handling;
-- **constraints** no use case can lift: allowed providers and models, forbidden tools and actions, approval rules, amount limits.
+- **constraints** no use case can lift: allowed providers and models, forbidden tools and actions, approval rules, argument rules.
 
 Start from the baseline shipped with the release:
 
@@ -82,7 +82,7 @@ sudo chown root:talon /etc/talon/talon.config.yaml && sudo chmod 0640 /etc/talon
 sudoedit /etc/talon/talon.config.yaml          # adjust the lines marked ADJUST and the thresholds
 ```
 
-It defines one provider, PII blocked, per-use-case budgets with company ceilings (checked against pre-request estimates before each call; not an invoice ceiling), two forbidden actions, and example refund amount bands: up to 50 EUR allowed, up to 500 EUR to a reviewer in `support-leads`, above that denied.
+It defines one provider, PII blocked, per-use-case budgets with company ceilings (checked against pre-request estimates before each call; not an invoice ceiling), two forbidden actions, and example argument rules for a refund: above 50.00 a reviewer in `support-leads` must approve, above 500.00 it is denied (the action's schema restricts the currency to EUR).
 
 ## 4. Register your first AI use case and start Talon
 
@@ -185,7 +185,7 @@ curl -sS -X POST http://127.0.0.1:8080/v1/action-operations/refund-T-1001/attemp
 - **A replay or a concurrent claim cannot cause a second effect** within the installation's own durable state.
 - **An ambiguous outcome is `unknown`** (your refund service was called and no answer came back) and is never retried automatically. Reconcile it with the refund service.
 
-Reference: [Action Gateway](../reference/action-gateway.md) · [amount limits](../reference/action-gateway.md#amount-limits-205).
+Reference: [Action Gateway](../reference/action-gateway.md) · [argument rules](../reference/action-gateway.md#argument-rules-205).
 
 ## 7. Approve as a reviewer
 

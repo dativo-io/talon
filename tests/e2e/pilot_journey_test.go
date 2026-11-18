@@ -21,12 +21,12 @@ import (
 // without a provider key, over the built binary and real processes, under
 // the company baseline policy shipped as examples/pilot/talon.config.yaml:
 //
-//	company policy (PII block, forbidden actions, company refund bands)
+//	company policy (PII block, forbidden actions, company refund rules)
 //	→ register the first use case (talon agents add) → it declares its
-//	business action AND tries to lift the company policy (wider bands, a
+//	business action AND tries to lift the company policy (laxer rules, a
 //	forbidden action) → validate → serve --gateway
 //	→ a model request reaches the provider once; a request with PII never does
-//	→ allow / approval (CLI reviewer) / deny by the COMPANY bands, forbidden
+//	→ allow / approval (CLI reviewer) / deny by the COMPANY rules, forbidden
 //	action denied, with an independent refund counter
 //	→ verify every lifecycle → pair the Operations Console: it lists the use
 //	  case and verifies the action's evidence as the CLI does
@@ -91,11 +91,11 @@ func TestE2E_PilotJourney(t *testing.T) {
 	run(nil, "secrets", "set", "openai-api-key", "test-provider-needs-no-key")
 
 	// 1. Register the first use case. It declares its business action and
-	// tries to lift the company policy: wider refund bands and an action the
+	// tries to lift the company policy: laxer refund rules and an action the
 	// company forbids.
 	addOut := run(nil, "agents", "add", "refund-bot", "--tenant", "acme", "--owner", "support-ops")
 	refundKey := ucKey.FindString(addOut)
-	if refundKey == "" || strings.Contains(addOut, "WARNING") || !strings.Contains(addOut, "pii_action block") || !strings.Contains(addOut, "2 forbidden tool/action pattern(s), 0 approval rule(s), 1 amount limit(s)") {
+	if refundKey == "" || strings.Contains(addOut, "WARNING") || !strings.Contains(addOut, "pii_action block") || !strings.Contains(addOut, "2 forbidden tool/action pattern(s), 0 approval rule(s), 2 argument rule(s)") {
 		t.Fatalf("registration under the company policy:\n%s", addOut)
 	}
 	agentFile := filepath.Join(agentsDir, "refund-bot", "agent.talon.yaml")
@@ -138,15 +138,22 @@ policies:
   cost_limits: {}
   approvals:
     expires_after: 30m
-    amount_limits:
-      generous:
+    argument_rules:
+      generous-approval:
         actions: [create_refund_request]
-        amount_argument: amount
-        currency_argument: currency
-        currency: EUR
-        allow_up_to: "1000.00"
-        approval_up_to: "5000.00"
-        approver_groups: [support-leads]`, 1)
+        argument: amount
+        type: decimal
+        operator: gt
+        value: "1000.00"
+        effect: require_approval
+        approver_groups: [support-leads]
+      generous-deny:
+        actions: [create_refund_request]
+        argument: amount
+        type: decimal
+        operator: gt
+        value: "5000.00"
+        effect: deny`, 1)
 	if err := os.WriteFile(agentFile, []byte(gen), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +210,7 @@ policies:
 		t.Log("NOT RUN: OpenAI SDK client check (TALON_PILOT_SDK_DIR is not set)")
 	}
 
-	// 4. The business action: the COMPANY bands decide, whatever the use case declared.
+	// 4. The business action: the COMPANY rules decide, whatever the use case declared.
 	establish := func(opID, amount string) (int, map[string]any) {
 		return c.do("POST", "/v1/action-operations", refundKey, `{"operation_id":"`+opID+`","action":"create_refund_request","arguments":{"ticket_id":"`+opID+`","amount":"`+amount+`","currency":"EUR"}}`)
 	}
@@ -225,13 +232,13 @@ policies:
 	}
 	calls(1, "allow")
 	st, res := establish("T-75", "75.00")
-	if st != 202 || dig(res, "operation", "matched_rule_id") != "company:refund-bands" {
-		t.Fatalf("75 EUR must need approval under the COMPANY band although the use case allows up to 1000: %d %v", st, res)
+	if st != 202 || dig(res, "operation", "matched_rule_id") != "company:refund-needs-approval" {
+		t.Fatalf("75 EUR must need approval under the COMPANY rule although the use case asks approval only above 1000: %d %v", st, res)
 	}
 	approvalID, _ := dig(res, "operation", "approval", "id").(string)
 	calls(1, "approval pending")
 	reviewer := map[string]string{"TALON_APPROVER_KEY": leadKey}
-	if out := run(reviewer, "approvals", "show", approvalID, "--url="+c.base); !strings.Contains(out, "amount           \"75.00\"") || !strings.Contains(out, "company amount limit company:refund-bands") {
+	if out := run(reviewer, "approvals", "show", approvalID, "--url="+c.base); !strings.Contains(out, "amount           \"75.00\"") || !strings.Contains(out, "company argument rule company:refund-needs-approval: a call of create_refund_request where amount gt 50 (decimal) requires approval by support-leads") {
 		t.Fatalf("the reviewer must see the exact amount and the company rule:\n%s", out)
 	}
 	run(reviewer, "approvals", "approve", approvalID, "--reason", "customer verified", "--url="+c.base)
@@ -240,8 +247,8 @@ policies:
 		t.Fatal("claim 75 EUR after approval")
 	}
 	calls(2, "approved refund")
-	if st, res = establish("T-900", "900.00"); st != 403 || dig(res, "operation", "matched_rule_id") != "company:refund-bands" {
-		t.Fatalf("900 EUR must be denied by the COMPANY band although the use case would only ask approval: %d %v", st, res)
+	if st, res = establish("T-900", "900.00"); st != 403 || dig(res, "operation", "matched_rule_id") != "company:refund-too-large" {
+		t.Fatalf("900 EUR must be denied by the COMPANY rule although the use case would only ask approval: %d %v", st, res)
 	}
 	if st, res = c.do("POST", "/v1/action-operations", refundKey, `{"operation_id":"del-1","action":"delete_customer","arguments":{"customer_id":"c-1"}}`); st != 403 || dig(res, "operation", "matched_rule_id") != "company:forbidden_tools" {
 		t.Fatalf("a company-forbidden action must be denied although the use case declares it: %d %v", st, res)
