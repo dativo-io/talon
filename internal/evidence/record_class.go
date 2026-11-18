@@ -63,7 +63,6 @@ var nonRequestClass = map[string]RecordClass{
 	// Operator / control-plane actions.
 	"agent_enabled":        ClassOperatorEvent,
 	"agent_disabled":       ClassOperatorEvent,
-	"recovery_resumed":     ClassOperatorEvent, // `talon backup resume` ended a recovery hold (#465)
 	"mode_change":          ClassOperatorEvent, // LEGACY (#442): written by the removed `talon enforce`; kept for historical rows
 	"plan_review":          ClassOperatorEvent,
 	"plan_dispatch":        ClassOperatorEvent,
@@ -73,6 +72,9 @@ var nonRequestClass = map[string]RecordClass{
 	// once per crossing during some triggering request — counting it as a
 	// request would double that request in traffic queries.
 	"budget_threshold": ClassOperatorEvent,
+
+	// `talon backup resume` ended a recovery hold after a restore (#465).
+	"recovery_resumed": ClassOperatorEvent,
 
 	// Configuration lifecycle.
 	"config_reload": ClassConfigEvent,
