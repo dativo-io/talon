@@ -41,35 +41,52 @@ type n8nWorkflow struct {
 	Settings map[string]any `json:"settings"`
 }
 
-func loadN8nWorkflow(t *testing.T) (n8nWorkflow, string) {
+func loadN8nWorkflow(t *testing.T) (wf n8nWorkflow, raw string) {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "examples", "n8n-refund", "refund-approval.workflow.json"))
+	b, err := os.ReadFile(filepath.Join("..", "examples", "n8n-refund", "refund-approval.workflow.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var wf n8nWorkflow
-	if err := json.Unmarshal(raw, &wf); err != nil {
+	if err := json.Unmarshal(b, &wf); err != nil {
 		t.Fatalf("workflow is not valid JSON: %v", err)
 	}
-	return wf, string(raw)
+	return wf, string(b)
 }
+
+const n8nClaimNode = "Talon: claim (Talon dispatches)"
 
 func TestN8nRefundWorkflow_SafetyProperties(t *testing.T) {
 	wf, raw := loadN8nWorkflow(t)
+	if strings.Contains(raw, "Bearer") || strings.Contains(raw, "talon_uc_") || strings.Contains(raw, "talon_appr_") {
+		t.Fatal("the workflow must not carry a key: use the referenced n8n Header Auth credential")
+	}
+	if !strings.Contains(raw, `operation_id: \"refund-\" + $json.body.ticket_id`) {
+		t.Error("the operation id must be derived from the ticket so a retry resumes the same operation")
+	}
+	if v, _ := wf.Settings["executionTimeout"].(float64); v <= 0 {
+		t.Error("an undecided approval must not poll forever: set settings.executionTimeout")
+	}
+	checkN8nNodes(t, &wf)
+	checkN8nClaimReachability(t, &wf)
+	checkN8nFirstOutput(t, &wf, "Talon verdict", "allow")
+	checkN8nFirstOutput(t, &wf, "Approval state", "authorized")
+}
+
+// checkN8nNodes: stock nodes only, no continue-on-fail, and every HTTP call
+// goes to Talon's Action Gateway with a referenced credential.
+func checkN8nNodes(t *testing.T, wf *n8nWorkflow) {
+	t.Helper()
 	stock := map[string]bool{
 		"n8n-nodes-base.webhook": true, "n8n-nodes-base.httpRequest": true, "n8n-nodes-base.switch": true,
 		"n8n-nodes-base.wait": true, "n8n-nodes-base.respondToWebhook": true, "n8n-nodes-base.stopAndError": true,
 	}
-	if strings.Contains(raw, "Bearer") || strings.Contains(raw, "talon_uc_") || strings.Contains(raw, "talon_appr_") {
-		t.Fatal("the workflow must not carry a key: use the referenced n8n Header Auth credential")
-	}
-	claimNode := "Talon: claim (Talon dispatches)"
 	httpNodes := 0
-	for _, n := range wf.Nodes {
+	for i := range wf.Nodes {
+		n := &wf.Nodes[i]
 		if !stock[n.Type] {
 			t.Errorf("node %q uses %s: only stock n8n nodes are allowed", n.Name, n.Type)
 		}
-		if n.OnError != "" && n.OnError != "stopWorkflow" || n.ContinueOn {
+		if (n.OnError != "" && n.OnError != "stopWorkflow") || n.ContinueOn {
 			t.Errorf("node %q continues on failure: a Talon outage must stop the workflow", n.Name)
 		}
 		if n.Type != "n8n-nodes-base.httpRequest" {
@@ -88,55 +105,51 @@ func TestN8nRefundWorkflow_SafetyProperties(t *testing.T) {
 	if httpNodes != 3 {
 		t.Errorf("want exactly 3 Talon HTTP nodes (establish, read, claim), got %d", httpNodes)
 	}
-	if !strings.Contains(raw, `operation_id: \"refund-\" + $json.body.ticket_id`) {
-		t.Error("the operation id must be derived from the ticket so a retry resumes the same operation")
-	}
-	if v, _ := wf.Settings["executionTimeout"].(float64); v <= 0 {
-		t.Error("an undecided approval must not poll forever: set settings.executionTimeout")
-	}
+}
 
-	// Which outputs lead to the claim: only Talon verdict[ALLOW] and Approval state[authorized].
-	into := map[string][]string{}
+// checkN8nClaimReachability: only Talon verdict[0] (ALLOW) and Approval
+// state[0] (authorized) lead to the claim.
+func checkN8nClaimReachability(t *testing.T, wf *n8nWorkflow) {
+	t.Helper()
+	var into []string
 	for from, c := range wf.Connections {
 		for i, out := range c.Main {
 			for _, to := range out {
-				into[to.Node] = append(into[to.Node], from+"#"+string(rune('0'+i)))
+				if to.Node == n8nClaimNode {
+					into = append(into, from+"#"+string(rune('0'+i)))
+				}
 			}
 		}
 	}
-	got := strings.Join(into[claimNode], ",")
+	got := strings.Join(into, ",")
 	for _, want := range []string{"Talon verdict#0", "Approval state#0"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the claim must be reached from %s; reached from %s", want, got)
 		}
 	}
-	if len(into[claimNode]) != 2 {
-		t.Errorf("the claim is reachable from %v; only ALLOW and an authorized approval may lead to it", into[claimNode])
+	if len(into) != 2 {
+		t.Errorf("the claim is reachable from %v; only ALLOW and an authorized approval may lead to it", into)
 	}
-	for _, n := range wf.Nodes {
-		if n.Name == "Talon verdict" {
-			var rules struct {
-				Values []struct {
-					OutputKey string `json:"outputKey"`
-				} `json:"values"`
-			}
-			_ = json.Unmarshal(n.Parameters["rules"], &rules)
-			if len(rules.Values) < 1 || rules.Values[0].OutputKey != "allow" {
-				t.Errorf("output 0 of Talon verdict must be the ALLOW branch: %+v", rules.Values)
-			}
+}
+
+func checkN8nFirstOutput(t *testing.T, wf *n8nWorkflow, node, wantKey string) {
+	t.Helper()
+	for i := range wf.Nodes {
+		if wf.Nodes[i].Name != node {
+			continue
 		}
-		if n.Name == "Approval state" {
-			var rules struct {
-				Values []struct {
-					OutputKey string `json:"outputKey"`
-				} `json:"values"`
-			}
-			_ = json.Unmarshal(n.Parameters["rules"], &rules)
-			if len(rules.Values) < 1 || rules.Values[0].OutputKey != "authorized" {
-				t.Errorf("output 0 of Approval state must be the authorized branch: %+v", rules.Values)
-			}
+		var rules struct {
+			Values []struct {
+				OutputKey string `json:"outputKey"`
+			} `json:"values"`
 		}
+		_ = json.Unmarshal(wf.Nodes[i].Parameters["rules"], &rules)
+		if len(rules.Values) < 1 || rules.Values[0].OutputKey != wantKey {
+			t.Errorf("output 0 of %s must be the %s branch: %+v", node, wantKey, rules.Values)
+		}
+		return
 	}
+	t.Errorf("node %q not found", node)
 }
 
 func TestN8nRefundWorkflow_ExamplePolicyCompiles(t *testing.T) {
