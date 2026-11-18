@@ -96,7 +96,7 @@ if [ -n "$BIN" ]; then
   talon secrets set openai-api-key "unused-no-provider" >/dev/null 2>&1
   (cd "$WORK" && exec "$BIN" serve --port "$PORT" --gateway --gateway-config "$WORK/talon.config.yaml") >"$WORK/serve.log" 2>&1 &
   serve_pid=$!
-  echo "Talon: $("$BIN" version | head -n1) (local binary $BIN)"
+  echo "Talon: $("$BIN" version | sed -n 1p) (local binary $BIN)"
 else
   [ "${TALON_QUICKSTART_NO_PULL:-0}" = "1" ] || docker pull -q "$IMAGE" >/dev/null
   digest="$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}(no registry digest: local image){{end}}' "$IMAGE")"
@@ -110,7 +110,7 @@ else
       talon secrets set openai-api-key "unused-no-provider" >/dev/null 2>&1 &&
       exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml' >/dev/null
   talon() { docker exec "$NAME" talon "$@"; }
-  echo "Talon: $(talon version | head -n1)"
+  echo "Talon: $(talon version | sed -n 1p)"
   echo "Image: $IMAGE"
   echo "Digest: $digest"
 fi
