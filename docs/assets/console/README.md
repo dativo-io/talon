@@ -37,11 +37,3 @@ python3 scripts/console-visual-baseline.py check
 ```
 
 The capture suite uses `tests/browser/03-screenshots.spec.js`; the renderer `scripts/generate-console-visuals.py` crops the actual browser screenshots without modifying their in-app statuses or labels. The generated `showcase.webp` adds section headings and visual framing around these real source images. Do not replace these with fabricated UI mockups.
-
-## Publish approved console visuals to dativo.io
-
-Talon is the canonical source of screenshots. The website (`dativo-io/talon-www`) maintains a reviewed lock of the complete screenshot set, identified by file name and content hash, without duplicating the binary assets.
-
-Every website PR checks its lock against the actual images on Talon `main`. A new, removed, renamed or changed screenshot fails website CI until the website maintainer reviews the changes and refreshes the lock in a website PR. Changes to this README or to Talon's visual-baseline metadata alone do not require website synchronization.
-
-The website build uses the same verified Talon checkout for technical docs and approved images. Talon never triggers a website deployment. Website publishing remains the responsibility of the existing website Git/Cloudflare build process. See the [website README](https://github.com/dativo-io/talon-www#console-screenshot-publication) for the update command.
