@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "inputs": {
-    ".github/workflows/console-screenshots.yml": "eb1100c8665db6819a181a7028280151c8ed1971",
+    ".github/workflows/console-screenshots.yml": "a99dc1cac0ab188b82f72ef7f3bdf58e2d0217b0",
     "go.mod": "b71b9c01a605dc3d550911a0a483453f6ca26d24",
     "go.sum": "e981ed060a861fe97cda1f51f149a41d3e8bf06b",
     "internal/cmd/agent_bridge.go": "5ae199375031bad7efdd8a0d4edf9e59d0f60aa8",
