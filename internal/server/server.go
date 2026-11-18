@@ -38,6 +38,7 @@ type Server struct {
 	gateway          http.Handler // optional LLM API gateway at /v1/proxy/*
 	actionServices   ActionServiceResolver
 	approvalOwners   ApprovalOwnerResolver
+	pendingApprovals PendingApprovalLister
 	approvers        ApproverResolver
 	tenantManager    *tenant.Manager
 	webhookHandler   *trigger.WebhookHandler
@@ -351,6 +352,10 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/v1/approvals/{approval_id}", s.handleApprovalGet)
 		})
 		r.Post("/v1/approvals/{approval_id}/decisions", s.handleApprovalDecision)
+		// Reviewer reads (#433): approver credential only, tenant- and
+		// group-scoped; what the reviewer sees before deciding.
+		r.Get("/v1/reviews", s.handleReviewList)
+		r.Get("/v1/reviews/{approval_id}", s.handleReviewGet)
 	}
 
 	// LLM API Gateway (agent-key identification via the identity registry; no Talon auth middleware)

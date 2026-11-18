@@ -615,7 +615,8 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 		server.WithSovereigntyMode(cfg.EffectiveSovereigntyMode()),
 	}
 	if actionGW != nil {
-		opts = append(opts, server.WithActionGateway(actionGW.resolver(), actionGW.ownerResolver(), actionGW.approvers))
+		opts = append(opts, server.WithActionGateway(actionGW.resolver(), actionGW.ownerResolver(), actionGW.approvers),
+			server.WithApprovalLister(actionGW.repo.PendingApprovals))
 	}
 	opts = append(opts, []server.Option{
 		server.WithActiveRunTracker(activeRunTracker),

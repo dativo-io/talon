@@ -67,6 +67,18 @@ type ApprovalRuleView struct {
 	ApproverGroups []string `json:"approver_groups"`
 }
 
+// AmountLimitView is one amount limit (#205) that matches a definition.
+type AmountLimitView struct {
+	ID               string   `json:"id"`
+	Source           string   `json:"source"`
+	AmountArgument   string   `json:"amount_argument"`
+	CurrencyArgument string   `json:"currency_argument"`
+	Currency         string   `json:"currency"`
+	AllowUpTo        string   `json:"allow_up_to"`
+	ApprovalUpTo     string   `json:"approval_up_to"`
+	ApproverGroups   []string `json:"approver_groups"`
+}
+
 // DefinitionView is the safe projection of one definition.
 type DefinitionView struct {
 	Name             string          `json:"name"`
@@ -93,6 +105,9 @@ type DefinitionView struct {
 	// REQUIRE_APPROVAL verdict (company | use_case); absent for ALLOW.
 	VerdictSource string             `json:"verdict_source,omitempty"`
 	ApprovalRules []ApprovalRuleView `json:"approval_rules,omitempty"`
+	// AmountLimits apply per call: the verdict above is the name-only
+	// verdict, and a call's arguments can raise it to approval or deny.
+	AmountLimits []AmountLimitView `json:"amount_limits,omitempty"`
 }
 
 // View projects the whole catalog. ap may be nil (no approval policy
@@ -150,6 +165,14 @@ func (c *Catalog) DefinitionView(name string, ap *ApprovalPolicy) (DefinitionVie
 		dv.Verdict, dv.VerdictSource = v.Outcome, v.Source
 		for _, r := range ap.MatchingRules(d.Name) {
 			dv.ApprovalRules = append(dv.ApprovalRules, ApprovalRuleView{ID: r.ID, Source: r.Source, ApproverGroups: append([]string(nil), r.ApproverGroups...)})
+		}
+		limits := ap.MatchingLimits(d.Name)
+		for i := range limits {
+			l := &limits[i]
+			dv.AmountLimits = append(dv.AmountLimits, AmountLimitView{
+				ID: l.ID, Source: l.Source, AmountArgument: l.AmountArgument, CurrencyArgument: l.CurrencyArgument, Currency: l.Currency,
+				AllowUpTo: formatMinorUnits(l.AllowUpTo), ApprovalUpTo: formatMinorUnits(l.ApprovalUpTo), ApproverGroups: append([]string(nil), l.ApproverGroups...),
+			})
 		}
 	}
 	return dv, true

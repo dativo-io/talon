@@ -323,7 +323,11 @@ type OrgConstraints struct {
 // agent file: exact catalog names or trailing-* prefixes, and approver groups
 // of tenant-scoped approver principals.
 type ActionApprovalsConstraint struct {
-	Rules map[string]policy.ApprovalRuleConfig `yaml:"rules" json:"rules"`
+	Rules map[string]policy.ApprovalRuleConfig `yaml:"rules,omitempty" json:"rules,omitempty"`
+	// AmountLimits (#205): company-wide typed amount bands per action
+	// (allow / approval / deny). A use case can add its own limits but
+	// never lift these.
+	AmountLimits map[string]policy.AmountLimitConfig `yaml:"amount_limits,omitempty" json:"amount_limits,omitempty"`
 }
 
 // CompanyActionPolicy projects the organization policy's action-relevant
@@ -341,6 +345,15 @@ func (o *OrganizationPolicy) CompanyActionPolicy(source string) *action.CompanyA
 		c.Rules = make(map[string]action.CompanyApprovalRule, len(o.Constraints.ActionApprovals.Rules))
 		for id, r := range o.Constraints.ActionApprovals.Rules {
 			c.Rules[id] = action.CompanyApprovalRule{Actions: append([]string(nil), r.Actions...), ApproverGroups: append([]string(nil), r.ApproverGroups...)}
+		}
+		if len(o.Constraints.ActionApprovals.AmountLimits) > 0 {
+			c.AmountLimits = make(map[string]policy.AmountLimitConfig, len(o.Constraints.ActionApprovals.AmountLimits))
+			for id := range o.Constraints.ActionApprovals.AmountLimits {
+				l := o.Constraints.ActionApprovals.AmountLimits[id]
+				l.Actions = append([]string(nil), l.Actions...)
+				l.ApproverGroups = append([]string(nil), l.ApproverGroups...)
+				c.AmountLimits[id] = l
+			}
 		}
 	}
 	return c

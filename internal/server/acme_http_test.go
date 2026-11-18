@@ -110,6 +110,7 @@ func newACMEHTTPHarness(t *testing.T) *acmeHTTPHarness {
 			acme.BillingKey: {AgentID: acme.BillingAgent, TenantID: acme.Tenant},
 		})),
 		WithActionGateway(resolver, owners, approvers),
+		WithApprovalLister(h.repo.PendingApprovals),
 	)
 	h.handler = srv.Routes()
 	return h

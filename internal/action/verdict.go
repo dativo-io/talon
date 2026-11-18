@@ -72,6 +72,9 @@ type CompanyActionPolicy struct {
 	ForbiddenActions []string
 	// Rules are the company-wide approval requirements by operator-chosen id.
 	Rules map[string]CompanyApprovalRule
+	// AmountLimits are the company-wide typed amount bands (#205) by
+	// operator-chosen id: no use case can lift their approval or deny band.
+	AmountLimits map[string]policy.AmountLimitConfig
 }
 
 // CompanyApprovalRule requires approval for matching catalogued actions by
@@ -96,7 +99,45 @@ func (c *CompanyActionPolicy) Validate() error {
 	if err != nil {
 		return err
 	}
-	return rejectIncompatibleOverlaps(rules)
+	limits, err := c.compiledLimits()
+	if err != nil {
+		return err
+	}
+	if err := rejectIDCollisions(rules, limits); err != nil {
+		return err
+	}
+	return rejectIncompatibleOverlaps(withLimitRules(rules, limits))
+}
+
+func (c *CompanyActionPolicy) compiledLimits() ([]AmountLimit, error) {
+	return compileAmountLimits(PolicySourceCompany, "organization_policy.constraints.action_approvals.amount_limits.", c.AmountLimits)
+}
+
+// withLimitRules appends each limit's approval band as a rule, for the
+// overlap check only.
+func withLimitRules(rules []ApprovalRule, limits []AmountLimit) []ApprovalRule {
+	out := append([]ApprovalRule(nil), rules...)
+	for i := range limits {
+		out = append(out, limits[i].asApprovalRule())
+	}
+	return out
+}
+
+// rejectIDCollisions refuses a limit whose (namespaced) id equals a rule's:
+// a rule id in a verdict, an approval or evidence must name one thing.
+func rejectIDCollisions(rules []ApprovalRule, limits []AmountLimit) error {
+	ids := map[string]bool{}
+	for _, r := range rules {
+		ids[r.ID] = true
+	}
+	for i := range limits {
+		id := limits[i].ID
+		if ids[id] {
+			return fmt.Errorf("amount limit %q has the same id as an approval rule of the same layer; ids must be unique", id)
+		}
+		ids[id] = true
+	}
+	return nil
 }
 
 // Digest is the deterministic digest of the material company rules ("" for
@@ -110,7 +151,11 @@ func (c *CompanyActionPolicy) Digest() string {
 	if err != nil {
 		return ""
 	}
-	return Digest(companyCanonical(sortedUnique(c.ForbiddenActions), rules))
+	limits, err := c.compiledLimits()
+	if err != nil {
+		return ""
+	}
+	return Digest(companyCanonical(sortedUnique(c.ForbiddenActions), rules, limits))
 }
 
 func (c *CompanyActionPolicy) compiledRules() ([]ApprovalRule, error) {
@@ -148,6 +193,9 @@ type companyEncoding struct {
 	Version   int                   `json:"v"`
 	Forbidden []string              `json:"forbidden"`
 	Rules     []companyRuleEncoding `json:"rules"`
+	// Limits (#205) are present only in version 2: a company policy without
+	// amount limits keeps its version-1 bytes and every digest bound to them.
+	Limits []companyLimitEncoding `json:"limits,omitempty"`
 }
 
 type companyRuleEncoding struct {
@@ -162,8 +210,12 @@ type companyRuleEncoding struct {
 // order and escapes every string, so the bytes are a function of the
 // values alone and no value can imitate a delimiter. Empty lists encode as
 // [] (never null) so "no patterns" has exactly one spelling.
-func companyCanonical(forbidden []string, rules []ApprovalRule) []byte {
+func companyCanonical(forbidden []string, rules []ApprovalRule, limits []AmountLimit) []byte {
 	enc := companyEncoding{Version: 1, Forbidden: nonNil(forbidden), Rules: make([]companyRuleEncoding, 0, len(rules))}
+	if len(limits) > 0 {
+		enc.Version = 2
+		enc.Limits = encodeCompanyLimits(limits)
+	}
 	for _, r := range rules {
 		enc.Rules = append(enc.Rules, companyRuleEncoding{ID: r.ID, Actions: nonNil(r.Actions), Groups: nonNil(r.ApproverGroups)})
 	}
@@ -205,6 +257,9 @@ type forbiddenPattern struct {
 type ApprovalPolicy struct {
 	// Rules are company rules first (by id), then use-case rules (by id).
 	Rules []ApprovalRule
+	// Limits are the amount limits (#205), company first then use case, by
+	// id. Only EvaluateArguments applies them.
+	Limits []AmountLimit
 	// ForbiddenTools is the union of company and use-case DENY patterns
 	// (sorted); forbidden keeps each pattern's provenance for verdicts.
 	ForbiddenTools []string
@@ -240,11 +295,14 @@ func CompileEffectiveActionPolicy(pol *policy.Policy, company *CompanyActionPoli
 		return ap, nil
 	}
 	var companyRules []ApprovalRule
+	var companyLimits []AmountLimit
 	if company != nil {
 		if err := company.Validate(); err != nil {
 			return nil, fmt.Errorf("company action policy: %w", err)
 		}
 		companyRules, _ = company.compiledRules()
+		companyLimits, _ = company.compiledLimits()
+		ap.Limits = append(ap.Limits, companyLimits...)
 		for _, f := range sortedUnique(company.ForbiddenActions) {
 			ap.forbidden = append(ap.forbidden, forbiddenPattern{Pattern: f, Source: PolicySourceCompany})
 		}
@@ -255,7 +313,10 @@ func CompileEffectiveActionPolicy(pol *policy.Policy, company *CompanyActionPoli
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectIncompatibleOverlaps(ap.Rules); err != nil {
+	if err := rejectIDCollisions(ap.Rules, ap.Limits); err != nil {
+		return nil, err
+	}
+	if err := rejectIncompatibleOverlaps(withLimitRules(ap.Rules, ap.Limits)); err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
@@ -267,9 +328,15 @@ func CompileEffectiveActionPolicy(pol *policy.Policy, company *CompanyActionPoli
 	}
 	sort.Strings(ap.ForbiddenTools)
 
-	// Digest: the use-case lines keep their pre-#425 byte layout so a
-	// deployment without a company policy keeps every digest it has; the
-	// company lines are appended only when a company policy exists.
+	ap.Digest, ap.CompanyDigest = effectiveDigests(ap, useCaseForbidden, company, companyRules, companyLimits)
+	return ap, nil
+}
+
+// effectiveDigests computes the approval-relevant digest and the company
+// digest. The use-case lines keep their pre-#425 byte layout so a
+// deployment without a company policy keeps every digest it has; the
+// company lines are appended only when a company policy exists.
+func effectiveDigests(ap *ApprovalPolicy, useCaseForbidden []string, company *CompanyActionPolicy, companyRules []ApprovalRule, companyLimits []AmountLimit) (digest, companyDigest string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "expires_after=%s\n", ap.ExpiresAfter)
 	fmt.Fprintf(&b, "forbidden=%s\n", strings.Join(useCaseForbidden, ","))
@@ -279,15 +346,21 @@ func CompileEffectiveActionPolicy(pol *policy.Policy, company *CompanyActionPoli
 		}
 		fmt.Fprintf(&b, "rule %s actions=%s groups=%s\n", r.ID, strings.Join(r.Actions, ","), strings.Join(r.ApproverGroups, ","))
 	}
+	// Use-case amount limits add lines only when present, so a policy
+	// without limits keeps its digest byte for byte.
+	for i := range ap.Limits {
+		if ap.Limits[i].Source == PolicySourceUseCase {
+			b.WriteString(amountLimitDigestLine(&ap.Limits[i]))
+		}
+	}
 	if company != nil {
-		cb := companyCanonical(sortedUnique(company.ForbiddenActions), companyRules)
+		cb := companyCanonical(sortedUnique(company.ForbiddenActions), companyRules, companyLimits)
 		b.WriteString("company=")
 		b.Write(cb)
 		b.WriteByte('\n')
-		ap.CompanyDigest = Digest(cb)
+		companyDigest = Digest(cb)
 	}
-	ap.Digest = Digest([]byte(b.String()))
-	return ap, nil
+	return Digest([]byte(b.String())), companyDigest
 }
 
 // compileUseCaseLayer appends the agent file's forbidden tools and approval
@@ -331,6 +404,11 @@ func compileUseCaseLayer(ap *ApprovalPolicy, pol *policy.Policy) ([]string, erro
 		}
 		ap.Rules = append(ap.Rules, rule)
 	}
+	limits, err := compileAmountLimits(PolicySourceUseCase, "policies.approvals.amount_limits.", ac.AmountLimits)
+	if err != nil {
+		return nil, err
+	}
+	ap.Limits = append(ap.Limits, limits...)
 	return useCaseForbidden, nil
 }
 
@@ -445,6 +523,68 @@ func (ap *ApprovalPolicy) Evaluate(action string) Verdict {
 		}
 	}
 	return Verdict{Outcome: VerdictAllow, Reason: "no approval rule matches; action is catalogued"}
+}
+
+// EvaluateArguments is the authorization verdict for one catalogued action
+// with its canonical arguments: Evaluate's forbidden patterns and approval
+// rules plus every amount limit (#205) that matches the action. DENY >
+// REQUIRE_APPROVAL > ALLOW across all of them; among restrictions of the
+// same strength the company's is reported (company first, rules before
+// limits). A matching limit whose amount is not established denies.
+// Every path that authorizes, binds or dispatches an action must use this,
+// not Evaluate.
+func (ap *ApprovalPolicy) EvaluateArguments(action string, canonical []byte) Verdict {
+	base := ap.Evaluate(action)
+	if base.Outcome == VerdictDeny {
+		return base
+	}
+	var approval *Verdict
+	if base.Outcome == VerdictRequireApproval {
+		approval = &base
+	}
+	var allowReasons []string
+	for i := range ap.Limits {
+		l := &ap.Limits[i]
+		if !l.matches(action) {
+			continue
+		}
+		v := l.band(canonical)
+		switch v.Outcome {
+		case VerdictDeny:
+			return v
+		case VerdictRequireApproval:
+			// The overlap check guarantees the same approver groups;
+			// keep the first (company before use case, rules before
+			// limits) as the reported rule.
+			if approval == nil || (approval.Source == PolicySourceUseCase && v.Source == PolicySourceCompany) {
+				vv := v
+				approval = &vv
+			}
+		default:
+			allowReasons = append(allowReasons, v.Reason)
+		}
+	}
+	if approval != nil {
+		return *approval
+	}
+	if len(allowReasons) > 0 {
+		return Verdict{Outcome: VerdictAllow, Reason: strings.Join(allowReasons, "; ")}
+	}
+	return base
+}
+
+// MatchingLimits lists the amount limits that match the action (inspection).
+func (ap *ApprovalPolicy) MatchingLimits(action string) []AmountLimit {
+	if ap == nil {
+		return nil
+	}
+	var out []AmountLimit
+	for i := range ap.Limits {
+		if ap.Limits[i].matches(action) {
+			out = append(out, ap.Limits[i])
+		}
+	}
+	return out
 }
 
 // MatchingRules lists every approval rule whose pattern matches the action,
