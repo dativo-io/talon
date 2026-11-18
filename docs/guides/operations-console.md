@@ -35,44 +35,43 @@ These are **real console screenshots** from the synthetic Playwright test instal
 
 ### 1. Identify what needs attention
 
-![Overview: gateway startup failure, MCP status, tenant-scoped findings, and installation-wide readiness](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/overview-attention.webp)
+![Overview: gateway startup failure, MCP status, tenant-scoped findings, and installation-wide readiness](../assets/console/overview-attention.webp)
 
 *Start at Overview: installation readiness is shown separately from the fleet-health assessment; selecting a tenant does not hide shared runtime failures.*
 
 ### 2. Inspect the affected AI use case
 
-![HR Analytics Assistant: use-case Summary and operational state](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/use-case-summary.webp)
+![HR Analytics Assistant: use-case Summary and operational state](../assets/console/use-case-summary.webp)
 
 *One use case combines Summary, Sessions & Activity, Policy & Runtime, and Costs. A healthy fleet projection does not establish runtime readiness.*
 
 ### 3. Follow the session to an intercepted decision
 
-![People Analytics session with an allowed aggregate, blocked export, and destination-side SQL rejection](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/session-investigation.webp)
+![People Analytics session with an allowed aggregate, blocked export, and destination-side SQL rejection](../assets/console/session-investigation.webp)
 
 *The three outcomes are different: Talon allowed and dispatched an aggregate; Talon denied an employee export before dispatch; Talon allowed a SQL tool call later rejected by HR. The session is evidence-observed, not a lifecycle Talon invented.*
 
 ### 4. Verify signed evidence
 
-![Evidence detail: Talon denied the employee-export tool before dispatch, and the HMAC signature verifies](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/evidence-verification.webp)
+![Evidence detail: Talon denied the employee-export tool before dispatch, and the HMAC signature verifies](../assets/console/evidence-verification.webp)
 
 *The signature proves the stored record was not changed since signing. It does not prove that no bypass route exists or that an external business outcome completed.*
 
 ### Other operator views
 
-![Costs: per-tenant and per-use-case spend with explicit currency-unavailable values](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/costs.webp)
+![Costs: per-tenant and per-use-case spend with explicit currency-unavailable values](../assets/console/costs.webp)
 
 *Costs never silently sum incompatible currencies; unpriced usage and unavailable budgets remain labeled.*
 
-![Configuration: organization baseline, shared MCP proxy settings, and configured AI use cases](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/configuration.webp)
+![Configuration: organization baseline, shared MCP proxy settings, and configured AI use cases](../assets/console/configuration.webp)
 
 *Configuration shows current file contents; separately reported process activation proves which bytes have actually been loaded.*
 
-![System: startup failure and process heartbeat evidence](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/system-diagnostics.webp)
+![System: startup failure and process heartbeat evidence](../assets/console/system-diagnostics.webp)
 
 *System is the diagnostic drill-down for process state, runtime records, activation, and evidence-store access.*
 
-For negative evidence-verification testing, see the [tampered-record example](https://raw.githubusercontent.com/dativo-io/talon/main/docs/assets/console/tamper-detection.webp). To reproduce or recapture these images, see [screenshot provenance](https://github.com/dativo-io/talon/blob/main/docs/assets/console/README.md).
-
+For negative evidence-verification testing, see the [tampered-record example](../assets/console/tamper-detection.webp). To reproduce or recapture these images, see [screenshot provenance](../assets/console/README.md).
 
 ## Reading the pages correctly
 

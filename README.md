@@ -1,41 +1,19 @@
 # Dativo Talon
 
-**Enforce company AI policy across AI use cases — before model access and consequential actions, with verifiable proof.**
+**One company policy for your AI use cases.**
+
+Talon is an open-source, self-hosted AI control plane. Control model access, data and tool permissions, enforce budgets, handle provider failures, and investigate decisions with signed evidence — on the paths you route through Talon.
 
 [![CI](https://github.com/dativo-io/talon/actions/workflows/ci.yml/badge.svg)](https://github.com/dativo-io/talon/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/dativo-io/talon/actions/workflows/codeql.yml/badge.svg)](https://github.com/dativo-io/talon/actions/workflows/codeql.yml)
 [![Latest Release](https://img.shields.io/github/v/release/dativo-io/talon)](https://github.com/dativo-io/talon/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Open source vs Enterprise:** Talon OSS is a complete Apache-2.0 enforcement and evidence core—not a limited trial. A separate Enterprise edition is being developed for corporate OIDC/domain and reviewer administration, SIEM/SOC integrations, existing approval workflows, supported deployment profiles and commercial support. **Those Enterprise integrations are not released features.** See [edition boundaries](docs/explanation/oss-enterprise-boundary.md) and the [public editions overview](https://dativo.io/enterprise/).\n\nEvery AI use case — a customer-support assistant, a coding assistant, a document summarizer — needs to obey the same company rules even when teams choose different models or runtimes. **Dativo Talon** is an Apache-2.0, self-hosted control plane that resolves company policy plus use-case-specific rules and enforces them at supported boundaries. On routed model traffic, it governs provider access, data, budgets, retry/fallback and sessions. On consequential actions, the shipped **HTTP Action Gateway** binds the exact action and arguments, supports `DENY > REQUIRE_APPROVAL > ALLOW`, and records the authorized attempt with signed evidence. The MCP and native action paths have not yet converged on that exact-action contract; Talon does not control local effects that bypass its boundary.
+**[Try it in 60 seconds](#try-it-in-60-seconds-no-api-key)** · [Product demo](#product-demo--three-use-cases-one-control-plane) · [Documentation](https://dativo.io/talon/docs/) · [Website](https://dativo.io/)
 
-[![A live terminal demo of real Talon CLI and API calls — the local model is down so a customer request fails over, skipping a provider the use case isn't allowed to use; customer email and IBAN are redacted before the provider; a forbidden admin tool is rejected by a company boundary; a projected-cost budget stops the next call before spend; and `talon agents` shows the fleet, with every decision signed](docs/assets/talon_hero.gif)](examples/product-demo/)
+[![Talon Operations Console: readiness, AI use cases, sessions, signed evidence, costs, configuration and system diagnostics](docs/assets/console/showcase.webp)](docs/guides/operations-console.md)
 
-*A **live terminal walkthrough** (55s): real Talon CLI and API calls across three AI use cases — **customer-support, coding-assistant, document-summary** — with every headline checked against **signed evidence**. A downed local model triggers a **policy-valid failover** (skipping a provider this use case may not use), customer **PII is redacted before the provider** (the raw request and the provider's reply are both on screen), a destructive **admin tool is rejected by a company-wide boundary**, a use case's **next call is denied on projected cost before it spends**, `talon agents` shows the fleet react, and one session is **audited end-to-end** — every decision signed and offline-verifiable.*
-
-<!-- Static, motion-free version of the recording above — the walkthrough's four chapters, in one operating period: -->
-
-```
-1 · fleet          talon agents → three use cases, each one agent.talon.yaml, one operating view
-2 · reliability    raw request (email + IBAN) → redacted ([EMAIL], [IBAN]) → local model down
-   + shared policy → disallowed provider skipped → policy-valid fallback → provider's own reply
-3 · org policy     admin_* tool → HTTP 403 before the provider, $0.0000 spent
-   + cost          projected spend + estimate-based session cap → next call denied
-4 · operations     live budget edit → safe reload → fleet shows blocked (and why)
-   + proof         audit list --session → verify offline: 8 records · 8 valid · 0 invalid
-```
-
-**Operate three use cases →** [Product demo](examples/product-demo/) (real providers, ~$0.05) · **Authorize one exact HTTP action →** [Action Gateway](docs/reference/action-gateway.md) · **See it in 60 seconds, no key →** [Quickstart](#try-it-in-60-seconds-no-api-key) · **Deep proof, one session →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot a real use case →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
-
-## See the Operations Console
-
-[![Talon Operations Console — operational readiness, AI use-case investigation, sessions, costs, and signed evidence](docs/assets/console/showcase.webp)](docs/guides/operations-console.md)
-
-*Actual console UI from a **seeded synthetic Playwright fixture**, not a customer deployment. Some runtime failures are intentionally induced to demonstrate truthful degraded states. The collage is assembled from screenshots, not a separate simulated UI.*
-
-Explore [the read-only Operations Console](docs/guides/operations-console.md) or [inspect a governed session and verified evidence](docs/guides/operations-console.md#operator-walkthrough-in-pictures).
-
----
+*Read-only Operations Console. Real UI screenshots using synthetic test data, including intentionally degraded runtimes.* [Explore the console →](docs/guides/operations-console.md)
 
 ## Where Talon can enforce today
 
@@ -123,6 +101,10 @@ Or just [try it with no key](#try-it-in-60-seconds-no-api-key) first, then [open
 
 ## Product demo — three use cases, one control plane
 
+[![55-second terminal walkthrough of Talon enforcing policy across three AI use cases](docs/assets/talon_hero.gif)](examples/product-demo/)
+
+*Watch real CLI and API calls demonstrate policy-valid failover, PII redaction, a forbidden tool denial, budget enforcement and signed evidence.*
+
 A **live, evidence-backed product demo**: it operates **customer-support, coding-assistant, and document-summary** as three `agent.talon.yaml` files under one `agents_dir`, on real providers, and walks the four pillars in one operating period:
 
 ```bash
@@ -162,7 +144,7 @@ The record shows the PII detected (email, IBAN), the data tier, the policy decis
 
 The same stack starts the read-only operations console as its own service: open <http://127.0.0.1:8787/> and enter the one-time pairing code from `docker compose logs talon-ui` (no admin key in the browser; see [console access](docs/reference/console-access.md)). Both the console and the API are published on the host's loopback only; the demo API has no admin key, so do not expose it to a network as is.
 
-> **Why did the request still succeed?** The demo config sets `pii_action: redact` — the enforced policy keeps traffic flowing but the provider never sees the raw values. The mock provider receives `[IBAN]` (and `[EMAIL]`) in place of the detected PII, and the signed record shows `pii_redacted: true` alongside the detections. The hero above shows the same redaction against real providers. Change one line to `pii_action: block` and the same request is denied before the provider is reached — a real denial that costs nothing. There is no shadow/observe-only posture (#442): whatever action a rule declares is what happens.
+> **Why did the request still succeed?** The demo config sets `pii_action: redact` — the enforced policy keeps traffic flowing but the provider never sees the raw values. The mock provider receives `[IBAN]` (and `[EMAIL]`) in place of the detected PII, and the signed record shows `pii_redacted: true` alongside the detections. The [product demo](#product-demo--three-use-cases-one-control-plane) shows the same redaction against real providers. Change one line to `pii_action: block` and the same request is denied before the provider is reached — a real denial that costs nothing. There is no shadow/observe-only posture (#442): whatever action a rule declares is what happens.
 
 Full walk-through: [60-second demo](docs/tutorials/quickstart-demo.md).
 
@@ -389,6 +371,8 @@ Artifacts a skeptical reviewer can grep in one session:
 ---
 
 ## Docs
+
+**Open source and Enterprise:** Talon OSS is a complete Apache-2.0 enforcement and evidence core. A separate Enterprise edition is in development; corporate identity, SIEM and external approval integrations are not released Enterprise features. See [edition boundaries](docs/explanation/oss-enterprise-boundary.md) and the [editions overview](https://dativo.io/enterprise/).
 
 [Documentation index](docs/README.md) ·
 [60-second demo](docs/tutorials/quickstart-demo.md) ·
