@@ -64,7 +64,7 @@ wait_http() { # wait_http <url> <seconds>
 
 n8n_version="$("$N8N_BIN" --version 2>/dev/null | tail -n1)"
 check "n8n is the pinned release" "$n8n_version" "${N8N_EXPECT:-$PINNED_N8N}"
-echo "talon: $("$TALON_BIN" version | head -n1)"
+echo "talon: $("$TALON_BIN" version | sed -n 1p)"
 
 # ---- the independently counting refund service ---------------------------
 cat >"$WORK/refund_service.py" <<'PY'
