@@ -70,6 +70,7 @@ var actionsListCmd = &cobra.Command{
 		fmt.Fprintln(w, "\nActions:")
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "  ACTION\tSOURCE\tUPSTREAM\tSCHEMA\tDEFINITION\tVERDICT\tRULES")
+		byAmount := false
 		for _, a := range view.Actions {
 			src := a.Source.Type
 			if a.Source.ID != "" {
@@ -79,9 +80,24 @@ var actionsListCmd = &cobra.Command{
 			for _, r := range a.ApprovalRules {
 				rules = append(rules, r.ID)
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Name, src, orDash(a.UpstreamName), shortGeneration(a.SchemaDigest), shortGeneration(a.DefinitionDigest), a.Verdict, orDash(strings.Join(rules, ",")))
+			verdict := a.Verdict
+			for i := range a.AmountLimits {
+				rules = append(rules, a.AmountLimits[i].ID)
+			}
+			if len(a.AmountLimits) > 0 && a.Verdict != action.VerdictDeny {
+				// The name alone does not decide a limited action.
+				verdict = "BY AMOUNT"
+				byAmount = true
+			}
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Name, src, orDash(a.UpstreamName), shortGeneration(a.SchemaDigest), shortGeneration(a.DefinitionDigest), verdict, orDash(strings.Join(rules, ",")))
 		}
-		return tw.Flush()
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		if byAmount {
+			fmt.Fprintln(w, "\nBY AMOUNT: an amount limit decides each call from its arguments (allow / approval / deny); see 'talon actions show <action>' and 'talon actions validate'.")
+		}
+		return nil
 	},
 }
 
@@ -137,9 +153,12 @@ var actionsShowCmd = &cobra.Command{
 				fmt.Fprintf(w, "  Mcp-Param-%s <- %s (%s)\n", m.Header, strings.Join(m.Path, "."), orDash(m.Type))
 			}
 		}
-		if dv.VerdictSource != "" {
+		switch {
+		case len(dv.AmountLimits) > 0 && dv.Verdict != action.VerdictDeny:
+			fmt.Fprintf(w, "Verdict:            BY AMOUNT — %s by name; the amount limit below decides each call from its arguments\n", dv.Verdict)
+		case dv.VerdictSource != "":
 			fmt.Fprintf(w, "Verdict:            %s (%s policy)\n", dv.Verdict, dv.VerdictSource)
-		} else {
+		default:
 			fmt.Fprintf(w, "Verdict:            %s\n", dv.Verdict)
 		}
 		for _, r := range dv.ApprovalRules {

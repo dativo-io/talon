@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,11 +84,11 @@ policies:
 		t.Fatal(err)
 	}
 	out, stderr, code := RunTalon(t, dir, nil, "actions", "validate", "--action", "create_refund_request", "--input", argsFile)
-	if code != 0 || !strings.Contains(out, "REQUIRE_APPROVAL (rule refund-bands)") || !strings.Contains(out, "75.00 EUR is above 50.00 and at most 500.00") {
+	if code != 0 || !strings.Contains(out, "REQUIRE_APPROVAL (rule refund-bands)") || !strings.Contains(out, "the amount is above 50.00 and at most 500.00 EUR") {
 		t.Fatalf("actions validate: code=%d\n%s\n%s", code, out, stderr)
 	}
 	out, _, _ = RunTalon(t, dir, nil, "actions", "show", "create_refund_request")
-	if !strings.Contains(out, "Amount limit:       refund-bands (use_case): amount EUR — allow up to 50.00, approval (groups: support-leads) up to 500.00, deny above") {
+	if !strings.Contains(out, "Verdict:            BY AMOUNT") || !strings.Contains(out, "Amount limit:       refund-bands (use_case): amount EUR — allow up to 50.00, approval (groups: support-leads) up to 500.00, deny above") {
 		t.Fatalf("actions show must list the amount limit:\n%s", out)
 	}
 
@@ -185,5 +186,19 @@ policies:
 		if code != 0 || !strings.Contains(out, "Lifecycle: VALID") {
 			t.Fatalf("verify %s: code=%d\n%s\n%s", opID, code, out, stderr)
 		}
+	}
+	// The signed evidence names the band and the policy thresholds, never
+	// the amounts of the calls.
+	db, err := sql.Open("sqlite3", filepath.Join(dir, "evidence.db")+"?mode=ro&_busy_timeout=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var leaked int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM evidence WHERE invocation_type = 'action_lifecycle' AND (evidence_json LIKE '%75.00%' OR evidence_json LIKE '%900.00%' OR evidence_json LIKE '%30.00%' OR evidence_json LIKE '%T-2%')`).Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatalf("%d lifecycle records carry argument values of a call", leaked)
 	}
 }
