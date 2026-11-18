@@ -279,7 +279,7 @@ func (s *Service) prepareEstablish(req EstablishRequest) (*establishPlan, error)
 	reviewJSON, _ := json.Marshal(def.ReviewProjection(canonical))
 	return &establishPlan{
 		opID: opID, def: def, canonical: canonical, digest: s.operationDigest(def, canonical),
-		verdict: s.Policy.Evaluate(def.Name), reviewJSON: reviewJSON, identitySource: identitySource,
+		verdict: s.Policy.EvaluateArguments(def.Name, canonical), reviewJSON: reviewJSON, identitySource: identitySource,
 	}, nil
 }
 
@@ -766,7 +766,26 @@ func (s *Service) authorizeClaim(ctx context.Context, tx *sql.Tx, w *evidence.Tx
 	if err != nil {
 		return nil, s.refuse(ctx, tx, w, op, CodePayloadUnavailable, "active payload cannot be opened: "+err.Error())
 	}
+	approvalChecked := current.Outcome == VerdictRequireApproval || op.Verdict == VerdictRequireApproval
+	if refused := s.recheckWithArguments(ctx, tx, w, op, ap, payload, approvalChecked); refused != nil {
+		return nil, refused
+	}
 	return &claimAuthorization{op: op, def: def, approval: ap, payload: payload}, nil
+}
+
+// recheckWithArguments applies the argument rules (#205), which read the
+// material arguments only the sealed payload holds, before anything is
+// claimed: a rule that now denies, or now requires an approval this
+// operation does not hold, refuses with zero dispatch.
+func (s *Service) recheckWithArguments(ctx context.Context, tx *sql.Tx, w *evidence.TxWriter, op *Operation, ap *Approval, payload []byte, approvalChecked bool) error {
+	v := s.Policy.EvaluateArguments(op.Action, payload)
+	if v.Outcome == VerdictDeny {
+		return s.refuse(ctx, tx, w, op, CodePolicyDenied, "current policy denies this action with these arguments ("+v.Reason+"); a prior authorization cannot be used")
+	}
+	if v.Outcome == VerdictRequireApproval && !approvalChecked {
+		return s.approvalUsable(ctx, tx, w, op, ap)
+	}
+	return nil
 }
 
 // approvalUsable checks that an approved decision binds this exact

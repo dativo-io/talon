@@ -121,17 +121,26 @@ func deepValidatePolicy(ctx context.Context, pol *policy.Policy, osc offlineServ
 	// checked, and the undiscovered sources are reported truthfully —
 	// `talon actions list --agent <name>` discovers and compiles them.
 	if pol.Actions != nil && len(pol.Actions.Definitions) > 0 {
-		if _, err := action.CompileCatalog(pol.Actions, nil); err != nil {
+		cat, err := action.CompileCatalog(pol.Actions, nil)
+		if err != nil {
 			var undiscovered *action.SourceNotDiscoveredError
 			if !errors.As(err, &undiscovered) {
 				return fmt.Errorf("action catalog: %w", err)
 			}
 			log.Info().Strs("sources", undiscovered.IDs).Msg("action_sources_not_discovered_offline")
+			cat = nil
 		}
 		// The effective action policy composes the company policy (#425)
 		// with this use case's rules exactly as serve does, so a company /
 		// use-case conflict serve would refuse is refused here first.
-		if _, err := action.CompileEffectiveActionPolicy(pol, osc.Company); err != nil {
+		ap, err := action.CompileEffectiveActionPolicy(pol, osc.Company)
+		if err != nil {
+			return fmt.Errorf("effective action policy: %w", err)
+		}
+		// Argument rules resolve against the catalog as at serve (#205).
+		// With undiscovered sources the catalog is not available offline;
+		// serve performs the check when it builds the generation.
+		if err := ap.ValidateAgainstCatalog(cat); err != nil {
 			return fmt.Errorf("effective action policy: %w", err)
 		}
 	}

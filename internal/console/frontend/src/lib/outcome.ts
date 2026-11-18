@@ -20,6 +20,13 @@ export function outcomeStory(o: Outcome | undefined | null): OutcomeStory {
   if (o.downstream === "cache") {
     return { headline: "Served from Talon's cache", detail: `Talon answered ${what} from its semantic cache; no destination was called.`, tone: "ok" };
   }
+  if (o.decision === "approval_required") {
+    return {
+      headline: "Approval required — not dispatched",
+      detail: `Talon holds ${what} until an authorized reviewer approves it: the destination has not received it.${recorded(o)}`,
+      tone: "warn",
+    };
+  }
   if (o.dispatch === "not_dispatched") {
     if (o.decision === "denied") {
       return { headline: "Talon denied it — not dispatched", detail: `Talon blocked ${what} before its dispatch boundary: the destination never received it.`, tone: "error" };

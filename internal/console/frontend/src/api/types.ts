@@ -431,7 +431,8 @@ export type Dispatch = "not_dispatched" | "dispatched" | "unknown" | "not_record
 export type Downstream = "none" | "completed" | "rejected" | "failed" | "unknown" | "not_recorded" | "cache";
 
 export interface Outcome {
-  decision: "allowed" | "denied";
+  // approval_required: an Action Gateway operation waiting for a reviewer.
+  decision: "allowed" | "denied" | "approval_required";
   dispatch: Dispatch;
   downstream: Downstream;
   response_withheld?: boolean;
@@ -518,7 +519,30 @@ export interface EvidenceRecord {
   failover?: { role: string; provider: string; model?: string; error_class?: string; chain_position: number };
   enforcement?: { mechanism: string; boundary: string; decision_authority: string; provenance: string };
   orchestration?: Record<string, unknown>;
+  action_lifecycle?: ActionLifecycle;
   signature: string;
+  [key: string]: unknown;
+}
+
+// One signed Action Gateway lifecycle transition (evidence.ActionLifecycle):
+// the decision facts the record carries. Argument values are never part of it.
+export interface ActionLifecycle {
+  event: string;
+  sequence: number;
+  operation_id: string;
+  action: string;
+  policy_digest: string;
+  verdict?: string;
+  matched_rule_id?: string;
+  matched_rule_source?: string;
+  operation_status: string;
+  approval_id?: string;
+  approval_status?: string;
+  approver_groups?: string[];
+  reviewer_principal?: string;
+  reviewer_group?: string;
+  decision_reason?: string;
+  attempt_status?: string;
   [key: string]: unknown;
 }
 
@@ -570,9 +594,22 @@ export interface ProviderView {
   fallback?: string[];
 }
 
+// One company action rule; condition is absent for a name-based approval
+// rule, which applies to every call of its actions.
+export interface CompanyActionRule {
+  id: string;
+  actions: string[];
+  condition?: string;
+  type?: string;
+  effect: "require_approval" | "deny";
+  approver_groups?: string[];
+}
+
 export interface OrganizationConfig {
   availability: Availability;
   source_path?: string;
+  action_rules?: CompanyActionRule[];
+  action_rules_error?: string;
   pii_action?: string;
   response_pii_action?: string;
   daily_cost?: number;
@@ -771,6 +808,48 @@ export interface BoundaryProof {
   instance_ids?: string[];
 }
 
+export interface ActionApprovalRule { id: string; source: string; approver_groups: string[]; actions?: string[] }
+
+// One argument rule (#205): a typed condition on one argument with a
+// restrictive effect, and the layer (company | use_case) that declared it.
+export interface ActionArgumentRule {
+  id: string;
+  source: string;
+  argument: string;
+  type: string;
+  operator: string;
+  value: string;
+  condition: string;
+  effect: "require_approval" | "deny";
+  approver_groups?: string[];
+  actions?: string[];
+}
+
+// decision_basis "arguments": verdict is only the baseline; a call's
+// arguments can make it stricter, never looser.
+export interface ActionDecision {
+  action: string;
+  verdict: string;
+  verdict_source?: string;
+  decision_basis: "name" | "arguments";
+  approval_rules?: ActionApprovalRule[];
+  argument_rules?: ActionArgumentRule[];
+}
+
+export interface ActionBoundary {
+  basis: string;
+  proven_active: boolean;
+  proof: BoundaryProof; // every running talon serve: agent file + the gateway config its company action policy came from
+  policy_digest?: string;
+  approval_expires_after?: string;
+  forbidden_actions?: string[];
+  actions: ActionDecision[];
+  approval_rules?: ActionApprovalRule[];
+  argument_rules?: ActionArgumentRule[];
+  error?: string;
+  notes?: string[];
+}
+
 export interface EffectiveReport {
   use_case: string;
   tenant_id: string;
@@ -796,6 +875,7 @@ export interface EffectiveReport {
     providers?: { name: string; enabled: boolean; effective_digest: string; forbidden_tools?: string[]; allowed_models?: string[] }[];
   };
   mcp_boundary?: { proxy: string; file: string; scope: string; tools: ToolAccess[]; error?: string; proven_active: boolean; proof: BoundaryProof };
+  action_boundary?: ActionBoundary;
   last_decision?: {
     evidence_id: string;
     timestamp: string;

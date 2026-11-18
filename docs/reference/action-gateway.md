@@ -83,6 +83,131 @@ gateway:
 
 **Activation is a restart boundary.** The company policy is loaded once at process start and frozen into every runtime generation the process builds; agent-file hot reloads keep that snapshot. A changed company policy activates at the next restart as a new effective generation (the generation id folds in the company digest): a pending approval established before it is invalidated at its next decision (`409 approval_binding_stale`, approval `invalidated`), an approved-but-unclaimed operation is refused at claim with the same code, historical evidence stays valid under the policy digest it was signed with, and the changed requirement needs a new operation.
 
+## Argument rules (#205)
+
+An **argument rule** is one declarative, typed condition on **one top-level argument** of matching actions, with a **restrictive** effect:
+
+```
+when <argument> <operator> <value> holds   →   require_approval (by approver_groups)  |  deny
+```
+
+A rule never grants anything. The action being catalogued and not forbidden is the prerequisite; a rule whose condition does not hold adds no restriction; the result is `DENY > REQUIRE_APPROVAL > the baseline`. It is one rule form, not an expression language: no nested paths, no conjunctions, no membership, no regular expressions, no functions, no external data (those are #570).
+
+```yaml
+# agent.talon.yaml (use-case layer)
+policies:
+  approvals:
+    expires_after: 30m
+    argument_rules:
+      refund-needs-approval:
+        actions: [create_refund_request]   # exact names or trailing-* prefixes
+        argument: amount                   # a top-level argument of the action
+        type: decimal                      # integer | decimal | string | boolean
+        operator: gt                       # eq | ne | gt | gte | lt | lte
+        value: "50.00"                     # the operand, in the rule's type
+        effect: require_approval           # require_approval | deny
+        approver_groups: [support-leads]   # required for require_approval, not allowed for deny
+      refund-too-large:
+        {actions: [create_refund_request], argument: amount, type: decimal, operator: gt, value: "500.00", effect: deny}
+      mass-delete-denied:
+        {actions: [delete_records], argument: count, type: integer, operator: gte, value: 1000, effect: deny}
+      real-delete-needs-approval:
+        {actions: [delete_records], argument: dry_run, type: boolean, operator: eq, value: false, effect: require_approval, approver_groups: [support-leads]}
+      prod-deploy-needs-approval:
+        {actions: [deploy_service], argument: environment, type: string, operator: eq, value: production, effect: require_approval, approver_groups: [release-managers]}
+
+# talon.config.yaml (company layer; restart-required like the rest of the company action policy)
+gateway:
+  organization_policy:
+    constraints:
+      action_approvals:
+        argument_rules:
+          refund-too-large:
+            {actions: [create_refund_request], argument: amount, type: decimal, operator: gt, value: "500.00", effect: deny}
+```
+
+These are example policies. Talon has no built-in notion of a refund, a currency or an environment.
+
+### Types, operators and wire representation
+
+| `type` | Argument on the wire | `value` in the rule | Operators |
+|---|---|---|---|
+| `integer` | a JSON number without fraction or exponent, at most 18 digits | a YAML integer | `eq ne gt gte lt lte` |
+| `decimal` | an exact decimal with at most 18 integer and 6 fractional digits, as a JSON number (`75.00`) or a JSON string (`"75.00"`) | a **quoted** string (`"50.00"`) | `eq ne gt gte lt lte` |
+| `string` | a JSON string, at most 1024 bytes | a string | `eq ne` (exact, case-sensitive) |
+| `boolean` | a JSON boolean | `true` / `false` | `eq ne` |
+
+- **Exact decimals:** a decimal is compared exactly, never as a float. An unquoted decimal operand in YAML would pass through a float and is refused at load. `"50"` and `"50.00"` are the same operand and the same digest.
+- **No implicit coercion:** `"5"` is not an integer, `0` is not a boolean, `1e2` is not an integer.
+- **Resolved against the trusted catalog:** at load (`talon validate`, `talon serve`, `talon actions`), for every catalogued action a rule applies to, the argument must be a declared top-level property that the action's input schema marks **required**, with a matching JSON type (`integer` → `integer`; `decimal` → `number` or `string`; `string` → `string`; `boolean` → `boolean`). A rule that could not be evaluated truthfully is a configuration error.
+
+### Fail closed
+
+When a rule applies to an action and its argument is missing, `null`, of another JSON type or outside the type's bounds, the condition cannot be established and the call is **denied** (reason code `argument_not_established`). An unestablished argument is never treated as "the rule does not match".
+
+### Domain constraints belong to the catalog
+
+What an amount may look like is the action's contract, not the policy's. Put it in the action's trusted input schema, which Talon enforces before any policy decision (`action_schema_invalid`, nothing bound):
+
+```yaml
+      input_schema:
+        properties:
+          amount: {type: string, pattern: "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$"}   # non-negative, cent precision
+          currency: {type: string, enum: [EUR]}                                       # EUR only
+```
+
+An explicit guard rule is the alternative when the schema must stay open, for example `{argument: currency, type: string, operator: ne, value: EUR, effect: deny}`.
+
+### Composition
+
+Argument rules compile in the same one compiler as forbidden patterns and name-based approval rules:
+- **Precedence:** a company `forbidden_tools` match denies whatever the arguments. A company rule's restriction stands whatever a use case declares; a use case can **add** rules (and so tighten) but has no way to lift one: there is no `allow` effect.
+- **Unambiguous reviewers:** any two approval requirements that can apply to one action (name-based rules and `require_approval` argument rules, in either layer) must name the same approver groups; otherwise the configuration is refused at load.
+- **Unique ids:** an argument rule may not reuse a rule id of its layer. Company rules carry `company:<id>`.
+
+### Binding and re-check
+
+- **At establish** the verdict is computed from the call's canonical arguments, and the approval (if one is required) binds the exact digest of those arguments. A different argument value under the same `operation_id` is `operation_conflict`.
+- **Policy digest:** argument rules are part of the approval-relevant `policy_digest` (operands normalized), so changing an operand invalidates approvals granted under the old one (`approval_binding_stale`). A policy without argument rules keeps its digest byte for byte, and the company encoding stays version 1 unless it carries them.
+- **Before a claim** the policy is re-evaluated against the operation's sealed arguments. An operation allowed under an earlier policy that a rule now denies is refused `policy_denied`; one that now requires approval is refused `approval_required`. Either way nothing is dispatched.
+
+### Decisions, machine-readable
+
+| Where | What it carries |
+|---|---|
+| `POST /v1/action-operations` (`operation`) | `verdict`, `matched_rule_id`, `matched_rule_source` (`company` \| `use_case`), `approval.approver_groups` |
+| `talon actions show <action> [--json]` | `decision_basis`: `name` (the verdict holds for every call) or `arguments` (argument rules apply; a call can be stricter than `verdict`, never looser), and `argument_rules[]`: `id`, `source`, `argument`, `type`, `operator`, `value`, `condition`, `effect`, `approver_groups`. The text form prints `BY ARGUMENTS`. A consumer must not read `verdict: ALLOW` with `decision_basis: arguments` as unconditional |
+| `talon actions validate --action <a> --input <file> [--json]` | for arguments that satisfy the action's definition: the verdict for those exact arguments, `matched_rule_id`, `matched_rule_source` (`company` \| `use_case`), `approver_groups` (when approval is required), `reason`, and `reason_code` (`argument_rule_approval`, `argument_rule_deny` or `argument_not_established`). For arguments that do not (missing, malformed, wrong type, undeclared): `valid: false`, `verdict: REFUSED`, `reason_code: arguments_invalid` and a non-zero exit. Invalid arguments never show the action's name-only verdict, so they can never read as `ALLOW` |
+| `talon agents show <name> --effective [--json]` and the console's use-case page | `action_boundary`: every action the agent file defines with `verdict`, `decision_basis` and the rules that apply, plus all `approval_rules` and `argument_rules` of both layers with their `source`. A policy that `talon validate` and `talon serve` refuse (for example a company rule whose argument this use case's action does not require) is reported as `action_boundary.error` with no actions or rules, never as the effective policy. The console's Configuration page lists the company rules, and its evidence detail shows the verdict and matched rule of an action lifecycle record |
+| signed lifecycle evidence | `matched_rule_id`, `matched_rule_source` and the reason |
+
+**Inspection reason codes are not HTTP error codes.** `reason_code` and the `REFUSED` verdict exist only in the output of `talon actions validate`. They explain a pre-flight check to an operator or a script and are not part of the wire contract. The Action Gateway answers with the registered governance codes (`internal/govcode`, listed in the [MCP governance extension registry](mcp-governance-extension.md) and in the route table below), which are what clients key on:
+
+| Inspection (`talon actions validate`) | What the Action Gateway answers for the same call |
+|---|---|
+| `verdict: REFUSED`, `reason_code: arguments_invalid` | `422 action_schema_invalid`; no operation is established |
+| `verdict: DENY`, `reason_code: argument_rule_deny` or `argument_not_established` | `403` with `operation.verdict: DENY` and `matched_rule_id`; a claim is refused `policy_denied` |
+| `verdict: REQUIRE_APPROVAL`, `reason_code: argument_rule_approval` | `202` with `operation.verdict: REQUIRE_APPROVAL`; a claim before the decision is refused `approval_pending` |
+| `verdict: ALLOW` | `201`/`200` with `operation.verdict: ALLOW` |
+
+**No argument values in reasons.** A reason names the rule and its argument (`use_case argument rule refund-needs-approval: its condition on argument "amount" holds; approval is required`). It never repeats a value of the call or the rule's operand: evidence outlives the sealed payload.
+
+### Not supported (see #570)
+
+Nested argument paths, several arguments in one rule, `and`/`or`, set membership, pattern matching, time- or history-dependent conditions, cumulative limits, and any `allow` effect. Corporate approval flows (chat, ticketing) are outside the OSS scope.
+
+### Approving a conditional action: what the operator does
+
+The approval path of an argument rule is the existing approval API; nothing else is needed, and nothing else exists in this release.
+
+1. **Create the reviewer once:** `talon approver add --name <name> --tenant <tenant> --groups <group>` prints an approver credential (shown once). The group must be one the rule names.
+2. **The application calls** `POST /v1/action-operations`. When a rule requires approval the answer is `202` with `operation.verdict: REQUIRE_APPROVAL`, `matched_rule_id`, `matched_rule_source` and the approval (`approval.id`, `approval.approver_groups`, expiry). Nothing is dispatched.
+3. **The application hands the approval id to a reviewer** through whatever channel the team uses. Talon does not notify anyone and has no list of pending approvals: the calling application is the only holder of the id.
+4. **The reviewer decides:** the application reads `GET /v1/approvals/{approval_id}` with its agent key (the approval and the reviewer projection of the exact arguments) and shows it to the reviewer; the reviewer sends `POST /v1/approvals/{approval_id}/decisions` with the approver credential and `{"decision": "approve" | "reject", "reason": "..."}` records the decision. A decision dispatches nothing.
+5. **The application claims** with `POST /v1/action-operations/{operation_id}/attempts`; only then is the approved call dispatched, exactly once.
+
+The Operations Console is read-only: it shows the rules (use-case page, Configuration) and the signed lifecycle records of an operation (evidence detail), and it cannot approve, reject or list pending approvals.
+
 ## Trusted MCP sources (`actions.sources`)
 
 A definition may be **discovered** from a trusted MCP source instead of declared with its own schema. Everything with authority stays Talon-configured: the source id, the endpoint, the credential reference, the canonical action name, the upstream-name mapping and the reviewer classification. The upstream supplies **bounded source metadata** only — tool name, description, `inputSchema`, `x-mcp-header` declarations, cache hints, informational `serverInfo` — and can never define approval requirements, approver groups, materiality, execution posture, tenant, agent, source URL, credentials or a destination outside its configured source.

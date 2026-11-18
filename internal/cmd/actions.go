@@ -70,6 +70,7 @@ var actionsListCmd = &cobra.Command{
 		fmt.Fprintln(w, "\nActions:")
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "  ACTION\tSOURCE\tUPSTREAM\tSCHEMA\tDEFINITION\tVERDICT\tRULES")
+		byArguments := false
 		for _, a := range view.Actions {
 			src := a.Source.Type
 			if a.Source.ID != "" {
@@ -79,9 +80,24 @@ var actionsListCmd = &cobra.Command{
 			for _, r := range a.ApprovalRules {
 				rules = append(rules, r.ID)
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Name, src, orDash(a.UpstreamName), shortGeneration(a.SchemaDigest), shortGeneration(a.DefinitionDigest), a.Verdict, orDash(strings.Join(rules, ",")))
+			verdict := a.Verdict
+			for i := range a.ArgumentRules {
+				rules = append(rules, a.ArgumentRules[i].ID)
+			}
+			if a.DecisionBasis == action.DecisionByArguments {
+				// The name alone does not decide this action.
+				verdict = "BY ARGUMENTS"
+				byArguments = true
+			}
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Name, src, orDash(a.UpstreamName), shortGeneration(a.SchemaDigest), shortGeneration(a.DefinitionDigest), verdict, orDash(strings.Join(rules, ",")))
 		}
-		return tw.Flush()
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		if byArguments {
+			fmt.Fprintln(w, "\nBY ARGUMENTS: argument rules decide each call from its arguments (the baseline, approval or deny); see 'talon actions show <action>' and 'talon actions validate'.")
+		}
+		return nil
 	},
 }
 
@@ -137,13 +153,24 @@ var actionsShowCmd = &cobra.Command{
 				fmt.Fprintf(w, "  Mcp-Param-%s <- %s (%s)\n", m.Header, strings.Join(m.Path, "."), orDash(m.Type))
 			}
 		}
-		if dv.VerdictSource != "" {
+		switch {
+		case dv.DecisionBasis == action.DecisionByArguments:
+			fmt.Fprintf(w, "Verdict:            BY ARGUMENTS — %s by name; the argument rules below can require approval or deny a call\n", dv.Verdict)
+		case dv.VerdictSource != "":
 			fmt.Fprintf(w, "Verdict:            %s (%s policy)\n", dv.Verdict, dv.VerdictSource)
-		} else {
+		default:
 			fmt.Fprintf(w, "Verdict:            %s\n", dv.Verdict)
 		}
 		for _, r := range dv.ApprovalRules {
 			fmt.Fprintf(w, "Approval rule:      %s (%s; groups: %s)\n", r.ID, r.Source, strings.Join(r.ApproverGroups, ", "))
+		}
+		for i := range dv.ArgumentRules {
+			r := &dv.ArgumentRules[i]
+			effect := "deny"
+			if r.Effect == action.EffectRequireApproval {
+				effect = "require approval (groups: " + strings.Join(r.ApproverGroups, ", ") + ")"
+			}
+			fmt.Fprintf(w, "Argument rule:      %s (%s): when %s [%s] → %s\n", r.ID, r.Source, r.Condition, r.Type, effect)
 		}
 		fmt.Fprintf(w, "Schema:             %s\n", string(dv.Schema))
 		return nil
@@ -159,9 +186,31 @@ type actionsValidateResult struct {
 	DefinitionDigest string                     `json:"definition_digest"`
 	ArgumentsDigest  string                     `json:"arguments_digest,omitempty"`
 	Review           map[string]json.RawMessage `json:"review,omitempty"`
-	Verdict          string                     `json:"verdict"`
-	MatchedRuleID    string                     `json:"matched_rule_id,omitempty"`
+	// Verdict is ALLOW, REQUIRE_APPROVAL or DENY for valid arguments,
+	// evaluated WITH them (argument rules, #205). For invalid arguments it is
+	// REFUSED: the Action Gateway rejects them before any policy decision, so
+	// no policy verdict exists and none is shown — never the action's
+	// name-only verdict, which could read ALLOW.
+	Verdict       string `json:"verdict"`
+	MatchedRuleID string `json:"matched_rule_id,omitempty"`
+	// MatchedRuleSource (company | use_case) and ApproverGroups mirror the
+	// Action Gateway's operation projection, so a script reads the layer
+	// and the reviewers from fields, not from the rule id or the reason.
+	MatchedRuleSource string   `json:"matched_rule_source,omitempty"`
+	ApproverGroups    []string `json:"approver_groups,omitempty"`
+	Reason            string   `json:"reason,omitempty"`
+	// ReasonCode is an INSPECTION code of this command, not an HTTP
+	// governance error code: argument_rule_deny | argument_rule_approval |
+	// argument_not_established | arguments_invalid.
+	ReasonCode string `json:"reason_code,omitempty"`
 }
+
+// Inspection-only values of `talon actions validate` (not wire codes).
+const (
+	validateVerdictRefused      = "REFUSED"
+	validateReasonArgsInvalid   = "arguments_invalid"
+	validateReasonArgsInvalidTx = "the arguments do not satisfy the action's trusted definition: the Action Gateway refuses them before any policy decision (HTTP 422 action_schema_invalid); nothing is bound or dispatched"
+)
 
 var actionsValidateCmd = &cobra.Command{
 	Use:   "validate --action <name> --input <file>",
@@ -185,18 +234,22 @@ var actionsValidateCmd = &cobra.Command{
 			return fmt.Errorf("action %q is not in agent %q's catalog (actions: %s)", actionsValidateFor, cc.agent.Name, strings.Join(cc.catalog.Names(), ", "))
 		}
 		res := actionsValidateResult{Candidate: cc.candidateLabel(), Action: def.Name, DefinitionDigest: def.DefinitionDigest}
-		verdict := cc.approvals.Evaluate(def.Name)
-		res.Verdict, res.MatchedRuleID = verdict.Outcome, verdict.RuleID
 		canonical, err := action.Canonicalize(raw)
 		if err == nil {
 			err = def.ValidateArguments(canonical)
 		}
 		if err != nil {
+			// No policy verdict for arguments the gateway would refuse: the
+			// name-only verdict must not stand in for one.
 			res.Error = err.Error()
+			res.Verdict, res.Reason, res.ReasonCode = validateVerdictRefused, validateReasonArgsInvalidTx, validateReasonArgsInvalid
 		} else {
 			res.Valid = true
 			res.ArgumentsDigest = action.Digest(canonical)
 			res.Review = def.ReviewProjection(canonical)
+			verdict := cc.approvals.EvaluateArguments(def.Name, canonical)
+			res.Verdict, res.MatchedRuleID, res.Reason, res.ReasonCode = verdict.Outcome, verdict.RuleID, verdict.Reason, verdict.Code
+			res.MatchedRuleSource, res.ApproverGroups = verdict.Source, verdict.ApproverGroups
 		}
 		if actionsJSON {
 			if werr := writeActionsJSON(cmd.OutOrStdout(), res); werr != nil {
@@ -227,6 +280,12 @@ var actionsValidateCmd = &cobra.Command{
 				fmt.Fprintf(w, " (rule %s)", res.MatchedRuleID)
 			}
 			fmt.Fprintln(w)
+			if len(res.ApproverGroups) > 0 {
+				fmt.Fprintf(w, "Approver groups:    %s\n", strings.Join(res.ApproverGroups, ", "))
+			}
+			if res.Reason != "" {
+				fmt.Fprintf(w, "Reason:             %s\n", res.Reason)
+			}
 		}
 		if !res.Valid {
 			return fmt.Errorf("arguments do not satisfy the trusted definition of %q", def.Name)
@@ -297,6 +356,9 @@ func cliActionCatalog(ctx context.Context, agentName, policyPath string) (*cliCa
 	}
 	ap, err := action.CompileEffectiveActionPolicy(ca.Policy, osc.Company)
 	if err != nil {
+		return nil, fmt.Errorf("effective action policy: %w", err)
+	}
+	if err := ap.ValidateAgainstCatalog(cat); err != nil {
 		return nil, fmt.Errorf("effective action policy: %w", err)
 	}
 	return &cliCatalog{agent: ca, catalog: cat, approvals: ap, at: time.Now().UTC()}, nil

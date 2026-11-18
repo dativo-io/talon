@@ -62,6 +62,58 @@ func ProveGatewayConfig(v View, readable bool, gatewayConfigDigest string) Loade
 	})
 }
 
+// ProveActionPolicy proves the Action Gateway's effective action policy for
+// one use case. The Action Gateway is served by EVERY `talon serve` process,
+// whatever its role, and each compiles the action policy from two inputs: the
+// agent file of its active generation and the company action policy of the
+// gateway config it read at start. So every running serve process (a process
+// that reports an agent catalog) must report the use case with agentDigest
+// AND the digest of the gateway config it loaded, equal to
+// gatewayConfigDigest. A process that serves the Action Gateway but does not
+// report which gateway config it read (a serve without --gateway reads the
+// company policy from the file without reporting its digest) leaves the proof
+// unknown: its company action policy cannot be compared, and is never assumed.
+func ProveActionPolicy(v View, readable bool, name, tenant, agentDigest, gatewayConfigDigest string) Loaded {
+	const label = "talon serve"
+	if !readable {
+		return Loaded{State: BoundaryUnknown, Reason: "runtime records unavailable: whether a running " + label + " enforces this action policy cannot be proved"}
+	}
+	var ids []string
+	for i := range v.Processes {
+		p := &v.Processes[i]
+		if p.Assessed != Running || p.Catalog == nil {
+			continue
+		}
+		ids = append(ids, p.InstanceID)
+		fail := func(state, why string) Loaded {
+			return Loaded{State: state, Reason: fmt.Sprintf("the running %s %s %s", label, p.InstanceID, why), InstanceIDs: ids}
+		}
+		found := false
+		for _, a := range p.Catalog.Agents {
+			if a.Name != name || tenantOf(a.TenantID) != tenantOf(tenant) {
+				continue
+			}
+			found = true
+			if a.PolicyDigest != agentDigest || agentDigest == "" {
+				return fail(BoundaryDiffers, "loaded a different version of the agent file")
+			}
+		}
+		if !found {
+			return fail(BoundaryDiffers, "does not have this use case in its active generation")
+		}
+		if p.GatewayConfig == nil || p.GatewayConfig.Digest == "" {
+			return fail(BoundaryUnknown, "serves the Action Gateway but does not report which gateway config it read, so its company action policy cannot be compared")
+		}
+		if ok, why := configMatches(p.GatewayConfig, gatewayConfigDigest, "gateway config"); !ok {
+			return fail(BoundaryDiffers, why+"; the company action policy is read at process start")
+		}
+	}
+	if len(ids) == 0 {
+		return Loaded{State: BoundaryNotRunning, Reason: "no " + label + " of this installation is running: nothing enforces this action policy now"}
+	}
+	return Loaded{State: BoundaryProven, Reason: "every running " + label + " loaded this agent file and read the company action policy from this gateway config at start", InstanceIDs: ids}
+}
+
 // errUnreported marks a running process that did not report what it loaded:
 // nothing can be compared, so the proof is unknown rather than different.
 const errUnreported = "did not report the digest of the "

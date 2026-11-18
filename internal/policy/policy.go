@@ -983,6 +983,31 @@ type ApprovalsConfig struct {
 	// Duration string; default 1h.
 	ExpiresAfter string                        `yaml:"expires_after,omitempty" json:"expires_after,omitempty"`
 	Rules        map[string]ApprovalRuleConfig `yaml:"rules,omitempty" json:"rules,omitempty"`
+	// ArgumentRules (#205) are typed conditions on one top-level argument
+	// of matching actions, with a restrictive effect (require_approval or
+	// deny). They never grant anything.
+	ArgumentRules map[string]ArgumentRuleConfig `yaml:"argument_rules,omitempty" json:"argument_rules,omitempty"`
+}
+
+// ArgumentRuleConfig is one argument rule (#205), in an agent file
+// (policies.approvals.argument_rules) or the company policy
+// (organization_policy.constraints.action_approvals.argument_rules):
+//
+//	when <argument> <operator> <value> holds for a matching action,
+//	require approval by approver_groups, or deny.
+//
+// Type is integer | decimal | string | boolean. Value must have that type:
+// an integer is a YAML integer, a decimal a QUOTED string ("50.00", never a
+// float), a string a string, a boolean true/false. Operator is eq | ne for
+// every type and gt | gte | lt | lte for integer and decimal.
+type ArgumentRuleConfig struct {
+	Actions        []string `yaml:"actions" json:"actions"`
+	Argument       string   `yaml:"argument" json:"argument"`
+	Type           string   `yaml:"type" json:"type"`
+	Operator       string   `yaml:"operator" json:"operator"`
+	Value          any      `yaml:"value" json:"value"`
+	Effect         string   `yaml:"effect" json:"effect"`
+	ApproverGroups []string `yaml:"approver_groups,omitempty" json:"approver_groups,omitempty"`
 }
 
 // ApprovalRuleConfig requires approval for matching actions. Actions are

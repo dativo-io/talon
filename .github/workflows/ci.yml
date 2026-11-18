@@ -377,6 +377,11 @@ jobs:
       # serve --proxy-config and talon ui serve, then the live spec in Chromium.
       - name: People Analytics live (real processes, browser)
         run: bash scripts/people-analytics-live.sh
+      # Action Gateway (#205): allow, reviewer-approved and denied actions
+      # through the real HTTP gateway, then their signed records and the
+      # effective action policy in Chromium.
+      - name: Action Gateway evidence live (real processes, browser)
+        run: bash scripts/action-evidence-live.sh
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

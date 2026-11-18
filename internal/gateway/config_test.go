@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -396,4 +398,43 @@ func TestRegistryMetricsTenantScope(t *testing.T) {
 			t.Fatalf("MetricsTenantScope() = %q, want empty for multi-tenant", got)
 		}
 	})
+}
+
+// Company argument rules (#205) load from the gateway config, with or
+// without approval rules; an empty action_approvals block, an operand of the
+// wrong YAML type and an unknown field are load errors.
+func TestLoadGatewayConfig_CompanyArgumentRules(t *testing.T) {
+	write := func(t *testing.T, approvals string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "talon.config.yaml")
+		body := "gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      secret_name: openai-api-key\n      base_url: \"https://api.openai.com\"\n  organization_policy:\n    constraints:\n      action_approvals:\n" + approvals
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+		return path
+	}
+	rules := func(decimalValue string) string {
+		return "        argument_rules:\n" +
+			"          refund-needs-approval: {actions: [create_refund_request], argument: amount, type: decimal, operator: gt, value: " + decimalValue + ", effect: require_approval, approver_groups: [support-leads]}\n" +
+			"          mass-delete-denied: {actions: [delete_records], argument: count, type: integer, operator: gte, value: 1000, effect: deny}\n" +
+			"          prod-deploy-needs-approval: {actions: [deploy_service], argument: environment, type: string, operator: eq, value: production, effect: require_approval, approver_groups: [support-leads]}\n" +
+			"          real-delete-needs-approval: {actions: [delete_records], argument: dry_run, type: boolean, operator: eq, value: false, effect: require_approval, approver_groups: [support-leads]}\n"
+	}
+
+	cfg, err := LoadGatewayConfig(write(t, rules(`"50.00"`)))
+	require.NoError(t, err, "argument_rules without rules is a valid company policy")
+	cp := cfg.OrganizationPolicy.CompanyActionPolicy("test")
+	require.NotNil(t, cp)
+	require.Len(t, cp.ArgumentRules, 4)
+	require.NotEmpty(t, cp.Digest())
+	require.Equal(t, 1000, cp.ArgumentRules["mass-delete-denied"].Value, "an integer operand stays an integer")
+	require.Equal(t, false, cp.ArgumentRules["real-delete-needs-approval"].Value)
+	require.Equal(t, "50.00", cp.ArgumentRules["refund-needs-approval"].Value, "a decimal operand is a string, never a float")
+
+	_, err = LoadGatewayConfig(write(t, "        {}\n"))
+	require.ErrorContains(t, err, "rules or argument_rules are required")
+
+	_, err = LoadGatewayConfig(write(t, rules("50.00")))
+	require.ErrorContains(t, err, "quoted decimal string", "an unquoted decimal would be read as a float and is refused")
+
+	_, err = LoadGatewayConfig(write(t, "        amount_limits:\n          x: {actions: [a]}\n"))
+	require.Error(t, err, "the unreleased amount_limits form is not accepted")
 }
