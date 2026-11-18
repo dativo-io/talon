@@ -739,6 +739,14 @@ func (s *Service) authorizeClaim(ctx context.Context, tx *sql.Tx, w *evidence.Tx
 	if err != nil {
 		return nil, err
 	}
+	// Fail closed after a point-in-time restore (#465): nothing is claimed
+	// until an operator has resumed the installation, and never for an
+	// operation id the operator held.
+	if why, err := recoveryBlock(ctx, tx, op.OperationID); err != nil {
+		return nil, &Error{Code: CodeStoreUnavailable, Message: "reading recovery state", Err: err}
+	} else if why != "" {
+		return nil, s.refuse(ctx, tx, w, op, CodeRecoveryHold, why)
+	}
 	def, ok := s.Catalog.Lookup(op.Action)
 	if !ok || def.DefinitionDigest != op.DefinitionDigest {
 		return nil, s.refuse(ctx, tx, w, op, CodeApprovalBindingStale, "the trusted action definition (schema/projection/destination/success contract) changed since this operation was bound; establish a new operation")

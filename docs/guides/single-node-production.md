@@ -52,28 +52,48 @@ The company action policy (`talon.config.yaml`) is read at start. Changing it re
 
 ## Back up
 
+A production restore point is a **cold** backup: stop Talon, snapshot, start.
+
 ```bash
+sudo systemctl stop talon talon-ui 2>/dev/null
 sudo -u talon env $(sudo cat /etc/talon/talon.env | xargs) TALON_DATA_DIR=/var/lib/talon \
-  talon backup create /var/backups/talon/$(date -u +%Y%m%dT%H%M%SZ)
+  talon backup create --cold /var/backups/talon/$(date -u +%Y%m%dT%H%M%SZ)
+sudo systemctl start talon
 ```
 
-`talon backup create` is safe while `talon serve` runs:
-- **Consistent per store:** each store is copied in one read transaction (SQLite `VACUUM INTO` over a read-only connection).
-- **Not one cross-store transaction:** the three stores are copied one after another, so a vault change made during the backup can be missing from the copied vault.
-- **Never overwrites:** it writes into a new or empty directory only, with a `manifest.json` of SHA-256 checksums.
-- **Keys and configuration are not included.**
+What a backup contains:
+- **The durable stores:** `evidence.db`, `secrets.db`, `memory.db`. A store that does not exist is recorded as absent, never silently omitted.
+- **The configuration in force:** the gateway config (which carries the company policy) and every agent file, under `config/`, with a digest.
+- **A manifest** (`manifest.json`) with a backup id, the mode, and a SHA-256 checksum of every file.
+- **Not the keys.** `TALON_SECRETS_KEY` and `TALON_SIGNING_KEY` stay in your secret manager.
 
-Schedule it (a systemd timer or cron) and copy the directory off the host. Then **verify** each backup:
+**Cold and online are different things:**
+- **`--cold`** refuses to run while a Talon process of this installation is running, or when that cannot be established. The result is **one coherent recovery point** across the stores and the configuration.
+- **Without `--cold`**, a backup can be taken while `talon serve` runs. Each store is then copied consistently (one read transaction), but the stores are copied one after another, so a change made during the backup can be in one store and not in another. Such a backup is labelled `online` and is **not a coherent recovery point**. Use it for extra copies between cold backups, not as your restore point.
+
+A backup never overwrites one: it writes into a new or empty directory only.
+
+Then **verify** it, with the keys you would restore with:
 
 ```bash
 talon backup verify /var/backups/talon/<backup>
 ```
 
-`verify` reads the backup only. It checks every checksum, SQLite `integrity_check`, **every evidence signature under the configured `TALON_SIGNING_KEY`**, and that every vault entry decrypts under the configured `TALON_SECRETS_KEY`. Entries whose ACL names specific tenants or agents are counted but not decrypted. It prints `PASS backup verify: …` or `FAIL …` and exits non-zero on any failure.
+`verify` only reads the backup. It fails, and exits non-zero, when:
+- the manifest is malformed, incomplete or inconsistent (an unknown or duplicate store, a store neither present nor recorded as absent, a configuration path outside `config/`);
+- the directory contains a file the manifest does not account for, or lacks one it lists;
+- a checksum, size or SQLite `integrity_check` is wrong;
+- **any evidence record's signature** does not verify under the configured `TALON_SIGNING_KEY`;
+- **any vault entry** does not decrypt under the configured `TALON_SECRETS_KEY`. Every entry is checked, including the ACL-restricted keys `talon agents add` creates; no value is read out and the backup is not modified;
+- the evidence snapshot does not carry its recovery hold (below).
+
+It also notes when this installation's configuration files differ from those in the backup.
 
 ## Restore
 
-Restore is a deliberate stop, copy and start. No command replaces the stores of a running installation.
+**What a restore is.** It returns the installation to the moment of the backup. Everything Talon did after that moment is gone from its records: operations established later do not exist, and operations that were *executed* later look unexecuted again (authorized, or awaiting an approval that had in fact been given). **Talon's restored ledger therefore cannot tell you whether an action already happened.** A restored installation must not be allowed to dispatch on that basis.
+
+**The recovery hold.** Every backup's evidence snapshot carries a hold. An installation started on restored stores refuses **every** claim of a governed action (`503 recovery_hold`, nothing dispatched) until an operator resumes it. The hold is in the snapshot itself, so it applies however the files were copied back. Model traffic, policy decisions, establishing operations and approvals keep working; only dispatch is held.
 
 ```bash
 sudo systemctl stop talon talon-ui 2>/dev/null
@@ -81,22 +101,39 @@ talon backup verify /var/backups/talon/<backup>            # with the keys you w
 sudo mv /var/lib/talon /var/lib/talon.before-restore       # keep what you are replacing
 sudo install -d -o talon -g talon -m 0700 /var/lib/talon
 sudo install -o talon -g talon -m 0600 /var/backups/talon/<backup>/*.db /var/lib/talon/
+# restore the configuration from <backup>/config/ too, unless you are deliberately keeping the current one
 sudo systemctl start talon
-talon audit verify --operation <a recent operation_id>     # Lifecycle: VALID
 ```
 
-Restore onto a host that has the **same `TALON_SECRETS_KEY` and `TALON_SIGNING_KEY`** and the same configuration files.
+**Reconcile, then resume.**
 
-After the restore:
-- **The state is the backup's.** Operations established after the backup do not exist. Pending approvals from the backup are pending again. Succeeded operations stay succeeded and are never re-dispatched.
-- **Actions dispatched after the backup are not recorded.** If the downstream system received such an action, Talon has no record of it. Reconcile it with the downstream system. Talon cannot report effects it no longer has evidence of.
+```bash
+talon backup resume
+```
 
-The restore path is exercised by `TestE2E_BackupRestore_SingleNode`:
-1. State is created: a succeeded refund, a pending approval and a denial.
-2. An online backup is taken while `talon serve` runs, and verified.
-3. The stores are deleted, then restored by stop, copy and start.
-4. The pending approval is dispatched once after the decision (at most one effect per operation), the succeeded refund is refused a second claim, and every lifecycle verifies.
-5. A tampered backup and a wrong signing key fail verification.
+This prints the hold and every operation that was still open in the backup, with the `Idempotency-Key` Talon sends for it. For each one, look in the downstream system (your refund service, for example) for that key:
+- **It was executed after the backup:** keep it held for good with `--hold-operation <operation_id>`. It will never be dispatched again; a genuinely new action needs a new `operation_id`.
+- **It was not executed:** leave it. It becomes claimable again.
+- **You cannot tell:** hold it.
+
+Operations established after the backup are not listed, because Talon no longer knows them. Find those in the downstream system and in the calling application, and hold their operation ids as well if the application may retry them.
+
+```bash
+talon backup resume --reconciled --hold-operation refund-T-1842 --hold-operation refund-T-1850
+```
+
+- **Configuration:** if the company policy or agent files now differ from those captured with the backup, the resume is refused until you have reviewed them and pass `--accept-config-change`. A restore must not silently change which policy is enforced.
+- **Record:** the resume is written as a signed `recovery_resumed` evidence record with the backup id, the number of open operations and the held ids.
+
+**What Talon guarantees after a restore, and what it does not:**
+- Until you resume: no governed action is dispatched.
+- After you resume: an operation id you held is never dispatched; a succeeded operation that was in the backup is never dispatched again.
+- **Not guaranteed:** that an operation you did not hold was not executed in the lost interval. That is exactly what the reconciliation establishes; Talon cannot know it from a restored ledger. If your downstream system honours the `Idempotency-Key` header, a repeated dispatch of an operation that existed in the backup carries the same key and can be deduplicated there. An operation established after the backup gets a new key when it is established again.
+- Restore onto a host with the **same `TALON_SECRETS_KEY` and `TALON_SIGNING_KEY`**.
+
+The recovery path is exercised over real processes:
+- `TestE2E_Restore_DoesNotRepeatEffectsExecutedAfterTheBackup`: one operation is authorized and one awaits approval at backup time; both are executed afterwards (two downstream effects); the backup is restored. Replaying, re-establishing and re-approving produce no third effect (`recovery_hold`). `talon backup resume` lists both with the key the downstream saw; held, they never dispatch again; a new operation works.
+- `TestE2E_BackupRestore_SingleNode`: backup while serving (labelled online; `--cold` refuses), restore, hold, resume; a succeeded refund cannot be claimed again; a tampered backup and a wrong signing key fail verification.
 
 ## When something is unavailable
 
@@ -108,6 +145,7 @@ The restore path is exercised by `TestE2E_BackupRestore_SingleNode`:
 | Action payload key missing or rotated | claim refused `payload_unavailable`, nothing dispatched |
 | Approval expired, missing, or granted under another policy | claim refused (`approval_expired`, `approval_required`, `approval_binding_stale`), nothing dispatched |
 | Ambiguous outcome after dispatch (no response) | operation `unknown`; no automatic retry |
+| The installation runs on a restored backup and was not resumed | every claim refused `recovery_hold` (503), nothing dispatched |
 | Invalid agent-file edit while serving | last-known-good keeps serving; the rejection is logged and recorded |
 | Gateway or MCP proxy stopped | the console reads it *offline* or *stale*, never healthy |
 
@@ -117,12 +155,13 @@ Upgrade with the same binary path. Back up and verify first. Stop the service, r
 
 The in-place upgrade from the previous stable release (v1.16.1) is exercised by `TestE2E_UpgradeFromPreviousStable`: the released v1.16.1 binary writes a succeeded action, a pending approval, evidence, the vault and an approver; the new binary takes the same data directory over; the old evidence verifies, the old succeeded action is refused a second claim, the old pending approval is decided with the old approver credential and dispatched once, and a backup of the upgraded stores verifies.
 
-**Rollback is restore.** Returning to an older binary after the new one has written to the stores is not tested. To roll back, stop the service, put the old binary back and restore the pre-upgrade backup. Everything recorded after the upgrade is then lost, and the downstream reconciliation from [Restore](#restore) applies.
+**Rollback is restore.** Returning to an older binary after the new one has written to the stores is not tested. To roll back, stop the service, put the old binary back and restore the pre-upgrade backup. Everything recorded after the upgrade is then lost, and the reconciliation and resume from [Restore](#restore) apply. A release older than this one does not know the recovery hold: after rolling back to it, reconcile before you start the service.
 
 ## Limits
 
 - **One node.** SQLite with one writer process per data directory. Two `talon serve` processes on one data directory are not supported. The in-flight budget ledger is process-local.
 - **No HA and no automatic failover.** Recovery time is how long a restore takes. Recovery point is the time since the last backup.
-- **Cross-store snapshot is not atomic** (see [Back up](#back-up)).
+- **Only a cold backup is a coherent recovery point** (see [Back up](#back-up)). An online backup is a set of per-store snapshots.
+- **A restore loses everything after the backup,** including which actions were dispatched. Dispatch stays held until an operator reconciles and resumes (see [Restore](#restore)). The hold covers the Action Gateway; MCP proxy tool calls and model traffic are not consequential-action dispatch in this sense and are not held.
 - **Capacity is not benchmarked for this profile.** Size the host on your own load test. Evidence grows with every request; plan disk and retention (`audit.retention_days`).
 - **Keys are your responsibility.** Losing `TALON_SECRETS_KEY` makes the vault unrecoverable. Losing `TALON_SIGNING_KEY` makes existing evidence unverifiable, though still readable.

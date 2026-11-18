@@ -17,7 +17,7 @@ func TestDomainCodes_RegisteredInGovcode(t *testing.T) {
 		CodeOperationIDRequired, CodeOperationConflict, CodeActionNotFound, CodeActionSchemaInvalid, CodePolicyDenied,
 		CodeApprovalRequired, CodeApprovalPending, CodeApprovalRejected, CodeApprovalExpired, CodeApprovalNotAuthorized,
 		CodeApprovalAlreadyDecided, CodeApprovalBindingStale, CodeOperationAlreadySucceeded, CodeOperationOutcomeUnknown,
-		CodeAttemptAlreadyInProgress, CodeAttemptNotAuthorized, CodePayloadUnavailable, CodeExecutionUnsupported,
+		CodeAttemptAlreadyInProgress, CodeAttemptNotAuthorized, CodePayloadUnavailable, CodeRecoveryHold, CodeExecutionUnsupported,
 		CodeNotFound, CodeInvalidRequest, CodeStoreUnavailable,
 	} {
 		spec, ok := govcode.Lookup(code)

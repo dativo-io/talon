@@ -39,6 +39,10 @@ const (
 	CodeAttemptAlreadyInProgress  = "attempt_already_in_progress"
 	CodeAttemptNotAuthorized      = "attempt_not_authorized"
 	CodePayloadUnavailable        = "payload_unavailable"
+	// CodeRecoveryHold: the installation runs on a restored backup and has
+	// not been resumed by an operator, or this operation id is held after
+	// such a resume (#465). No claim is dispatched.
+	CodeRecoveryHold = "recovery_hold"
 	// CodeExecutionUnsupported: the definition is catalogued but this
 	// adapter has no executor for its destination type (mcp-sourced
 	// actions wait for the MCP route convergence, #431). Nothing is bound

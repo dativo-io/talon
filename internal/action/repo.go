@@ -148,6 +148,9 @@ func NewRepository(ctx context.Context, db *sql.DB) (*Repository, error) {
 	if _, err := db.ExecContext(ctx, repoSchema); err != nil {
 		return nil, fmt.Errorf("action repository schema: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, RecoveryHoldSchema); err != nil {
+		return nil, fmt.Errorf("action repository schema: %w", err)
+	}
 	if err := devSchemaMigrations(ctx, db); err != nil {
 		return nil, fmt.Errorf("action repository schema: %w", err)
 	}

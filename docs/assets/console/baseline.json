@@ -89,7 +89,7 @@
     "internal/evidence/parity.go": "0d07188e9183e261948b4ae15045bb2594ddf4b7",
     "internal/evidence/provenance.go": "008b208e95da5b44711c30c96d4aa7e6c7f20a53",
     "internal/evidence/readonly.go": "edc3f2d6422664ce8fdcd1fb2b075456254b5b0c",
-    "internal/evidence/record_class.go": "53a856a6949d4ea01aee440f83b10d7992aeaa5b",
+    "internal/evidence/record_class.go": "7882ebb779b22b853f6f19aab90b6233b0100cf2",
     "internal/evidence/response_scan.go": "c34c81289f8a6d0c89dca68b705d83f39ae3fc35",
     "internal/evidence/sanitize.go": "b21b6ac79c5ce0fe2a3de47c6b3daf935c18d196",
     "internal/evidence/scanner_info.go": "1e16b5be3a0aada741bb65e8e514b32ed444a8ac",

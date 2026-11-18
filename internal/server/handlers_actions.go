@@ -117,7 +117,7 @@ func statusForActionCode(code string) int {
 	case action.CodeOperationConflict, action.CodeApprovalPending, action.CodeApprovalExpired, action.CodeApprovalAlreadyDecided,
 		action.CodeApprovalBindingStale, action.CodeOperationAlreadySucceeded, action.CodeOperationOutcomeUnknown, action.CodeAttemptAlreadyInProgress:
 		return http.StatusConflict
-	case action.CodeStoreUnavailable:
+	case action.CodeStoreUnavailable, action.CodeRecoveryHold:
 		return http.StatusServiceUnavailable
 	case action.CodeExecutionUnsupported:
 		return http.StatusNotImplemented
