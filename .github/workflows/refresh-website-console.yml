@@ -1,0 +1,48 @@
+name: Refresh website console visuals
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/assets/console/*.webp'
+      - 'docs/guides/operations-console.md'
+  workflow_dispatch:
+
+# Only production-branch events can request a production build. No checkout,
+# GitHub write token, Cloudflare API token or PR-supplied code is needed.
+permissions: {}
+
+concurrency:
+  group: talon-www-console-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Request existing Cloudflare website build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Request production-branch build using deploy hook
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.TALON_WWW_DEPLOY_HOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_HOOK_URL:-}" ]; then
+            echo "::warning::Website refresh not configured: set TALON_WWW_DEPLOY_HOOK_URL in this repository's Actions secrets."
+            echo "No website rebuild requested: deploy hook is not configured." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Accept only the official Workers Builds deploy-hook endpoint, without
+          # following redirects or printing the URL or response body.
+          if [[ ! "$DEPLOY_HOOK_URL" =~ ^https://api\.cloudflare\.com/client/v4/workers/builds/deploy_hooks/[A-Za-z0-9_-]+$ ]]; then
+            echo "::error::Invalid Workers Builds deploy hook configuration."
+            exit 1
+          fi
+          # Do not automatically retry a POST that may already have been accepted.
+          if ! curl --proto '=https' --connect-timeout 10 --max-time 30 \
+            --silent --fail --output /dev/null --request POST "$DEPLOY_HOOK_URL"; then
+            echo "::error::Website build request failed or its result is unknown; inspect Cloudflare Builds before retrying."
+            exit 1
+          fi
+          echo "Cloudflare accepted the build request. Deployment success must be checked in Workers Builds." >> "$GITHUB_STEP_SUMMARY"
