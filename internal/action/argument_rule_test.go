@@ -493,6 +493,17 @@ func TestArgumentRules_ValidateAgainstCatalog(t *testing.T) {
 	require.ErrorContains(t, check(rule("delete_records", "count", ArgTypeDecimal, OpGt, "50", EffectDeny)), "no implicit coercion")
 	require.ErrorContains(t, check(rule("deploy_service", "environment", ArgTypeBoolean, OpEq, true, EffectDeny)), "no implicit coercion")
 	require.ErrorContains(t, check(rule("delete_*", "count", ArgTypeInteger, OpGt, 1, EffectDeny)), `on action "delete_customer"`, "a prefix rule must be valid for every action it matches")
+
+	// The argument a rule decides on cannot be hidden from the reviewer.
+	pol := examplePolicy("http://127.0.0.1:9")
+	def := pol.Actions.Definitions["delete_records"]
+	def.Review = &policy.ActionReviewConfig{Fields: []string{"table", "dry_run"}, NonMaterial: []string{"count"}}
+	pol.Actions.Definitions["delete_records"] = def
+	ap, err := CompileApprovalPolicy(pol)
+	require.NoError(t, err)
+	cat, err := CompileCatalog(pol.Actions, nil)
+	require.NoError(t, err)
+	require.ErrorContains(t, ap.ValidateAgainstCatalog(cat), `argument "count" is declared review.non_material`)
 }
 
 func ruleHarness(t *testing.T) *harness {

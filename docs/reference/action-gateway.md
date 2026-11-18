@@ -139,7 +139,7 @@ These are example policies. Talon has no built-in notion of a refund, a currency
 
 - **Exact decimals:** a decimal is compared exactly, never as a float. An unquoted decimal operand in YAML would pass through a float and is refused at load. `"50"` and `"50.00"` are the same operand and the same digest.
 - **No implicit coercion:** `"5"` is not an integer, `0` is not a boolean, `1e2` is not an integer.
-- **Resolved against the trusted catalog:** at load (`talon validate`, `talon serve`, `talon actions`), for every catalogued action a rule applies to, the argument must be a declared top-level property that the action's input schema marks **required**, with a matching JSON type (`integer` → `integer`; `decimal` → `number` or `string`; `string` → `string`; `boolean` → `boolean`). A rule that could not be evaluated truthfully is a configuration error.
+- **Resolved against the trusted catalog:** at load (`talon validate`, `talon serve`, `talon actions`), for every catalogued action a rule applies to, the argument must be a declared top-level property that the action's input schema marks **required**, with a matching JSON type (`integer` → `integer`; `decimal` → `number` or `string`; `string` → `string`; `boolean` → `boolean`). The argument may not be listed in the action's `review.non_material`: a value a rule decides on is shown to the reviewer. A rule that could not be evaluated truthfully, or whose argument a reviewer would not see, is a configuration error.
 
 ### Fail closed
 
