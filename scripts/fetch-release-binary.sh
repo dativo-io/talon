@@ -14,6 +14,6 @@ mkdir -p "$DIR"
 curl -fsSL --retry 3 -o "$DIR/$ARCHIVE" "$BASE/$ARCHIVE"
 curl -fsSL --retry 3 -o "$DIR/checksums.txt" "$BASE/checksums.txt"
 (cd "$DIR" && grep -F " $ARCHIVE" checksums.txt | sha256sum -c - >&2 && tar xzf "$ARCHIVE" talon)
-got="$("$DIR/talon" version | head -n1)"
+got="$("$DIR/talon" version | sed -n 1p)"
 [ "$got" = "Talon $VERSION" ] || { echo "fetch-release-binary: expected 'Talon $VERSION', got '$got'" >&2; exit 1; }
 echo "$DIR/talon"
