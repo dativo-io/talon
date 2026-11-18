@@ -59,6 +59,10 @@ func (s *Service) EffectivePolicy(ctx context.Context, tenant, name string) (*Ef
 		out.Availability.Unavailable = append(out.Availability.Unavailable, "report.mcp_boundary.proven_active")
 		notes = append(notes, "MCP proxy decisions computed from the current proxy config, not proven active: "+b.Proof.Reason)
 	}
+	if b := r.ActionBoundary; b != nil && !b.ProvenActive {
+		out.Availability.Unavailable = append(out.Availability.Unavailable, "report.action_boundary.proven_active")
+		notes = append(notes, "action policy compiled from the current files, not proven active: "+b.Proof.Reason)
+	}
 	if len(notes) > 0 {
 		out.Availability.State = StatePartial
 		out.Availability.Note = strings.Join(notes, "; ")

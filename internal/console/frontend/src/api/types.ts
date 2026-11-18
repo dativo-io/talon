@@ -431,7 +431,8 @@ export type Dispatch = "not_dispatched" | "dispatched" | "unknown" | "not_record
 export type Downstream = "none" | "completed" | "rejected" | "failed" | "unknown" | "not_recorded" | "cache";
 
 export interface Outcome {
-  decision: "allowed" | "denied";
+  // approval_required: an Action Gateway operation waiting for a reviewer.
+  decision: "allowed" | "denied" | "approval_required";
   dispatch: Dispatch;
   downstream: Downstream;
   response_withheld?: boolean;
@@ -838,6 +839,7 @@ export interface ActionDecision {
 export interface ActionBoundary {
   basis: string;
   proven_active: boolean;
+  proof: BoundaryProof; // every running talon serve: agent file + the gateway config its company action policy came from
   policy_digest?: string;
   approval_expires_after?: string;
   forbidden_actions?: string[];
