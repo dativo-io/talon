@@ -29,8 +29,11 @@ func TestE2E_AgentsAdd_SecondUseCaseWhileServing(t *testing.T) {
 		t.Fatalf("agents add support-bot: %d\n%s\n%s", code, out, stderr)
 	}
 	// Without a company policy and without the explicit flag, nothing is registered.
-	if o2, stderr2, code2 := RunTalon(t, dir, env, "agents", "add", "ungoverned"); code2 == 0 || !strings.Contains(stderr2, "no company policy is active") {
+	if o2, stderr2, code2 := RunTalon(t, dir, env, "agents", "add", "ungoverned"); code2 == 0 || !strings.Contains(stderr2, "no company policy: no gateway config at") {
 		t.Fatalf("a registration without any company policy must be refused: %d\n%s\n%s", code2, o2, stderr2)
+	}
+	if !strings.Contains(out, "activation: NOT ACTIVE — no Talon process of this installation is running") {
+		t.Fatalf("a registration with nothing running must say so:\n%s", out)
 	}
 	firstKey := keyRe.FindString(out)
 	if firstKey == "" || !strings.Contains(out, "Created agents_dir") {
@@ -67,6 +70,9 @@ func TestE2E_AgentsAdd_SecondUseCaseWhileServing(t *testing.T) {
 	out, stderr, code = RunTalon(t, dir, env, "agents", "add", "refund-bot", "--tenant", "acme", "--no-company-policy")
 	if code != 0 {
 		t.Fatalf("agents add refund-bot: %d\n%s\n%s", code, out, stderr)
+	}
+	if !strings.Contains(out, "activation: NOT YET ACTIVE — a Talon process is running") {
+		t.Fatalf("a registration while serving must not claim the use case is active:\n%s", out)
 	}
 	secondKey := keyRe.FindString(out)
 	if secondKey == "" || secondKey == firstKey {

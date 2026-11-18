@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -94,7 +96,8 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 	require.Contains(t, string(content), "cost_limits: {}", "no budget of its own: the company defaults apply")
 	require.NotContains(t, string(content), key1, "the key never lands in the file")
 	require.Contains(t, out.String(), "WARNING: registered WITHOUT a company policy", "without an organization policy the missing budget cap is stated")
-	require.Contains(t, out.String(), "company policy: none (no gateway config")
+	require.Contains(t, out.String(), "company policy: no company policy: no gateway config at")
+	require.Contains(t, out.String(), "activation: NOT ACTIVE — no Talon process of this installation is running")
 
 	// The key is readable only as this use case in its tenant.
 	vault, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
@@ -248,7 +251,7 @@ func TestAgentsAdd_CompanyPolicyIsRequiredAndReported(t *testing.T) {
 	resetAgentsAddFlags(t)
 	agentsAddNoCompanyPolicy = false
 	err := runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot")
-	require.ErrorContains(t, err, "no company policy is active")
+	require.ErrorContains(t, err, "no company policy: no gateway config at")
 	require.ErrorContains(t, err, "--no-company-policy")
 	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
 	require.True(t, os.IsNotExist(statErr))
@@ -260,9 +263,27 @@ func TestAgentsAdd_CompanyPolicyIsRequiredAndReported(t *testing.T) {
 	t.Setenv("TALON_GATEWAY_CONFIG", gw)
 	var out bytes.Buffer
 	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
-	require.Contains(t, out.String(), "company policy: "+gw+" — pii_action block, daily cost 25.00")
+	require.Contains(t, out.String(), "company policy: configured in "+gw+" — pii_action block, daily cost 25.00")
 	require.Contains(t, out.String(), "1 forbidden tool/action pattern(s)")
+	// Configured is not active: nothing runs here, and the output says so.
+	require.Contains(t, out.String(), "Runtime: NOT PROVEN ACTIVE")
+	require.NotContains(t, out.String(), "Runtime: ACTIVE")
 	require.NotContains(t, out.String(), "WARNING")
+
+	// A gateway config that exists but declares no organization policy is
+	// not a company policy: the loader's built-in defaults were chosen by nobody.
+	bare := filepath.Join(t.TempDir(), "talon.config.yaml")
+	require.NoError(t, os.WriteFile(bare, []byte("gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      secret_name: openai-api-key\n      base_url: \"https://api.openai.com\"\n"), 0o600))
+	t.Setenv("TALON_GATEWAY_CONFIG", bare)
+	err = runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "hr-copilot")
+	require.ErrorContains(t, err, "has no gateway.organization_policy block")
+	require.ErrorContains(t, err, "--no-company-policy")
+	_, statErr = os.Stat(filepath.Join(agentsDir, "hr-copilot"))
+	require.True(t, os.IsNotExist(statErr))
+	agentsAddNoCompanyPolicy = true
+	out.Reset()
+	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "hr-copilot"))
+	require.Contains(t, out.String(), "WARNING: registered WITHOUT a company policy")
 }
 
 // A dry run writes nothing at all, on an installation that does not exist yet.
@@ -303,6 +324,65 @@ func TestAgentsAdd_UseExistingKeyChecksItsACL(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr))
 	agentsAddDryRun = true
 	require.ErrorContains(t, runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot"), "does not permit use case")
+}
+
+// A key bound with --use-existing-key is resolved the way serve resolves it:
+// one that does not decrypt under the configured secrets key is refused.
+func TestAgentsAdd_UseExistingKeyMustResolve(t *testing.T) {
+	ctx := context.Background()
+	cfg, agentsDir := setupAddFleet(t)
+	resetAgentsAddFlags(t)
+	agentsAddTenant, agentsAddUseExisting = "acme", true
+	require.NoError(t, cfg.EnsureDataDir())
+	other, err := secrets.NewSecretStore(cfg.SecretsDBPath(), "fedcba9876543210fedcba9876543210")
+	require.NoError(t, err)
+	require.NoError(t, other.Set(ctx, "refund-bot-talon-key", []byte("sealed-under-another-key"), secrets.ACL{}))
+	require.NoError(t, other.Close())
+	err = runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot")
+	require.ErrorContains(t, err, "cannot be resolved")
+	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
+	require.True(t, os.IsNotExist(statErr))
+}
+
+// A dry run inspects an existing vault read-only: the file is byte-identical
+// afterwards (no schema statement, no access-log row).
+func TestAgentsAdd_DryRunLeavesAnExistingVaultUntouched(t *testing.T) {
+	ctx := context.Background()
+	cfg, _ := setupAddFleet(t)
+	resetAgentsAddFlags(t)
+	require.NoError(t, cfg.EnsureDataDir())
+	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+	require.NoError(t, err)
+	require.NoError(t, store.Set(ctx, "other-talon-key", []byte("k"), secrets.ACL{}))
+	require.NoError(t, store.Close())
+	rw, err := sql.Open("sqlite3", cfg.SecretsDBPath())
+	require.NoError(t, err)
+	_, err = rw.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	require.NoError(t, err)
+	require.NoError(t, rw.Close())
+	digest := func() [32]byte {
+		b, err := os.ReadFile(cfg.SecretsDBPath())
+		require.NoError(t, err)
+		return sha256.Sum256(b)
+	}
+	before := digest()
+
+	agentsAddDryRun = true
+	var out bytes.Buffer
+	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
+	require.Contains(t, out.String(), "Dry run: nothing was written")
+	require.Equal(t, before, digest(), "the vault file is unchanged by a dry run")
+
+	// A vault file without a secrets table (never initialized) is treated as empty, read-only.
+	empty := *cfg
+	empty.DataDir = t.TempDir()
+	e, err := sql.Open("sqlite3", empty.SecretsDBPath())
+	require.NoError(t, err)
+	_, err = e.ExecContext(ctx, `CREATE TABLE unrelated (x INTEGER)`)
+	require.NoError(t, err)
+	require.NoError(t, e.Close())
+	_, err = secrets.MetadataReadOnly(ctx, empty.SecretsDBPath(), "refund-bot-talon-key")
+	require.ErrorIs(t, err, secrets.ErrSecretNotFound)
 }
 
 // A rollback removes only this registration's own key version: a key someone
