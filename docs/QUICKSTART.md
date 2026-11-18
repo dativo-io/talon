@@ -4,6 +4,18 @@ This page points you to the right doc for what you want to do. For the full docu
 
 ---
 
+## One command, no clone, no provider key
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/quickstart.sh | TALON_VERSION=X.Y.Z bash
+```
+
+Needs Docker and `curl`. Replace `X.Y.Z` with a published release; the script never assumes `latest`. It pulls `ghcr.io/dativo-io/talon:X.Y.Z` anonymously, starts it on `127.0.0.1:18080` with a small company policy, and sends three requests: one carrying an IBAN and an email address (blocked: `pii_policy_violation`), one for a model the policy does not allow (denied: `model_not_allowed`) and one with an unknown key (refused: `401`). No model provider exists in this setup, so both decisions are Talon's own, made before any provider call. It then verifies the signature of both evidence records with `talon audit verify`, prints the image digest it ran and the elapsed time, and removes its container and volume (`TALON_QUICKSTART_KEEP=1` keeps them). `TALON_IMAGE` takes a digest pin instead of a version.
+
+What it does not show: a model answer, a redaction, the console, or a business action. For those, continue with the paths below or the [production pilot runbook](guides/production-pilot.md).
+
+---
+
 ## Which path is yours?
 
 **1.** I have an existing app that calls OpenAI or Anthropic.  
