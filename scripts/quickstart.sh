@@ -157,7 +157,16 @@ elapsed=$(( $(date +%s) - started ))
 echo
 if [ "$fail" -eq 0 ]; then
   echo "PASS talon quickstart in ${elapsed}s (includes the image pull): two governed decisions, no provider, evidence verified."
-  echo "Next: the production pilot runbook — https://github.com/dativo-io/talon/blob/main/docs/guides/production-pilot.md"
+  # Next steps for the SAME version: link the docs of the release that ran,
+  # not whatever main describes today.
+  ver="${TALON_VERSION:-$(talon version 2>/dev/null | sed -n '1s/^Talon //p')}"
+  ver="${ver#v}"
+  ref=main
+  if printf '%s' "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then ref="v$ver"; fi
+  docs="https://github.com/dativo-io/talon/blob/$ref"
+  echo "Next, with this version:"
+  echo "  See the decisions in the Operations Console (published image): $docs/examples/docker-compose/README.md"
+  echo "  Put your own application behind Talon:                         $docs/docs/guides/add-talon-to-existing-app.md"
 else
   echo "FAIL talon quickstart after ${elapsed}s"; exit 1
 fi
