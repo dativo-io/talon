@@ -211,7 +211,13 @@ policies:
 //	  caller replays, re-establishes or a reviewer approves again
 //	→ `talon backup resume` lists both with the Idempotency-Key the
 //	  downstream already saw; the operator holds both for good
-//	→ they are never dispatched again; a new operation works: 3 effects.
+//	→ they are never dispatched again; a new operation works.
+//
+// op-d is established, approved and executed entirely AFTER the backup: the
+// restored ledger does not know it. Retried by the application it becomes a
+// new operation, is approved again, and is still refused by the hold; Talon
+// cannot list it, so the operator holds it by id from the downstream
+// reconciliation.
 //
 // The restored SQLite ledger alone does not provide at-most-once execution
 // across the lost interval; the hold and the operator's reconciliation do.
@@ -309,7 +315,17 @@ policies:
 	if st, _ := claim("op-b"); st != 200 {
 		t.Fatalf("claim op-b: %d", st)
 	}
-	calls(2, "two effects after the backup")
+	// op-d does not exist in the backup at all: established, approved and
+	// executed entirely after it.
+	_, res = establish("op-d", "T-D", 60)
+	dApproval, _ := dig(res, "operation", "approval", "id").(string)
+	if approve(dApproval) != 200 {
+		t.Fatal("approve op-d")
+	}
+	if st, _ := claim("op-d"); st != 200 {
+		t.Fatalf("claim op-d: %d", st)
+	}
+	calls(3, "three effects after the backup")
 	down.mu.Lock()
 	keyA := down.idemKeys[0]
 	down.mu.Unlock()
@@ -353,23 +369,44 @@ policies:
 	if st, code := claim("op-b"); st != 503 || code != "recovery_hold" {
 		t.Fatalf("claim of op-b after its approval was granted again: %d %s", st, code)
 	}
-	calls(2, "the restored installation repeated an effect")
+	// op-d is unknown to the restored ledger. The application retries it: it
+	// is established as a NEW operation, approved again — and still held.
+	if st, _ := c.do("GET", "/v1/action-operations/op-d", agAgentKey, ""); st != 404 {
+		t.Fatalf("op-d must not exist in the restored ledger: %d", st)
+	}
+	st, res := establish("op-d", "T-D", 60)
+	if st != 202 {
+		t.Fatalf("re-establishing the lost op-d: %d %v", st, res)
+	}
+	dAgain, _ := dig(res, "operation", "approval", "id").(string)
+	if dAgain == "" || dAgain == dApproval || approve(dAgain) != 200 {
+		t.Fatalf("the lost operation is a new one with a new approval: %q (was %q)", dAgain, dApproval)
+	}
+	if st, code := claim("op-d"); st != 503 || code != "recovery_hold" {
+		t.Fatalf("claim of the re-established lost operation: %d %s", st, code)
+	}
+	calls(3, "the restored installation repeated an effect")
 
 	// The operator sees what was open, with the key the downstream already saw.
 	status, _, code := RunTalon(t, dir, nil, "backup", "resume")
+	if !strings.Contains(status, "Operations established after the backup are not listed") {
+		t.Fatalf("backup resume must say that it cannot list operations lost with the restore:\n%s", status)
+	}
 	if code == 0 || !strings.Contains(status, "op-a") || !strings.Contains(status, "op-b") || !strings.Contains(status, "Idempotency-Key "+keyA) {
 		t.Fatalf("backup resume must list the open operations and the Idempotency-Key the downstream received (%s): %d\n%s", keyA, code, status)
 	}
 	// Reconciled: both were executed, so both stay held for good.
-	if out, stderr, code := RunTalon(t, dir, nil, "backup", "resume", "--reconciled", "--hold-operation", "op-a", "--hold-operation", "op-b"); code != 0 {
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "resume", "--reconciled", "--hold-operation", "op-a", "--hold-operation", "op-b", "--hold-operation", "op-d"); code != 0 {
 		t.Fatalf("backup resume --reconciled: %d\n%s\n%s", code, out, stderr)
 	}
-	for _, op := range []string{"op-a", "op-b"} {
+	// op-d was found in the refund service, not in Talon: the operator held
+	// it by id, from the downstream reconciliation.
+	for _, op := range []string{"op-a", "op-b", "op-d"} {
 		if st, code := claim(op); st != 503 || code != "recovery_hold" {
 			t.Fatalf("a held operation must never dispatch (%s): %d %s", op, st, code)
 		}
 	}
-	calls(2, "held operations after resume")
+	calls(3, "held operations after resume")
 
 	// Dispatch is resumed for everything else.
 	_, res = establish("op-c", "T-C", 10)
@@ -380,7 +417,7 @@ policies:
 	if st, code := claim("op-c"); st != 200 {
 		t.Fatalf("a new operation after resume: %d %s", st, code)
 	}
-	calls(3, "a new operation after resume")
+	calls(4, "a new operation after resume")
 	for _, op := range []string{"op-a", "op-b", "op-c"} {
 		out, stderr, code := RunTalon(t, dir, nil, "audit", "verify", "--operation", op)
 		if code != 0 || strings.Contains(out, "INVALID") {

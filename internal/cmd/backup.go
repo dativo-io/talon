@@ -783,19 +783,29 @@ func resumeAfterRestore(ctx context.Context, out io.Writer, cfg *config.Config) 
 	if drift && !backupResumeAcceptDrift {
 		return errors.New("the configuration differs from the backup's: review it, then pass --accept-config-change to resume with the current configuration")
 	}
-	ended, err := action.ResumeRecovery(ctx, db, operatorID(), backupResumeHoldOps, time.Now())
-	if err != nil {
-		return fmt.Errorf("resuming: %w", err)
-	}
+	// The held operation ids, the end of the hold and the signed record of
+	// the operator's decision commit in ONE transaction (the evidence
+	// store's transactional writer). If the record cannot be written, the
+	// hold stays active and dispatch stays refused.
 	id := "rr_" + uuid.New().String()[:12]
-	reasons := []string{"backup: " + hold.BackupID, "backup taken: " + hold.BackupCreatedAt.UTC().Format(time.RFC3339), fmt.Sprintf("open operations in the backup: %d", len(open)), "held operation ids: " + strings.Join(backupResumeHoldOps, ","), fmt.Sprintf("configuration changed since the backup: %t", drift)}
-	if err := evStore.Store(ctx, &evidence.Evidence{
-		ID: id, CorrelationID: id, Timestamp: time.Now().UTC(), TenantID: "system", AgentID: "talon-backup",
-		InvocationType: "recovery_resumed", RequestSourceID: operatorID(),
-		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "recovery_resumed", Reasons: reasons},
-	}); err != nil {
-		return fmt.Errorf("the hold was ended but the signed record of it could not be written: %w", err)
+	w := evStore.NewTxWriter()
+	ended, err := action.ResumeRecovery(ctx, db, operatorID(), backupResumeHoldOps, time.Now(), func(ctx context.Context, tx *sql.Tx, ended []action.RecoveryHold) error {
+		backups := make([]string, 0, len(ended))
+		for i := range ended {
+			backups = append(backups, ended[i].BackupID+" taken "+ended[i].BackupCreatedAt.UTC().Format(time.RFC3339))
+		}
+		reasons := []string{"backups: " + strings.Join(backups, "; "), fmt.Sprintf("open operations in the backup: %d", len(open)), "held operation ids: " + strings.Join(backupResumeHoldOps, ","), fmt.Sprintf("configuration changed since the backup: %t", drift)}
+		return w.Store(ctx, tx, &evidence.Evidence{
+			ID: id, CorrelationID: id, Timestamp: time.Now().UTC(), TenantID: "system", AgentID: "talon-backup",
+			InvocationType: "recovery_resumed", RequestSourceID: operatorID(),
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "recovery_resumed", Reasons: reasons},
+		})
+	})
+	if err != nil {
+		w.Discard()
+		return fmt.Errorf("not resumed, the recovery hold is still active and nothing is dispatched: %w", err)
 	}
+	w.Committed(ctx)
 	fmt.Fprintf(out, "\nResumed: %d hold(s) ended, %d operation id(s) held for good. Evidence: %s (signed, recovery_resumed).\n", len(ended), len(backupResumeHoldOps), id)
 	return nil
 }

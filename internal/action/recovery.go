@@ -143,27 +143,60 @@ func OpenOperations(ctx context.Context, db *sql.DB) ([]OpenOperation, error) {
 }
 
 // ResumeRecovery ends every active hold and keeps the given operation ids
-// held for good, in one transaction. It returns the holds it ended.
-func ResumeRecovery(ctx context.Context, db *sql.DB, by string, holdOperationIDs []string, now time.Time) ([]RecoveryHold, error) {
+// held for good. record is called INSIDE the same transaction, after the
+// state changes and before the commit, to write the signed evidence of the
+// operator's decision: the held ids, the end of the hold and that record
+// commit together or not at all. When record fails (or the commit does),
+// nothing changes — the hold stays active and dispatch stays refused. It
+// returns the holds it ended (none, and record is not called, when no hold
+// is active).
+func ResumeRecovery(ctx context.Context, db *sql.DB, by string, holdOperationIDs []string, now time.Time, record func(ctx context.Context, tx *sql.Tx, ended []RecoveryHold) error) ([]RecoveryHold, error) {
+	if record == nil {
+		return nil, errors.New("resume recovery: an evidence writer is required")
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	holds, err := ActiveRecoveryHolds(ctx, tx)
+	// The UPDATE comes first so the transaction holds the write lock before
+	// anything is read: two concurrent resumes cannot both end the hold.
+	res, err := tx.ExecContext(ctx, `UPDATE recovery_holds SET resumed_at = ?, resumed_by = ? WHERE resumed_at IS NULL`, now.UTC(), by)
+	if err != nil {
+		if isNoSuchTable(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT backup_id, backup_created_at, config_digest FROM recovery_holds WHERE resumed_at = ? AND resumed_by = ? ORDER BY backup_created_at, backup_id`, now.UTC(), by)
 	if err != nil {
 		return nil, err
 	}
-	if len(holds) == 0 {
-		return nil, nil
+	var ended []RecoveryHold
+	for rows.Next() {
+		var h RecoveryHold
+		if err := rows.Scan(&h.BackupID, &h.BackupCreatedAt, &h.ConfigDigest); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		ended = append(ended, h)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
 	for _, id := range holdOperationIDs {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO recovery_held_operations (operation_id, backup_id, held_at) VALUES (?, ?, ?) ON CONFLICT(operation_id) DO NOTHING`, id, holds[0].BackupID, now.UTC()); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO recovery_held_operations (operation_id, backup_id, held_at) VALUES (?, ?, ?) ON CONFLICT(operation_id) DO NOTHING`, id, ended[0].BackupID, now.UTC()); err != nil {
 			return nil, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE recovery_holds SET resumed_at = ?, resumed_by = ? WHERE resumed_at IS NULL`, now.UTC(), by); err != nil {
+	if err := record(ctx, tx, ended); err != nil {
+		return nil, fmt.Errorf("recording the resume as signed evidence: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return holds, tx.Commit()
+	return ended, nil
 }
