@@ -460,7 +460,8 @@ func jsonTypesFor(ruleType string) []string {
 // ValidateAgainstCatalog resolves every argument rule against the trusted
 // catalog: for each catalogued action a rule applies to, the argument must
 // be a declared top-level property, REQUIRED by the action's schema (so it
-// is always established), with a JSON type that matches the rule's type. A
+// is always established), with a JSON type that matches the rule's type,
+// and not hidden from the reviewer as review.non_material. A
 // rule that matches no catalogued action is allowed (the action may be
 // added later); a rule that could never be evaluated truthfully is a load
 // error.
@@ -505,6 +506,13 @@ func checkRuleAgainstSchema(r *ArgumentRule, def *Definition) error {
 	}
 	if !required {
 		return fmt.Errorf("argument %q must be required by the action's input schema: a rule's argument is always established, or the call is denied", r.Argument)
+	}
+	// A value a rule decides on is material: the reviewer of an approval
+	// must see it, so it cannot be declared non-material and hidden.
+	for _, n := range def.Review.NonMaterial {
+		if n == r.Argument {
+			return fmt.Errorf("argument %q is declared review.non_material for this action: a value a rule decides on must be shown to the reviewer (list it in review.fields)", r.Argument)
+		}
 	}
 	declaredType, _ := prop.Type.(string)
 	for _, t := range jsonTypesFor(r.Type) {
