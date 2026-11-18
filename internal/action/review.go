@@ -102,28 +102,48 @@ type PendingApproval struct {
 // MaxPendingList bounds one pending-approvals listing.
 const MaxPendingList = 200
 
-// PendingApprovals lists the pending approvals of one tenant, oldest first,
-// at most limit (1..MaxPendingList).
-func (r *Repository) PendingApprovals(ctx context.Context, tenantID string, limit int) ([]PendingApproval, error) {
+// PendingApprovals lists the pending approvals of one tenant that at least
+// one of groups may decide, oldest first, at most limit (1..MaxPendingList).
+// The group filter is applied BEFORE the bound, so approvals of other groups
+// can never push an eligible one out of the listing. more reports that
+// further eligible approvals exist beyond limit: the listing is then the
+// oldest part of the queue, not all of it.
+func (r *Repository) PendingApprovals(ctx context.Context, tenantID string, groups []string, limit int) (list []PendingApproval, more bool, err error) {
 	if limit <= 0 || limit > MaxPendingList {
 		limit = MaxPendingList
 	}
+	mine := map[string]bool{}
+	for _, g := range groups {
+		mine[g] = true
+	}
 	rows, err := r.db.QueryContext(ctx, `SELECT a.id, o.tenant_id, o.agent_id, a.groups_json, a.expires_at
 		FROM action_approvals a JOIN action_operations o ON o.ref = a.operation_ref
-		WHERE o.tenant_id = ? AND a.status = ? ORDER BY a.created_at, a.id LIMIT ?`, tenantID, ApprovalPending, limit)
+		WHERE o.tenant_id = ? AND a.status = ? ORDER BY a.created_at, a.id`, tenantID, ApprovalPending)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
-	var out []PendingApproval
 	for rows.Next() {
 		var p PendingApproval
-		var groups string
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.AgentID, &groups, &p.ExpiresAt); err != nil {
-			return nil, err
+		var raw string
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.AgentID, &raw, &p.ExpiresAt); err != nil {
+			return nil, false, err
 		}
-		_ = json.Unmarshal([]byte(groups), &p.Groups)
-		out = append(out, p)
+		_ = json.Unmarshal([]byte(raw), &p.Groups)
+		eligible := false
+		for _, g := range p.Groups {
+			if mine[g] {
+				eligible = true
+				break
+			}
+		}
+		if !eligible {
+			continue
+		}
+		if len(list) == limit {
+			return list, true, rows.Err()
+		}
+		list = append(list, p)
 	}
-	return out, rows.Err()
+	return list, false, rows.Err()
 }

@@ -29,6 +29,7 @@ func TestReviewerReads_ScopedToTenantAndGroup(t *testing.T) {
 	require.Equal(t, acme.Tenant, res["tenant"])
 	reviews, _ := res["reviews"].([]any)
 	require.Len(t, reviews, 1, raw)
+	require.Equal(t, false, res["more"], "the listing states that it is complete")
 	st, res, raw = h.do("GET", "/v1/reviews/"+approvalID, h.reviewer.Bob.Token, "")
 	require.Equal(t, http.StatusOK, st, raw)
 	require.Equal(t, acme.BillingOnly, acmeDig(res, "operation", "action"))

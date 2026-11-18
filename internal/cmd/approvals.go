@@ -55,6 +55,7 @@ var approvalsListCmd = &cobra.Command{
 		var out struct {
 			Tenant  string           `json:"tenant"`
 			Reviews []reviewResponse `json:"reviews"`
+			More    bool             `json:"more"`
 		}
 		raw, err := approvalsRequest(cmd.Context(), http.MethodGet, "/v1/reviews", nil, &out)
 		if err != nil {
@@ -74,6 +75,9 @@ var approvalsListCmd = &cobra.Command{
 			r := &out.Reviews[i]
 			fmt.Fprintf(w, "  %s  %s  %s  op %s  expires %s  %s\n", r.Operation.Approval.ID, r.UseCase, r.Operation.Action, r.Operation.OperationID,
 				r.Operation.Approval.ExpiresAt.UTC().Format(time.RFC3339), compactReview(r.Operation.Review))
+		}
+		if out.More {
+			fmt.Fprintf(w, "\nMORE pending approvals exist beyond these %d (the oldest are shown first). Decide these, then list again.\n", len(out.Reviews))
 		}
 		fmt.Fprintf(w, "\nShow one with: talon approvals show <approval-id>\n")
 		return nil
