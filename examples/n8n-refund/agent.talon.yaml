@@ -1,0 +1,51 @@
+# AI use case "refund-bot": the support workflow that n8n runs.
+# Register it with 'talon agents add refund-bot --tenant acme' and merge the
+# blocks below into the generated file, or copy this file to
+# <agents_dir>/refund-bot/agent.talon.yaml and store its key with
+# 'talon secrets set refund-bot-talon-key <key>'.
+agent:
+  name: refund-bot
+  description: Support refunds requested from the n8n workflow
+  version: 1.0.0
+  tenant_id: acme
+  key:
+    secret_name: refund-bot-talon-key
+
+# The one consequential action Talon governs for this use case. Talon itself
+# calls the destination when an authorized operation is claimed; n8n never
+# calls the refund service directly.
+actions:
+  definitions:
+    create_refund_request:
+      description: Create a refund for a support ticket
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount, currency]
+        properties:
+          ticket_id: {type: string, pattern: "^[A-Z]+-[0-9]+$"}
+          amount: {type: string, pattern: "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$"}   # exact decimal as a string
+          currency: {type: string, enum: [EUR]}
+      review:
+        fields: [ticket_id, amount, currency]
+      destination:
+        type: http
+        url: "https://refunds.internal/v1/refunds"   # replace with your refund service (https; plaintext http only on loopback)
+        method: POST
+        success: {status_codes: [201]}
+
+policies:
+  cost_limits: {}
+  approvals:
+    expires_after: 30m
+    # Example policy, not a built-in rule: up to 50.00 EUR allow, up to
+    # 500.00 EUR approval by support-leads, above that deny.
+    amount_limits:
+      refund-bands:
+        actions: [create_refund_request]
+        amount_argument: amount
+        currency_argument: currency
+        currency: EUR
+        allow_up_to: "50.00"
+        approval_up_to: "500.00"
+        approver_groups: [support-leads]
