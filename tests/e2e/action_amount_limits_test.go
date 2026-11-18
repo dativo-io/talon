@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,11 +84,11 @@ policies:
 		t.Fatal(err)
 	}
 	out, stderr, code := RunTalon(t, dir, nil, "actions", "validate", "--action", "create_refund_request", "--input", argsFile)
-	if code != 0 || !strings.Contains(out, "REQUIRE_APPROVAL (rule refund-bands)") || !strings.Contains(out, "75.00 EUR is above 50.00 and at most 500.00") {
+	if code != 0 || !strings.Contains(out, "REQUIRE_APPROVAL (rule refund-bands)") || !strings.Contains(out, "the amount is above 50.00 and at most 500.00 EUR") {
 		t.Fatalf("actions validate: code=%d\n%s\n%s", code, out, stderr)
 	}
 	out, _, _ = RunTalon(t, dir, nil, "actions", "show", "create_refund_request")
-	if !strings.Contains(out, "Amount limit:       refund-bands (use_case): amount EUR — allow up to 50.00, approval (groups: support-leads) up to 500.00, deny above") {
+	if !strings.Contains(out, "Verdict:            BY AMOUNT") || !strings.Contains(out, "Amount limit:       refund-bands (use_case): amount EUR — allow up to 50.00, approval (groups: support-leads) up to 500.00, deny above") {
 		t.Fatalf("actions show must list the amount limit:\n%s", out)
 	}
 
@@ -152,6 +153,9 @@ policies:
 	if _, stderr, code := RunTalon(t, dir, map[string]string{"TALON_APPROVER_KEY": agAgentKey}, "approvals", "list", url); code == 0 || !strings.Contains(stderr, "does not hold an approver credential") {
 		t.Fatalf("an agent key is no approver credential: code=%d %s", code, stderr)
 	}
+	if _, stderr, code := RunTalon(t, dir, reviewerEnv, "approvals", "list", "--url=http://talon.example.invalid:8080"); code == 0 || !strings.Contains(stderr, "refusing to send the approver credential over plain http") {
+		t.Fatalf("the credential must not leave over plain http: code=%d %s", code, stderr)
+	}
 	out, stderr, code = RunTalon(t, dir, reviewerEnv, "approvals", "list", url)
 	if code != 0 || !strings.Contains(out, approvalID) || !strings.Contains(out, "amount=75.00") || !strings.Contains(out, "op op-75") {
 		t.Fatalf("approvals list: code=%d\n%s\n%s", code, out, stderr)
@@ -159,6 +163,7 @@ policies:
 	out, stderr, code = RunTalon(t, dir, reviewerEnv, "approvals", "show", approvalID, url)
 	for _, want := range []string{
 		"Action:            create_refund_request",
+		"Requested by:      AI use case support-bot (tenant default)",
 		"Target:            POST " + down.srv.URL + "/refunds",
 		"Verdict:           REQUIRE_APPROVAL (rule refund-bands, use_case policy)",
 		"Why:               use_case amount limit refund-bands on create_refund_request: EUR amounts (argument \"amount\") up to 50.00 are allowed, above 50.00 and up to 500.00 require approval by support-leads, above 500.00 are denied",
@@ -222,5 +227,19 @@ policies:
 		if code != 0 || !strings.Contains(out, "Lifecycle: VALID") {
 			t.Fatalf("verify %s: code=%d\n%s\n%s", opID, code, out, stderr)
 		}
+	}
+	// The signed evidence names the band and the policy thresholds, never
+	// the amounts of the calls.
+	db, err := sql.Open("sqlite3", filepath.Join(dir, "evidence.db")+"?mode=ro&_busy_timeout=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var leaked int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM evidence WHERE invocation_type = 'action_lifecycle' AND (evidence_json LIKE '%75.00%' OR evidence_json LIKE '%900.00%' OR evidence_json LIKE '%30.00%' OR evidence_json LIKE '%T-2%')`).Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatalf("%d lifecycle records carry argument values of a call", leaked)
 	}
 }

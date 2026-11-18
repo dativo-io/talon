@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -29,6 +31,8 @@ var (
 	approvalsURL    string
 	approvalsJSON   bool
 	approvalsReason string
+	// approvalsAllowPlaintext permits plain http to a non-loopback host.
+	approvalsAllowPlaintext bool
 )
 
 var approvalsCmd = &cobra.Command{
@@ -68,7 +72,7 @@ var approvalsListCmd = &cobra.Command{
 		fmt.Fprintf(w, "Pending approvals in tenant %s (oldest first):\n\n", out.Tenant)
 		for i := range out.Reviews {
 			r := &out.Reviews[i]
-			fmt.Fprintf(w, "  %s  %s  op %s  expires %s  %s\n", r.Operation.Approval.ID, r.Operation.Action, r.Operation.OperationID,
+			fmt.Fprintf(w, "  %s  %s  %s  op %s  expires %s  %s\n", r.Operation.Approval.ID, r.UseCase, r.Operation.Action, r.Operation.OperationID,
 				r.Operation.Approval.ExpiresAt.UTC().Format(time.RFC3339), compactReview(r.Operation.Review))
 		}
 		fmt.Fprintf(w, "\nShow one with: talon approvals show <approval-id>\n")
@@ -152,6 +156,8 @@ type reviewOperation struct {
 
 type reviewResponse struct {
 	Operation         reviewOperation `json:"operation"`
+	UseCase           string          `json:"use_case"`
+	Tenant            string          `json:"tenant"`
 	Target            string          `json:"target"`
 	Rule              string          `json:"rule"`
 	PolicyCurrent     bool            `json:"policy_current"`
@@ -174,6 +180,7 @@ func compactReview(review map[string]json.RawMessage) string {
 func printReview(w io.Writer, r *reviewResponse) {
 	op := &r.Operation
 	fmt.Fprintf(w, "Action:            %s\n", op.Action)
+	fmt.Fprintf(w, "Requested by:      AI use case %s (tenant %s)\n", r.UseCase, r.Tenant)
 	fmt.Fprintf(w, "Operation:         %s (%s)\n", op.OperationID, op.Status)
 	fmt.Fprintf(w, "Target:            %s\n", r.Target)
 	fmt.Fprintf(w, "Verdict:           %s (rule %s, %s policy)\n", op.Verdict, op.MatchedRuleID, op.MatchedRuleSource)
@@ -209,6 +216,9 @@ func approvalsRequest(ctx context.Context, method, path string, body []byte, out
 	}
 	if !strings.HasPrefix(key, "talon_appr_") {
 		return nil, fmt.Errorf("%s does not hold an approver credential (talon_appr_...); admin and agent keys carry no approval authority", approverKeyEnv)
+	}
+	if err := refusePlaintextRemote(approvalsURL); err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -251,7 +261,27 @@ func approvalsRequest(ctx context.Context, method, path string, body []byte, out
 	return raw, nil
 }
 
+// refusePlaintextRemote keeps the approver credential off the network in
+// clear text: plain http is accepted for loopback only, unless the operator
+// states that the path is protected (a private link or a TLS-terminating
+// proxy on the same host) with --allow-plaintext.
+func refusePlaintextRemote(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("--url %q is not a valid URL", raw)
+	}
+	if u.Scheme == "https" || approvalsAllowPlaintext {
+		return nil
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); host == "localhost" || (ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return fmt.Errorf("refusing to send the approver credential over plain http to %s: use an https URL, or pass --allow-plaintext when the network path is protected", u.Host)
+}
+
 func init() {
+	approvalsCmd.PersistentFlags().BoolVar(&approvalsAllowPlaintext, "allow-plaintext", false, "send the credential over plain http to a non-loopback host (only on a protected network path)")
 	approvalsCmd.PersistentFlags().StringVar(&approvalsURL, "url", "http://localhost:8080", "base URL of the running Talon server")
 	approvalsCmd.PersistentFlags().BoolVar(&approvalsJSON, "json", false, "print the server's JSON answer")
 	approve := decideCmd("approve", true)

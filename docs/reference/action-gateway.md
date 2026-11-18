@@ -138,8 +138,9 @@ The refund bands are an example policy, not a built-in rule.
 
 **Inspection.**
 - `talon actions show <action>` lists each matching limit with its bands. Its `verdict` is the name-only verdict, because a call's arguments decide the band.
-- `talon actions validate --action <a> --input <file>` prints the band verdict for those exact arguments and its reason, for example `REQUIRE_APPROVAL (rule refund-bands)` with `Reason: use_case amount limit refund-bands: 75.00 EUR is above 50.00 and at most 500.00, so it requires approval`.
-- The lifecycle evidence records the matched rule id and that reason.
+- `talon actions validate --action <a> --input <file>` prints the band verdict for those exact arguments and its reason, for example `REQUIRE_APPROVAL (rule refund-bands)` with `Reason: use_case amount limit refund-bands: the amount is above 50.00 and at most 500.00 EUR, so it requires approval`.
+- `talon actions list` shows `BY AMOUNT` for a limited action, because the name alone does not decide it.
+- The lifecycle evidence records the matched rule id and that reason. A reason names the band and the policy's thresholds, never the amount or currency of the call: evidence outlives the sealed payload.
 
 **Not supported:** more than one amount argument per limit, nested argument paths, currencies with zero or three minor digits, conversion between currencies, and conditions on non-amount arguments. These are refused or denied; they are not silently approximated.
 
@@ -219,7 +220,7 @@ talon approvals reject  apr_... --reason "duplicate refund"
 ```
 
 `show` prints:
-- the action and operation;
+- the action, the operation and the AI use case that asked for it;
 - the **target**: the trusted catalog destination Talon itself will call;
 - the verdict with its rule id and layer;
 - **why**: the matched rule as the current policy states it, for example the amount bands;
@@ -228,12 +229,12 @@ talon approvals reject  apr_... --reason "duplicate refund"
 
 It warns when the policy or the action definition changed since the operation was established, because an approval could then not be used.
 
-A decision dispatches nothing. The AI use case's runtime claims the approved operation afterwards, and Talon re-checks the binding, the policy and the amount bands before any claim. `--reason` is required and recorded in the signed approval evidence. `--json` prints the server's answer.
+A decision dispatches nothing. The AI use case's runtime claims the approved operation afterwards, and Talon re-checks the binding, the policy and the amount bands before any claim. `--reason` is required and recorded in the signed approval evidence. The command refuses to send the credential over plain `http` to a non-loopback host unless `--allow-plaintext` is given (for a protected network path). `--json` prints the server's answer.
 
 | Route | Credential | Answer |
 |---|---|---|
 | `GET /v1/reviews` | approver only | `{tenant, reviews: [ReviewerView]}`: pending approvals of the credential's tenant that share at least one approver group, oldest first, at most 200 |
-| `GET /v1/reviews/{approval_id}` | approver only | `ReviewerView`: `operation` (the projection), `target`, `rule`, `policy_current`, `definition_current`; `404 not_found` for another tenant's approval or one none of the reviewer's groups may decide |
+| `GET /v1/reviews/{approval_id}` | approver only | `ReviewerView`: `operation` (the projection), `use_case`, `tenant`, `target`, `rule`, `policy_current`, `definition_current`; `404 not_found` for another tenant's approval or one none of the reviewer's groups may decide |
 | `POST /v1/approvals/{approval_id}/decisions` | approver only | the decision (unchanged) |
 
 Admin keys, agent keys, revoked and rotated-away credentials get `401 approval_not_authorized` on every reviewer route. Reads never change an operation, an approval or the evidence. *(Backed by `TestReviewerReads_ScopedToTenantAndGroup`, `TestE2E_ActionGateway_AmountBands`.)*

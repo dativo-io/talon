@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -325,4 +327,64 @@ func TestAmountLimit_LoweredCeilingRefusesAnApprovedOperation(t *testing.T) {
 	require.Equal(t, int64(0), down.calls.Load())
 	f := h4.verify(t, "op-was-allowed-big")
 	require.Equal(t, LifecycleIncomplete, f.Verdict, "refused at claim: consistent, not closed; "+f.Summary())
+}
+
+// Reasons end up in signed evidence, which outlives the sealed payload:
+// they never repeat an argument value of the call.
+func TestAmountLimit_ReasonsCarryNoArgumentValues(t *testing.T) {
+	ap, err := CompileApprovalPolicy(limitPolicy("http://x"))
+	require.NoError(t, err)
+	for _, args := range []string{
+		`{"amount":12.34,"currency":"EUR"}`, `{"amount":"123.45","currency":"EUR"}`, `{"amount":777.77,"currency":"EUR"}`,
+		`{"amount":"12.345","currency":"EUR"}`, `{"amount":"secret-text","currency":"EUR"}`, `{"amount":12.34,"currency":"XTS"}`,
+	} {
+		v := ap.EvaluateArguments("create_refund_request", []byte(args))
+		for _, leaked := range []string{"12.34", "123.45", "777.77", "12.345", "secret-text", "XTS"} {
+			require.NotContains(t, v.Reason, leaked, args)
+		}
+	}
+}
+
+// An approval required by an amount band keeps the reviewer and claim
+// guarantees of rule-based approvals: only the band's groups decide, and
+// concurrent claims produce one effect.
+func TestAmountLimit_ApprovalAuthorityAndSingleClaim(t *testing.T) {
+	ctx := context.Background()
+	down := newDownstream(t)
+	store, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	h := newHarnessWith(t, down, store, limitPolicy(down.srv.URL), testVaultKey)
+	mid := h.establish(t, "op-mid", "create_refund_request", `{"ticket_id":"T-6","amount":75.00,"currency":"EUR"}`)
+
+	intern := lead("intern")
+	intern.Groups = []string{"interns"}
+	_, err = h.svc.Decide(ctx, DecideRequest{ApprovalID: mid.Operation.Approval.ID, Approve: true, Reviewer: intern})
+	require.Equal(t, CodeApprovalNotAuthorized, CodeOf(err))
+	foreign := lead("foreign")
+	foreign.TenantScope = "other-tenant"
+	_, err = h.svc.Decide(ctx, DecideRequest{ApprovalID: mid.Operation.Approval.ID, Approve: true, Reviewer: foreign})
+	require.Error(t, err)
+	_, err = h.svc.Execute(ctx, "op-mid")
+	require.Equal(t, CodeApprovalPending, CodeOf(err))
+	require.Equal(t, int64(0), down.calls.Load())
+
+	h.approve(t, mid, lead("lead-1"))
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	var succeeded atomic.Int64
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := h.svc.Execute(ctx, "op-mid"); err == nil {
+				succeeded.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	require.Equal(t, int64(1), succeeded.Load(), "exactly one claim wins")
+	require.Equal(t, int64(1), down.calls.Load(), "one effect")
 }

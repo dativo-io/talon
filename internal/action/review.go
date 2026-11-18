@@ -18,6 +18,9 @@ import (
 // nothing is added that the record does not carry.
 type ReviewerView struct {
 	Operation *Projection `json:"operation"`
+	// UseCase and Tenant name the AI use case that asked for the action.
+	UseCase string `json:"use_case"`
+	Tenant  string `json:"tenant"`
 	// Target is the trusted catalog destination (method and URL), the
 	// endpoint Talon itself calls when the operation is claimed.
 	Target string `json:"target"`
@@ -52,6 +55,8 @@ func (s *Service) Review(ctx context.Context, approvalID string) (*ReviewerView,
 	}
 	v := &ReviewerView{
 		Operation:         proj,
+		UseCase:           op.AgentID,
+		Tenant:            op.TenantID,
 		Rule:              s.Policy.DescribeRule(op.RuleID),
 		PolicyCurrent:     s.Policy.Digest == op.PolicyDigest,
 		DefinitionCurrent: s.definitionCurrent(op),
