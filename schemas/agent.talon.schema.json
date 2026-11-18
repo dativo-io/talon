@@ -310,24 +310,27 @@
                 }
               }
             },
-            "amount_limits": {
+            "argument_rules": {
               "type": "object",
-              "description": "Typed amount bands per action (#205): up to allow_up_to no restriction, up to approval_up_to approval by approver_groups, above it DENY. A missing, malformed, negative, wrong-type or other-currency amount is DENIED.",
-              "maxProperties": 64,
+              "description": "Argument rules (#205): a typed condition on ONE top-level argument of matching actions with a restrictive effect. When the condition holds, the call requires approval or is denied; a rule never grants anything. The argument must be a required property of the action's input schema with a matching JSON type. A missing, null or wrong-type argument is DENIED.",
+              "maxProperties": 128,
               "propertyNames": {"pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
               "additionalProperties": {
                 "type": "object",
-                "required": ["actions", "amount_argument", "currency_argument", "currency", "allow_up_to", "approval_up_to", "approver_groups"],
+                "required": ["actions", "argument", "type", "operator", "value", "effect"],
                 "additionalProperties": false,
                 "properties": {
                   "actions": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}\\*?$"}},
-                  "amount_argument": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$", "description": "Top-level argument holding the amount: a decimal string (\"75.00\") or a JSON number written the same way; at most two fractional digits, no sign, no exponent."},
-                  "currency_argument": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$", "description": "Top-level string argument holding the currency code."},
-                  "currency": {"type": "string", "pattern": "^[A-Z]{3}$", "description": "The only currency this limit authorizes; any other value is denied."},
-                  "allow_up_to": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$", "description": "Amounts up to and including this need no approval from this limit."},
-                  "approval_up_to": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$", "description": "Amounts above allow_up_to up to and including this require approval; above it DENY."},
-                  "approver_groups": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}}
-                }
+                  "argument": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$", "description": "A top-level argument of the action."},
+                  "type": {"enum": ["integer", "decimal", "string", "boolean"], "description": "integer: JSON number without fraction; decimal: exact decimal (at most 18 integer and 6 fractional digits) as a JSON number or string, never compared as a float; string: exact, case-sensitive; boolean."},
+                  "operator": {"enum": ["eq", "ne", "gt", "gte", "lt", "lte"], "description": "eq and ne for every type; gt, gte, lt, lte for integer and decimal only."},
+                  "value": {"type": ["integer", "string", "boolean"], "description": "The operand, in the rule's type: an integer, a QUOTED decimal such as \"50.00\", a string, or true/false."},
+                  "effect": {"enum": ["require_approval", "deny"]},
+                  "approver_groups": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}, "description": "Required for effect require_approval; not allowed for deny."}
+                },
+                "if": {"properties": {"effect": {"const": "require_approval"}}},
+                "then": {"required": ["approver_groups"]},
+                "else": {"not": {"required": ["approver_groups"]}}
               }
             }
           }

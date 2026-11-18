@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { EffectiveFile, EffectivePolicyDTO, EffectiveReport } from "../api/types";
+import type { ActionArgumentRule, ActionBoundary, ActionDecision, EffectiveFile, EffectivePolicyDTO, EffectiveReport } from "../api/types";
 import { AvailabilityNotice, Badge, CopyableIdentifier, DecisionOutcome, ErrorState, Loading } from "./ui";
 import { ActiveBadge } from "./RuntimeStatus";
 import { humanize, utc } from "../lib/format";
@@ -112,6 +112,7 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
             ) : null}
           </div>
         ) : null}
+        {r.action_boundary ? <ActionBoundarySection b={r.action_boundary} /> : null}
       </section>
 
       <section aria-labelledby="eff-last">
@@ -140,4 +141,106 @@ function FileRow({ label, f }: { label: string; f: EffectiveFile | undefined }) 
   else if (!f.present) v = <><code>{f.path}</code> <span className="muted">absent</span></>;
   else v = <><code>{f.path}</code> <span className="small muted">sha256 {f.digest?.slice(0, 12)}</span></>;
   return <><dt>{label}</dt><dd>{v}</dd></>;
+}
+
+// The Action Gateway's effective policy: the company policy composed with
+// the use case's own. A baseline ALLOW with argument rules is shown as
+// "by arguments", never as an unconditional allow.
+function ActionBoundarySection({ b }: { b: ActionBoundary }) {
+  const rules = b.argument_rules ?? [];
+  const nameRules = b.approval_rules ?? [];
+  return (
+    <div className="stack" data-testid="action-boundary">
+      <h4>Action Gateway</h4>
+      <p>
+        <strong className="small">Action Gateway: </strong>
+        {b.proven_active ? <Badge tone="ok">Proven active</Badge> : <Badge tone="info">Compiled from current files, not proven active</Badge>}
+      </p>
+      <p className="small muted">{b.basis}</p>
+      {b.error ? <div className="notice warn" role="status"><div>Effective action policy unavailable: {b.error}</div></div> : null}
+      {b.actions.length ? (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Action</th><th>Decision</th><th>Rules that apply</th></tr></thead>
+            <tbody>
+              {b.actions.map((a) => (
+                <tr key={a.action}>
+                  <td><code>{a.action}</code></td>
+                  <td><ActionVerdict a={a} /></td>
+                  <td className="small">
+                    {(a.approval_rules ?? []).map((x) => (
+                      <div key={x.id}><code>{x.id}</code> ({humanize(x.source)}): approval by {x.approver_groups.join(", ")}</div>
+                    ))}
+                    {(a.argument_rules ?? []).map((x) => <div key={x.id}><RuleLine r={x} /></div>)}
+                    {!a.approval_rules?.length && !a.argument_rules?.length ? <span className="muted">none</span> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {rules.length || nameRules.length ? (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Rule</th><th>Declared by</th><th>Actions</th><th>Condition</th><th>Effect</th></tr></thead>
+            <tbody>
+              {nameRules.map((x) => (
+                <tr key={x.id}>
+                  <td><code>{x.id}</code></td>
+                  <td>{humanize(x.source)}</td>
+                  <td><code>{(x.actions ?? []).join(", ")}</code></td>
+                  <td className="muted">every call</td>
+                  <td>Require approval by {x.approver_groups.join(", ")}</td>
+                </tr>
+              ))}
+              {rules.map((x) => (
+                <tr key={x.id}>
+                  <td><code>{x.id}</code></td>
+                  <td>{humanize(x.source)}</td>
+                  <td><code>{(x.actions ?? []).join(", ")}</code></td>
+                  <td><code>{x.condition}</code> <span className="small muted">({x.type})</span></td>
+                  <td>{x.effect === "deny" ? "Deny" : `Require approval by ${(x.approver_groups ?? []).join(", ")}`}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      <dl className="facts">
+        {b.forbidden_actions?.length ? (<><dt>Forbidden actions</dt><dd><code>{b.forbidden_actions.join(", ")}</code></dd></>) : null}
+        {b.approval_expires_after ? (<><dt>Approvals expire after</dt><dd>{b.approval_expires_after}</dd></>) : null}
+        {b.policy_digest ? (<><dt>Approval policy digest</dt><dd><CopyableIdentifier value={b.policy_digest} label="approval policy digest" /></dd></>) : null}
+      </dl>
+      {rules.length ? (
+        <p className="small muted">
+          An argument rule only restricts: when its condition holds the call needs approval or is denied; a call whose argument is missing or of another type is denied. A use case can add rules, never lift a company rule.
+        </p>
+      ) : null}
+      {(b.notes ?? []).map((n) => <p key={n} className="small muted">{n}</p>)}
+    </div>
+  );
+}
+
+function ActionVerdict({ a }: { a: ActionDecision }) {
+  const from = a.verdict_source ? ` (${humanize(a.verdict_source)})` : "";
+  if (a.decision_basis === "arguments") {
+    return (
+      <>
+        <Badge tone="info">Depends on arguments</Badge>
+        <div className="small muted">{a.verdict === "ALLOW" ? "allowed" : "approval required"} by name{from}; the rules can make a call stricter</div>
+      </>
+    );
+  }
+  if (a.verdict === "DENY") return <Badge tone="error">Denied{from}</Badge>;
+  if (a.verdict === "REQUIRE_APPROVAL") return <Badge tone="warn">Approval required{from}</Badge>;
+  return <Badge tone="ok" plain>Allowed for every call</Badge>;
+}
+
+function RuleLine({ r }: { r: ActionArgumentRule }) {
+  return (
+    <>
+      <code>{r.id}</code> ({humanize(r.source)}): when <code>{r.condition}</code> → {r.effect === "deny" ? "deny" : `approval by ${(r.approver_groups ?? []).join(", ")}`}
+    </>
+  );
 }

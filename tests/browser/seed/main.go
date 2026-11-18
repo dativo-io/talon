@@ -91,9 +91,33 @@ policies:
   name: support-bot
   version: "1.0.0"
   enabled: false
+actions:
+  definitions:
+    create_refund_request:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount, currency]
+        properties:
+          ticket_id: {type: string}
+          amount: {type: number, minimum: 0}
+          currency: {type: string, enum: [EUR]}
+      destination: {type: http, url: "https://refunds.example.com/refunds", method: POST}
+    notify_customer:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id]
+        properties: {ticket_id: {type: string}}
+      destination: {type: http, url: "https://notify.example.com/notify", method: POST}
 policies:
   cost_limits:
     monthly: 20
+  approvals:
+    expires_after: 30m
+    argument_rules:
+      refund-needs-approval: {actions: [create_refund_request], argument: amount, type: decimal, operator: gt, value: "50.00", effect: require_approval, approver_groups: [support-leads]}
+      refund-too-large: {actions: [create_refund_request], argument: amount, type: decimal, operator: gt, value: "500.00", effect: deny}
 `)
 	write(filepath.Join(*dir, "agents/eu-reports/agent.talon.yaml"), `agent:
   name: eu-reports

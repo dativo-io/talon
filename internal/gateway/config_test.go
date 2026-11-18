@@ -400,10 +400,10 @@ func TestRegistryMetricsTenantScope(t *testing.T) {
 	})
 }
 
-// Company amount limits (#205) load from the gateway config, with or without
-// approval rules; an empty action_approvals block and an invalid limit are
-// load errors.
-func TestLoadGatewayConfig_CompanyAmountLimits(t *testing.T) {
+// Company argument rules (#205) load from the gateway config, with or
+// without approval rules; an empty action_approvals block, an operand of the
+// wrong YAML type and an unknown field are load errors.
+func TestLoadGatewayConfig_CompanyArgumentRules(t *testing.T) {
 	write := func(t *testing.T, approvals string) string {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "talon.config.yaml")
@@ -411,20 +411,30 @@ func TestLoadGatewayConfig_CompanyAmountLimits(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		return path
 	}
-	limit := func(currency string) string {
-		return "        amount_limits:\n          refund-bands:\n            actions: [create_refund_request]\n            amount_argument: amount\n            currency_argument: currency\n            currency: " + currency + "\n            allow_up_to: \"50.00\"\n            approval_up_to: \"500.00\"\n            approver_groups: [support-leads]\n"
+	rules := func(decimalValue string) string {
+		return "        argument_rules:\n" +
+			"          refund-needs-approval: {actions: [create_refund_request], argument: amount, type: decimal, operator: gt, value: " + decimalValue + ", effect: require_approval, approver_groups: [support-leads]}\n" +
+			"          mass-delete-denied: {actions: [delete_records], argument: count, type: integer, operator: gte, value: 1000, effect: deny}\n" +
+			"          prod-deploy-needs-approval: {actions: [deploy_service], argument: environment, type: string, operator: eq, value: production, effect: require_approval, approver_groups: [support-leads]}\n" +
+			"          real-delete-needs-approval: {actions: [delete_records], argument: dry_run, type: boolean, operator: eq, value: false, effect: require_approval, approver_groups: [support-leads]}\n"
 	}
 
-	cfg, err := LoadGatewayConfig(write(t, limit("EUR")))
-	require.NoError(t, err, "amount_limits without rules is a valid company policy")
+	cfg, err := LoadGatewayConfig(write(t, rules(`"50.00"`)))
+	require.NoError(t, err, "argument_rules without rules is a valid company policy")
 	cp := cfg.OrganizationPolicy.CompanyActionPolicy("test")
 	require.NotNil(t, cp)
-	require.Contains(t, cp.AmountLimits, "refund-bands")
+	require.Len(t, cp.ArgumentRules, 4)
 	require.NotEmpty(t, cp.Digest())
+	require.Equal(t, 1000, cp.ArgumentRules["mass-delete-denied"].Value, "an integer operand stays an integer")
+	require.Equal(t, false, cp.ArgumentRules["real-delete-needs-approval"].Value)
+	require.Equal(t, "50.00", cp.ArgumentRules["refund-needs-approval"].Value, "a decimal operand is a string, never a float")
 
 	_, err = LoadGatewayConfig(write(t, "        {}\n"))
-	require.ErrorContains(t, err, "rules or amount_limits are required")
+	require.ErrorContains(t, err, "rules or argument_rules are required")
 
-	_, err = LoadGatewayConfig(write(t, limit("euro")))
-	require.ErrorContains(t, err, "currency")
+	_, err = LoadGatewayConfig(write(t, rules("50.00")))
+	require.ErrorContains(t, err, "quoted decimal string", "an unquoted decimal would be read as a float and is refused")
+
+	_, err = LoadGatewayConfig(write(t, "        amount_limits:\n          x: {actions: [a]}\n"))
+	require.Error(t, err, "the unreleased amount_limits form is not accepted")
 }

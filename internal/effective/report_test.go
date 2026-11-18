@@ -3,6 +3,7 @@ package effective
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/fleetview"
@@ -367,4 +369,105 @@ policies:
 		assert.Contains(t, err.Error(), filepath.Join("acme-hr", "agent.talon.yaml"))
 		assert.Contains(t, err.Error(), filepath.Join("hr-analytics-assistant", "agent.talon.yaml"))
 	}
+}
+
+// The action boundary is the one compiler's output for the current files:
+// each rule carries the layer that declared it, an action with argument
+// rules is never reported as an unconditional ALLOW, and an unreadable
+// company layer yields no policy at all.
+func TestBuild_ActionBoundary(t *testing.T) {
+	f := peopleAnalytics(t)
+	ctx := context.Background()
+	r, err := Build(ctx, f.inputs())
+	require.NoError(t, err)
+	assert.Nil(t, r.ActionBoundary, "a use case without actions has no action boundary")
+
+	agentFile := filepath.Join(f.agents, "hr-analytics-assistant", "agent.talon.yaml")
+	raw, err := os.ReadFile(agentFile)
+	require.NoError(t, err)
+	body := strings.Replace(string(raw), "policies:\n", `actions:
+  definitions:
+    create_refund_request:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount]
+        properties: {ticket_id: {type: string}, amount: {type: number}}
+      destination: {type: http, url: "https://refunds.example.com/refunds", method: POST}
+    deploy_service:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [environment]
+        properties: {environment: {type: string}}
+      destination: {type: http, url: "https://deploy.example.com/deploy", method: POST}
+    notify_customer:
+      input_schema: {type: object, additionalProperties: false, required: [ticket_id], properties: {ticket_id: {type: string}}}
+      destination: {type: http, url: "https://notify.example.com/notify", method: POST}
+    admin_reset:
+      input_schema: {type: object, additionalProperties: false, properties: {}}
+      destination: {type: http, url: "https://admin.example.com/reset", method: POST}
+policies:
+  approvals:
+    expires_after: 30m
+    argument_rules:
+      prod-deploy-needs-approval: {actions: [deploy_service], argument: environment, type: string, operator: eq, value: production, effect: require_approval, approver_groups: [release-managers]}
+`, 1)
+	require.NoError(t, os.WriteFile(agentFile, []byte(body), 0o600))
+	gw, err := os.ReadFile(f.gw)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.gw, append(gw, []byte(`      action_approvals:
+        argument_rules:
+          refund-too-large: {actions: [create_refund_request], argument: amount, type: decimal, operator: gt, value: "500.00", effect: deny}
+`)...), 0o600))
+
+	r, err = Build(ctx, f.inputs())
+	require.NoError(t, err)
+	b := r.ActionBoundary
+	require.NotNil(t, b)
+	require.Empty(t, b.Error)
+	assert.False(t, b.ProvenActive, "no running process: compiled from the files only")
+	assert.Contains(t, b.Basis, "not proven")
+	assert.NotEmpty(t, b.PolicyDigest)
+	assert.Equal(t, "30m0s", b.ExpiresAfter)
+
+	byName := map[string]action.DecisionView{}
+	for _, d := range b.Actions {
+		byName[d.Action] = d
+	}
+	require.Len(t, byName, 4)
+	refund := byName["create_refund_request"]
+	assert.Equal(t, action.VerdictAllow, refund.Verdict)
+	assert.Equal(t, action.DecisionByArguments, refund.DecisionBasis, "a name-only ALLOW with argument rules is not unconditional")
+	require.Len(t, refund.ArgumentRules, 1)
+	assert.Equal(t, "company:refund-too-large", refund.ArgumentRules[0].ID)
+	assert.Equal(t, action.PolicySourceCompany, refund.ArgumentRules[0].Source)
+	assert.Equal(t, "amount gt 500", refund.ArgumentRules[0].Condition)
+	deploy := byName["deploy_service"]
+	assert.Equal(t, action.DecisionByArguments, deploy.DecisionBasis)
+	assert.Equal(t, action.PolicySourceUseCase, deploy.ArgumentRules[0].Source)
+	assert.Equal(t, []string{"release-managers"}, deploy.ArgumentRules[0].ApproverGroups)
+	assert.Equal(t, action.DecisionByName, byName["notify_customer"].DecisionBasis)
+	assert.Equal(t, action.VerdictAllow, byName["notify_customer"].Verdict)
+	assert.Equal(t, action.VerdictDeny, byName["admin_reset"].Verdict, "the company forbidden pattern admin_* applies")
+	assert.Equal(t, action.PolicySourceCompany, byName["admin_reset"].VerdictSource)
+
+	require.Len(t, b.ArgumentRules, 2)
+	assert.Equal(t, []string{"create_refund_request"}, b.ArgumentRules[0].Actions)
+	assert.Equal(t, action.EffectDeny, b.ArgumentRules[0].Effect)
+	assert.Equal(t, action.EffectRequireApproval, b.ArgumentRules[1].Effect)
+
+	raw, err = json.Marshal(r)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"action_boundary"`)
+	assert.Contains(t, string(raw), `"decision_basis":"arguments"`)
+
+	// An unreadable company layer: no effective action policy is shown.
+	require.NoError(t, os.WriteFile(f.gw, []byte("gateway: [broken"), 0o600))
+	r, err = Build(ctx, f.inputs())
+	require.NoError(t, err)
+	require.NotNil(t, r.ActionBoundary)
+	assert.Contains(t, r.ActionBoundary.Error, "company action policy is unknown")
+	assert.Empty(t, r.ActionBoundary.Actions)
+	assert.Empty(t, r.ActionBoundary.ArgumentRules)
 }
