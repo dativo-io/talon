@@ -46,6 +46,12 @@ func configService(t *testing.T) (*Service, *fixture) {
     constraints:
       forbidden_tools: ["admin_*"]
       max_monthly_cost: 500
+      action_approvals:
+        rules:
+          payouts: {actions: ["create_payout"], approver_groups: [finance]}
+        argument_rules:
+          refund-too-large: {actions: [create_refund_request], argument: amount, type: decimal, operator: gt, value: "500.00", effect: deny}
+          prod-deploy: {actions: ["deploy_*"], argument: environment, type: string, operator: eq, value: production, effect: require_approval, approver_groups: [release-managers]}
     log_prompts: true
     cost_webhook_url: "https://hooks.example/T0K3N-SUPERSECRET-WEBHOOK"
 `
@@ -80,6 +86,13 @@ func TestConfiguration_SemanticSummaryFromTheFiles(t *testing.T) {
 	assert.InDelta(t, 100, org.DailyCost, 1e-9)
 	assert.InDelta(t, 500, org.MaxMonthlyCost, 1e-9)
 	assert.Equal(t, []string{"admin_*"}, org.ForbiddenTools)
+	// Company action rules as the one compiler normalizes them: the
+	// name-based rule first, then the argument rules with their condition.
+	require.Empty(t, org.ActionRulesError)
+	require.Len(t, org.ActionRules, 3)
+	assert.Equal(t, CompanyActionRule{ID: "company:payouts", Actions: []string{"create_payout"}, Effect: "require_approval", ApproverGroups: []string{"finance"}}, org.ActionRules[0])
+	assert.Equal(t, CompanyActionRule{ID: "company:prod-deploy", Actions: []string{"deploy_*"}, Condition: `environment eq "production"`, Type: "string", Effect: "require_approval", ApproverGroups: []string{"release-managers"}}, org.ActionRules[1])
+	assert.Equal(t, CompanyActionRule{ID: "company:refund-too-large", Actions: []string{"create_refund_request"}, Condition: "amount gt 500", Type: "decimal", Effect: "deny"}, org.ActionRules[2])
 	require.NotNil(t, org.Retry)
 	assert.Equal(t, 3, org.Retry.MaxAttempts)
 	assert.True(t, org.LogPrompts)

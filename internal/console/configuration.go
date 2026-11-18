@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/fleetview"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/mcp"
@@ -119,7 +120,47 @@ type OrganizationConfig struct {
 	LogResponses      bool     `json:"log_responses"`
 	CostWebhook       bool     `json:"cost_webhook_configured"`
 
+	// ActionRules are the company action rules (#425, #205): name-based
+	// approval rules and argument rules, as the action-policy compiler
+	// normalizes them. ActionRulesError says why they are not shown.
+	ActionRules      []CompanyActionRule `json:"action_rules,omitempty"`
+	ActionRulesError string              `json:"action_rules_error,omitempty"`
+
 	Providers []ProviderView `json:"providers,omitempty"`
+}
+
+// CompanyActionRule is one company action rule. Condition is empty for a
+// name-based approval rule (it applies to every call of its actions).
+type CompanyActionRule struct {
+	ID             string   `json:"id"`
+	Actions        []string `json:"actions"`
+	Condition      string   `json:"condition,omitempty"`
+	Type           string   `json:"type,omitempty"`
+	Effect         string   `json:"effect"` // require_approval | deny
+	ApproverGroups []string `json:"approver_groups,omitempty"`
+}
+
+// companyActionRules compiles the company layer alone with the one action
+// policy compiler, so the console shows what a process would enforce.
+func companyActionRules(org *gateway.OrganizationPolicy, source string) ([]CompanyActionRule, error) {
+	company := org.CompanyActionPolicy(source)
+	if company == nil {
+		return nil, nil
+	}
+	ap, err := action.CompileEffectiveActionPolicy(&policy.Policy{}, company)
+	if err != nil {
+		return nil, err
+	}
+	var out []CompanyActionRule
+	for _, r := range ap.Rules {
+		out = append(out, CompanyActionRule{ID: r.ID, Actions: r.Actions, Effect: action.EffectRequireApproval, ApproverGroups: r.ApproverGroups})
+	}
+	views := ap.ArgumentRuleViews()
+	for i := range views {
+		r := &views[i]
+		out = append(out, CompanyActionRule{ID: r.ID, Actions: r.Actions, Condition: r.Condition, Type: r.Type, Effect: r.Effect, ApproverGroups: r.ApproverGroups})
+	}
+	return out, nil
 }
 
 // Retry is a retry policy.
@@ -360,6 +401,11 @@ func organizationView(path string, now time.Time) OrganizationConfig {
 	out.MaxDailyCost, out.MaxMonthlyCost, out.MaxSessionCost = c.MaxDailyCost, c.MaxMonthlyCost, c.MaxSessionCost
 	out.LogPrompts, out.LogResponses = org.LogPrompts, org.LogResponses
 	out.CostWebhook = strings.TrimSpace(org.CostWebhookURL) != ""
+	if rules, err := companyActionRules(&org, path); err != nil {
+		out.ActionRulesError = err.Error()
+	} else {
+		out.ActionRules = rules
+	}
 	names := make([]string, 0, len(gw.Providers))
 	for n := range gw.Providers {
 		names = append(names, n)

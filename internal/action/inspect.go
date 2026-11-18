@@ -180,23 +180,64 @@ func (c *Catalog) DefinitionView(name string, ap *ApprovalPolicy) (DefinitionVie
 		MetadataDigest:   d.MetadataDigest,
 	}
 	if ap != nil {
-		v := ap.Evaluate(d.Name)
-		dv.Verdict, dv.VerdictSource = v.Outcome, v.Source
-		for _, r := range ap.MatchingRules(d.Name) {
-			dv.ApprovalRules = append(dv.ApprovalRules, ApprovalRuleView{ID: r.ID, Source: r.Source, ApproverGroups: append([]string(nil), r.ApproverGroups...)})
-		}
-		dv.DecisionBasis = DecisionByName
-		argRules := ap.MatchingArgumentRules(d.Name)
-		for i := range argRules {
-			r := &argRules[i]
-			dv.ArgumentRules = append(dv.ArgumentRules, ArgumentRuleView{
-				ID: r.ID, Source: r.Source, Argument: r.Argument, Type: r.Type, Operator: r.Operator, Value: r.Value,
-				Condition: r.Condition(), Effect: r.Effect, ApproverGroups: append([]string(nil), r.ApproverGroups...),
-			})
-		}
-		if len(argRules) > 0 && v.Outcome != VerdictDeny {
-			dv.DecisionBasis = DecisionByArguments
-		}
+		dec := ap.Decision(d.Name)
+		dv.Verdict, dv.VerdictSource, dv.DecisionBasis = dec.Verdict, dec.VerdictSource, dec.DecisionBasis
+		dv.ApprovalRules, dv.ArgumentRules = dec.ApprovalRules, dec.ArgumentRules
 	}
 	return dv, true
+}
+
+// DecisionView is the policy's answer for one action NAME: the baseline
+// verdict, whether a call's arguments can make it stricter, and every rule
+// that applies with the layer that declared it. It is the one projection
+// behind `talon actions`, `talon agents show --effective` and the console.
+type DecisionView struct {
+	Action        string             `json:"action"`
+	Verdict       string             `json:"verdict"`
+	VerdictSource string             `json:"verdict_source,omitempty"`
+	DecisionBasis string             `json:"decision_basis"`
+	ApprovalRules []ApprovalRuleView `json:"approval_rules,omitempty"`
+	ArgumentRules []ArgumentRuleView `json:"argument_rules,omitempty"`
+}
+
+// Decision projects the policy for one action name.
+func (ap *ApprovalPolicy) Decision(name string) DecisionView {
+	v := ap.Evaluate(name)
+	out := DecisionView{Action: name, Verdict: v.Outcome, VerdictSource: v.Source, DecisionBasis: DecisionByName}
+	for _, r := range ap.MatchingRules(name) {
+		out.ApprovalRules = append(out.ApprovalRules, ApprovalRuleView{ID: r.ID, Source: r.Source, ApproverGroups: append([]string(nil), r.ApproverGroups...)})
+	}
+	argRules := ap.MatchingArgumentRules(name)
+	for i := range argRules {
+		out.ArgumentRules = append(out.ArgumentRules, argRules[i].view())
+	}
+	if len(argRules) > 0 && v.Outcome != VerdictDeny {
+		out.DecisionBasis = DecisionByArguments
+	}
+	return out
+}
+
+func (r *ArgumentRule) view() ArgumentRuleView {
+	return ArgumentRuleView{
+		ID: r.ID, Source: r.Source, Argument: r.Argument, Type: r.Type, Operator: r.Operator, Value: r.Value,
+		Condition: r.Condition(), Effect: r.Effect, ApproverGroups: append([]string(nil), r.ApproverGroups...),
+	}
+}
+
+// ArgumentRuleWithActions is one argument rule and the action patterns it
+// applies to.
+type ArgumentRuleWithActions struct {
+	ArgumentRuleView
+	Actions []string
+}
+
+// ArgumentRuleViews projects every argument rule of the policy, company
+// rules first.
+func (ap *ApprovalPolicy) ArgumentRuleViews() []ArgumentRuleWithActions {
+	out := make([]ArgumentRuleWithActions, 0, len(ap.ArgumentRules))
+	for i := range ap.ArgumentRules {
+		r := &ap.ArgumentRules[i]
+		out = append(out, ArgumentRuleWithActions{ArgumentRuleView: r.view(), Actions: append([]string(nil), r.Actions...)})
+	}
+	return out
 }

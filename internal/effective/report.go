@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -70,8 +71,11 @@ type Report struct {
 	Loaded       runtimestatus.Loaded `json:"loaded"`
 	Effective    Effective            `json:"effective"`
 	MCPBoundary  *MCPBoundary         `json:"mcp_boundary,omitempty"`
-	LastDecision *LastDecision        `json:"last_decision,omitempty"`
-	Notes        []string             `json:"notes,omitempty"`
+	// ActionBoundary is the effective ACTION policy (#425, #205): present
+	// when the use case declares actions or action approvals. Additive.
+	ActionBoundary *ActionBoundary `json:"action_boundary,omitempty"`
+	LastDecision   *LastDecision   `json:"last_decision,omitempty"`
+	Notes          []string        `json:"notes,omitempty"`
 }
 
 // CurrentFiles are the files as they read now.
@@ -266,6 +270,9 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 		r.Notes = append(r.Notes, "no organization baseline was read (no or invalid gateway config): the effective values are the use case's own")
 	}
 
+	// 3a. Action Gateway boundary
+	r.ActionBoundary = actionBoundary(agent, baseline, r.CurrentFiles.GatewayConfig, r.Effective)
+
 	// 3b. MCP boundary
 	r.MCPBoundary = mcpBoundary(ctx, in.ProxyConfig, agent, &r.CurrentFiles)
 	proveMCP(in, r)
@@ -283,6 +290,94 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 		}
 	}
 	return r, nil
+}
+
+// ActionBoundary is the effective action policy of the Action Gateway for
+// one use case: the company policy composed with the use case's own, as the
+// one compiler (action.CompileEffectiveActionPolicy) produces it. A rule's
+// Source is the layer that declared it. With argument rules, an action's
+// verdict is only the baseline (decision_basis "arguments"): a call can be
+// stricter, never looser.
+type ActionBoundary struct {
+	Basis        string `json:"basis"`
+	ProvenActive bool   `json:"proven_active"`
+	// PolicyDigest is the approval-relevant digest approvals are bound to.
+	PolicyDigest   string   `json:"policy_digest,omitempty"`
+	ExpiresAfter   string   `json:"approval_expires_after,omitempty"`
+	ForbiddenTools []string `json:"forbidden_actions,omitempty"`
+	// Actions are the actions the agent file defines itself, by name.
+	// Actions discovered from MCP sources are not listed (no discovery is
+	// run for this report); the rules below still apply to them.
+	Actions []action.DecisionView `json:"actions"`
+	// ApprovalRules and ArgumentRules are every rule of both layers.
+	ApprovalRules []ActionApprovalRule `json:"approval_rules,omitempty"`
+	ArgumentRules []ActionArgumentRule `json:"argument_rules,omitempty"`
+	Error         string               `json:"error,omitempty"`
+	Notes         []string             `json:"notes,omitempty"`
+}
+
+// ActionApprovalRule is one name-based approval rule with its action patterns.
+type ActionApprovalRule struct {
+	action.ApprovalRuleView
+	Actions []string `json:"actions"`
+}
+
+// ActionArgumentRule is one argument rule with its action patterns.
+type ActionArgumentRule struct {
+	action.ArgumentRuleView
+	Actions []string `json:"actions"`
+}
+
+func actionBoundary(agent *policy.Policy, baseline gateway.OrganizationPolicy, gwFile *File, gw Effective) *ActionBoundary {
+	declaresActions := agent.Actions != nil && (len(agent.Actions.Definitions) > 0 || len(agent.Actions.Sources) > 0)
+	if !declaresActions && agent.Policies.Approvals == nil {
+		return nil
+	}
+	b := &ActionBoundary{Actions: []action.DecisionView{}, ProvenActive: gw.ProvenActive}
+	source := ""
+	if gwFile != nil {
+		source = gwFile.Path
+		if gwFile.Error != "" {
+			// Never show the use case's own rules as the effective policy
+			// when the company layer could not be read.
+			b.Error, b.ProvenActive = "the gateway config cannot be loaded, so the company action policy is unknown: "+gwFile.Error, false
+			b.Basis = "not compiled: the company layer of the action policy is unreadable"
+			return b
+		}
+	}
+	ap, err := action.CompileEffectiveActionPolicy(agent, baseline.CompanyActionPolicy(source))
+	if err != nil {
+		b.Error, b.ProvenActive = err.Error(), false
+		b.Basis = "the effective action policy does not compile from the current files; a process started from them refuses to start"
+		return b
+	}
+	if b.ProvenActive {
+		b.Basis = "compiled by action.CompileEffectiveActionPolicy from the current files; every running gateway loaded this agent file and this gateway config"
+	} else {
+		b.Basis = "compiled by action.CompileEffectiveActionPolicy from the current files; not proven to be what a running process enforces (" + gw.Proof.Reason + ")"
+	}
+	b.PolicyDigest, b.ForbiddenTools = ap.Digest, ap.ForbiddenTools
+	if ap.ExpiresAfter > 0 {
+		b.ExpiresAfter = ap.ExpiresAfter.String()
+	}
+	if agent.Actions != nil {
+		for _, name := range sortedKeys(agent.Actions.Definitions) {
+			b.Actions = append(b.Actions, ap.Decision(name))
+		}
+		if len(agent.Actions.Sources) > 0 {
+			b.Notes = append(b.Notes, "actions discovered from MCP sources are not listed here (talon actions list runs the discovery); the rules apply to them by name")
+		}
+	}
+	for _, r := range ap.Rules {
+		b.ApprovalRules = append(b.ApprovalRules, ActionApprovalRule{
+			ApprovalRuleView: action.ApprovalRuleView{ID: r.ID, Source: r.Source, ApproverGroups: r.ApproverGroups}, Actions: r.Actions,
+		})
+	}
+	views := ap.ArgumentRuleViews()
+	for i := range views {
+		b.ArgumentRules = append(b.ArgumentRules, ActionArgumentRule{ArgumentRuleView: views[i].ArgumentRuleView, Actions: views[i].Actions})
+	}
+	return b
 }
 
 // proveMCP proves the MCP boundary independently of the gateway: a running
@@ -430,7 +525,7 @@ func lastDecision(ctx context.Context, store *evidence.Store, tenant, name, file
 	return ld, nil
 }
 
-func sortedKeys(m map[string]gateway.ProviderConfig) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
