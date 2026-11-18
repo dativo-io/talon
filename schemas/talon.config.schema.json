@@ -686,7 +686,7 @@
                 "action_approvals": {
                   "type": "object",
                   "additionalProperties": false,
-                  "anyOf": [{"required": ["rules"]}, {"required": ["amount_limits"]}],
+                  "anyOf": [{"required": ["rules"]}, {"required": ["argument_rules"]}],
                   "description": "Company-wide approval requirements for catalogued actions (#425): applied to EVERY use case; a use case may add rules but can never weaken these. Same vocabulary as agent policies.approvals.rules. Restart-required.",
                   "properties": {
                     "rules": {
@@ -713,22 +713,22 @@
                         }
                       }
                     },
-                    "amount_limits": {
+                    "argument_rules": {
                       "type": "object",
                       "minProperties": 1,
                       "propertyNames": {"pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
-                      "description": "Company-wide typed amount bands per action (#205): up to allow_up_to no restriction, up to approval_up_to approval by approver_groups, above it DENY; a missing, malformed, negative, wrong-type or other-currency amount is DENIED. A use case can add limits but never lift these. Restart-required.",
+                      "description": "Company-wide argument rules (#205): a typed condition on ONE top-level argument of matching actions that requires approval or denies when it holds. A rule never grants anything; a use case can add rules but never lift these. A missing, null or wrong-type argument is DENIED. Restart-required.",
                       "additionalProperties": {
                         "type": "object",
                         "additionalProperties": false,
-                        "required": ["actions", "amount_argument", "currency_argument", "currency", "allow_up_to", "approval_up_to", "approver_groups"],
+                        "required": ["actions", "argument", "type", "operator", "value", "effect"],
                         "properties": {
                           "actions": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "Exact catalog action names or trailing-* prefixes."},
-                          "amount_argument": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
-                          "currency_argument": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
-                          "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
-                          "allow_up_to": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$"},
-                          "approval_up_to": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$"},
+                          "argument": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+                          "type": {"enum": ["integer", "decimal", "string", "boolean"]},
+                          "operator": {"enum": ["eq", "ne", "gt", "gte", "lt", "lte"]},
+                          "value": {"type": ["integer", "string", "boolean"], "description": "An integer, a QUOTED decimal such as \"50.00\", a string, or true/false, matching the rule's type."},
+                          "effect": {"enum": ["require_approval", "deny"]},
                           "approver_groups": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}}
                         }
                       }

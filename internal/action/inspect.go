@@ -67,17 +67,32 @@ type ApprovalRuleView struct {
 	ApproverGroups []string `json:"approver_groups"`
 }
 
-// AmountLimitView is one amount limit (#205) that matches a definition.
-type AmountLimitView struct {
-	ID               string   `json:"id"`
-	Source           string   `json:"source"`
-	AmountArgument   string   `json:"amount_argument"`
-	CurrencyArgument string   `json:"currency_argument"`
-	Currency         string   `json:"currency"`
-	AllowUpTo        string   `json:"allow_up_to"`
-	ApprovalUpTo     string   `json:"approval_up_to"`
-	ApproverGroups   []string `json:"approver_groups"`
+// ArgumentRuleView is one argument rule (#205) that applies to a definition:
+// the condition, its restrictive effect and the layer that declared it.
+type ArgumentRuleView struct {
+	ID string `json:"id"`
+	// Source is the layer that declared the rule: company | use_case.
+	Source   string `json:"source"`
+	Argument string `json:"argument"`
+	Type     string `json:"type"`
+	Operator string `json:"operator"`
+	// Value is the operand in its normalized text form.
+	Value string `json:"value"`
+	// Condition is "<argument> <operator> <value>".
+	Condition string `json:"condition"`
+	// Effect is require_approval | deny.
+	Effect         string   `json:"effect"`
+	ApproverGroups []string `json:"approver_groups,omitempty"`
 }
+
+// Decision bases of a definition's verdict.
+const (
+	// DecisionByName: the verdict is the same for every call of the action.
+	DecisionByName = "name"
+	// DecisionByArguments: argument rules apply; the verdict of a call
+	// depends on its arguments and can be stricter than Verdict.
+	DecisionByArguments = "arguments"
+)
 
 // DefinitionView is the safe projection of one definition.
 type DefinitionView struct {
@@ -105,9 +120,13 @@ type DefinitionView struct {
 	// REQUIRE_APPROVAL verdict (company | use_case); absent for ALLOW.
 	VerdictSource string             `json:"verdict_source,omitempty"`
 	ApprovalRules []ApprovalRuleView `json:"approval_rules,omitempty"`
-	// AmountLimits apply per call: the verdict above is the name-only
-	// verdict, and a call's arguments can raise it to approval or deny.
-	AmountLimits []AmountLimitView `json:"amount_limits,omitempty"`
+	// DecisionBasis says whether Verdict is the verdict of every call
+	// ("name") or only the baseline before argument rules ("arguments"):
+	// with argument rules a call can be stricter than Verdict, never looser.
+	// A consumer must not read a name-only ALLOW as unconditional.
+	DecisionBasis string `json:"decision_basis"`
+	// ArgumentRules are the argument rules that apply to this action.
+	ArgumentRules []ArgumentRuleView `json:"argument_rules,omitempty"`
 }
 
 // View projects the whole catalog. ap may be nil (no approval policy
@@ -166,13 +185,17 @@ func (c *Catalog) DefinitionView(name string, ap *ApprovalPolicy) (DefinitionVie
 		for _, r := range ap.MatchingRules(d.Name) {
 			dv.ApprovalRules = append(dv.ApprovalRules, ApprovalRuleView{ID: r.ID, Source: r.Source, ApproverGroups: append([]string(nil), r.ApproverGroups...)})
 		}
-		limits := ap.MatchingLimits(d.Name)
-		for i := range limits {
-			l := &limits[i]
-			dv.AmountLimits = append(dv.AmountLimits, AmountLimitView{
-				ID: l.ID, Source: l.Source, AmountArgument: l.AmountArgument, CurrencyArgument: l.CurrencyArgument, Currency: l.Currency,
-				AllowUpTo: formatMinorUnits(l.AllowUpTo), ApprovalUpTo: formatMinorUnits(l.ApprovalUpTo), ApproverGroups: append([]string(nil), l.ApproverGroups...),
+		dv.DecisionBasis = DecisionByName
+		argRules := ap.MatchingArgumentRules(d.Name)
+		for i := range argRules {
+			r := &argRules[i]
+			dv.ArgumentRules = append(dv.ArgumentRules, ArgumentRuleView{
+				ID: r.ID, Source: r.Source, Argument: r.Argument, Type: r.Type, Operator: r.Operator, Value: r.Value,
+				Condition: r.Condition(), Effect: r.Effect, ApproverGroups: append([]string(nil), r.ApproverGroups...),
 			})
+		}
+		if len(argRules) > 0 && v.Outcome != VerdictDeny {
+			dv.DecisionBasis = DecisionByArguments
 		}
 	}
 	return dv, true

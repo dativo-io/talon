@@ -70,7 +70,7 @@ var actionsListCmd = &cobra.Command{
 		fmt.Fprintln(w, "\nActions:")
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "  ACTION\tSOURCE\tUPSTREAM\tSCHEMA\tDEFINITION\tVERDICT\tRULES")
-		byAmount := false
+		byArguments := false
 		for _, a := range view.Actions {
 			src := a.Source.Type
 			if a.Source.ID != "" {
@@ -81,21 +81,21 @@ var actionsListCmd = &cobra.Command{
 				rules = append(rules, r.ID)
 			}
 			verdict := a.Verdict
-			for i := range a.AmountLimits {
-				rules = append(rules, a.AmountLimits[i].ID)
+			for i := range a.ArgumentRules {
+				rules = append(rules, a.ArgumentRules[i].ID)
 			}
-			if len(a.AmountLimits) > 0 && a.Verdict != action.VerdictDeny {
-				// The name alone does not decide a limited action.
-				verdict = "BY AMOUNT"
-				byAmount = true
+			if a.DecisionBasis == action.DecisionByArguments {
+				// The name alone does not decide this action.
+				verdict = "BY ARGUMENTS"
+				byArguments = true
 			}
 			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Name, src, orDash(a.UpstreamName), shortGeneration(a.SchemaDigest), shortGeneration(a.DefinitionDigest), verdict, orDash(strings.Join(rules, ",")))
 		}
 		if err := tw.Flush(); err != nil {
 			return err
 		}
-		if byAmount {
-			fmt.Fprintln(w, "\nBY AMOUNT: an amount limit decides each call from its arguments (allow / approval / deny); see 'talon actions show <action>' and 'talon actions validate'.")
+		if byArguments {
+			fmt.Fprintln(w, "\nBY ARGUMENTS: argument rules decide each call from its arguments (the baseline, approval or deny); see 'talon actions show <action>' and 'talon actions validate'.")
 		}
 		return nil
 	},
@@ -154,8 +154,8 @@ var actionsShowCmd = &cobra.Command{
 			}
 		}
 		switch {
-		case len(dv.AmountLimits) > 0 && dv.Verdict != action.VerdictDeny:
-			fmt.Fprintf(w, "Verdict:            BY AMOUNT — %s by name; the amount limit below decides each call from its arguments\n", dv.Verdict)
+		case dv.DecisionBasis == action.DecisionByArguments:
+			fmt.Fprintf(w, "Verdict:            BY ARGUMENTS — %s by name; the argument rules below can require approval or deny a call\n", dv.Verdict)
 		case dv.VerdictSource != "":
 			fmt.Fprintf(w, "Verdict:            %s (%s policy)\n", dv.Verdict, dv.VerdictSource)
 		default:
@@ -164,9 +164,13 @@ var actionsShowCmd = &cobra.Command{
 		for _, r := range dv.ApprovalRules {
 			fmt.Fprintf(w, "Approval rule:      %s (%s; groups: %s)\n", r.ID, r.Source, strings.Join(r.ApproverGroups, ", "))
 		}
-		for _, l := range dv.AmountLimits {
-			fmt.Fprintf(w, "Amount limit:       %s (%s): %s %s — allow up to %s, approval (groups: %s) up to %s, deny above\n",
-				l.ID, l.Source, l.AmountArgument, l.Currency, l.AllowUpTo, strings.Join(l.ApproverGroups, ", "), l.ApprovalUpTo)
+		for i := range dv.ArgumentRules {
+			r := &dv.ArgumentRules[i]
+			effect := "deny"
+			if r.Effect == action.EffectRequireApproval {
+				effect = "require approval (groups: " + strings.Join(r.ApproverGroups, ", ") + ")"
+			}
+			fmt.Fprintf(w, "Argument rule:      %s (%s): when %s [%s] → %s\n", r.ID, r.Source, r.Condition, r.Type, effect)
 		}
 		fmt.Fprintf(w, "Schema:             %s\n", string(dv.Schema))
 		return nil
@@ -185,8 +189,11 @@ type actionsValidateResult struct {
 	Verdict          string                     `json:"verdict"`
 	MatchedRuleID    string                     `json:"matched_rule_id,omitempty"`
 	// Reason is the verdict's policy reason; with valid arguments it is
-	// evaluated with them (amount limits, #205).
+	// evaluated with them (argument rules, #205).
 	Reason string `json:"reason,omitempty"`
+	// ReasonCode is the machine-readable reason of an argument-rule verdict:
+	// argument_rule_deny | argument_rule_approval | argument_not_established.
+	ReasonCode string `json:"reason_code,omitempty"`
 }
 
 var actionsValidateCmd = &cobra.Command{
@@ -225,7 +232,7 @@ var actionsValidateCmd = &cobra.Command{
 			res.Review = def.ReviewProjection(canonical)
 			verdict = cc.approvals.EvaluateArguments(def.Name, canonical)
 		}
-		res.Verdict, res.MatchedRuleID, res.Reason = verdict.Outcome, verdict.RuleID, verdict.Reason
+		res.Verdict, res.MatchedRuleID, res.Reason, res.ReasonCode = verdict.Outcome, verdict.RuleID, verdict.Reason, verdict.Code
 		if actionsJSON {
 			if werr := writeActionsJSON(cmd.OutOrStdout(), res); werr != nil {
 				return werr
@@ -328,6 +335,9 @@ func cliActionCatalog(ctx context.Context, agentName, policyPath string) (*cliCa
 	}
 	ap, err := action.CompileEffectiveActionPolicy(ca.Policy, osc.Company)
 	if err != nil {
+		return nil, fmt.Errorf("effective action policy: %w", err)
+	}
+	if err := ap.ValidateAgainstCatalog(cat); err != nil {
 		return nil, fmt.Errorf("effective action policy: %w", err)
 	}
 	return &cliCatalog{agent: ca, catalog: cat, approvals: ap, at: time.Now().UTC()}, nil

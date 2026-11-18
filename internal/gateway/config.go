@@ -324,10 +324,10 @@ type OrgConstraints struct {
 // of tenant-scoped approver principals.
 type ActionApprovalsConstraint struct {
 	Rules map[string]policy.ApprovalRuleConfig `yaml:"rules,omitempty" json:"rules,omitempty"`
-	// AmountLimits (#205): company-wide typed amount bands per action
-	// (allow / approval / deny). A use case can add its own limits but
-	// never lift these.
-	AmountLimits map[string]policy.AmountLimitConfig `yaml:"amount_limits,omitempty" json:"amount_limits,omitempty"`
+	// ArgumentRules (#205): company-wide typed conditions on one argument of
+	// matching actions, each requiring approval or denying. A use case can
+	// add its own rules but never lift these.
+	ArgumentRules map[string]policy.ArgumentRuleConfig `yaml:"argument_rules,omitempty" json:"argument_rules,omitempty"`
 }
 
 // CompanyActionPolicy projects the organization policy's action-relevant
@@ -346,13 +346,13 @@ func (o *OrganizationPolicy) CompanyActionPolicy(source string) *action.CompanyA
 		for id, r := range o.Constraints.ActionApprovals.Rules {
 			c.Rules[id] = action.CompanyApprovalRule{Actions: append([]string(nil), r.Actions...), ApproverGroups: append([]string(nil), r.ApproverGroups...)}
 		}
-		if len(o.Constraints.ActionApprovals.AmountLimits) > 0 {
-			c.AmountLimits = make(map[string]policy.AmountLimitConfig, len(o.Constraints.ActionApprovals.AmountLimits))
-			for id := range o.Constraints.ActionApprovals.AmountLimits {
-				l := o.Constraints.ActionApprovals.AmountLimits[id]
-				l.Actions = append([]string(nil), l.Actions...)
-				l.ApproverGroups = append([]string(nil), l.ApproverGroups...)
-				c.AmountLimits[id] = l
+		if len(o.Constraints.ActionApprovals.ArgumentRules) > 0 {
+			c.ArgumentRules = make(map[string]policy.ArgumentRuleConfig, len(o.Constraints.ActionApprovals.ArgumentRules))
+			for id := range o.Constraints.ActionApprovals.ArgumentRules {
+				r := o.Constraints.ActionApprovals.ArgumentRules[id]
+				r.Actions = append([]string(nil), r.Actions...)
+				r.ApproverGroups = append([]string(nil), r.ApproverGroups...)
+				c.ArgumentRules[id] = r
 			}
 		}
 	}
@@ -817,8 +817,8 @@ func (c *GatewayConfig) Validate() error {
 	// The company action policy (#425) compiles into every use case: a rule
 	// without actions or groups, an illegal pattern, or two company rules
 	// that match one action with different groups is a load error.
-	if aa := c.OrganizationPolicy.Constraints.ActionApprovals; aa != nil && len(aa.Rules) == 0 && len(aa.AmountLimits) == 0 {
-		return fmt.Errorf("gateway organization_policy.constraints.action_approvals: rules or amount_limits are required (remove the block to configure no company approval requirement)")
+	if aa := c.OrganizationPolicy.Constraints.ActionApprovals; aa != nil && len(aa.Rules) == 0 && len(aa.ArgumentRules) == 0 {
+		return fmt.Errorf("gateway organization_policy.constraints.action_approvals: rules or argument_rules are required (remove the block to configure no company approval requirement)")
 	}
 	if cp := c.OrganizationPolicy.CompanyActionPolicy(""); cp != nil {
 		// forbidden_tools keep the gateway's glob vocabulary; a malformed glob

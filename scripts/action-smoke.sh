@@ -9,7 +9,11 @@
 # ACME company-policy scenario: one `gateway.organization_policy.constraints`
 # policy over two use cases (company DENY and approval, no weakening by a use
 # case, reviewer matrix with zero dispatch, stale approval invalidated across
-# a restart under a changed company rule, lifecycle verified).
+# a restart under a changed company rule, lifecycle verified). Since #205 it
+# also runs the argument-rule scenario (TestE2E_ActionGateway_ArgumentRules):
+# one typed rule form over a refund amount, a deletion count with a dry-run
+# flag and a deployment environment — allow, approval and deny for each,
+# company rules from talon.config.yaml, changed arguments, replay, restart.
 #
 # Independent of make test-smoke (no provider key, no Docker); also run as
 # `make test-action-smoke`, smoke section 41 and a named PR CI step.
