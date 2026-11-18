@@ -153,6 +153,9 @@ policies:
 	if _, stderr, code := RunTalon(t, dir, map[string]string{"TALON_APPROVER_KEY": agAgentKey}, "approvals", "list", url); code == 0 || !strings.Contains(stderr, "does not hold an approver credential") {
 		t.Fatalf("an agent key is no approver credential: code=%d %s", code, stderr)
 	}
+	if _, stderr, code := RunTalon(t, dir, reviewerEnv, "approvals", "list", "--url=http://talon.example.invalid:8080"); code == 0 || !strings.Contains(stderr, "refusing to send the approver credential over plain http") {
+		t.Fatalf("the credential must not leave over plain http: code=%d %s", code, stderr)
+	}
 	out, stderr, code = RunTalon(t, dir, reviewerEnv, "approvals", "list", url)
 	if code != 0 || !strings.Contains(out, approvalID) || !strings.Contains(out, "amount=75.00") || !strings.Contains(out, "op op-75") {
 		t.Fatalf("approvals list: code=%d\n%s\n%s", code, out, stderr)
@@ -160,6 +163,7 @@ policies:
 	out, stderr, code = RunTalon(t, dir, reviewerEnv, "approvals", "show", approvalID, url)
 	for _, want := range []string{
 		"Action:            create_refund_request",
+		"Requested by:      AI use case support-bot (tenant default)",
 		"Target:            POST " + down.srv.URL + "/refunds",
 		"Verdict:           REQUIRE_APPROVAL (rule refund-bands, use_case policy)",
 		"Why:               use_case amount limit refund-bands on create_refund_request: EUR amounts (argument \"amount\") up to 50.00 are allowed, above 50.00 and up to 500.00 require approval by support-leads, above 500.00 are denied",
