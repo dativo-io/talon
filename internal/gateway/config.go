@@ -817,8 +817,8 @@ func (c *GatewayConfig) Validate() error {
 	// The company action policy (#425) compiles into every use case: a rule
 	// without actions or groups, an illegal pattern, or two company rules
 	// that match one action with different groups is a load error.
-	if c.OrganizationPolicy.Constraints.ActionApprovals != nil && len(c.OrganizationPolicy.Constraints.ActionApprovals.Rules) == 0 {
-		return fmt.Errorf("gateway organization_policy.constraints.action_approvals: rules are required (remove the block to configure no company approval rule)")
+	if aa := c.OrganizationPolicy.Constraints.ActionApprovals; aa != nil && len(aa.Rules) == 0 && len(aa.AmountLimits) == 0 {
+		return fmt.Errorf("gateway organization_policy.constraints.action_approvals: rules or amount_limits are required (remove the block to configure no company approval requirement)")
 	}
 	if cp := c.OrganizationPolicy.CompanyActionPolicy(""); cp != nil {
 		// forbidden_tools keep the gateway's glob vocabulary; a malformed glob
