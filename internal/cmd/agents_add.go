@@ -12,12 +12,15 @@ import (
 	"regexp"
 	"strings"
 	"text/template"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 )
@@ -96,6 +99,10 @@ type agentsAddPlan struct {
 	Dir, Path                                    string
 	Content                                      []byte
 	CreatedAgentsDir                             bool
+	// NoOrganizationPolicy: no gateway config was found, so nothing is
+	// inherited and the new use case has no budget cap of its own.
+	NoOrganizationPolicy bool
+	EvidenceID           string
 }
 
 func runAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, name string) error {
@@ -142,7 +149,10 @@ func commitAgentsAdd(ctx context.Context, cfg *config.Config, store *secrets.Sec
 		if err != nil {
 			return "", err
 		}
-		if err := store.Set(ctx, plan.SecretName, []byte(key), secrets.ACL{}); err != nil {
+		// Readable only as this use case in its tenant: another use case's
+		// identity can never resolve this key.
+		acl := secrets.ACL{Tenants: []string{plan.Tenant}, Agents: []string{plan.Name}}
+		if err := store.Set(ctx, plan.SecretName, []byte(key), acl); err != nil {
 			return "", fmt.Errorf("storing the key in the vault (nothing else was written): %w", err)
 		}
 	}
@@ -162,7 +172,37 @@ func commitAgentsAdd(ctx context.Context, cfg *config.Config, store *secrets.Sec
 		}
 		return "", fmt.Errorf("the fleet does not validate with the new use case, so it was removed again: %w", err)
 	}
+	// The registration is an operator event like enable/disable: one signed
+	// record in the use case's tenant. A registration that cannot be
+	// recorded is undone.
+	if err := recordAgentRegistered(ctx, cfg, plan, exists); err != nil {
+		_ = os.Remove(plan.Path)
+		_ = os.Remove(plan.Dir)
+		if !exists {
+			_ = store.Delete(ctx, plan.SecretName)
+		}
+		return "", fmt.Errorf("recording the registration as signed evidence failed, so it was removed again: %w", err)
+	}
 	return key, nil
+}
+
+func recordAgentRegistered(ctx context.Context, cfg *config.Config, plan *agentsAddPlan, boundExisting bool) error {
+	evStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if err != nil {
+		return err
+	}
+	defer evStore.Close()
+	keyNote := "key: generated, vault secret " + plan.SecretName
+	if boundExisting {
+		keyNote = "key: bound to existing vault secret " + plan.SecretName
+	}
+	id := "al_" + uuid.New().String()[:12]
+	plan.EvidenceID = id
+	return evStore.Store(ctx, &evidence.Evidence{
+		ID: id, CorrelationID: id, Timestamp: time.Now().UTC(), TenantID: plan.Tenant, AgentID: plan.Name,
+		InvocationType: "agent_registered", RequestSourceID: operatorID(),
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "agent_registered", Reasons: []string{"config: " + plan.Path, keyNote}},
+	})
 }
 
 // planAgentsAdd validates everything that needs no write: the installation
@@ -212,6 +252,9 @@ func planAgentsAdd(ctx context.Context, cfg *config.Config, name string) (*agent
 		return nil, err
 	}
 	plan.Content = []byte(b.String())
+	if _, err := os.Stat(gatewayConfigPath("")); errors.Is(err, os.ErrNotExist) {
+		plan.NoOrganizationPolicy = true
+	}
 	if err := validateAgentContent(ctx, plan.Content); err != nil {
 		return nil, fmt.Errorf("the generated agent file does not validate (nothing was written): %w", err)
 	}
@@ -319,6 +362,10 @@ func printAgentsAddResult(out io.Writer, plan *agentsAddPlan, key string) {
 	fmt.Fprintf(out, "Registered AI use case %q (tenant %s)\n", plan.Name, plan.Tenant)
 	fmt.Fprintf(out, "  config:  %s\n", plan.Path)
 	fmt.Fprintf(out, "  key:     vault secret %q\n", plan.SecretName)
+	fmt.Fprintf(out, "  evidence: %s (signed, agent_registered)\n", plan.EvidenceID)
+	if plan.NoOrganizationPolicy {
+		fmt.Fprintf(out, "\nWARNING: no gateway config (%s) was found, so there is no organization policy to inherit: this use case has NO budget cap and no company constraints until you add an organization_policy or set policies.cost_limits in its file.\n", gatewayConfigPath(""))
+	}
 	if key != "" {
 		fmt.Fprintf(out, "\nTalon key (shown ONCE; store it in the application's secret manager, never in source):\n  %s\n", key)
 	} else {
@@ -326,9 +373,11 @@ func printAgentsAddResult(out io.Writer, plan *agentsAddPlan, key string) {
 	}
 	fmt.Fprintf(out, `
 Connect the application (it presents the key as a bearer token):
-  LLM gateway (OpenAI-compatible):  base URL http://<talon-host>:8080/v1/proxy/<provider>/v1
+  LLM gateway (talon serve --gateway; OpenAI-compatible):
+                                    base URL <talon-url>/v1/proxy/<provider>/v1
                                     header   Authorization: Bearer <key>
-  Business actions:                 POST http://<talon-host>:8080/v1/action-operations
+  Business actions (needs actions.definitions in the use case's file):
+                                    POST <talon-url>/v1/action-operations
                                     header   Authorization: Bearer <key>
 
 Next:

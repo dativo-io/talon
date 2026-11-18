@@ -6,12 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 )
@@ -54,10 +57,16 @@ func vaultValue(t *testing.T, cfg *config.Config, name string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	s, err := store.Get(context.Background(), name, "default", name)
+	s, err := store.Get(context.Background(), name, tenantOf(name), agentOf(name))
 	require.NoError(t, err)
 	return string(s.Value), true
 }
+
+// The vault ACL binds a generated key to its use case and tenant; the test
+// fleet registers everything in tenant acme.
+func tenantOf(string) string { return "acme" }
+
+func agentOf(secret string) string { return strings.TrimSuffix(secret, "-talon-key") }
 
 func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 	cfg, agentsDir := setupAddFleet(t)
@@ -80,6 +89,27 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 	require.Contains(t, string(content), `secret_name: "refund-bot-talon-key"`)
 	require.Contains(t, string(content), "cost_limits: {}", "no budget of its own: the company defaults apply")
 	require.NotContains(t, string(content), key1, "the key never lands in the file")
+	require.Contains(t, out.String(), "WARNING: no gateway config", "without an organization policy the missing budget cap is stated")
+
+	// The key is readable only as this use case in its tenant.
+	vault, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+	require.NoError(t, err)
+	_, err = vault.Get(ctx, "refund-bot-talon-key", "acme", "support")
+	require.Error(t, err, "another use case cannot resolve this key")
+	_, err = vault.Get(ctx, "refund-bot-talon-key", "other-tenant", "refund-bot")
+	require.Error(t, err, "another tenant cannot resolve this key")
+	require.NoError(t, vault.Close())
+
+	// One signed operator record of the registration.
+	evStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	require.NoError(t, err)
+	rows, err := evStore.List(ctx, "acme", "refund-bot", time.Time{}, time.Time{}, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "agent_registered", rows[0].InvocationType)
+	require.True(t, evStore.VerifyRecord(&rows[0]))
+	require.NotContains(t, rows[0].PolicyDecision.Reasons[1], key1)
+	require.NoError(t, evStore.Close())
 
 	out.Reset()
 	agentsAddTenant, agentsAddOwner = "acme", ""
