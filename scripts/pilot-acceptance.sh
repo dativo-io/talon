@@ -5,14 +5,21 @@
 #
 #   scripts/pilot-acceptance.sh <talon-binary> [expected-version]
 #
-#   TALON_IMAGE                    also run the no-clone quickstart against this image
-#   TALON_PREVIOUS_STABLE_BINARY   also run the in-place upgrade from that release
+#   TALON_IMAGE                    the released image: run the no-clone quickstart against it
+#   TALON_PREVIOUS_STABLE_BINARY   the stable release immediately preceding this one (N-1 gate):
+#                                  run the in-place upgrade from it
+#   TALON_COMPAT_BINARIES          older released binaries (path list): historical upgrade compatibility
+#   N8N_BIN                        the pinned n8n: run the real n8n refund workflow against this binary
+#   PILOT_REQUIRE_ALL=1            release mode: a missing input above, or missing node/npm for the
+#                                  application-client check, is a FAILURE, never a silent skip
 #   PILOT_LIVE_PROVIDER=1          also send ONE real, priced model request through
-#     with OPENAI_API_KEY          the gateway (optional; reported NOT RUN otherwise)
+#     with OPENAI_API_KEY          the gateway (always optional; reported NOT RUN otherwise)
 #
 # What runs, with that binary (TALON_E2E_BINARY) and no provider key:
 #   - the pilot journey: company baseline policy, `talon agents add`, model
 #     traffic allowed and a PII request blocked (deterministic LOCAL provider),
+#     the same two requests through a real application client (the official
+#     OpenAI Node SDK, pinned),
 #     refund allow / approval by a separately authenticated reviewer / deny by
 #     the company policy with an independent refund counter, signed lifecycle
 #     verification, the paired Operations Console (use case listed, evidence
@@ -30,9 +37,15 @@ BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+OPENAI_SDK_VERSION="7.59.0"
 results=()
 record() { results+=("$1"); echo "$1"; }
 failed=0
+# missing <what>: an input this run does not have. NOT RUN, or a failure in
+# release mode — required acceptance is never silently skipped.
+missing() {
+  if [ "${PILOT_REQUIRE_ALL:-0}" = "1" ]; then record "FAIL $1 — required in release mode (PILOT_REQUIRE_ALL=1)"; failed=1; else record "NOT RUN $1"; fi
+}
 run() { # run <label> <command...>
   local label="$1"; shift
   echo; echo "== $label"
@@ -41,7 +54,7 @@ run() { # run <label> <command...>
 
 echo "binary under test: $BIN"
 "$BIN" version
-version_line="$("$BIN" version | head -n1)"
+version_line="$("$BIN" version | sed -n 1p)"
 if [ -n "$EXPECT" ] && [ "$version_line" != "Talon ${EXPECT#v}" ]; then
   echo "FAIL pilot-acceptance: expected 'Talon ${EXPECT#v}', the binary reports '$version_line'" >&2
   exit 1
@@ -50,22 +63,51 @@ fi
 export TALON_E2E_BINARY="$BIN"
 e2e() { go test -count=1 -tags=e2e -timeout 12m -run "$1" ./tests/e2e/; }
 
-run "customer journey (registration, policy, model traffic, allow/approval/deny, console, evidence, backup/restore/resume, second use case)" e2e '^TestE2E_PilotJourney$'
+# A real application client for the journey: the official OpenAI Node SDK.
+sdk_dir=""
+if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+  sdk_dir="$(mktemp -d "${TMPDIR:-/tmp}/pilot-sdk.XXXXXX")"
+  if (cd "$sdk_dir" && npm install --no-audit --no-fund --loglevel=error "openai@${OPENAI_SDK_VERSION}" >/dev/null); then
+    export TALON_PILOT_SDK_DIR="$sdk_dir"
+  else
+    sdk_dir=""
+  fi
+fi
+journey() {
+  local log; log="$(mktemp "${TMPDIR:-/tmp}/pilot-journey.XXXXXX")"
+  go test -count=1 -tags=e2e -timeout 12m -v -run '^TestE2E_PilotJourney$' ./tests/e2e/ >"$log" 2>&1 || { tail -n 60 "$log"; return 1; }
+  grep -E '^(--- |ok )|client check|PASS (permitted|request with PII)' "$log" || true
+  if [ -n "$sdk_dir" ]; then grep -q 'PASS request with PII blocked by Talon' "$log" && record "PASS application client: OpenAI Node SDK ${OPENAI_SDK_VERSION} through Talon (permitted request answered, PII request refused with pii_policy_violation)"; fi
+}
+
+run "customer journey (registration, policy, model traffic, allow/approval/deny, console, evidence, backup/restore/resume, second use case)" journey
+[ -n "$sdk_dir" ] || missing "application client check with the OpenAI Node SDK (node and npm are needed)"
 run "exact action governance and amount limits" e2e '^TestE2E_ActionGateway'
 run "use-case registration, including concurrent registrations" e2e '^TestE2E_AgentsAdd'
 run "backup, restore and the recovery hold" e2e '^TestE2E_BackupRestore_SingleNode$|^TestE2E_Restore_'
 run "no-key quickstart script over this binary" e2e '^TestE2E_QuickstartScript_LocalBinary$'
 
 if [ -n "${TALON_PREVIOUS_STABLE_BINARY:-}" ]; then
-  run "in-place upgrade from the previous stable release" e2e '^TestE2E_UpgradeFromPreviousStable$'
+  run "in-place upgrade from the immediately preceding stable release ($("$TALON_PREVIOUS_STABLE_BINARY" version | sed -n 1p))" e2e '^TestE2E_UpgradeFromPreviousStable$'
 else
-  record "NOT RUN in-place upgrade from the previous stable release (TALON_PREVIOUS_STABLE_BINARY is not set)"
+  missing "in-place upgrade from the immediately preceding stable release (TALON_PREVIOUS_STABLE_BINARY is not set)"
+fi
+if [ -n "${TALON_COMPAT_BINARIES:-}" ]; then
+  run "historical upgrade compatibility (not the N-1 gate)" e2e '^TestE2E_UpgradeFromHistoricalReleases$'
+else
+  record "NOT RUN historical upgrade compatibility (TALON_COMPAT_BINARIES is not set; optional)"
 fi
 
 if [ -n "${TALON_IMAGE:-}" ]; then
   run "no-clone quickstart against $TALON_IMAGE" bash scripts/quickstart.sh
 else
-  record "NOT RUN no-clone quickstart against the published image (TALON_IMAGE is not set)"
+  missing "no-clone quickstart against the published image (TALON_IMAGE is not set)"
+fi
+
+if [ -n "${N8N_BIN:-}" ]; then
+  run "real n8n refund workflow against this binary ($("$N8N_BIN" --version 2>/dev/null | tail -n1))" env TALON_BIN="$BIN" bash scripts/n8n-refund-live.sh
+else
+  missing "real n8n refund workflow against this binary (N8N_BIN is not set)"
 fi
 
 live_provider() {

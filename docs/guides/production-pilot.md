@@ -10,7 +10,9 @@ This runbook takes an engineer who has never used Talon from a published release
 
 **What you do not get:** high availability, multi-node operation, an SSO-backed reviewer, a policy editor in the browser, or any compliance determination. See [LIMITATIONS.md](../../LIMITATIONS.md).
 
-**Not part of the released pilot path:** the n8n workflow in `examples/n8n-refund` is a validated reference for one n8n release and is labelled as such in its README; everything else in this runbook does not depend on it.
+**Which path governs a business action.** In this release a consequential business action is governed through the **HTTP Action Gateway** (step 6), called by your application or by the n8n reference workflow. Talon's MCP proxy governs MCP tool calls by policy (allowed and forbidden tools, signed allow/deny evidence, visible in the console), but an MCP tool call does **not** get an approval bound to its arguments, at-most-one dispatch, `unknown` outcome handling or the recovery hold. Do not put an action that needs those guarantees behind the MCP proxy.
+
+**n8n.** `examples/n8n-refund` is a reference workflow validated on **n8n 2.48.5** against a real Talon and a counting refund service (`scripts/n8n-refund-live.sh`). It requires an authenticated webhook caller and uses the use case's key as its identity towards Talon. Other n8n releases are untested. Nothing else in this runbook depends on it.
 
 ## 0. Prerequisites
 
@@ -89,7 +91,7 @@ t agents add support-assistant --tenant acme --owner support-ops@acme.example
 ```
 
 The command:
-- reports the **company policy in force** (it refuses when there is none, unless you pass `--no-company-policy` on purpose);
+- reports the **company policy the file declares** and, separately, whether a running gateway has loaded it. It refuses when no organization policy is configured, unless you pass `--no-company-policy` on purpose. Before Talon is started it reads `NOT PROVEN ACTIVE`; after step 4's start, `t agents show support-assistant --effective` shows what the running process loaded;
 - writes `/etc/talon/agents/support-assistant/agent.talon.yaml` with only the use case's identity and key binding, so every policy is the company's;
 - prints the use case's **key once**: put it into your application's secret manager now.
 
@@ -231,7 +233,7 @@ t backup verify /var/backups/talon/<backup>                               # ends
 ```
 
 - **A restart** keeps pending approvals pending and never re-dispatches a succeeded action.
-- **A restore** returns Talon to the moment of the backup. Talon then dispatches **nothing** (`recovery_hold`) until you have checked, in your refund service, which actions happened after the backup, and run `talon backup resume --reconciled`, keeping those operations held with `--hold-operation`. Talon's restored records cannot tell you whether an action already happened.
+- **A restore** returns Talon to the moment of the backup. Talon then dispatches **nothing** through the Action Gateway (`recovery_hold`) until you have checked, in your refund service, which actions happened after the backup, and run `talon backup resume --reconciled`, keeping those operations held with `--hold-operation`. Talon's restored records cannot tell you whether an action already happened, and they do not contain actions established after the backup at all: finding those is your reconciliation with the refund service.
 - **An upgrade** is: cold backup, verify, replace the binary, `talon doctor`, start. **Rollback is restoring the pre-upgrade backup.**
 
 Follow [single-node production](single-node-production.md) for the full procedures, what happens when something is unavailable, and the limits.

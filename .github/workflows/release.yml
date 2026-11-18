@@ -312,8 +312,8 @@ jobs:
   release-pilot-acceptance:
     name: Pilot acceptance on the released binary and image
     needs: release
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -330,19 +330,37 @@ jobs:
           gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/assets" -p "$ARCHIVE" -p checksums.txt
           (cd "$RUNNER_TEMP/assets" && grep -F " $ARCHIVE" checksums.txt | sha256sum -c -)
           tar -C "$RUNNER_TEMP/talon" -xzf "$RUNNER_TEMP/assets/$ARCHIVE" talon
-      - name: Fetch the previous stable release (checksum-verified)
+      # N-1: the stable release that immediately precedes this tag, resolved
+      # from the published releases (the draft being built is not one). The
+      # historical v1.16.1 run is extra compatibility, never the gate.
+      - name: Fetch the preceding stable release and the historical v1.16.1 (checksum-verified)
         env:
-          PREVIOUS_STABLE: "1.16.1"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          D="$RUNNER_TEMP/previous-stable"; mkdir -p "$D"; cd "$D"
-          BASE="https://github.com/dativo-io/talon/releases/download/v${PREVIOUS_STABLE}"
-          curl -fsSL --retry 3 -o "talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz" "$BASE/talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz"
-          curl -fsSL --retry 3 -o checksums.txt "$BASE/checksums.txt"
-          grep " talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz\$" checksums.txt | sha256sum -c -
-          tar xzf "talon_${PREVIOUS_STABLE}_linux_amd64.tar.gz" talon
-          echo "TALON_PREVIOUS_STABLE_BINARY=$D/talon" >> "$GITHUB_ENV"
-      - name: Pilot acceptance (no provider key)
+          PREV="$(bash scripts/previous-stable.sh "$RELEASE_TAG")"
+          echo "preceding stable release of $RELEASE_TAG: $PREV"
+          echo "TALON_PREVIOUS_STABLE_BINARY=$(bash scripts/fetch-release-binary.sh "$PREV" "$RUNNER_TEMP/previous-stable/$PREV")" >> "$GITHUB_ENV"
+          if [ "$PREV" != "1.16.1" ]; then
+            echo "TALON_COMPAT_BINARIES=$(bash scripts/fetch-release-binary.sh 1.16.1 "$RUNNER_TEMP/previous-stable/1.16.1")" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # The pinned n8n of scripts/n8n-refund-live.sh: the real workflow runs
+      # against the RELEASED executable.
+      - name: Install the pinned n8n
+        run: |
+          set -euo pipefail
+          N8N_VERSION="$(sed -n 's/^PINNED_N8N="\(.*\)"$/\1/p' scripts/n8n-refund-live.sh)"
+          mkdir -p "$RUNNER_TEMP/n8n" && cd "$RUNNER_TEMP/n8n"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error "n8n@${N8N_VERSION}"
+          npm rebuild sqlite3
+          echo "N8N_BIN=$RUNNER_TEMP/n8n/node_modules/.bin/n8n" >> "$GITHUB_ENV"
+      # Release mode: every required input is present, or the job fails.
+      - name: Pilot acceptance (no provider key; nothing required is skipped)
+        env:
+          PILOT_REQUIRE_ALL: "1"
         run: |
           set -euo pipefail
           TALON_IMAGE="ghcr.io/dativo-io/talon:${RELEASE_TAG#v}" \

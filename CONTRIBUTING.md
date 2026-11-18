@@ -123,12 +123,17 @@ runs `scripts/pilot-acceptance.sh` with the draft's linux executable as the syst
 the customer journey (`TestE2E_PilotJourney`: company baseline policy, `talon agents add`, model
 traffic through a deterministic local provider, refund allow / approval / deny with an
 independent counter, the paired console, evidence verification, backup, restore with the
-recovery hold, a second use case), the action, registration and recovery suites, the in-place
-upgrade from the previous stable release, and `scripts/quickstart.sh` against the released
-image. `release-verify` waits for it. `install-smoke.yml` (`pilot-acceptance`) repeats it on
-the published artifacts. A real-provider request is optional and reported `NOT RUN` unless
-`PILOT_LIVE_PROVIDER=1` and a key are set. Bump `PREVIOUS_STABLE` in `ci.yml`, `release.yml`
-and `install-smoke.yml` when a new stable release is cut.
+recovery hold, a second use case), the same model requests through a real application client
+(the official OpenAI Node SDK, pinned), the action, registration and recovery suites, the
+in-place upgrade from the **immediately preceding stable release**, the real n8n refund
+workflow (`scripts/n8n-refund-live.sh`, pinned n8n) with the released executable as `TALON_BIN`,
+and `scripts/quickstart.sh` against the released image. The job runs in release mode
+(`PILOT_REQUIRE_ALL=1`): a missing input is a failure, never a skipped line. `release-verify`
+waits for it. `install-smoke.yml` (`pilot-acceptance`) repeats it on the published artifacts.
+The preceding stable release is resolved from the published releases
+(`scripts/previous-stable.sh <tag>`), so there is no version to bump; v1.16.1 also runs as
+historical upgrade compatibility when it is not N-1. A real-provider request is the one
+optional check, reported `NOT RUN` unless `PILOT_LIVE_PROVIDER=1` and a key are set.
 
 **Supported-platform guarantee (#359 MVP).** The gated installer path is **linux/amd64**: its
 archive is required, verified before publication and installed by `install.sh`. The darwin

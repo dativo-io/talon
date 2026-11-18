@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -171,6 +172,35 @@ policies:
 	}
 	if st, res := chat(refundKey, "Refund to IBAN DE89370400440532013000 for jan.kowalski@example.com"); st != 400 || errCode(res) != "pii_policy_violation" || providerCalls.Load() != 1 {
 		t.Fatalf("a request with PII must be blocked before the provider: %d %v (provider calls %d)", st, res, providerCalls.Load())
+	}
+
+	// 3b. A supported application client: the official OpenAI Node SDK,
+	// pointed at Talon with the use-case key. Run when the acceptance
+	// harness provides the SDK (TALON_PILOT_SDK_DIR); skipped otherwise,
+	// which scripts/pilot-acceptance.sh reports as NOT RUN or as a failure.
+	if sdkDir := os.Getenv("TALON_PILOT_SDK_DIR"); sdkDir != "" {
+		script, err := os.ReadFile(filepath.Join("..", "..", "examples", "pilot", "client-check.mjs"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		local := filepath.Join(sdkDir, "client-check.mjs")
+		if err := os.WriteFile(local, script, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := providerCalls.Load()
+		cmd := exec.Command("node", local)
+		cmd.Dir = sdkDir
+		cmd.Env = append(os.Environ(), "TALON_URL="+c.base, "TALON_USE_CASE_KEY="+refundKey)
+		out, err := cmd.CombinedOutput()
+		if err != nil || strings.Count(string(out), "PASS") != 2 {
+			t.Fatalf("the OpenAI SDK client check failed: %v\n%s", err, out)
+		}
+		if got := providerCalls.Load() - before; got != 1 {
+			t.Fatalf("the SDK's permitted request must reach the provider once and its PII request never: %d provider calls", got)
+		}
+		t.Logf("OpenAI Node SDK client check:\n%s", out)
+	} else {
+		t.Log("NOT RUN: OpenAI SDK client check (TALON_PILOT_SDK_DIR is not set)")
 	}
 
 	// 4. The business action: the COMPANY bands decide, whatever the use case declared.
