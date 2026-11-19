@@ -186,17 +186,17 @@
     "tests/browser/seed/main.go": "66fbed4edab31c78a4fa6cd19904c1d2f10d30b0"
   },
   "assets": {
-    "action-evidence.webp": "97cbb7a6dc9f481374295b8916f9bb5038c04435",
+    "action-evidence.webp": "4fbc0c020b1729febd682d033884d4560a58772b",
     "action-policy.webp": "b1d927b8dd8b8e1d9824c9b17360323c8cdd250c",
-    "configuration.webp": "c940f951d10ef88e374aca95a12d74a19d0d4802",
+    "configuration.webp": "e0cc2b1b4d21378b9bda8c46fa0b47091f1f7c10",
     "costs.webp": "72fbbee8d4de1a7a46382a38288758af42d0b514",
-    "evidence-verification.webp": "002c3bb251bcbdbbca188b128b062478c4599405",
+    "evidence-verification.webp": "aefc96ea8412cfdca4340e0848b4737d0fe12c46",
     "overview-attention.webp": "628508dd03988cb24401b3e9f4453365d21929d5",
     "overview-mobile.webp": "6e9eb0aa770187a7ec7c5eb5004ee79649489fbd",
-    "session-investigation.webp": "80c777dc2bd4ee0db42c98979a1e2739eedce786",
-    "showcase.webp": "0c80f8a4c7c27d305a8667fad46e92181f1af495",
-    "system-diagnostics.webp": "921442c1b4dd259792084e3b977e73ddf3a2de02",
-    "tamper-detection.webp": "ff58393e8d5a2e5edd597e5b1ffcecc7be9f3e9d",
-    "use-case-summary.webp": "4cef36258d73b94ecb34b9d61b2705b32827edba"
+    "session-investigation.webp": "f295c47478aee49e2209b6845bcf04204647e82e",
+    "showcase.webp": "0ae5e89ca596abf647483e0d3fc6ec356d964d90",
+    "system-diagnostics.webp": "ff99d44d5dcb724855e62412fa19e2864d85e224",
+    "tamper-detection.webp": "f7c74f65a9a9e5c75c366d94f6aa9b4753d151da",
+    "use-case-summary.webp": "194af85412b3c21f7fc7ffe4aa0b1d7a0bd00931"
   }
 }
