@@ -3,6 +3,7 @@
 #
 #   scripts/release-capabilities.sh <tag>      # prints: console=true|false
 #                                              #         quickstart=true|false
+#                                              #         toolchain=true|false
 #
 # The Operations Console (talon ui, the talon-ui Compose service and their
 # acceptance scripts) ships from v1.17.0, release candidates included. An
@@ -34,3 +35,7 @@ fi
 echo "console=$console"
 # The no-clone quickstart script is part of a release from the same version.
 echo "quickstart=$console"
+# Every distributed executable is checked against the toolchain the release's
+# go.mod names (scripts/release-toolchain-check.sh) from the same version;
+# earlier releases were not built under that rule.
+echo "toolchain=$console"
