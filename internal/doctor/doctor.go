@@ -20,6 +20,7 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/registration"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/sovereignty"
 	"github.com/dativo-io/talon/internal/trigger"
@@ -104,6 +105,7 @@ func checkConfig() []CheckResult {
 	results = append(results, checkLLMKeys(cfg))
 	results = append(results, checkCryptoKeys(cfg)...)
 	results = append(results, checkEvidenceDB(cfg))
+	results = append(results, checkRegistrations(cfg))
 	results = append(results, checkCache(cfg))
 	results = append(results, checkSovereignty(cfg, nil))
 	results = append(results, checkAirGap(cfg, nil))
@@ -418,6 +420,35 @@ func checkEvidenceDB(cfg *config.Config) CheckResult {
 	return CheckResult{
 		Name: "evidence_db", Category: "config", Status: "pass",
 		Message: cfg.EvidenceDBPath(),
+	}
+}
+
+// checkRegistrations reports use-case registrations (`talon agents add`,
+// #472) whose signed intent has no completion or rollback record: the
+// process died in between. Such a registration may have left a generated
+// key (never shown to anyone) and an agent file a running server loads.
+func checkRegistrations(cfg *config.Config) CheckResult {
+	const name = "agent_registrations"
+	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if err != nil {
+		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("registration records could not be read: %v", err)}
+	}
+	defer store.Close()
+	interrupted, err := registration.FindInterrupted(context.Background(), store, "")
+	if err != nil {
+		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("registration records could not be read: %v", err)}
+	}
+	if len(interrupted) == 0 {
+		return CheckResult{Name: name, Category: "config", Status: "pass", Message: "No interrupted use-case registration"}
+	}
+	var parts []string
+	for _, in := range interrupted {
+		parts = append(parts, fmt.Sprintf("%s (tenant %s, intent %s at %s)", in.Name, in.Tenant, in.IntentID, in.At.UTC().Format(time.RFC3339)))
+	}
+	return CheckResult{
+		Name: name, Category: "config", Status: "warn",
+		Message: "Interrupted use-case registration(s), no completion or rollback record: " + strings.Join(parts, "; "),
+		Fix:     "Run 'talon agents add <name>' for each: it names what the interrupted registration left (a key nobody has seen, an agent file) and how to remove it; the next registration records it as rolled back",
 	}
 }
 

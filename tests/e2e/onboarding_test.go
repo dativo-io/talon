@@ -1,0 +1,607 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/dativo-io/talon/internal/effective"
+	"github.com/dativo-io/talon/internal/runtimestatus"
+)
+
+// Onboarding acceptance (#472): an engineer connects an existing application
+// to a real `talon serve --gateway`, verifies that it runs under the company
+// policy, and repeats it for a second, unrelated application. Every step
+// goes through the product's own interfaces: the `talon` CLI, the gateway's
+// HTTP endpoint, the console's read API. The provider is a deterministic
+// upstream that counts what really reaches it.
+
+var useCaseKeyRe = regexp.MustCompile(`talon_uc_[0-9a-f]{48}`)
+
+const piiPrompt = "Refund to IBAN DE89370400440532013000 for jan.kowalski@example.com"
+
+type onboarding struct {
+	t        *testing.T
+	dir      string
+	cfgPath  string
+	upstream *httptest.Server
+	calls    atomic.Int64
+	port     int
+	url      string
+	stop     func()
+}
+
+// newOnboarding prepares an installation the way the documentation does:
+// one talon.config.yaml with the provider and the company policy, the
+// provider's key in the vault. No use case exists yet.
+func newOnboarding(t *testing.T) *onboarding {
+	t.Helper()
+	o := &onboarding{t: t, dir: t.TempDir()}
+	o.upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		o.calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_onboarding","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`))
+	}))
+	t.Cleanup(o.upstream.Close)
+	o.cfgPath = filepath.Join(o.dir, "talon.config.yaml")
+	cfg := fmt.Sprintf(`agents_dir: %q
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: %q
+  organization_policy:
+    defaults:
+      pii_action: block
+      daily_cost: 50
+      monthly_cost: 500
+    constraints:
+      forbidden_tools: ["delete_*"]
+`, filepath.Join(o.dir, "agents"), o.upstream.URL)
+	if err := os.WriteFile(o.cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := o.talonStdin("sk-fake-provider-key-never-sent-to-the-app", "secrets", "set", "openai-api-key"); code != 0 {
+		t.Fatalf("storing the provider key: %d\n%s", code, out)
+	}
+	return o
+}
+
+func (o *onboarding) env() map[string]string {
+	return map[string]string{"TALON_GATEWAY_CONFIG": o.cfgPath, "TALON_AGENTS_RELOAD_INTERVAL": "1s", "TALON_ADMIN_KEY": "admin-e2e-onboarding-0001"}
+}
+
+func (o *onboarding) talon(args ...string) (stdout, stderr string, code int) {
+	o.t.Helper()
+	return RunTalon(o.t, o.dir, o.env(), args...)
+}
+
+// talonStdin runs the CLI with a value on stdin: how a secret is given to
+// `talon secrets set` without ever being a process argument.
+func (o *onboarding) talonStdin(stdin string, args ...string) (string, int) {
+	o.t.Helper()
+	cmd := exec.Command(binaryPath, args...)
+	cmd.Dir = o.dir
+	cmd.Env = append(os.Environ(), "TALON_DATA_DIR="+o.dir, "TALON_SECRETS_KEY="+testSecretsKey, "TALON_SIGNING_KEY="+testSigningKey)
+	for k, v := range o.env() {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	cmd.Stdin = strings.NewReader(stdin)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err := cmd.Run()
+	if ee, ok := err.(*exec.ExitError); ok {
+		return out.String(), ee.ExitCode()
+	} else if err != nil {
+		o.t.Fatalf("talon %s: %v", strings.Join(args, " "), err)
+	}
+	return out.String(), 0
+}
+
+func (o *onboarding) serve() {
+	o.t.Helper()
+	if o.port == 0 {
+		o.port = freePort(o.t)
+		o.url = fmt.Sprintf("http://127.0.0.1:%d", o.port)
+	}
+	o.stop = startConsoleServe(o.t, o.dir, o.port, o.env())
+}
+
+// register runs `talon agents add` and returns the key from the secret
+// block at the end of its output.
+func (o *onboarding) register(name string, args ...string) (key, out string) {
+	o.t.Helper()
+	out, stderr, code := o.talon(append([]string{"agents", "add", name}, args...)...)
+	if code != 0 {
+		o.t.Fatalf("talon agents add %s: %d\n%s\n%s", name, code, out, stderr)
+	}
+	secretAt := strings.Index(out, "SECRET — shown once")
+	if secretAt < 0 || useCaseKeyRe.MatchString(out[:secretAt]) {
+		o.t.Fatalf("the key must appear only in the secret block at the end:\n%s", out)
+	}
+	key = useCaseKeyRe.FindString(out[secretAt:])
+	if key == "" {
+		o.t.Fatalf("no key in the secret block:\n%s", out)
+	}
+	return key, out
+}
+
+func (o *onboarding) report(name string) *effective.Report {
+	o.t.Helper()
+	out, stderr, code := o.talon("agents", "show", name, "--effective", "--json")
+	if code != 0 {
+		o.t.Fatalf("talon agents show %s --effective --json: %d\n%s\n%s", name, code, out, stderr)
+	}
+	var r effective.Report
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		o.t.Fatalf("decoding the effective report: %v\n%s", err, out)
+	}
+	if r.Verification == nil {
+		o.t.Fatalf("the effective report has no verification section:\n%s", out)
+	}
+	return &r
+}
+
+func (o *onboarding) waitFor(what string, cond func() bool) {
+	o.t.Helper()
+	deadline := time.Now().Add(25 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			log, _ := os.ReadFile(filepath.Join(o.dir, "serve.log"))
+			o.t.Fatalf("timed out waiting for: %s\nserve log tail:\n%s", what, tail(string(log), 3000))
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
+}
+
+func (o *onboarding) waitLoaded(name string) {
+	o.t.Helper()
+	o.waitFor("a running process to load "+name, func() bool {
+		return o.report(name).Loaded.State == runtimestatus.LoadedMatchesFile
+	})
+}
+
+func traffic(r *effective.Report, boundary string) effective.TrafficObservation {
+	for _, t := range r.Verification.Traffic {
+		if t.Boundary == boundary {
+			return t
+		}
+	}
+	return effective.TrafficObservation{}
+}
+
+type sdkResult struct {
+	OK      bool   `json:"ok"`
+	Status  int    `json:"status"`
+	Code    string `json:"code"`
+	Content string `json:"content"`
+	Message string `json:"message"`
+}
+
+// sdk sends one chat completion with the official OpenAI Node SDK
+// (tests/onboarding/client.mjs), as the application would.
+func (o *onboarding) sdk(key, prompt string) sdkResult {
+	o.t.Helper()
+	dir := os.Getenv("TALON_ONBOARDING_SDK_DIR")
+	cmd := exec.Command("node", filepath.Join(dir, "client.mjs"), prompt)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "TALON_URL="+o.url, "TALON_USE_CASE_KEY="+key)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		o.t.Fatalf("the SDK client failed: %v\n%s\n%s", err, stdout.String(), stderr.String())
+	}
+	var res sdkResult
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &res); err != nil {
+		o.t.Fatalf("the SDK client printed no result line: %v\n%s", err, stdout.String())
+	}
+	return res
+}
+
+func (o *onboarding) wantCalls(want int64, why string) {
+	o.t.Helper()
+	if got := o.calls.Load(); got != want {
+		o.t.Fatalf("%s: the upstream received %d calls, want %d", why, got, want)
+	}
+}
+
+// gatewayRecords counts the signed LLM gateway records per use case.
+func (o *onboarding) gatewayRecords() map[string]int {
+	o.t.Helper()
+	db, err := sql.Open("sqlite3", filepath.Join(o.dir, "evidence.db")+"?mode=ro&_busy_timeout=5000")
+	if err != nil {
+		o.t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT agent_id, COUNT(*) FROM evidence WHERE invocation_type = 'gateway' GROUP BY agent_id`)
+	if err != nil {
+		o.t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var a string
+		var n int
+		if err := rows.Scan(&a, &n); err != nil {
+			o.t.Fatal(err)
+		}
+		out[a] = n
+	}
+	return out
+}
+
+// TestE2E_Onboarding_FirstAndSecondApplication is the customer journey:
+// register → connect → verify → operate, then a second unrelated
+// application under the same, unchanged company policy. It needs the
+// pinned OpenAI Node SDK (TALON_ONBOARDING_SDK_DIR); scripts/
+// onboarding-acceptance.sh installs it and fails unless this test PASSES.
+func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
+	if os.Getenv("TALON_ONBOARDING_SDK_DIR") == "" {
+		t.Skip("set TALON_ONBOARDING_SDK_DIR to tests/onboarding with the pinned OpenAI SDK installed (scripts/onboarding-acceptance.sh does, and requires this test to pass)")
+	}
+	o := newOnboarding(t)
+	companyBefore, _ := os.ReadFile(o.cfgPath)
+
+	// 1-2. The installation is prepared; nothing is registered.
+	if out, stderr, code := o.talon("validate"); code != 0 && !strings.Contains(out+stderr, "agent") {
+		t.Fatalf("talon validate on the prepared installation: %d\n%s\n%s", code, out, stderr)
+	}
+
+	// 3. Register the first existing application. Nothing runs yet.
+	key1, out := o.register("customer-support", "--owner", "support-engineering", "--description", "AI customer support assistant")
+	for _, want := range []string{
+		`Registered AI use case "customer-support"`, "owner:       support-engineering", "from organization.defaults",
+		"NOT ACTIVE — no Talon process of this installation is running", "<talon-url>/v1/proxy/openai/v1",
+		"talon agents show customer-support --effective", "Not verified by this command",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("registration output misses %q:\n%s", want, out)
+		}
+	}
+	agentFile, _ := os.ReadFile(filepath.Join(o.dir, "agents", "customer-support", "agent.talon.yaml"))
+	if strings.Contains(string(agentFile), "pii_action") || strings.Contains(string(agentFile), key1) {
+		t.Fatalf("the use case's file must hold neither company policy nor the key:\n%s", agentFile)
+	}
+	r := o.report("customer-support")
+	if r.Loaded.State == runtimestatus.LoadedMatchesFile || r.LastDecision != nil || traffic(r, effective.BoundaryLLMGateway).State != effective.TrafficNone {
+		t.Fatalf("registered, nothing running, no traffic: got loaded=%s last=%v traffic=%+v", r.Loaded.State, r.LastDecision, r.Verification.Traffic)
+	}
+	if c := r.Verification.Reading.Code; c != effective.ReadingLoadUnknown && c != effective.ReadingNotLoaded {
+		t.Fatalf("a registered use case with no process must not read as loaded or connected: %s (%s)", c, r.Verification.Reading.Text)
+	}
+	if r.Effective.PIIAction != "block" || r.Effective.DailyCap != 50 {
+		t.Fatalf("the company defaults are inherited: pii=%s daily=%v", r.Effective.PIIAction, r.Effective.DailyCap)
+	}
+
+	// 4-5. Start the gateway. The registration alone is not a connection:
+	// loaded, and still no authenticated traffic.
+	o.serve()
+	defer func() { o.stop() }()
+	o.waitLoaded("customer-support")
+	r = o.report("customer-support")
+	if r.Verification.Reading.Code != effective.ReadingLoadedNoTraffic || r.LastDecision != nil {
+		t.Fatalf("loaded but never connected: %s; last decision %v", r.Verification.Reading.Text, r.LastDecision)
+	}
+	o.wantCalls(0, "before any application request")
+
+	// The application, with the real SDK: a permitted request is answered
+	// through Talon by the provider; a request the company policy blocks
+	// never reaches the provider.
+	if res := o.sdk(key1, "Summarise ticket T-30 in five words."); !res.OK || res.Content != "ok" {
+		t.Fatalf("the permitted request: %+v", res)
+	}
+	o.wantCalls(1, "one permitted request")
+	if res := o.sdk(key1, piiPrompt); res.OK || res.Status != 400 || res.Code != "pii_policy_violation" {
+		t.Fatalf("the request the company policy blocks must surface as HTTP 400 pii_policy_violation in the SDK: %+v", res)
+	}
+	o.wantCalls(1, "the denied request reached the provider zero times")
+	if res := o.sdk("talon_uc_"+strings.Repeat("0", 48), "hello"); res.OK || res.Status != 401 {
+		t.Fatalf("an unknown key must be rejected with 401: %+v", res)
+	}
+	o.wantCalls(1, "an unknown key reached the provider zero times")
+
+	// 6. Verify: authenticated traffic observed at the LLM gateway, the
+	// record's signature verifies, and it was evaluated under the policy
+	// the current files compile to. The newest request was denied: that
+	// establishes the connection and the evaluation, not the provider.
+	r = o.report("customer-support")
+	g := traffic(r, effective.BoundaryLLMGateway)
+	if g.State != effective.TrafficObserved || g.Verification != "valid" || g.Policy != effective.PolicyMatchesCurrent || g.Outcome == nil || g.Outcome.Decision != "denied" {
+		t.Fatalf("observed traffic of the first application: %+v", g)
+	}
+	if r.Verification.Reading.Code != effective.ReadingTrafficMatches || r.LastDecision == nil || r.LastDecision.EvidenceID != g.EvidenceID {
+		t.Fatalf("reading %s; last decision %+v", r.Verification.Reading.Code, r.LastDecision)
+	}
+	if traffic(r, effective.BoundaryActionGateway).State != effective.TrafficNone || traffic(r, effective.BoundaryMCPProxy).State != effective.TrafficNone {
+		t.Fatalf("an LLM application is not presented as action or MCP traffic: %+v", r.Verification.Traffic)
+	}
+	if !strings.Contains(strings.Join(r.Verification.NotEstablished, "\n"), "that a provider was reached") {
+		t.Fatalf("a denied newest request must not claim the provider was reached: %v", r.Verification.NotEstablished)
+	}
+	if vout, stderr, code := o.talon("audit", "verify", g.EvidenceID); code != 0 {
+		t.Fatalf("talon audit verify %s: %d\n%s\n%s", g.EvidenceID, code, vout, stderr)
+	}
+	text, _, _ := o.talon("agents", "show", "customer-support", "--effective")
+	for _, want := range []string{"4. Connection and verification", "Authenticated traffic observed under the expected policy", "llm_gateway:", "signature valid; policy matches_current", "not established by the above:"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("talon agents show --effective misses %q:\n%s", want, text)
+		}
+	}
+
+	// 7. Operate: the same facts in the read-only console (one projection).
+	ui := startConsoleUI(t, o.dir, freePort(t), "--gateway-config", o.cfgPath)
+	cc := newConsoleClient(t, ui.base)
+	if st, body := cc.pair(ui.waitCodes(t, 1)[0]); st != 200 {
+		t.Fatalf("pairing the console: %d %s", st, body)
+	}
+	var dto struct {
+		Report *effective.Report `json:"report"`
+	}
+	consoleGet(t, cc, "/console/v1/use-cases/customer-support/effective-policy", &dto)
+	cliV, _ := json.Marshal(o.report("customer-support").Verification)
+	uiV, _ := json.Marshal(dto.Report.Verification)
+	if string(cliV) != string(uiV) {
+		t.Fatalf("the console and the CLI must state the same verification:\nCLI     %s\nconsole %s", cliV, uiV)
+	}
+
+	// 8. A second, unrelated application: one command, the same company
+	// policy, nothing copied and nothing of the company or of the first
+	// application changed. The first one keeps serving meanwhile.
+	key2, out2 := o.register("hr-copilot", "--owner", "people-ops", "--description", "HR policy assistant")
+	if key2 == key1 || !strings.Contains(out2, "NOT YET ACTIVE — a Talon process is running") {
+		t.Fatalf("second registration while serving:\n%s", out2)
+	}
+	if res := o.sdk(key1, "Summarise ticket T-31 in five words."); !res.OK {
+		t.Fatalf("the first application during the second registration: %+v", res)
+	}
+	o.wantCalls(2, "the first application keeps working")
+	o.waitLoaded("hr-copilot")
+	if res := o.sdk(key2, "Which policy covers parental leave?"); !res.OK {
+		t.Fatalf("the second application's permitted request: %+v", res)
+	}
+	o.wantCalls(3, "the second application's permitted request")
+	if res := o.sdk(key2, piiPrompt); res.OK || res.Status != 400 || res.Code != "pii_policy_violation" {
+		t.Fatalf("the same company rule applies to the second application: %+v", res)
+	}
+	o.wantCalls(3, "the second application's denied request reached the provider zero times")
+
+	r2 := o.report("hr-copilot")
+	if g2 := traffic(r2, effective.BoundaryLLMGateway); g2.State != effective.TrafficObserved || g2.Policy != effective.PolicyMatchesCurrent || g2.EvidenceID == g.EvidenceID {
+		t.Fatalf("observed traffic of the second application: %+v", g2)
+	}
+	if r2.Effective.PIIAction != r.Effective.PIIAction || r2.Effective.DailyCap != r.Effective.DailyCap || fmt.Sprint(r2.Effective.ForbiddenTools) != fmt.Sprint(r.Effective.ForbiddenTools) {
+		t.Fatalf("both applications run under the same company baseline: %+v vs %+v", r2.Effective, r.Effective)
+	}
+	if got := o.gatewayRecords(); got["customer-support"] != 3 || got["hr-copilot"] != 2 || len(got) != 2 {
+		t.Fatalf("evidence is scoped to each application (and an unknown key leaves none): %v", got)
+	}
+	companyAfter, _ := os.ReadFile(o.cfgPath)
+	if string(companyBefore) != string(companyAfter) {
+		t.Fatal("registering applications changed the company configuration")
+	}
+
+	// A policy change to the first application: its earlier request is now
+	// reported as evaluated under ANOTHER policy than the current file,
+	// never as verified; a new request matches again.
+	path := filepath.Join(o.dir, "agents", "customer-support", "agent.talon.yaml")
+	if err := os.WriteFile(path, []byte(strings.Replace(string(agentFile), "cost_limits: {}", "cost_limits:\n    daily: 5", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o.waitLoaded("customer-support")
+	r = o.report("customer-support")
+	if g := traffic(r, effective.BoundaryLLMGateway); g.Policy != effective.PolicyDiffers || r.Verification.Reading.Code != effective.ReadingTrafficDiffers || r.Effective.DailyCap != 5 {
+		t.Fatalf("after a policy change the earlier evidence must read as a different policy: %+v (%s), daily cap %v", g, r.Verification.Reading.Code, r.Effective.DailyCap)
+	}
+	if res := o.sdk(key1, "Summarise ticket T-32 in five words."); !res.OK {
+		t.Fatalf("a request under the changed policy: %+v", res)
+	}
+	o.wantCalls(4, "a request under the changed policy")
+	if r = o.report("customer-support"); r.Verification.Reading.Code != effective.ReadingTrafficMatches {
+		t.Fatalf("a request under the current policy verifies again: %s", r.Verification.Reading.Text)
+	}
+
+	// An invalid file appears in the fleet: the reload is rejected, the
+	// last-known-good generation keeps serving both applications, a new
+	// registration is refused without writing, and nothing claims the
+	// broken fleet is active.
+	broken := filepath.Join(o.dir, "agents", "broken")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "agent.talon.yaml"), []byte("agent:\n  name: broken\n  typo_field: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * time.Second) // several reload intervals
+	if res := o.sdk(key1, "Still there?"); !res.OK {
+		t.Fatalf("last-known-good must keep serving the first application: %+v", res)
+	}
+	if res := o.sdk(key2, "Still there?"); !res.OK {
+		t.Fatalf("last-known-good must keep serving the second application: %+v", res)
+	}
+	o.wantCalls(6, "both applications on last-known-good")
+	if out, stderr, code := o.talon("agents", "add", "third-app"); code == 0 || !strings.Contains(stderr, "does not validate") {
+		t.Fatalf("a registration into an invalid fleet must be refused: %d\n%s\n%s", code, out, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(o.dir, "agents", "third-app")); !os.IsNotExist(err) {
+		t.Fatal("the refused registration wrote a directory")
+	}
+	if err := os.RemoveAll(broken); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// chat sends one request with the given key over plain HTTP and returns the
+// status (the credential-lifecycle test needs many, quickly).
+func (o *onboarding) chat(key string) int {
+	o.t.Helper()
+	return chatThroughGateway(o.t, o.url, key, "")
+}
+
+// TestE2E_Onboarding_CredentialLifecycle: one active key per use case, and
+// what an operator actually does to replace, recover and revoke it.
+func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
+	o := newOnboarding(t)
+	key, _ := o.register("customer-support", "--owner", "support-engineering")
+	other, _ := o.register("hr-copilot", "--owner", "people-ops")
+	o.serve()
+	defer func() { o.stop() }()
+	o.waitLoaded("customer-support")
+	if st := o.chat(key); st != 200 {
+		t.Fatalf("the issued key: HTTP %d", st)
+	}
+	o.wantCalls(1, "the issued key")
+
+	// `talon secrets rotate` re-encrypts the SAME value with a fresh nonce:
+	// it is not a credential replacement. After it, and a restart, the same
+	// key still authenticates.
+	if out, stderr, code := o.talon("secrets", "rotate", "customer-support-talon-key"); code != 0 {
+		t.Fatalf("secrets rotate: %d\n%s\n%s", code, out, stderr)
+	}
+	o.stop()
+	o.serve()
+	if st := o.chat(key); st != 200 {
+		t.Fatalf("after 'secrets rotate' and a restart the SAME key must still work (rotate re-encrypts, it does not replace): HTTP %d", st)
+	}
+	o.wantCalls(2, "after secrets rotate")
+
+	// Replacement (also the lost-key procedure): a new value through stdin,
+	// never an argument, with the ACL of the use case.
+	const replacement = "talon_uc_replacement_0123456789abcdef0123456789abcdef"
+	out, code := o.talonStdin(replacement, "secrets", "set", "customer-support-talon-key", "--tenant", "default", "--agent", "customer-support")
+	if code != 0 || strings.Contains(out, replacement) {
+		t.Fatalf("replacing the key through stdin (and never echoing it): %d\n%s", code, out)
+	}
+	// A secret-only change is not a configuration change: the running
+	// process keeps the key it loaded until it is restarted.
+	time.Sleep(2500 * time.Millisecond) // more than two reload intervals
+	if st := o.chat(key); st != 200 {
+		t.Fatalf("before the restart the running process still holds the old key: HTTP %d", st)
+	}
+	if st := o.chat(replacement); st != 401 {
+		t.Fatalf("before the restart the new key is not active: HTTP %d", st)
+	}
+	o.wantCalls(3, "before the restart")
+	o.stop()
+	o.serve()
+	if st := o.chat(key); st != 401 {
+		t.Fatalf("after the restart the OLD key must be rejected: HTTP %d", st)
+	}
+	if st := o.chat(replacement); st != 200 {
+		t.Fatalf("after the restart the NEW key must work: HTTP %d", st)
+	}
+	o.wantCalls(4, "the replaced key: one accepted request, the old key reached the provider zero times")
+	if st := o.chat(other); st != 200 {
+		t.Fatalf("the other application is unaffected by the replacement: HTTP %d", st)
+	}
+	o.wantCalls(5, "the other application")
+
+	// Emergency disable: a configuration change, effective when the running
+	// process has loaded it — verified, not assumed.
+	if out, stderr, code := o.talon("agents", "disable", "customer-support"); code != 0 {
+		t.Fatalf("agents disable: %d\n%s\n%s", code, out, stderr)
+	}
+	o.waitFor("the running process to refuse the disabled use case", func() bool { return o.chat(replacement) != 200 })
+	before := o.calls.Load()
+	if st := o.chat(replacement); st == 200 || st == 401 {
+		t.Fatalf("a disabled use case is refused as itself (authenticated, then denied), not as an unknown key: HTTP %d", st)
+	}
+	o.wantCalls(before, "a disabled use case reaches the provider zero times")
+	if r := o.report("customer-support"); r.Verification.Configured != "disabled" || r.Verification.Reading.Code != effective.ReadingDisabled {
+		t.Fatalf("the report must say the use case is configured as disabled: %+v", r.Verification.Reading)
+	}
+	if st := o.chat(other); st != 200 {
+		t.Fatalf("the other application keeps working while one is disabled: HTTP %d", st)
+	}
+	if out, stderr, code := o.talon("agents", "enable", "customer-support"); code != 0 {
+		t.Fatalf("agents enable: %d\n%s\n%s", code, out, stderr)
+	}
+	o.waitFor("the running process to serve the re-enabled use case", func() bool { return o.chat(replacement) == 200 })
+
+	// Revocation: the use case is removed from the fleet; after the reload
+	// its key is an unknown key. The vault entry is deleted afterwards.
+	if err := os.RemoveAll(filepath.Join(o.dir, "agents", "customer-support")); err != nil {
+		t.Fatal(err)
+	}
+	o.waitFor("the running process to drop the removed use case", func() bool { return o.chat(replacement) == 401 })
+	if out, stderr, code := o.talon("secrets", "delete", "customer-support-talon-key"); code != 0 {
+		t.Fatalf("secrets delete: %d\n%s\n%s", code, out, stderr)
+	}
+	if st := o.chat(other); st != 200 {
+		t.Fatalf("the other application after the revocation: HTTP %d", st)
+	}
+	// The same name can be registered again with a new key.
+	again, _ := o.register("customer-support", "--owner", "support-engineering")
+	if again == key || again == replacement {
+		t.Fatal("a re-registration issues a new key")
+	}
+	o.waitFor("the re-registered use case to be served", func() bool { return o.chat(again) == 200 })
+}
+
+// Concurrent registrations of ONE name, as separate processes (#567 review):
+// exactly one succeeds; the losers change nothing; the winner's printed key
+// is the key that authenticates.
+func TestE2E_Onboarding_ConcurrentProcessesOneWinner(t *testing.T) {
+	o := newOnboarding(t)
+	const n = 5
+	var wg sync.WaitGroup
+	outs, codes := make([]string, n), make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			out, stderr, code := RunTalon(t, o.dir, o.env(), "agents", "add", "refund-bot", "--owner", "finance")
+			outs[i], codes[i] = out+stderr, code
+		}(i)
+	}
+	wg.Wait()
+	winner := ""
+	for i := 0; i < n; i++ {
+		k := useCaseKeyRe.FindString(outs[i])
+		switch {
+		case codes[i] == 0 && k != "" && winner == "":
+			winner = k
+		case codes[i] == 0:
+			t.Fatalf("more than one registration succeeded:\n%s", strings.Join(outs, "\n---\n"))
+		case k != "":
+			t.Fatalf("a refused registration printed a key:\n%s", outs[i])
+		}
+	}
+	if winner == "" {
+		t.Fatalf("no registration succeeded:\n%s", strings.Join(outs, "\n---\n"))
+	}
+	if out, stderr, code := o.talon("validate"); code != 0 {
+		t.Fatalf("talon validate after the race: %d\n%s\n%s", code, out, stderr)
+	}
+	if out, _, _ := o.talon("doctor", "--skip-upstream"); strings.Contains(out, "Interrupted use-case registration") {
+		t.Fatalf("every loser recorded its rollback; doctor must not report an interruption:\n%s", out)
+	}
+	o.serve()
+	defer func() { o.stop() }()
+	o.waitFor("the winner's key to authenticate", func() bool { return o.chat(winner) == 200 })
+	_ = context.Background()
+}

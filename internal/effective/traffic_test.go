@@ -1,0 +1,325 @@
+package effective
+
+import (
+	"context"
+	"database/sql"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/dativo-io/talon/internal/agentbridge"
+	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/fleetview"
+	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/runtimestatus"
+)
+
+const uc = "hr-analytics-assistant"
+
+func (f fixture) put(t *testing.T, id, typ string, at time.Time, mod func(*evidence.Evidence)) {
+	t.Helper()
+	ev := &evidence.Evidence{
+		ID: id, CorrelationID: "c-" + id, TenantID: "default", AgentID: uc, Timestamp: at, InvocationType: typ,
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+	}
+	if mod != nil {
+		mod(ev)
+	}
+	require.NoError(t, f.store.Store(context.Background(), ev))
+}
+
+// currentDigests returns the agent policy digest and the effective digest
+// toward openai that the fixture's current files compile to.
+func (f fixture) currentDigests(t *testing.T) (agent, effective string) {
+	t.Helper()
+	ctx := context.Background()
+	scan, err := fleetview.Scan(ctx, f.agents, "")
+	require.NoError(t, err)
+	gw, err := gateway.LoadGatewayConfig(f.gw)
+	require.NoError(t, err)
+	override := agentbridge.LoadedAgentFromPolicy(scan.Agents[0].Policy, scan.Agents[0].Path).Override
+	return scan.Agents[0].PolicyDigest, gateway.EffectivePolicyDigest(gw.OrganizationPolicy, gw.Providers["openai"], override)
+}
+
+func observation(t *testing.T, r *Report, boundary string) TrafficObservation {
+	t.Helper()
+	require.NotNil(t, r.Verification)
+	for i := range r.Verification.Traffic {
+		if r.Verification.Traffic[i].Boundary == boundary {
+			return r.Verification.Traffic[i]
+		}
+	}
+	t.Fatalf("no %s observation", boundary)
+	return TrafficObservation{}
+}
+
+func loadedView(f fixture, t *testing.T) *runtimestatus.View {
+	t.Helper()
+	first, err := Build(context.Background(), f.inputs())
+	require.NoError(t, err)
+	return &runtimestatus.View{Processes: []runtimestatus.Process{
+		runningRecord("gw1", []string{runtimestatus.RoleGateway}, first.CurrentFiles.PolicyDigest, first.CurrentFiles.GatewayConfig.Digest, ""),
+	}}
+}
+
+// A use case that was registered, enabled, reloaded and warned about its
+// budget has sent no traffic: none of those records is application traffic
+// or a decision. Neither are provider sub-attempts, imported external
+// events, native runs or a reviewer's approval decision.
+func TestVerification_OperatorAndOtherRecordsAreNotTraffic(t *testing.T) {
+	f := peopleAnalytics(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	i := 0
+	for _, typ := range []string{
+		"agent_registration_intent", "agent_registered", "agent_registration_rolled_back", "agent_enabled", "agent_disabled",
+		"config_reload", evidence.InvocationTypeBudgetThreshold, "control_plane", "gateway_failover_attempt", "llm_failover_attempt",
+		"gateway_count_tokens", evidence.InvocationTypeExternalRuntimeEvent, "manual", "api", "http", "scheduled", "graph_run", "plan_review",
+	} {
+		i++
+		f.put(t, "op"+strings.ReplaceAll(typ, "_", ""), typ, now.Add(time.Duration(i)*time.Second), nil)
+	}
+	// A reviewer's decision is recorded under the use case; the application
+	// did not send it.
+	f.put(t, "reviewer", evidence.InvocationTypeActionLifecycle, now.Add(time.Minute), func(ev *evidence.Evidence) {
+		ev.ActionLifecycle = &evidence.ActionLifecycle{Event: evidence.ActionEventApprovalDecided, OperationID: "op-1", PolicyDigest: "x"}
+	})
+
+	r, err := Build(ctx, f.inputs())
+	require.NoError(t, err)
+	assert.Nil(t, r.LastDecision, "an operator event is never the last decision")
+	for _, o := range r.Verification.Traffic {
+		assert.Equal(t, TrafficNone, o.State, o.Boundary)
+		assert.Empty(t, o.EvidenceID, o.Boundary)
+		assert.NotEmpty(t, o.Establishes)
+	}
+	assert.Equal(t, ReadingLoadUnknown, r.Verification.Reading.Code, "no runtime records were given")
+	assert.Contains(t, r.Verification.Reading.Text, "no authenticated traffic observed")
+	assert.Contains(t, strings.Join(r.Verification.NotEstablished, "\n"), "no authenticated LLM gateway request of this use case is recorded")
+	assert.Contains(t, strings.Join(r.Verification.NotEstablished, "\n"), "that all of this application's requests go through Talon")
+
+	// The same facts with a running gateway that loaded the file: loaded,
+	// and still no traffic.
+	in := f.inputs()
+	in.Runtime, in.RuntimeReadable = loadedView(f, t), true
+	r, err = Build(ctx, in)
+	require.NoError(t, err)
+	assert.Equal(t, ReadingLoadedNoTraffic, r.Verification.Reading.Code)
+	assert.Nil(t, r.LastDecision)
+
+	// Running, but another version of the file: registered, not loaded.
+	in.Runtime = &runtimestatus.View{Processes: []runtimestatus.Process{runningRecord("gw1", []string{runtimestatus.RoleGateway}, "another-digest", "x", "")}}
+	r, err = Build(ctx, in)
+	require.NoError(t, err)
+	assert.Equal(t, ReadingNotLoaded, r.Verification.Reading.Code)
+	assert.Contains(t, r.Verification.Reading.Text, "DIFFERENT version")
+}
+
+// An authenticated request that Talon denied establishes the connection and
+// the policy evaluation, with the matching policy, and nothing about a
+// provider.
+func TestVerification_DeniedAuthenticatedRequest(t *testing.T) {
+	f := peopleAnalytics(t)
+	ctx := context.Background()
+	agentDigest, effDigest := f.currentDigests(t)
+	now := time.Now().UTC()
+	f.put(t, "registered", "agent_registered", now, nil) // newer than the request
+	f.put(t, "denied", "gateway", now.Add(-time.Minute), func(ev *evidence.Evidence) {
+		ev.PolicyDecision = evidence.PolicyDecision{Allowed: false, Action: "deny", PolicyDigests: &evidence.PolicyDigests{Agent: agentDigest, Effective: effDigest}}
+	})
+	in := f.inputs()
+	in.Runtime, in.RuntimeReadable = loadedView(f, t), true
+	r, err := Build(ctx, in)
+	require.NoError(t, err)
+	o := observation(t, r, BoundaryLLMGateway)
+	assert.Equal(t, TrafficObserved, o.State)
+	assert.Equal(t, "denied", o.EvidenceID)
+	assert.Equal(t, "valid", o.Verification)
+	assert.Equal(t, PolicyMatchesCurrent, o.Policy)
+	assert.Equal(t, "denied", o.Outcome.Decision)
+	assert.NotEqual(t, evidence.DispatchDispatched, o.Outcome.Dispatch)
+	assert.Contains(t, o.Identity, "Talon key")
+	assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code)
+	assert.Contains(t, strings.Join(r.Verification.NotEstablished, "\n"), "that a provider was reached")
+	require.NotNil(t, r.LastDecision)
+	assert.Equal(t, "denied", r.LastDecision.EvidenceID, "the registration record, though newer, is not the last decision")
+	assert.Equal(t, TrafficNone, observation(t, r, BoundaryActionGateway).State)
+	assert.Equal(t, TrafficNone, observation(t, r, BoundaryMCPProxy).State)
+}
+
+// Stale policy, a missing digest and a tampered record never read as
+// verified; the store being unreadable is "unavailable", not "none".
+func TestVerification_StaleMissingTamperedUnavailable(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	t.Run("recorded under another policy revision", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		f.put(t, "stale", "gateway", now, func(ev *evidence.Evidence) {
+			ev.PolicyDecision.PolicyDigests = &evidence.PolicyDigests{Agent: "an-older-file", Effective: "an-older-effective"}
+		})
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		o := observation(t, r, BoundaryLLMGateway)
+		assert.Equal(t, PolicyDiffers, o.Policy)
+		assert.Equal(t, ReadingTrafficDiffers, r.Verification.Reading.Code)
+		assert.Equal(t, "different", r.LastDecision.AgentFile)
+	})
+
+	t.Run("no policy digest on the record", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		f.put(t, "nodigest", "gateway", now, nil)
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		o := observation(t, r, BoundaryLLMGateway)
+		assert.Equal(t, PolicyNotRecorded, o.Policy)
+		assert.Equal(t, ReadingTrafficNotProven, r.Verification.Reading.Code)
+		assert.NotContains(t, r.Verification.Reading.Text, "under the expected policy")
+	})
+
+	t.Run("only the agent digest is recorded", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		agentDigest, _ := f.currentDigests(t)
+		f.put(t, "half", "gateway", now, func(ev *evidence.Evidence) {
+			ev.PolicyDecision.PolicyDigests = &evidence.PolicyDigests{Agent: agentDigest}
+		})
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		assert.Equal(t, PolicyNotRecorded, observation(t, r, BoundaryLLMGateway).Policy, "a partial match is not a match")
+	})
+
+	t.Run("changed after signing", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		agentDigest, effDigest := f.currentDigests(t)
+		f.put(t, "tampered", "gateway", now, func(ev *evidence.Evidence) {
+			ev.PolicyDecision = evidence.PolicyDecision{Allowed: false, Action: "deny", PolicyDigests: &evidence.PolicyDigests{Agent: agentDigest, Effective: effDigest}}
+		})
+		db, err := sql.Open("sqlite3", filepath.Join(f.dir, "evidence.db"))
+		require.NoError(t, err)
+		defer db.Close()
+		_, err = db.ExecContext(ctx, `UPDATE evidence SET evidence_json = replace(evidence_json, '"allowed":false', '"allowed":true') WHERE id = 'tampered'`)
+		require.NoError(t, err)
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		o := observation(t, r, BoundaryLLMGateway)
+		assert.Equal(t, "invalid", o.Verification)
+		assert.Equal(t, PolicyUnverified, o.Policy, "digests that happen to match are not compared on an unauthenticated record")
+		assert.Equal(t, ReadingTrafficUnverified, r.Verification.Reading.Code)
+	})
+
+	t.Run("evidence store unreadable", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		f.put(t, "x", "gateway", now, nil)
+		require.NoError(t, f.store.Close())
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		for _, o := range r.Verification.Traffic {
+			assert.Equal(t, TrafficUnavailable, o.State, o.Boundary)
+			assert.NotEmpty(t, o.Error)
+		}
+		assert.Equal(t, ReadingEvidenceUnknown, r.Verification.Reading.Code)
+		assert.Nil(t, r.LastDecision)
+		assert.NotContains(t, strings.Join(r.Notes, "\n"), "no authenticated request of this use case is recorded yet", "unavailable is not 'none'")
+	})
+
+	t.Run("no evidence store", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		in := f.inputs()
+		in.Evidence = nil
+		r, err := Build(ctx, in)
+		require.NoError(t, err)
+		assert.Equal(t, ReadingEvidenceUnknown, r.Verification.Reading.Code)
+	})
+
+	t.Run("disabled in the file", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		p := filepath.Join(f.agents, uc, "agent.talon.yaml")
+		raw := mustRead(t, p)
+		mustWrite(t, p, strings.Replace(raw, "agent:\n", "agent:\n  enabled: false\n", 1))
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		assert.Equal(t, "disabled", r.Verification.Configured)
+		assert.Equal(t, ReadingDisabled, r.Verification.Reading.Code)
+	})
+}
+
+// An action-only use case is observed at the Action Gateway and is never
+// presented as LLM traffic; establishing an operation is not dispatching it.
+func TestVerification_ActionOnlyUseCase(t *testing.T) {
+	f := peopleAnalytics(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	life := func(id, event string, at time.Time) {
+		f.put(t, id, evidence.InvocationTypeActionLifecycle, at, func(ev *evidence.Evidence) {
+			ev.ActionLifecycle = &evidence.ActionLifecycle{Event: event, OperationID: "op-1", OperationRef: "op_1", Action: "create_refund_request", PolicyDigest: "recorded-digest", OperationStatus: "awaiting_approval"}
+		})
+	}
+	life("established", evidence.ActionEventOperationEstablished, now.Add(-3*time.Minute))
+	life("requested", evidence.ActionEventApprovalRequested, now.Add(-3*time.Minute+time.Second))
+	life("decided", evidence.ActionEventApprovalDecided, now.Add(-2*time.Minute))
+
+	r, err := Build(ctx, f.inputs())
+	require.NoError(t, err)
+	a := observation(t, r, BoundaryActionGateway)
+	assert.Equal(t, TrafficObserved, a.State)
+	assert.Equal(t, "established", a.EvidenceID, "the reviewer's later decision is not the application's request")
+	assert.Equal(t, evidence.ActionEventOperationEstablished, a.Event)
+	assert.Nil(t, a.LastDispatch, "nothing was dispatched")
+	assert.Equal(t, PolicyNotRecorded, a.Policy, "this use case's files declare no action policy to compare with")
+	assert.Equal(t, TrafficNone, observation(t, r, BoundaryLLMGateway).State, "an action-only use case is not an LLM application")
+	ne := strings.Join(r.Verification.NotEstablished, "\n")
+	assert.Contains(t, ne, "no authenticated LLM gateway request of this use case is recorded")
+	assert.Contains(t, ne, "that a governed action reached its destination")
+	assert.Contains(t, r.Verification.Reading.Text, "Action Gateway")
+
+	// The application claims and Talon dispatches: now a dispatch is recorded.
+	life("claimed", evidence.ActionEventAttemptClaimed, now.Add(-time.Minute))
+	f.put(t, "completed", evidence.InvocationTypeActionLifecycle, now, func(ev *evidence.Evidence) {
+		ev.ActionLifecycle = &evidence.ActionLifecycle{Event: evidence.ActionEventAttemptCompleted, OperationID: "op-1", OperationRef: "op_1", PolicyDigest: "recorded-digest", OperationStatus: "succeeded", ResultProvenance: "observed", AttemptStatus: "completed"}
+	})
+	r, err = Build(ctx, f.inputs())
+	require.NoError(t, err)
+	a = observation(t, r, BoundaryActionGateway)
+	assert.Equal(t, "completed", a.EvidenceID)
+	require.NotNil(t, a.LastDispatch)
+	assert.Equal(t, "completed", a.LastDispatch.EvidenceID)
+	assert.NotContains(t, strings.Join(r.Verification.NotEstablished, "\n"), "that a governed action reached its destination")
+}
+
+// The lookup is an indexed range read per invocation type, and it is scoped
+// to the tenant and the use case: another use case's or tenant's traffic is
+// never this one's.
+func TestVerification_BoundedAndScoped(t *testing.T) {
+	f := peopleAnalytics(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	f.put(t, "other-uc", "gateway", now, func(ev *evidence.Evidence) { ev.AgentID = "another-use-case" })
+	f.put(t, "other-tenant", "gateway", now, func(ev *evidence.Evidence) { ev.TenantID = "acme" })
+	r, err := Build(ctx, f.inputs())
+	require.NoError(t, err)
+	assert.Equal(t, TrafficNone, observation(t, r, BoundaryLLMGateway).State)
+
+	plan, err := f.store.ExplainQueryPlan(ctx,
+		`SELECT evidence_json FROM evidence WHERE tenant_id = ? AND agent_id = ? AND invocation_type = ? ORDER BY timestamp DESC, id DESC LIMIT ?`, "default", uc, "gateway", 1)
+	require.NoError(t, err)
+	joined := strings.Join(plan, "\n")
+	assert.Contains(t, joined, "idx_evidence_tenant_agent_type_ts", joined)
+	assert.NotContains(t, joined, "SCAN evidence", joined)
+}
+
+func mustRead(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func mustWrite(t *testing.T, p, body string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(p, []byte(body), 0o600))
+}

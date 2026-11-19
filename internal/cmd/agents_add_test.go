@@ -7,9 +7,12 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -18,36 +21,61 @@ import (
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/registration"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
 var printedKeyRe = regexp.MustCompile(`talon_uc_[0-9a-f]{48}`)
 
+const addGateway = "gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      secret_name: openai-api-key\n      base_url: \"https://api.openai.com\"\n  organization_policy:\n    defaults:\n      pii_action: block\n      daily_cost: 25\n    constraints:\n      forbidden_tools: [delete_customer]\n"
+
+const supportAgent = "agent:\n  name: support\n  version: \"1.0.0\"\n  key:\n    secret_name: support-talon-key\npolicies:\n  cost_limits: {}\n"
+
+// addEnv prepares an installation directory with one existing use case and
+// returns the environment a registration needs. gateway "" means no gateway
+// config (no company policy).
+func addEnv(t *testing.T, dir, gateway string) map[string]string {
+	t.Helper()
+	env := map[string]string{
+		"TALON_DATA_DIR": filepath.Join(dir, "data"), "TALON_SIGNING_KEY": testutil.TestSigningKey,
+		"TALON_SECRETS_KEY": "0123456789abcdef0123456789abcdef", "TALON_AGENTS_DIR": filepath.Join(dir, "agents"),
+		"TALON_GATEWAY_CONFIG": filepath.Join(dir, "absent.talon.config.yaml"),
+	}
+	if gateway != "" {
+		env["TALON_GATEWAY_CONFIG"] = filepath.Join(dir, "talon.config.yaml")
+		require.NoError(t, os.WriteFile(env["TALON_GATEWAY_CONFIG"], []byte(gateway), 0o600))
+	}
+	d := filepath.Join(env["TALON_AGENTS_DIR"], "support")
+	require.NoError(t, os.MkdirAll(d, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte(supportAgent), 0o600))
+	return env
+}
+
 func setupAddFleet(t *testing.T) (cfg *config.Config, agentsDir string) {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("TALON_DATA_DIR", filepath.Join(dir, "data"))
-	t.Setenv("TALON_SIGNING_KEY", testutil.TestSigningKey)
-	t.Setenv("TALON_SECRETS_KEY", "0123456789abcdef0123456789abcdef")
-	t.Setenv("TALON_GATEWAY_CONFIG", filepath.Join(dir, "absent.talon.config.yaml"))
-	agentsDir = filepath.Join(dir, "agents")
-	t.Setenv("TALON_AGENTS_DIR", agentsDir)
+	return setupAddFleetWith(t, "")
+}
+
+func setupAddFleetWith(t *testing.T, gateway string) (cfg *config.Config, agentsDir string) {
+	t.Helper()
 	// The data directory is deliberately absent: a first registration creates it.
-	d := filepath.Join(agentsDir, "support")
-	require.NoError(t, os.MkdirAll(d, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte("agent:\n  name: support\n  version: \"1.0.0\"\n  key:\n    secret_name: support-talon-key\npolicies:\n  cost_limits: {}\n"), 0o600))
+	env := addEnv(t, t.TempDir(), gateway)
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
 	cfg, err := config.Load()
 	require.NoError(t, err)
-	return cfg, agentsDir
+	return cfg, env["TALON_AGENTS_DIR"]
 }
 
 func resetAgentsAddFlags(t *testing.T) {
 	t.Helper()
 	// setupAddFleet has no gateway config: these registrations state that on purpose.
-	agentsAddTenant, agentsAddDescription, agentsAddOwner, agentsAddUseExisting, agentsAddDryRun, agentsAddNoCompanyPolicy = "default", "", "", false, false, true
+	agentsAddTenant, agentsAddDescription, agentsAddOwner, agentsAddDryRun, agentsAddNoCompanyPolicy = "default", "", "", false, true
 	t.Cleanup(func() {
-		agentsAddTenant, agentsAddDescription, agentsAddOwner, agentsAddUseExisting, agentsAddDryRun, agentsAddNoCompanyPolicy = "default", "", "", false, false, false
+		agentsAddTenant, agentsAddDescription, agentsAddOwner, agentsAddDryRun, agentsAddNoCompanyPolicy = "default", "", "", false, false
+		registrationFault = func(string) error { return nil }
 	})
 }
 
@@ -59,9 +87,7 @@ func vaultValue(t *testing.T, cfg *config.Config, name string) (string, bool) {
 	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 	require.NoError(t, err)
 	defer store.Close()
-	ok, err := secretExists(context.Background(), store, name)
-	require.NoError(t, err)
-	if !ok {
+	if _, err := store.Metadata(context.Background(), name); errors.Is(err, secrets.ErrSecretNotFound) {
 		return "", false
 	}
 	s, err := store.Get(context.Background(), name, tenantOf(name), agentOf(name))
@@ -75,61 +101,131 @@ func tenantOf(string) string { return "acme" }
 
 func agentOf(secret string) string { return strings.TrimSuffix(secret, "-talon-key") }
 
+// registrationRecords returns the registration lifecycle records of a use
+// case by type, each verified.
+func registrationRecords(t *testing.T, cfg *config.Config, tenant, name string) map[string][]evidence.Evidence {
+	t.Helper()
+	out := map[string][]evidence.Evidence{}
+	if _, err := os.Stat(cfg.EvidenceDBPath()); err != nil {
+		return out
+	}
+	st, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	require.NoError(t, err)
+	defer st.Close()
+	rows, err := st.List(context.Background(), tenant, name, time.Time{}, time.Time{}, 100)
+	require.NoError(t, err)
+	for i := range rows {
+		require.True(t, st.VerifyRecord(&rows[i]), "every registration record is signed")
+		out[rows[i].InvocationType] = append(out[rows[i].InvocationType], rows[i])
+	}
+	return out
+}
+
+func registered(t *testing.T, agentsDir, name string) bool {
+	t.Helper()
+	scan, err := agentcatalog.DiscoverAgents(context.Background(), agentsDir)
+	require.NoError(t, err)
+	for i := range scan.Agents {
+		if scan.Agents[i].Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
-	cfg, agentsDir := setupAddFleet(t)
+	cfg, agentsDir := setupAddFleetWith(t, addGateway)
 	resetAgentsAddFlags(t)
+	agentsAddNoCompanyPolicy = false
 	ctx := context.Background()
+	gwBefore, err := os.ReadFile(os.Getenv("TALON_GATEWAY_CONFIG"))
+	require.NoError(t, err)
+	supportBefore, err := os.ReadFile(filepath.Join(agentsDir, "support", "agent.talon.yaml"))
+	require.NoError(t, err)
 
 	var out bytes.Buffer
-	agentsAddTenant, agentsAddOwner = "acme", "support-ops@acme.example"
-	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
-	key1 := printedKeyRe.FindString(out.String())
-	require.NotEmpty(t, key1, out.String())
-	require.Contains(t, out.String(), "talon agents show refund-bot --effective")
-	stored, ok := vaultValue(t, cfg, "refund-bot-talon-key")
+	agentsAddTenant, agentsAddOwner, agentsAddDescription = "acme", "support-engineering", "AI customer support assistant"
+	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "customer-support"))
+	text := out.String()
+	key1 := printedKeyRe.FindString(text)
+	require.NotEmpty(t, key1, text)
+	stored, ok := vaultValue(t, cfg, "customer-support-talon-key")
 	require.True(t, ok)
 	require.Equal(t, key1, stored, "the printed key is the stored key")
 
-	content, err := os.ReadFile(filepath.Join(agentsDir, "refund-bot", "agent.talon.yaml"))
+	// The output, in order: identity and owner, configuration location,
+	// credential, inherited policy from the canonical projection,
+	// activation, how to connect, how to verify, what is not verified —
+	// and the secret last, in a block of its own.
+	order := []string{
+		`Registered AI use case "customer-support"`, "tenant:      acme", "owner:       support-engineering",
+		"config:      " + filepath.Join(agentsDir, "customer-support", "agent.talon.yaml"),
+		`key:         generated, vault secret "customer-support-talon-key"`, "evidence:", "signed completion record",
+		"Company policy this use case runs under", "daily_cost", "25", "from organization.defaults", "pii_action", "block", "the use case can only tighten it",
+		"forbidden_tools", "delete_customer", "no layer can remove a tool another forbids",
+		"Activation (configuration is not activation)", "NOT PROVEN ACTIVE", "NOT ACTIVE — no Talon process of this installation is running",
+		"Connect the application", "<talon-url>/v1/proxy/openai/v1", "Authorization: Bearer <the Talon key>", "TALON_USE_CASE_KEY", "docs/guides/choosing-integration-path.md",
+		"Verify the first request", "talon agents show customer-support --effective", "talon audit verify",
+		"Not verified by this command", "only requests sent to a Talon endpoint are governed",
+		"SECRET — shown once", key1,
+	}
+	at := 0
+	for _, want := range order {
+		i := strings.Index(text[at:], want)
+		require.GreaterOrEqual(t, i, 0, "%q missing or out of order in:\n%s", want, text)
+		at += i + len(want)
+	}
+	require.Equal(t, 1, strings.Count(text, key1), "the key is printed exactly once")
+	above, _, found := strings.Cut(text, "SECRET — shown once")
+	require.True(t, found)
+	require.NotContains(t, above, "talon_uc_", "nothing above the secret block is secret")
+	require.NotContains(t, text, "WARNING")
+	require.NotContains(t, text, "Runtime: ACTIVE", "configured is not active: nothing runs here")
+
+	content, err := os.ReadFile(filepath.Join(agentsDir, "customer-support", "agent.talon.yaml"))
 	require.NoError(t, err)
 	require.Contains(t, string(content), `tenant_id: "acme"`)
-	require.Contains(t, string(content), `secret_name: "refund-bot-talon-key"`)
+	require.Contains(t, string(content), `secret_name: "customer-support-talon-key"`)
+	require.Contains(t, string(content), `owner: "support-engineering"`)
+	require.Contains(t, string(content), `description: "AI customer support assistant"`)
 	require.Contains(t, string(content), "cost_limits: {}", "no budget of its own: the company defaults apply")
 	require.NotContains(t, string(content), key1, "the key never lands in the file")
-	require.Contains(t, out.String(), "WARNING: registered WITHOUT a company policy", "without an organization policy the missing budget cap is stated")
-	require.Contains(t, out.String(), "company policy: no company policy: no gateway config at")
-	require.Contains(t, out.String(), "activation: NOT ACTIVE — no Talon process of this installation is running")
+	require.NotContains(t, string(content), "pii_action", "company policy is inherited, not copied into the use case's file")
 
 	// The key is readable only as this use case in its tenant.
 	vault, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 	require.NoError(t, err)
-	_, err = vault.Get(ctx, "refund-bot-talon-key", "acme", "support")
+	_, err = vault.Get(ctx, "customer-support-talon-key", "acme", "support")
 	require.Error(t, err, "another use case cannot resolve this key")
-	_, err = vault.Get(ctx, "refund-bot-talon-key", "other-tenant", "refund-bot")
+	_, err = vault.Get(ctx, "customer-support-talon-key", "other-tenant", "customer-support")
 	require.Error(t, err, "another tenant cannot resolve this key")
 	require.NoError(t, vault.Close())
 
-	// One signed operator record of the registration.
-	evStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
-	require.NoError(t, err)
-	rows, err := evStore.List(ctx, "acme", "refund-bot", time.Time{}, time.Time{}, 10)
-	require.NoError(t, err)
-	require.Len(t, rows, 2, "intent and completion")
-	kinds := []string{rows[0].InvocationType, rows[1].InvocationType}
-	require.ElementsMatch(t, []string{"agent_registration_intent", "agent_registered"}, kinds)
-	for i := range rows {
-		require.True(t, evStore.VerifyRecord(&rows[i]))
-		require.NotContains(t, strings.Join(rows[i].PolicyDecision.Reasons, " "), key1)
-		require.Equal(t, rows[0].CorrelationID, rows[i].CorrelationID)
+	// Signed intent and completion, one correlation, no key in either.
+	recs := registrationRecords(t, cfg, "acme", "customer-support")
+	require.Len(t, recs[registration.TypeIntent], 1)
+	require.Len(t, recs[registration.TypeRegistered], 1)
+	require.Empty(t, recs[registration.TypeRolledBack])
+	require.Equal(t, recs[registration.TypeIntent][0].CorrelationID, recs[registration.TypeRegistered][0].CorrelationID)
+	require.True(t, recs[registration.TypeIntent][0].Timestamp.Before(recs[registration.TypeRegistered][0].Timestamp) || recs[registration.TypeIntent][0].Timestamp.Equal(recs[registration.TypeRegistered][0].Timestamp))
+	for _, list := range recs {
+		for i := range list {
+			require.NotContains(t, strings.Join(list[i].PolicyDecision.Reasons, " "), key1)
+			require.Equal(t, evidence.ClassOperatorEvent, evidence.RecordClassOf(list[i].InvocationType), "a registration record is an operator event, never traffic")
+		}
 	}
-	require.NoError(t, evStore.Close())
 
+	// A second, unrelated use case: same command, same company policy, no
+	// policy copied, nothing of the first one or of the company changed.
 	out.Reset()
-	agentsAddTenant, agentsAddOwner = "acme", ""
+	agentsAddTenant, agentsAddOwner, agentsAddDescription = "acme", "people-ops", "HR policy assistant"
 	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "hr-copilot"))
 	key2 := printedKeyRe.FindString(out.String())
 	require.NotEmpty(t, key2)
 	require.NotEqual(t, key1, key2)
+	require.Contains(t, out.String(), "from organization.defaults")
+	stored, _ = vaultValue(t, cfg, "customer-support-talon-key")
+	require.Equal(t, key1, stored, "the first use case's key is untouched")
 
 	scan, err := agentcatalog.DiscoverAgents(ctx, agentsDir)
 	require.NoError(t, err, "the fleet validates with both new use cases")
@@ -137,7 +233,11 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 	for i := range scan.Agents {
 		names = append(names, scan.Agents[i].Name)
 	}
-	require.ElementsMatch(t, []string{"support", "refund-bot", "hr-copilot"}, names)
+	require.ElementsMatch(t, []string{"support", "customer-support", "hr-copilot"}, names)
+	gwAfter, _ := os.ReadFile(os.Getenv("TALON_GATEWAY_CONFIG"))
+	require.Equal(t, gwBefore, gwAfter, "a registration never changes the company policy")
+	supportAfter, _ := os.ReadFile(filepath.Join(agentsDir, "support", "agent.talon.yaml"))
+	require.Equal(t, supportBefore, supportAfter, "an existing use case's file is untouched")
 }
 
 func TestAgentsAdd_RefusesWithoutWriting(t *testing.T) {
@@ -153,8 +253,9 @@ func TestAgentsAdd_RefusesWithoutWriting(t *testing.T) {
 		require.Equal(t, before, after)
 		_, ok := vaultValue(t, cfg, "support-talon-key")
 		require.False(t, ok, "no key minted for a refused registration")
+		require.Empty(t, registrationRecords(t, cfg, "default", "support"), "a refusal in planning writes no evidence")
 	})
-	t.Run("an existing key is never regenerated", func(t *testing.T) {
+	t.Run("an existing secret is never replaced or bound", func(t *testing.T) {
 		cfg, agentsDir := setupAddFleet(t)
 		resetAgentsAddFlags(t)
 		require.NoError(t, cfg.EnsureDataDir())
@@ -162,21 +263,17 @@ func TestAgentsAdd_RefusesWithoutWriting(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, store.Set(ctx, "refund-bot-talon-key", []byte("in-use-key-0001"), secrets.ACL{}))
 		require.NoError(t, store.Close())
-		err = runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot")
+		var out bytes.Buffer
+		err = runAgentsAdd(ctx, &out, cfg, "refund-bot")
 		require.ErrorContains(t, err, "already exists")
+		require.ErrorContains(t, err, "talon secrets delete refund-bot-talon-key")
+		require.NotContains(t, err.Error()+out.String(), "in-use-key-0001")
 		_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
 		require.True(t, os.IsNotExist(statErr))
 		v, _ := vaultValue(t, cfg, "refund-bot-talon-key")
 		require.Equal(t, "in-use-key-0001", v)
-
-		// Binding it deliberately: no key generated or printed, value unchanged.
-		agentsAddUseExisting = true
-		var out bytes.Buffer
-		require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
-		require.Empty(t, printedKeyRe.FindString(out.String()))
-		require.NotContains(t, out.String(), "in-use-key-0001")
-		v, _ = vaultValue(t, cfg, "refund-bot-talon-key")
-		require.Equal(t, "in-use-key-0001", v)
+		// The unreleased --use-existing-key option is gone (#567 review).
+		require.Nil(t, agentsAddCmd.Flags().Lookup("use-existing-key"))
 	})
 	t.Run("an invalid existing fleet", func(t *testing.T) {
 		cfg, agentsDir := setupAddFleet(t)
@@ -205,29 +302,297 @@ func TestAgentsAdd_RefusesWithoutWriting(t *testing.T) {
 		}
 	})
 	t.Run("an invalid company policy", func(t *testing.T) {
-		cfg, agentsDir := setupAddFleet(t)
+		cfg, agentsDir := setupAddFleetWith(t, "gateway:\n  enabled: true\n  not_a_key: 1\n")
 		resetAgentsAddFlags(t)
-		gw := filepath.Join(t.TempDir(), "talon.config.yaml")
-		require.NoError(t, os.WriteFile(gw, []byte("gateway:\n  enabled: true\n  not_a_key: 1\n"), 0o600))
-		t.Setenv("TALON_GATEWAY_CONFIG", gw)
 		require.ErrorContains(t, runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot"), "present but invalid")
 		_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
 		require.True(t, os.IsNotExist(statErr))
 	})
 }
 
-// A failure after the key was stored removes that key again: no orphaned
-// credential, no half-registered use case.
-func TestAgentsAdd_FailedWriteRemovesTheNewKey(t *testing.T) {
+// An ordinary failure at any step removes exactly what the registration
+// created, records a signed rollback that says what happened, prints no
+// key, leaves the existing use case alone, and a later registration of the
+// same name works.
+func TestAgentsAdd_FailureAtEveryStepIsRolledBack(t *testing.T) {
+	ctx := context.Background()
+	for _, step := range []string{stepIntentRecorded, stepKeyStored, stepFilePublished, stepFleetValidated} {
+		t.Run(step, func(t *testing.T) {
+			cfg, agentsDir := setupAddFleet(t)
+			resetAgentsAddFlags(t)
+			agentsAddTenant = "acme"
+			var seen []string
+			registrationFault = func(s string) error {
+				seen = append(seen, s)
+				if s == step {
+					if s == stepFilePublished || s == stepFleetValidated {
+						// What a running server's reload would load in this window.
+						require.True(t, registered(t, agentsDir, "refund-bot"))
+					}
+					return errors.New("injected failure after " + s)
+				}
+				return nil
+			}
+			var out bytes.Buffer
+			err := runAgentsAdd(ctx, &out, cfg, "refund-bot")
+			require.ErrorContains(t, err, "injected failure after "+step)
+			require.ErrorContains(t, err, "nothing of this registration was left behind")
+			require.Equal(t, step, seen[len(seen)-1], "the registration stopped at the failed step")
+			require.Empty(t, printedKeyRe.FindString(out.String()+err.Error()), "no key is shown for a failed registration")
+
+			_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
+			require.True(t, os.IsNotExist(statErr), "no agent file or directory is left")
+			_, ok := vaultValue(t, cfg, "refund-bot-talon-key")
+			require.False(t, ok, "no key is left")
+			require.False(t, registered(t, agentsDir, "refund-bot"))
+			require.True(t, registered(t, agentsDir, "support"), "the existing use case is untouched")
+
+			recs := registrationRecords(t, cfg, "acme", "refund-bot")
+			require.Len(t, recs[registration.TypeIntent], 1)
+			require.Empty(t, recs[registration.TypeRegistered], "no completion record")
+			require.Len(t, recs[registration.TypeRolledBack], 1)
+			reasons := strings.Join(recs[registration.TypeRolledBack][0].PolicyDecision.Reasons, " | ")
+			require.Contains(t, reasons, "cause: injected failure after "+step)
+			switch step {
+			case stepIntentRecorded:
+				require.Contains(t, reasons, "cleanup: nothing had been created")
+			case stepKeyStored:
+				require.Contains(t, reasons, "cleanup: removed the key this registration stored")
+			default:
+				require.Contains(t, reasons, "removed the agent file; removed the key this registration stored")
+			}
+			in, err := interruptedRegistrations(ctx, cfg, "refund-bot")
+			require.NoError(t, err)
+			require.Empty(t, in, "a rolled-back registration is terminal, not interrupted")
+
+			registrationFault = func(string) error { return nil }
+			out.Reset()
+			require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
+			require.NotEmpty(t, printedKeyRe.FindString(out.String()))
+		})
+	}
+
+	// After the completion record the registration IS complete: a failure
+	// to show the key is reported as that, and nothing is rolled back.
+	t.Run(stepCompleted, func(t *testing.T) {
+		cfg, agentsDir := setupAddFleet(t)
+		resetAgentsAddFlags(t)
+		agentsAddTenant = "acme"
+		registrationFault = func(s string) error {
+			if s == stepCompleted {
+				return errors.New("terminal closed")
+			}
+			return nil
+		}
+		var out bytes.Buffer
+		err := runAgentsAdd(ctx, &out, cfg, "refund-bot")
+		require.ErrorContains(t, err, "completed")
+		require.ErrorContains(t, err, "talon secrets set refund-bot-talon-key")
+		require.Empty(t, printedKeyRe.FindString(out.String()+err.Error()))
+		require.True(t, registered(t, agentsDir, "refund-bot"))
+		recs := registrationRecords(t, cfg, "acme", "refund-bot")
+		require.Len(t, recs[registration.TypeRegistered], 1)
+		require.Empty(t, recs[registration.TypeRolledBack])
+	})
+}
+
+// A rollback removes only this registration's own key version: a key someone
+// else stored under the name in the meantime survives, and the rollback
+// record says so.
+func TestAgentsAdd_RollbackRemovesOnlyItsOwnKey(t *testing.T) {
+	ctx := context.Background()
 	cfg, agentsDir := setupAddFleet(t)
 	resetAgentsAddFlags(t)
-	// A plain file where the use case's directory must go: MkdirAll fails
-	// after the key was stored.
-	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "refund-bot"), []byte("not a directory"), 0o600))
-	err := runAgentsAdd(context.Background(), &bytes.Buffer{}, cfg, "refund-bot")
-	require.Error(t, err)
-	_, ok := vaultValue(t, cfg, "refund-bot-talon-key")
-	require.False(t, ok, "the key stored before the failed write is removed")
+	agentsAddTenant = "acme"
+	registrationFault = func(s string) error {
+		if s != stepKeyStored {
+			return nil
+		}
+		// Someone replaces the secret between this registration's steps.
+		store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+		require.NoError(t, err)
+		defer store.Close()
+		require.NoError(t, store.Set(ctx, "refund-bot-talon-key", []byte("replaced-by-someone-else"), secrets.ACL{}))
+		return os.ErrPermission
+	}
+	err := runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot")
+	require.ErrorContains(t, err, "nothing of this registration was left behind")
+	got, ok := vaultValue(t, cfg, "refund-bot-talon-key")
+	require.True(t, ok)
+	require.Equal(t, "replaced-by-someone-else", got)
+	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
+	require.True(t, os.IsNotExist(statErr))
+	recs := registrationRecords(t, cfg, "acme", "refund-bot")
+	require.Contains(t, strings.Join(recs[registration.TypeRolledBack][0].PolicyDecision.Reasons, " | "), "the key this registration stored was already gone")
+}
+
+// Of concurrent registrations of one name exactly one completes; the
+// others are refused, never overwrite the winner's file or key, and clean
+// up nothing that is the winner's.
+func TestAgentsAdd_ConcurrentRegistrationsOneWinner(t *testing.T) {
+	cfg, agentsDir := setupAddFleet(t)
+	resetAgentsAddFlags(t)
+	agentsAddTenant = "acme"
+	const n = 6
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	outs := make([]bytes.Buffer, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = runAgentsAdd(context.Background(), &outs[i], cfg, "refund-bot")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	winners, key := 0, ""
+	for i := 0; i < n; i++ {
+		if errs[i] == nil {
+			winners++
+			key = printedKeyRe.FindString(outs[i].String())
+		} else {
+			require.Empty(t, printedKeyRe.FindString(outs[i].String()+errs[i].Error()), "a refused registration shows no key")
+		}
+	}
+	require.Equal(t, 1, winners, "errors: %v", errs)
+	require.NotEmpty(t, key)
+	stored, ok := vaultValue(t, cfg, "refund-bot-talon-key")
+	require.True(t, ok, "the winner's key survives every loser's cleanup")
+	require.Equal(t, key, stored)
+	require.True(t, registered(t, agentsDir, "refund-bot"))
+	recs := registrationRecords(t, cfg, "acme", "refund-bot")
+	require.Len(t, recs[registration.TypeRegistered], 1)
+	in, err := interruptedRegistrations(context.Background(), cfg, "refund-bot")
+	require.NoError(t, err)
+	require.Empty(t, in, "every loser that recorded an intent also recorded its rollback")
+}
+
+// TestAgentsAdd_CrashHelper is not a test of its own: the abrupt-death test
+// re-executes the test binary with TALON_TEST_CRASH_STEP set, and this
+// function then runs one registration and SIGKILLs its own process at that
+// step. No deferred function, rollback or terminal record runs.
+func TestAgentsAdd_CrashHelper(t *testing.T) {
+	step := os.Getenv("TALON_TEST_CRASH_STEP")
+	if step == "" {
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentsAddTenant, agentsAddNoCompanyPolicy = "acme", true
+	registrationFault = func(s string) error {
+		if s == step {
+			_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+			select {}
+		}
+		return nil
+	}
+	_ = runAgentsAdd(context.Background(), os.Stdout, cfg, "refund-bot")
+	os.Exit(3) // not reached when the step exists
+}
+
+// The process dies abruptly at each step. Whatever it left, nobody has
+// seen a key; the next registration of the name detects the interruption
+// and names the artifacts and the recovery; after the operator removed
+// them, registration works and the interrupted one is recorded as rolled
+// back. The existing use case is never affected.
+func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		step          string
+		key, file     bool
+		selfRecovered bool
+	}{
+		{stepIntentRecorded, false, false, true},
+		{stepKeyStored, true, false, false},
+		{stepFilePublished, true, true, false},
+		{stepFleetValidated, true, true, false},
+	} {
+		t.Run(tc.step, func(t *testing.T) {
+			dir := t.TempDir()
+			env := addEnv(t, dir, "")
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			cfg, err := config.Load()
+			require.NoError(t, err)
+			agentsDir := env["TALON_AGENTS_DIR"]
+			resetAgentsAddFlags(t)
+			agentsAddTenant = "acme"
+
+			child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAgentsAdd_CrashHelper$")
+			child.Env = append(os.Environ(), "TALON_TEST_CRASH_STEP="+tc.step)
+			var childOut bytes.Buffer
+			child.Stdout, child.Stderr = &childOut, &childOut
+			err = child.Run()
+			var exit *exec.ExitError
+			require.ErrorAs(t, err, &exit)
+			ws, _ := exit.Sys().(syscall.WaitStatus)
+			require.True(t, ws.Signaled() && ws.Signal() == syscall.SIGKILL, "the helper must die by SIGKILL at the step: %v\n%s", err, childOut.String())
+			require.Empty(t, printedKeyRe.FindString(childOut.String()), "a key is never printed before completion")
+
+			// What it left.
+			_, hasKey := vaultValue(t, cfg, "refund-bot-talon-key")
+			require.Equal(t, tc.key, hasKey)
+			_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot", "agent.talon.yaml"))
+			require.Equal(t, tc.file, statErr == nil)
+			require.True(t, registered(t, agentsDir, "support"), "the existing use case is untouched and the fleet still validates")
+			recs := registrationRecords(t, cfg, "acme", "refund-bot")
+			require.Len(t, recs[registration.TypeIntent], 1)
+			require.Empty(t, recs[registration.TypeRegistered])
+			require.Empty(t, recs[registration.TypeRolledBack], "an abrupt death writes no terminal record")
+			in, err := interruptedRegistrations(ctx, cfg, "refund-bot")
+			require.NoError(t, err)
+			require.Len(t, in, 1, "the interruption is detected from the signed intent")
+
+			var out bytes.Buffer
+			err = runAgentsAdd(ctx, &out, cfg, "refund-bot")
+			if !tc.selfRecovered {
+				// Detection and diagnosis: nothing is written, the artifacts
+				// and the recovery are named.
+				require.ErrorContains(t, err, "was interrupted")
+				require.ErrorContains(t, err, in[0].IntentID)
+				require.ErrorContains(t, err, "Its key was never printed")
+				require.ErrorContains(t, err, "talon secrets delete refund-bot-talon-key")
+				if tc.file {
+					require.ErrorContains(t, err, "rm -r "+filepath.Join(agentsDir, "refund-bot"))
+				}
+				require.Len(t, registrationRecords(t, cfg, "acme", "refund-bot")[registration.TypeIntent], 1, "the refused retry wrote nothing")
+
+				// The documented operator recovery, with the existing commands.
+				if tc.file {
+					require.NoError(t, os.RemoveAll(filepath.Join(agentsDir, "refund-bot")))
+				}
+				store, serr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+				require.NoError(t, serr)
+				require.NoError(t, store.Delete(ctx, "refund-bot-talon-key"))
+				require.NoError(t, store.Close())
+				out.Reset()
+				err = runAgentsAdd(ctx, &out, cfg, "refund-bot")
+			}
+			require.NoError(t, err)
+			key := printedKeyRe.FindString(out.String())
+			require.NotEmpty(t, key)
+			require.Contains(t, out.String(), "is now recorded as rolled back")
+			stored, _ := vaultValue(t, cfg, "refund-bot-talon-key")
+			require.Equal(t, key, stored)
+
+			recs = registrationRecords(t, cfg, "acme", "refund-bot")
+			require.Len(t, recs[registration.TypeIntent], 2)
+			require.Len(t, recs[registration.TypeRegistered], 1)
+			require.Len(t, recs[registration.TypeRolledBack], 1)
+			rb := recs[registration.TypeRolledBack][0]
+			require.Equal(t, in[0].Correlation, rb.CorrelationID, "the terminal record closes the interrupted registration")
+			require.Contains(t, strings.Join(rb.PolicyDecision.Reasons, " | "), "the registration was interrupted")
+			in, err = interruptedRegistrations(ctx, cfg, "refund-bot")
+			require.NoError(t, err)
+			require.Empty(t, in)
+		})
+	}
 }
 
 func TestAgentsAdd_DryRunWritesNothing(t *testing.T) {
@@ -260,7 +625,7 @@ func TestAgentsAdd_CompanyPolicyIsRequiredAndReported(t *testing.T) {
 	require.False(t, ok)
 
 	gw := filepath.Join(t.TempDir(), "talon.config.yaml")
-	require.NoError(t, os.WriteFile(gw, []byte("gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      secret_name: openai-api-key\n      base_url: \"https://api.openai.com\"\n  organization_policy:\n    defaults:\n      pii_action: block\n      daily_cost: 25\n    constraints:\n      forbidden_tools: [delete_customer]\n"), 0o600))
+	require.NoError(t, os.WriteFile(gw, []byte(addGateway), 0o600))
 	t.Setenv("TALON_GATEWAY_CONFIG", gw)
 	var out bytes.Buffer
 	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
@@ -285,6 +650,13 @@ func TestAgentsAdd_CompanyPolicyIsRequiredAndReported(t *testing.T) {
 	out.Reset()
 	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "hr-copilot"))
 	require.Contains(t, out.String(), "WARNING: registered WITHOUT a company policy")
+
+	// No gateway config at all: the endpoint is not claimed.
+	t.Setenv("TALON_GATEWAY_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+	out.Reset()
+	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "ops-bot"))
+	require.Contains(t, out.String(), "no enabled provider is configured in the gateway config this command read, so no model endpoint can be named")
+	require.NotContains(t, out.String(), "/v1/proxy/openai/v1")
 }
 
 // A dry run writes nothing at all, on an installation that does not exist yet.
@@ -307,72 +679,35 @@ func TestAgentsAdd_DryRunOnAFreshInstallationCreatesNothing(t *testing.T) {
 	require.Empty(t, entries, "no data directory, no agents_dir, no vault, no evidence store")
 }
 
-// Binding an existing key checks that its ACL lets this use case resolve it.
-func TestAgentsAdd_UseExistingKeyChecksItsACL(t *testing.T) {
-	ctx := context.Background()
-	cfg, agentsDir := setupAddFleet(t)
-	resetAgentsAddFlags(t)
-	agentsAddTenant, agentsAddUseExisting = "acme", true
-	require.NoError(t, cfg.EnsureDataDir())
-	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	require.NoError(t, err)
-	require.NoError(t, store.Set(ctx, "refund-bot-talon-key", []byte("someone-elses-key"), secrets.ACL{Tenants: []string{"acme"}, Agents: []string{"another-bot"}}))
-	require.NoError(t, store.Close())
-
-	err = runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot")
-	require.ErrorContains(t, err, "does not permit use case")
-	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
-	require.True(t, os.IsNotExist(statErr))
-	agentsAddDryRun = true
-	require.ErrorContains(t, runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot"), "does not permit use case")
-}
-
-// A key bound with --use-existing-key is resolved the way serve resolves it:
-// one that does not decrypt under the configured secrets key is refused.
-func TestAgentsAdd_UseExistingKeyMustResolve(t *testing.T) {
-	ctx := context.Background()
-	cfg, agentsDir := setupAddFleet(t)
-	resetAgentsAddFlags(t)
-	agentsAddTenant, agentsAddUseExisting = "acme", true
-	require.NoError(t, cfg.EnsureDataDir())
-	other, err := secrets.NewSecretStore(cfg.SecretsDBPath(), "fedcba9876543210fedcba9876543210")
-	require.NoError(t, err)
-	require.NoError(t, other.Set(ctx, "refund-bot-talon-key", []byte("sealed-under-another-key"), secrets.ACL{}))
-	require.NoError(t, other.Close())
-	err = runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot")
-	require.ErrorContains(t, err, "cannot be resolved")
-	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
-	require.True(t, os.IsNotExist(statErr))
-}
-
-// A dry run inspects an existing vault read-only: the file is byte-identical
-// afterwards (no schema statement, no access-log row).
-func TestAgentsAdd_DryRunLeavesAnExistingVaultUntouched(t *testing.T) {
+// A dry run leaves an existing vault and evidence store byte-identical.
+func TestAgentsAdd_DryRunLeavesExistingStoresUntouched(t *testing.T) {
 	ctx := context.Background()
 	cfg, _ := setupAddFleet(t)
 	resetAgentsAddFlags(t)
-	require.NoError(t, cfg.EnsureDataDir())
-	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	require.NoError(t, err)
-	require.NoError(t, store.Set(ctx, "other-talon-key", []byte("k"), secrets.ACL{}))
-	require.NoError(t, store.Close())
-	rw, err := sql.Open("sqlite3", cfg.SecretsDBPath())
-	require.NoError(t, err)
-	_, err = rw.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
-	require.NoError(t, err)
-	require.NoError(t, rw.Close())
-	digest := func() [32]byte {
-		b, err := os.ReadFile(cfg.SecretsDBPath())
+	// A real registration first, so both stores exist with content.
+	require.NoError(t, runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "first-one"))
+	checkpoint := func(path string) {
+		rw, err := sql.Open("sqlite3", path)
+		require.NoError(t, err)
+		_, err = rw.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+		require.NoError(t, err)
+		require.NoError(t, rw.Close())
+	}
+	checkpoint(cfg.SecretsDBPath())
+	checkpoint(cfg.EvidenceDBPath())
+	digest := func(path string) [32]byte {
+		b, err := os.ReadFile(path)
 		require.NoError(t, err)
 		return sha256.Sum256(b)
 	}
-	before := digest()
+	vaultBefore, evBefore := digest(cfg.SecretsDBPath()), digest(cfg.EvidenceDBPath())
 
 	agentsAddDryRun = true
 	var out bytes.Buffer
 	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
 	require.Contains(t, out.String(), "Dry run: nothing was written")
-	require.Equal(t, before, digest(), "the vault file is unchanged by a dry run")
+	require.Equal(t, vaultBefore, digest(cfg.SecretsDBPath()), "the vault file is unchanged by a dry run")
+	require.Equal(t, evBefore, digest(cfg.EvidenceDBPath()), "the evidence store is unchanged by a dry run")
 
 	// A vault file without a secrets table (never initialized) is treated as empty, read-only.
 	empty := *cfg
@@ -384,119 +719,4 @@ func TestAgentsAdd_DryRunLeavesAnExistingVaultUntouched(t *testing.T) {
 	require.NoError(t, e.Close())
 	_, err = secrets.MetadataReadOnly(ctx, empty.SecretsDBPath(), "refund-bot-talon-key")
 	require.ErrorIs(t, err, secrets.ErrSecretNotFound)
-}
-
-// A rollback removes only this registration's own key version: a key someone
-// else stored under the name in the meantime survives, and the failure says
-// what happened.
-func TestAgentsAdd_RollbackRemovesOnlyItsOwnKey(t *testing.T) {
-	ctx := context.Background()
-	cfg, agentsDir := setupAddFleet(t)
-	resetAgentsAddFlags(t)
-	require.NoError(t, cfg.EnsureDataDir())
-	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	require.NoError(t, err)
-	defer store.Close()
-	plan, err := planAgentsAdd(ctx, cfg, "refund-bot")
-	require.NoError(t, err)
-	own, err := store.Create(ctx, plan.SecretName, []byte("this-registration"), secrets.ACL{})
-	require.NoError(t, err)
-	require.NoError(t, store.Set(ctx, plan.SecretName, []byte("replaced-by-someone-else"), secrets.ACL{}))
-	err = undoAgentsAdd(ctx, store, nil, plan, own, false, os.ErrPermission)
-	require.ErrorContains(t, err, "nothing of this registration was left behind")
-	got, err := store.Get(ctx, plan.SecretName, "acme", "refund-bot")
-	require.NoError(t, err)
-	require.Equal(t, "replaced-by-someone-else", string(got.Value))
-	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
-	require.True(t, os.IsNotExist(statErr))
-}
-
-// The --use-existing-key failure path (#567 review): a registration that
-// fails AFTER its agent file was written is rolled back without touching the
-// existing key (same value, same ACL: it was never this registration's), the
-// file is gone, the rollback is recorded with its cause and no completion
-// record exists. A fleet scan taken while the file existed (what a running
-// server's reload would load in that window) sees the use case; the next
-// scan does not.
-func TestAgentsAdd_ExistingKeyFailureAfterTheFileIsWritten(t *testing.T) {
-	ctx := context.Background()
-	cfg, agentsDir := setupAddFleet(t)
-	resetAgentsAddFlags(t)
-	agentsAddTenant, agentsAddUseExisting = "acme", true
-	require.NoError(t, cfg.EnsureDataDir())
-	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	require.NoError(t, err)
-	acl := secrets.ACL{Tenants: []string{"acme"}, Agents: []string{"refund-bot"}}
-	require.NoError(t, store.Set(ctx, "refund-bot-talon-key", []byte("the-key-the-application-already-uses"), acl))
-	before, err := store.Metadata(ctx, "refund-bot-talon-key")
-	require.NoError(t, err)
-	require.NoError(t, store.Close())
-
-	scanHas := func() bool {
-		scan, err := agentcatalog.DiscoverAgents(ctx, agentsDir)
-		require.NoError(t, err)
-		for i := range scan.Agents {
-			if scan.Agents[i].Name == "refund-bot" {
-				return true
-			}
-		}
-		return false
-	}
-	loadedInTheWindow := false
-	real := verifyFleetAfterAddFn
-	verifyFleetAfterAddFn = func(ctx context.Context, cfg *config.Config, plan *agentsAddPlan) error {
-		require.NoError(t, real(ctx, cfg, plan), "the file is valid; the failure is injected after it")
-		loadedInTheWindow = scanHas()
-		return errors.New("injected failure after the agent file was written")
-	}
-	t.Cleanup(func() { verifyFleetAfterAddFn = real })
-
-	var out bytes.Buffer
-	err = runAgentsAdd(ctx, &out, cfg, "refund-bot")
-	require.ErrorContains(t, err, "injected failure after the agent file was written")
-	require.ErrorContains(t, err, "nothing of this registration was left behind")
-	require.NotContains(t, out.String()+err.Error(), "the-key-the-application-already-uses", "an existing key is never printed")
-
-	require.True(t, loadedInTheWindow, "between the file write and the rollback a reload would load the use case")
-	require.False(t, scanHas(), "after the rollback the next reload no longer finds it")
-	_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
-	require.True(t, os.IsNotExist(statErr), "the agent file and its directory are removed")
-
-	// The existing key is untouched: value, ACL and creation time.
-	got, ok := vaultValue(t, cfg, "refund-bot-talon-key")
-	require.True(t, ok, "the existing key must survive a rollback")
-	require.Equal(t, "the-key-the-application-already-uses", got)
-	store, err = secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	require.NoError(t, err)
-	defer store.Close()
-	after, err := store.Metadata(ctx, "refund-bot-talon-key")
-	require.NoError(t, err)
-	require.Equal(t, before.ACL, after.ACL)
-	require.Equal(t, before.CreatedAt, after.CreatedAt)
-
-	// Signed evidence: intent and rollback (with the cause), no completion.
-	ev, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
-	require.NoError(t, err)
-	defer ev.Close()
-	kinds := map[string]int{}
-	rows, err := ev.DB().QueryContext(ctx, `SELECT invocation_type, evidence_json FROM evidence WHERE agent_id = 'refund-bot'`)
-	require.NoError(t, err)
-	defer rows.Close()
-	for rows.Next() {
-		var kind, raw string
-		require.NoError(t, rows.Scan(&kind, &raw))
-		kinds[kind]++
-		require.NotContains(t, raw, "the-key-the-application-already-uses")
-		require.Contains(t, raw, "key: bound to existing vault secret refund-bot-talon-key")
-		if kind == "agent_registration_rolled_back" {
-			require.Contains(t, raw, "injected failure after the agent file was written")
-		}
-	}
-	require.NoError(t, rows.Err())
-	require.Equal(t, map[string]int{"agent_registration_intent": 1, "agent_registration_rolled_back": 1}, kinds)
-
-	// The name is free again: the same registration now succeeds.
-	verifyFleetAfterAddFn = real
-	require.NoError(t, runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot"))
-	require.True(t, scanHas())
 }

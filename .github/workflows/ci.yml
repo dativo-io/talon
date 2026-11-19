@@ -380,6 +380,13 @@ jobs:
       # effective action policy in Chromium.
       - name: Action Gateway evidence live (real processes, browser)
         run: bash scripts/action-evidence-live.sh
+      # Onboarding (#472): `talon agents add` for a first and a second
+      # application, the pinned OpenAI Node SDK against a real gateway with
+      # a counting upstream, verification in the CLI and the console, key
+      # replacement and revocation. Every mandatory test must PASS; a skip
+      # fails the step.
+      - name: Onboarding acceptance (real processes, OpenAI SDK)
+        run: bash scripts/onboarding-acceptance.sh
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

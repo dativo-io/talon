@@ -135,7 +135,7 @@ func TestBuild_PeopleAnalyticsLayers(t *testing.T) {
 	assert.False(t, r.Effective.ProvenActive)
 	assert.Contains(t, r.Effective.Basis, "not proven")
 	assert.Nil(t, r.LastDecision)
-	assert.Contains(t, r.Notes, "no evidence recorded for this use case yet")
+	assert.Contains(t, r.Notes, "no authenticated request of this use case is recorded yet (registration, enable/disable and reload records are operator events, not decisions)")
 }
 
 func TestBuild_LoadedProofAndHistoricalDecision(t *testing.T) {

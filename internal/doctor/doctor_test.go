@@ -5,13 +5,16 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/registration"
 	"github.com/dativo-io/talon/internal/secrets"
 )
 
@@ -590,4 +593,43 @@ func TestCheckConfigKeys(t *testing.T) {
 		r := checkConfigKeys(p)
 		assert.Equal(t, "warn", r.Status)
 	})
+}
+
+// An intent record without a completion or rollback record is an
+// interrupted `talon agents add`: doctor names it and says what to do; a
+// terminal record clears the finding.
+func TestRun_ReportsInterruptedRegistrations(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SIGNING_KEY", "doctor-test-signing-key-000000001")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	find := func() CheckResult {
+		for _, c := range Run(context.Background(), Options{}).Checks {
+			if c.Name == "agent_registrations" {
+				return c
+			}
+		}
+		t.Fatal("no agent_registrations check")
+		return CheckResult{}
+	}
+	require.Equal(t, "pass", find().Status)
+
+	store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	require.NoError(t, err)
+	put := func(id, typ string) {
+		require.NoError(t, store.Store(context.Background(), &evidence.Evidence{
+			ID: id, CorrelationID: "al_corr", TenantID: "default", AgentID: "refund-bot", Timestamp: time.Now().UTC(), InvocationType: typ,
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: typ},
+		}))
+	}
+	put("al_intent", registration.TypeIntent)
+	c := find()
+	require.Equal(t, "warn", c.Status)
+	require.Contains(t, c.Message, "refund-bot (tenant default, intent al_intent")
+	require.Contains(t, c.Fix, "talon agents add <name>")
+
+	put("al_rollback", registration.TypeRolledBack)
+	require.NoError(t, store.Close())
+	require.Equal(t, "pass", find().Status)
 }

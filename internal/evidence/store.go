@@ -625,6 +625,11 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	addColumnIfNotExists(db, "step_evidence", "graph_run_id", "TEXT")
 
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_session ON evidence(session_id)")
+	// "The newest record of one invocation type of one use case" (#472): the
+	// observed-traffic projection asks this per interception boundary. With
+	// this index each question is one ordered range read ending at LIMIT,
+	// whatever the size of the store or of the use case's history.
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_tenant_agent_type_ts ON evidence(tenant_id, agent_id, invocation_type, timestamp)")
 	// Covering index for the session read model (#535): observed-session
 	// discovery groups by (tenant, session, agent) and timeline pages walk
 	// (session, tenant, agent, timestamp); both resolve from this index
@@ -1044,6 +1049,20 @@ func (s *Store) queryEvidenceJSON(ctx context.Context, scope, query string, args
 		results = append(results, &ev)
 	}
 	return results, rows.Err()
+}
+
+// NewestByType returns the newest records of ONE invocation type of one use
+// case in one tenant, newest first, at most limit. It is the bounded lookup
+// behind "has authenticated traffic been observed at this boundary" (#472):
+// an indexed range read (idx_evidence_tenant_agent_type_ts), never a scan of
+// the use case's history. Signatures are not verified here (Detail does).
+func (s *Store) NewestByType(ctx context.Context, tenantID, agentID, invocationType string, limit int) ([]*Evidence, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	return s.queryEvidenceJSON(ctx, "invocation type",
+		`SELECT evidence_json FROM evidence WHERE tenant_id = ? AND agent_id = ? AND invocation_type = ? ORDER BY timestamp DESC, id DESC LIMIT ?`,
+		tenantID, agentID, invocationType, limit)
 }
 
 // RuntimeRefPage is one page of records attributed to an external-runtime
