@@ -20,8 +20,9 @@ import (
 //     console passes what the current files compile to, and says whether a
 //     running process is proven to have loaded them.
 //   - Disclosure: which fields the caller may see. An authenticated approver
-//     who could decide the approval reads the exact review values; the
-//     console reads argument names only.
+//     who could decide the approval reads the exact review values and the
+//     decision's free-text reason; the console reads argument names only and
+//     that a reason was recorded, never its text.
 //
 // Nothing here authorizes, expires, invalidates or decides anything. The
 // decision path (Service.Decide) stays the only authority; a view says what
@@ -37,7 +38,8 @@ const (
 	// DiscloseOperational: the read-only Operations Console. A paired
 	// browser is not a reviewer, and its tenant selection is a filter, not
 	// authorization: argument NAMES only, no value, no digest of values, a
-	// destination reduced to scheme and host.
+	// destination reduced to scheme and host, and no free text a reviewer
+	// wrote (a decision reason can quote the exact arguments).
 	DiscloseOperational
 )
 
@@ -117,9 +119,14 @@ const (
 	// them.
 	ClassPotentiallyActionable = "potentially_actionable"
 	// ClassNotDecidable: unresolved in the store, but a decision would be
-	// refused (lifetime elapsed, binding stale, use case not served).
+	// refused: the lifetime elapsed, or the configuration a process RUNS
+	// (the deciding runtime, or files proven loaded by every running
+	// process) no longer matches the binding or no longer serves the use
+	// case. Never inferred from files alone.
 	ClassNotDecidable = "not_decidable"
-	// ClassUnknown: unresolved; eligibility cannot be established.
+	// ClassUnknown: unresolved; whether the deciding process would accept a
+	// decision cannot be established. That includes files that differ from
+	// the binding while no process is proven to run them.
 	ClassUnknown = "unknown"
 	// ClassDecided: a completed decision (approved, rejected) or an
 	// approval the system closed (expired, invalidated). History.
@@ -172,6 +179,14 @@ type bindingFacts struct {
 // approval-relevant policy. Where the current configuration is not known a
 // certain refusal is still reported (a changed digest is stale whatever the
 // unknown part is); otherwise the answer is unknown, never eligible.
+//
+// A refusal is certain only on a basis that is what a process runs: the
+// deciding runtime itself, or files every running process is proven to have
+// loaded. Files that no process is proven to run (CurrentFiles) can differ
+// from the binding while the deciding process still holds the configuration
+// the approval was established under and would accept the decision. That is
+// "unknown", never "not decidable"; the comparison of the binding with the
+// files stays in Policy and Definition as its own fact (#565 review).
 func classifyApproval(f bindingFacts, cfg CurrentConfig, now time.Time) Eligibility {
 	if f.Status != ApprovalPending {
 		return Eligibility{
@@ -193,6 +208,9 @@ func classifyApproval(f bindingFacts, cfg CurrentConfig, now time.Time) Eligibil
 	case cfg.Unavailable != "":
 		e.State, e.Class, e.Basis = EligibilityUnknown, ClassUnknown, "none"
 		e.Explanation = "whether this can still be decided cannot be established here: " + cfg.Unavailable
+	case cfg.Basis == CurrentFiles && (e.Definition == BindingChanged || e.Policy == BindingChanged):
+		e.State, e.Class = EligibilityUnknown, ClassUnknown
+		e.Explanation = "the current configuration files compile to another " + changedPart(e) + " than this operation was established under, but no running Talon process is proven to enforce these files. The deciding process may still hold the configuration this was established under and has the final word; a process that runs these files refuses a decision (approval_binding_stale)"
 	case e.Definition == BindingChanged:
 		e.State, e.Class = EligibilityStaleDefinition, ClassNotDecidable
 		e.Explanation = "the trusted action definition changed since this operation was established; a decision would be refused (approval_binding_stale). The application must create a new operation"
@@ -206,10 +224,17 @@ func classifyApproval(f bindingFacts, cfg CurrentConfig, now time.Time) Eligibil
 		e.State = EligibilityEligible
 		e.Class, e.Explanation = eligibleClass(cfg.Basis)
 	}
-	if e.Class == ClassNotDecidable && cfg.Basis == CurrentFiles && e.Basis != "lifetime" {
-		e.Explanation += " (according to the current configuration files; no running process is proven to enforce them)"
-	}
 	return e
+}
+
+func changedPart(e Eligibility) string {
+	switch {
+	case e.Definition == BindingChanged && e.Policy == BindingChanged:
+		return "action definition and policy"
+	case e.Definition == BindingChanged:
+		return "action definition"
+	}
+	return "policy"
 }
 
 func eligibleClass(basis string) (class, explanation string) {
@@ -345,7 +370,13 @@ type ApprovalDecision struct {
 	DecidedAt    *time.Time `json:"decided_at,omitempty"`
 	DecidedBy    string     `json:"decided_by,omitempty"`
 	DecidedGroup string     `json:"decided_group,omitempty"`
-	Reason       string     `json:"reason,omitempty"`
+	// Reason is the reviewer's free text, present only for the reviewer
+	// disclosure: a reviewer can quote the exact material arguments in it,
+	// so for the operational disclosure it is a value like any other.
+	Reason string `json:"reason,omitempty"`
+	// ReasonRecorded says that the decision carries a reason, under every
+	// disclosure.
+	ReasonRecorded bool `json:"reason_recorded"`
 }
 
 // ApprovalOperation is what happened to the operation the approval is for.
@@ -422,7 +453,10 @@ func BuildApprovalView(rec *ApprovalRecord, cfg CurrentConfig, disclosure Disclo
 	}
 	describeCurrent(v, op, cfg, disclosure)
 	if ap.Status != ApprovalPending {
-		v.Decision = &ApprovalDecision{Status: ap.Status, DecidedAt: ap.DecidedAt, DecidedBy: ap.DecidedBy, DecidedGroup: ap.DecidedGroup, Reason: ap.Reason}
+		v.Decision = &ApprovalDecision{Status: ap.Status, DecidedAt: ap.DecidedAt, DecidedBy: ap.DecidedBy, DecidedGroup: ap.DecidedGroup, ReasonRecorded: ap.Reason != ""}
+		if disclosure == DiscloseReviewer {
+			v.Decision.Reason = ap.Reason
+		}
 	}
 	if at := rec.LatestAttempt; at != nil {
 		v.Operation.LatestAttempt = &ApprovalAttempt{

@@ -30,9 +30,17 @@ import (
 // (effective.BuildActionConfigs). An approval reads "actionable" only when
 // every running `talon serve` is proven to have loaded exactly those
 // files; otherwise it reads "potentially actionable (per current files)",
-// and "unknown" where the files cannot say. Stored facts (an approval is
-// unresolved, its lifetime elapsed) need no configuration and are kept
+// and "unknown" where the files cannot say or where they differ from the
+// approval's binding while no process is proven to run them (the process
+// may still hold the configuration the approval was established under: it
+// is never called undecidable from files alone). Stored facts (an approval
+// is unresolved, its lifetime elapsed) need no configuration and are kept
 // apart from those inferences in every count.
+//
+// A reviewer's free text is a value too: the reason of a decision can quote
+// the exact arguments, so the console states that one was recorded and
+// never returns it, here or in the evidence view of the decision record
+// (operationalRecord).
 
 // SourceActionStore names the action tables of the evidence database.
 const SourceActionStore = "action_store"
@@ -56,10 +64,13 @@ type ApprovalEligibilityCounts struct {
 	Actionable int `json:"actionable"`
 	// PotentiallyActionable: eligible according to the current files only.
 	PotentiallyActionable int `json:"potentially_actionable"`
-	// NotDecidable: lifetime elapsed, or bound to a policy or action
-	// definition that changed.
+	// NotDecidable: lifetime elapsed, or bound to another policy or action
+	// definition than the files every running process is proven to have
+	// loaded.
 	NotDecidable int `json:"not_decidable"`
-	// Unknown: eligibility cannot be established from the files.
+	// Unknown: whether the deciding process would accept a decision cannot
+	// be established: the files cannot say, or they differ from the binding
+	// while no running process is proven to run them.
 	Unknown int `json:"unknown"`
 }
 
@@ -89,6 +100,19 @@ type ApprovalsSummary struct {
 
 const approvalsBasis = "unresolved counts are read from the store; eligibility is inferred from the current configuration files and is 'actionable' only where every running Talon process is proven to have loaded them"
 
+// What one page says about the selection it belongs to.
+const (
+	// PageEmptySelection: the first page, no item and no cursor: the
+	// selection holds nothing.
+	PageEmptySelection = "empty_selection"
+	// PageContinues: a cursor exists. The selection is not exhausted,
+	// whether or not this page holds an item (a page ends at the listing's
+	// scan bound and can be empty).
+	PageContinues = "continues"
+	// PageEnd: no cursor: the selection is exhausted with this page.
+	PageEnd = "end"
+)
+
 // ApprovalList is one page of the Approvals page.
 type ApprovalList struct {
 	Meta         Meta                     `json:"meta"`
@@ -97,8 +121,11 @@ type ApprovalList struct {
 	UseCase      string                   `json:"use_case,omitempty"`
 	Items        []action.ApprovalSummary `json:"items"`
 	Next         string                   `json:"next,omitempty"`
-	Limit        int                      `json:"limit"`
-	Disclosure   string                   `json:"disclosure"`
+	// Page is PageEmptySelection, PageContinues or PageEnd; empty when the
+	// store could not be read. Only PageEmptySelection means "no approval".
+	Page       string `json:"page,omitempty"`
+	Limit      int    `json:"limit"`
+	Disclosure string `json:"disclosure"`
 }
 
 // ApprovalDetail is one approval for the console.
@@ -129,11 +156,32 @@ type ApprovalCommands struct {
 
 const argumentsNote = "The console shows argument names only. Exact values are read by an approver of the required group with: talon approvals show <approval-id> (credential in TALON_APPROVER_KEY)."
 
-func (s *Service) actionReader() (*action.Reader, *Availability) {
+const noActionsNote = "this installation has not established any governed action yet"
+
+// actionReader returns a reader over an action store that can be read as a
+// whole. Otherwise it returns why not, as an availability: unavailable when
+// there is no store, when it cannot be queried, or when its schema exists
+// only in part; empty when the installation never used the Action Gateway
+// (no action table at all: a true zero). The console is read-only and never
+// creates or repairs a table.
+func (s *Service) actionReader(ctx context.Context) (*action.Reader, *Availability) {
 	if s.cfg.Evidence == nil {
 		return nil, &Availability{State: StateUnavailable, Source: SourceActionStore, Error: noStoreMsg}
 	}
-	return action.NewReader(s.cfg.Evidence.DB()), nil
+	reader := action.NewReader(s.cfg.Evidence.DB())
+	schema, err := reader.Schema(ctx)
+	if err != nil {
+		a := unavailable(SourceActionStore, err)
+		return nil, &a
+	}
+	switch schema.State {
+	case action.SchemaAbsent:
+		return nil, &Availability{State: StateEmpty, Source: SourceActionStore, AsOf: s.now(), Note: noActionsNote}
+	case action.SchemaIncomplete:
+		why := "the action store is incomplete, so approvals cannot be read (missing: " + strings.Join(schema.Missing, ", ") + "). This is not an unused installation; the read-only console creates and repairs nothing"
+		return nil, &Availability{State: StateUnavailable, Source: SourceActionStore, AsOf: s.now(), Error: why}
+	}
+	return reader, nil
 }
 
 // actionConfigs compiles the action configuration of every use case from
@@ -151,35 +199,26 @@ func (s *Service) actionConfigs(ctx context.Context, rt Runtime) *effective.Acti
 // approvalsSummary counts the unresolved approvals of the tenant scope.
 // The stored totals come from one grouped query over all rows; the
 // eligibility classes come from a second one grouped by what eligibility
-// depends on, classified once per group.
+// depends on, classified once per group. Both run in one read transaction
+// (action.Reader.UnresolvedCounts), so the classes of a use case sum to its
+// total whatever is decided meanwhile.
 func (s *Service) approvalsSummary(ctx context.Context, tenant string, rt Runtime) ApprovalsSummary {
 	out := ApprovalsSummary{UseCases: []UseCaseApprovals{}, Basis: approvalsBasis}
-	reader, missing := s.actionReader()
+	reader, missing := s.actionReader(ctx)
 	if missing != nil {
 		out.Availability = *missing
-		return out
-	}
-	ready, err := reader.Ready(ctx)
-	if err != nil {
-		out.Availability = unavailable(SourceActionStore, err)
-		return out
-	}
-	if !ready {
-		out.Availability = Availability{State: StateEmpty, Source: SourceActionStore, AsOf: s.now(), Note: "this installation has not established any governed action yet"}
-		out.Total = &ApprovalCounts{Eligibility: &ApprovalEligibilityCounts{}}
+		if missing.State == StateEmpty {
+			out.Total = &ApprovalCounts{Eligibility: &ApprovalEligibilityCounts{}}
+		}
 		return out
 	}
 	now := s.now()
-	stored, err := reader.UnresolvedByUseCase(ctx, tenant)
+	counts, err := reader.UnresolvedCounts(ctx, tenant, now)
 	if err != nil {
 		out.Availability = unavailable(SourceActionStore, err)
 		return out
 	}
-	groups, complete, err := reader.UnresolvedGroups(ctx, tenant, now)
-	if err != nil {
-		out.Availability = unavailable(SourceActionStore, err)
-		return out
-	}
+	stored, groups, complete := counts.ByUseCase, counts.Groups, counts.GroupsComplete
 	out.Availability = ok(SourceActionStore, now)
 	byUC := map[string]*ApprovalEligibilityCounts{}
 	if complete {
@@ -309,7 +348,7 @@ func approvalWhy(unresolved int, e ApprovalEligibilityCounts) string {
 		parts = append(parts, fmt.Sprintf("%d of unknown eligibility", e.Unknown))
 	}
 	if e.NotDecidable > 0 {
-		parts = append(parts, fmt.Sprintf("%d can no longer be decided (expired or stale)", e.NotDecidable))
+		parts = append(parts, fmt.Sprintf("%d can no longer be decided (expired, or stale against the configuration the running process loaded)", e.NotDecidable))
 	}
 	return strings.Join(parts, "; ") + ". A decision is taken with an approver credential: talon approvals list"
 }
@@ -333,18 +372,12 @@ func (s *Service) Approvals(ctx context.Context, tenant, useCase, state, after s
 	}
 	limit = clampLimit(limit, 50, action.MaxApprovalList)
 	out := &ApprovalList{Meta: s.meta(tenant), State: state, UseCase: useCase, Items: []action.ApprovalSummary{}, Limit: limit, Disclosure: action.DiscloseOperational.String()}
-	reader, missing := s.actionReader()
+	reader, missing := s.actionReader(ctx)
 	if missing != nil {
 		out.Availability = *missing
-		return out, nil
-	}
-	ready, err := reader.Ready(ctx)
-	if err != nil {
-		out.Availability = unavailable(SourceActionStore, err)
-		return out, nil
-	}
-	if !ready {
-		out.Availability = Availability{State: StateEmpty, Source: SourceActionStore, AsOf: s.now(), Note: "this installation has not established any governed action yet"}
+		if missing.State == StateEmpty {
+			out.Page = PageEmptySelection
+		}
 		return out, nil
 	}
 	cfgs := s.actionConfigs(ctx, s.runtime())
@@ -361,8 +394,21 @@ func (s *Service) Approvals(ctx context.Context, tenant, useCase, state, after s
 	out.Items, out.Next = page.Items, page.Next
 	out.Availability = ok(SourceActionStore, s.now())
 	out.Availability.Note = approvalsBasis
-	if len(out.Items) == 0 {
+	// Only a first page without items and without a cursor is an empty
+	// selection (#565 review). A page ends at the listing's scan bound, so
+	// it can be empty while the selection continues; and an empty page
+	// reached through a cursor is the end of a listing that had items.
+	switch {
+	case out.Next != "":
+		out.Page = PageContinues
+		if len(out.Items) == 0 {
+			out.Availability.Note = "no approval of this selection among the rows read for this page; the selection is not exhausted: read the next page. " + approvalsBasis
+		}
+	case len(out.Items) == 0 && after == "":
+		out.Page = PageEmptySelection
 		out.Availability.State = StateEmpty
+	default:
+		out.Page = PageEnd
 	}
 	return out, nil
 }
@@ -374,16 +420,14 @@ func (s *Service) Approval(ctx context.Context, tenant, id string) (*ApprovalDet
 	if strings.TrimSpace(id) == "" {
 		return nil, fmt.Errorf("%w: approval id is required", ErrInvalidArgument)
 	}
-	reader, missing := s.actionReader()
-	if missing != nil {
-		return nil, fmt.Errorf("%w: %s", ErrUnavailable, missing.Error)
-	}
-	ready, err := reader.Ready(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("%w: reading the action store", ErrUnavailable)
-	}
-	if !ready {
+	reader, missing := s.actionReader(ctx)
+	switch {
+	case missing != nil && missing.State == StateEmpty:
 		return nil, fmt.Errorf("%w: approval", ErrNotFound)
+	case missing != nil:
+		// A store that cannot be read is never "not found" (the approval
+		// may exist).
+		return nil, fmt.Errorf("%w: %s", ErrUnavailable, missing.Error)
 	}
 	rec, err := reader.ApprovalRecord(ctx, id)
 	if err != nil {
@@ -397,12 +441,13 @@ func (s *Service) Approval(ctx context.Context, tenant, id string) (*ApprovalDet
 	view := action.BuildApprovalView(rec, cfg, action.DiscloseOperational, s.now())
 	out := &ApprovalDetail{
 		Meta: s.meta(op.TenantID), Availability: ok(SourceActionStore, s.now()), Approval: view,
-		Lifecycle: s.lifecycle(ctx, op.TenantID, op.Ref), ArgumentsNote: argumentsNote,
+		ArgumentsNote: argumentsNote,
 		Commands: ApprovalCommands{
 			Show:   "talon approvals show " + view.ApprovalID,
 			Verify: "talon audit verify --operation " + op.OperationID + " --tenant " + op.TenantID,
 		},
 	}
+	out.Lifecycle = s.lifecycle(ctx, op.TenantID, op.Ref, out.Commands.Verify)
 	out.Availability.Note = approvalsBasis
 	if view.Unresolved && view.Eligibility.NeedsAttention() {
 		out.Commands.Approve = "talon approvals approve " + view.ApprovalID + ` --reason "..."`
@@ -419,13 +464,19 @@ const maxLifecycleRecords = 50
 
 // lifecycle lists the operation's evidence records as index rows, oldest
 // first. They are the signed records `talon audit verify --operation`
-// checks; a lifecycle record never carries an argument value.
-func (s *Service) lifecycle(ctx context.Context, tenant, opRef string) DecisionList {
+// checks; an index row carries no argument value and no free text. The list is
+// bounded: when the operation has more records, the list is marked
+// truncated and says which part it is and how to read all of them, so a
+// bounded list never looks complete (#565 review).
+func (s *Service) lifecycle(ctx context.Context, tenant, opRef, verifyCommand string) DecisionList {
 	out := DecisionList{Records: []evidence.Index{}, Limit: maxLifecycleRecords}
-	records, err := s.cfg.Evidence.ListByCorrelationIDLimit(ctx, opRef, tenant, maxLifecycleRecords)
+	records, err := s.cfg.Evidence.ListByCorrelationIDLimit(ctx, opRef, tenant, maxLifecycleRecords+1)
 	if err != nil {
 		out.Availability = unavailable(SourceEvidenceStore, err)
 		return out
+	}
+	if len(records) > maxLifecycleRecords {
+		records, out.Truncated = records[:maxLifecycleRecords], true
 	}
 	for _, r := range records {
 		out.Records = append(out.Records, evidence.IndexOf(r))
@@ -437,7 +488,11 @@ func (s *Service) lifecycle(ctx context.Context, tenant, opRef string) DecisionL
 		return out.Records[i].ID < out.Records[j].ID
 	})
 	out.Availability = ok(SourceEvidenceStore, s.now())
-	if len(out.Records) == 0 {
+	switch {
+	case out.Truncated:
+		out.Availability.State = StatePartial
+		out.Availability.Note = fmt.Sprintf("this operation has more than %d signed records; the list holds the oldest %d. All of them: %s", maxLifecycleRecords, maxLifecycleRecords, verifyCommand)
+	case len(out.Records) == 0:
 		out.Availability.State = StateEmpty
 	}
 	return out

@@ -88,7 +88,7 @@ var approvalsListCmd = &cobra.Command{
 			_, err = cmd.OutOrStdout().Write(append(raw, '\n'))
 			return err
 		}
-		printApprovalList(cmd.OutOrStdout(), &out, time.Now().UTC())
+		printApprovalList(cmd.OutOrStdout(), &out, time.Now().UTC(), approvalsAfter != "")
 		return nil
 	},
 }
@@ -102,14 +102,21 @@ type approvalsListResponse struct {
 
 // printApprovalList is the compact listing: one line per approval, no
 // argument name or value (talon approvals show prints those).
-func printApprovalList(w io.Writer, out *approvalsListResponse, now time.Time) {
+//
+// The server ends a page at its scan bound, so a page can be empty while
+// the selection continues ("next" is set). Only a first page without rows
+// and without a cursor says that the selection is empty; an empty page with
+// a cursor says that nothing was found yet, and an empty page reached with
+// --after says that the listing ended (#565 review). continued is true when
+// this page was requested with --after.
+func printApprovalList(w io.Writer, out *approvalsListResponse, now time.Time, continued bool) {
 	what := map[string]string{
 		action.SelectAttention:  "Approvals of your groups that need a decision",
 		action.SelectUnresolved: "Unresolved approvals of your groups (including ones that can no longer be decided)",
 		action.SelectDecided:    "Decided and closed approvals of your groups (newest first)",
 	}[out.State]
-	if len(out.Approvals) == 0 {
-		fmt.Fprintf(w, "%s in tenant %s: none.\n", what, out.Tenant)
+	if empty := emptyPageText(out, continued); empty != "" {
+		fmt.Fprintf(w, "%s in tenant %s: %s\n", what, out.Tenant, empty)
 	} else {
 		fmt.Fprintf(w, "%s in tenant %s:\n\n", what, out.Tenant)
 		tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
@@ -133,9 +140,29 @@ func printApprovalList(w io.Writer, out *approvalsListResponse, now time.Time) {
 		_ = tw.Flush()
 	}
 	fmt.Fprintln(w)
-	if out.Next != "" {
+	switch {
+	case out.Next != "" && len(out.Approvals) == 0:
+		fmt.Fprintf(w, "Continue: talon approvals list%s --after %s\n", listFlag(out.State), out.Next)
+	case out.Next != "":
 		fmt.Fprintf(w, "More exist. Next page: talon approvals list%s --after %s\n", listFlag(out.State), out.Next)
 	}
+	printListHints(w, out)
+}
+
+// emptyPageText words a page without rows; "" when the page has rows.
+func emptyPageText(out *approvalsListResponse, continued bool) string {
+	switch {
+	case len(out.Approvals) > 0:
+		return ""
+	case out.Next != "":
+		return "none among the requests read for this page. The listing is NOT exhausted."
+	case continued:
+		return "no further approvals. This is the end of the listing."
+	}
+	return "none."
+}
+
+func printListHints(w io.Writer, out *approvalsListResponse) {
 	switch out.State {
 	case action.SelectAttention:
 		fmt.Fprintln(w, "Expired or stale requests: talon approvals list --all    History: talon approvals list --decided")
@@ -397,7 +424,8 @@ func approvalsRequest(ctx context.Context, method, path string, body []byte, out
 	if !strings.HasPrefix(key, "talon_appr_") {
 		return nil, fmt.Errorf("%s does not hold an approver credential (talon_appr_...); admin and agent keys carry no approval authority", approverKeyEnv)
 	}
-	if err := refusePlaintextRemote(approvalsURL); err != nil {
+	base, err := approvalsBaseURL(approvalsURL, approvalsAllowPlaintext)
+	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -406,7 +434,7 @@ func approvalsRequest(ctx context.Context, method, path string, body []byte, out
 	if body != nil {
 		rd = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(approvalsURL, "/")+path, rd)
+	req, err := http.NewRequestWithContext(ctx, method, approvalsEndpoint(base, path), rd)
 	if err != nil {
 		return nil, err
 	}
@@ -416,11 +444,11 @@ func approvalsRequest(ctx context.Context, method, path string, body []byte, out
 	}
 	resp, err := approvalsHTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("reaching the Talon server at %s: %w", approvalsURL, err)
+		return nil, fmt.Errorf("reaching the Talon server at %s: %w", base.String(), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode <= 399 {
-		return nil, fmt.Errorf("the server at %s answered with a redirect (HTTP %d); the approver credential is sent only to the URL you gave, so the redirect was not followed. Pass the final URL with --url", approvalsURL, resp.StatusCode)
+		return nil, fmt.Errorf("the server at %s answered with a redirect (HTTP %d); the approver credential is sent only to the URL you gave, so the redirect was not followed. Pass the final URL with --url", base.String(), resp.StatusCode)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
@@ -453,28 +481,79 @@ func approvalsServerError(status int, path string, raw []byte) error {
 // approvalsHTTPClient never follows a redirect (#565 review). The request
 // carries the approver credential; a redirect could name another host, or
 // the same host over plain http, and the credential must reach only the
-// URL the operator gave (which refusePlaintextRemote has already checked).
+// URL the operator gave (which approvalsBaseURL has already validated).
 var approvalsHTTPClient = &http.Client{
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
 
-// refusePlaintextRemote keeps the approver credential off the network in
-// clear text: plain http is accepted for loopback only, unless the operator
-// states that the path is protected (a private link or a TLS-terminating
-// proxy on the same host) with --allow-plaintext.
-func refusePlaintextRemote(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return fmt.Errorf("--url %q is not a valid URL", raw)
+// approvalsBaseURL validates --url completely before any request is built.
+// The approver credential is sent to this URL, so nothing about it is left
+// to interpretation (#565 review):
+//
+//   - http or https only, with a host; --allow-plaintext admits plain http
+//     to a remote host and nothing else (never another scheme);
+//   - no user or password in the URL: the credential comes from the
+//     environment, and a URL with a password ends up in shell history;
+//   - no query and no fragment: the request path is appended to the base, so
+//     either would move the request to another resource;
+//   - no whitespace or control character anywhere.
+//
+// A path prefix is kept (a reverse proxy can serve Talon below one). The
+// error never repeats the URL when it carries credentials.
+func approvalsBaseURL(raw string, allowPlaintext bool) (*url.URL, error) {
+	u, err := parseBaseURL(raw)
+	if err != nil {
+		return nil, err
 	}
-	if u.Scheme == "https" || approvalsAllowPlaintext {
-		return nil
+	if u.Scheme == "https" || allowPlaintext {
+		return u, nil
 	}
 	host := u.Hostname()
 	if ip := net.ParseIP(host); host == "localhost" || (ip != nil && ip.IsLoopback()) {
-		return nil
+		return u, nil
 	}
-	return fmt.Errorf("refusing to send the approver credential over plain http to %s: use an https URL, or pass --allow-plaintext when the network path is protected", u.Host)
+	return nil, fmt.Errorf("refusing to send the approver credential over plain http to %s: use an https URL, or pass --allow-plaintext when the network path is protected", u.Host)
+}
+
+// parseBaseURL checks the shape of --url: everything but the plain-http rule.
+func parseBaseURL(raw string) (*url.URL, error) {
+	if raw == "" {
+		return nil, fmt.Errorf("--url is empty: pass the base URL of the running Talon server (for example https://talon.example.com)")
+	}
+	if strings.IndexFunc(raw, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
+		return nil, fmt.Errorf("--url must not contain whitespace or control characters")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("--url is not a valid URL (expected http(s)://host[:port][/prefix])")
+	}
+	if u.User != nil {
+		return nil, fmt.Errorf("--url must not embed a user or password: the approver credential is read from %s only", approverKeyEnv)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("--url %q must start with http:// or https://", raw)
+	}
+	if u.Opaque != "" || u.Hostname() == "" {
+		return nil, fmt.Errorf("--url %q names no host (expected http(s)://host[:port][/prefix])", raw)
+	}
+	if carriesQueryOrFragment(raw, u) {
+		return nil, fmt.Errorf("--url %q must not carry a query or a fragment: the request path is appended to it", raw)
+	}
+	return u, nil
+}
+
+func carriesQueryOrFragment(raw string, u *url.URL) bool {
+	return u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || strings.HasSuffix(raw, "#")
+}
+
+// approvalsEndpoint appends a request path ("/v1/reviews?state=...") to the
+// validated base URL, keeping the base's path prefix.
+func approvalsEndpoint(base *url.URL, path string) string {
+	p, query, _ := strings.Cut(path, "?")
+	u := *base
+	u.Path, u.RawPath = strings.TrimRight(base.Path, "/")+p, ""
+	u.RawQuery = query
+	return u.String()
 }
 
 func init() {

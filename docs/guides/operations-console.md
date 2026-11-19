@@ -98,7 +98,7 @@ A further AI use case is another agent file and key under the same `talon.config
 
 ![Approvals: a refund that waits for a decision and one whose lifetime elapsed, each with its state and required group](../assets/console/approvals.webp)
 
-*The Approvals page lists Action Gateway requests that wait for a person. "Eligible per current files" means the configuration files still match what the request was established under; it reads "Can be decided now" only when a running `talon serve` is proven to have loaded those files. A request whose lifetime elapsed stays unresolved in the store and reads "Expired, not decidable". No argument name or value is listed.*
+*The Approvals page lists Action Gateway requests that wait for a person. "Eligible per current files" means the configuration files still match what the request was established under; it reads "Can be decided now" only when a running `talon serve` is proven to have loaded those files. When the files were changed and no running process is proven to run them, a request reads "Files changed, runtime not confirmed" and stays listed: the process may still hold the configuration it was established under. A request whose lifetime elapsed stays unresolved in the store and reads "Expired, not decidable". No argument name or value is listed, and a reviewer's reason is never shown: the console states that one was recorded.*
 
 ![Approval detail: who asks for what, whether it can be decided, argument names without values, the rule that required approval, and the CLI commands](../assets/console/approval-detail.webp)
 

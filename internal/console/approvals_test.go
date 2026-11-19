@@ -34,6 +34,11 @@ const approvalsKey = "console-approvals-signing-key-0001"
 // of the operations the fixture establishes.
 var sentinels = []string{"T-SENTINEL-4711", "987654.32", "987654", "payments-SENTINEL-svc", "T-SENTINEL-2", "T-SENTINEL-3"}
 
+// approvedReason is the fixture's decision reason. It quotes the exact
+// arguments of the request it approves (sentinels), as a reviewer may: no
+// console route may return it.
+const approvedReason = "customer verified by phone: T-SENTINEL-2, 987654.32 EUR"
+
 const refundAgent = `agent:
   name: refund-bot
   version: "1.0.0"
@@ -163,7 +168,7 @@ func newApprovalsFixture(t *testing.T) *approvalsFixture {
 	f.approved = establish(f.refund, "refund-ok", "create_refund_request", `{"ticket_id":"T-SENTINEL-2","amount":987654.32,"currency":"EUR"}`)
 	f.pending = establish(f.refund, "refund-big", "create_refund_request", `{"ticket_id":"T-SENTINEL-4711","amount":987654.32,"currency":"EUR"}`)
 	f.deploy = establish(f.release, "deploy-prod", "deploy_service", `{"service":"payments-SENTINEL-svc","environment":"production"}`)
-	_, err = f.refund.Decide(ctx, action.DecideRequest{ApprovalID: f.approved, Approve: true, Reason: "customer verified by phone", Reviewer: reviewer("support-leads")})
+	_, err = f.refund.Decide(ctx, action.DecideRequest{ApprovalID: f.approved, Approve: true, Reason: approvedReason, Reviewer: reviewer("support-leads")})
 	require.NoError(t, err)
 	// The fixture's one hand-written change: an approval whose lifetime
 	// elapsed while nobody touched it (it stays pending in the store).
@@ -291,18 +296,31 @@ func TestApprovals_StoredCountsAndInferredEligibilityAreSeparate(t *testing.T) {
 	require.Equal(t, action.CurrentFilesConfirmed, d.Approval.Eligibility.Basis)
 
 	// The refund rule is edited on disk and the process is not restarted:
-	// per the files the approval is stale, and the console says that this
-	// is a statement about the files, not about the running process.
+	// the files now differ from the binding, which is reported as a fact
+	// about the files. It is not a refusal: the running process still holds
+	// the configuration the approval was established under
+	// (TestApprovals_FileChangeWithoutRestartNeverHidesADecidableApproval).
 	p := filepath.Join(f.dir, "agents", "refund-bot", "agent.talon.yaml")
 	require.NoError(t, os.WriteFile(p, []byte(strings.Replace(refundAgent, `value: "50.00"`, `value: "60.00"`, 1)), 0o600))
 	d, err = f.svc.Approval(ctx, "", f.pending)
 	require.NoError(t, err)
-	require.Equal(t, action.EligibilityStalePolicy, d.Approval.Eligibility.State)
+	require.Equal(t, action.ClassUnknown, d.Approval.Eligibility.Class)
+	require.Equal(t, action.BindingChanged, d.Approval.Eligibility.Policy)
 	require.Equal(t, action.CurrentFiles, d.Approval.Current.Basis)
-	require.Contains(t, d.Approval.Eligibility.Explanation, "according to the current configuration files")
+	require.Contains(t, d.Approval.Eligibility.Explanation, "no running Talon process is proven to enforce these files")
 	require.Contains(t, d.Approval.Current.Note, "not proven to be what a running process enforces")
 	require.Equal(t, "refund-needs-approval", d.Approval.Bound.RuleID, "bound facts are the record's")
 	require.Contains(t, d.Approval.Current.Rule, "amount gt 60", "today's rule, under 'current'")
+
+	// The process restarts and loads the edited file: now the same
+	// comparison is what a process runs, and the approval cannot be decided.
+	f.proveLoaded()
+	d, err = f.svc.Approval(ctx, "", f.pending)
+	require.NoError(t, err)
+	require.Equal(t, action.EligibilityStalePolicy, d.Approval.Eligibility.State)
+	require.Equal(t, action.ClassNotDecidable, d.Approval.Eligibility.Class)
+	require.Equal(t, action.CurrentFilesConfirmed, d.Approval.Current.Basis)
+	require.Empty(t, d.Commands.Approve)
 
 	// The release use case disappears from the files: its approval is still
 	// counted and inspectable, with unknown eligibility — never dropped,
@@ -321,6 +339,53 @@ func TestApprovals_StoredCountsAndInferredEligibilityAreSeparate(t *testing.T) {
 	list, err = f.svc.Approvals(ctx, "acme", "", "", "", 0)
 	require.NoError(t, err)
 	require.Len(t, list.Items, 1, "an approval of unknown eligibility stays in the default listing")
+}
+
+// #565 review, finding 1. A running process loaded the configuration an
+// approval was established under; the file is then edited and the process
+// is not restarted. The files now differ from the binding, but the process
+// still accepts the decision. The console must not call that approval
+// undecidable or drop it from the default selection: runtime eligibility is
+// unknown, and the comparison with the files is reported as its own fact.
+func TestApprovals_FileChangeWithoutRestartNeverHidesADecidableApproval(t *testing.T) {
+	ctx := context.Background()
+	f := newApprovalsFixture(t)
+	f.proveLoaded()
+	p := filepath.Join(f.dir, "agents", "refund-bot", "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(strings.Replace(refundAgent, `value: "50.00"`, `value: "60.00"`, 1)), 0o600))
+
+	d, err := f.svc.Approval(ctx, "", f.pending)
+	require.NoError(t, err)
+	e := d.Approval.Eligibility
+	require.Equal(t, action.ClassUnknown, e.Class, "the files differ, but no process is proven to run them")
+	require.Equal(t, action.EligibilityUnknown, e.State)
+	require.True(t, e.NeedsAttention())
+	require.Equal(t, action.BindingChanged, e.Policy, "the comparison of the binding with the files is kept")
+	require.Equal(t, action.BindingUnchanged, e.Definition)
+	require.Equal(t, action.CurrentFiles, d.Approval.Current.Basis)
+	require.Contains(t, d.Approval.Current.Note, "not proven to be what a running process enforces")
+	require.Contains(t, d.Approval.Current.Rule, "amount gt 60", "today's rule, under 'current'")
+	require.Equal(t, "refund-needs-approval", d.Approval.Bound.RuleID, "bound facts are the record's")
+	require.NotEmpty(t, d.Commands.Approve, "the approval may still be decidable: the commands stay")
+
+	list, err := f.svc.Approvals(ctx, "default", "", "", "", 0)
+	require.NoError(t, err)
+	var ids []string
+	for _, it := range list.Items {
+		ids = append(ids, it.ApprovalID)
+	}
+	require.Contains(t, ids, f.pending, "an unresolved, unexpired approval stays in the default selection")
+
+	ov := f.svc.Overview(ctx, "default")
+	refund := useCaseCounts(t, ov.Approvals, "default", "refund-bot")
+	require.Equal(t, 2, refund.Unresolved)
+	require.Equal(t, console.ApprovalEligibilityCounts{Unknown: 1, NotDecidable: 1}, *refund.Eligibility, "one unknown (files changed, runtime not proven), one expired")
+	require.NotNil(t, finding(ov.Findings, "approvals_awaiting_decision", "refund-bot"))
+
+	// The process that holds the configuration it was established under
+	// accepts the decision: the approval WAS decidable all along.
+	_, err = f.refund.Decide(ctx, action.DecideRequest{ApprovalID: f.pending, Approve: true, Reason: "confirmed", Reviewer: reviewer("support-leads")})
+	require.NoError(t, err)
 }
 
 // History and the detail view: a decided approval shows who decided, when
@@ -360,7 +425,8 @@ func TestApprovals_DetailHistoryAndCommands(t *testing.T) {
 	require.False(t, d.Approval.Unresolved)
 	require.Equal(t, "apr_operator", d.Approval.Decision.DecidedBy)
 	require.Equal(t, "support-leads", d.Approval.Decision.DecidedGroup)
-	require.Equal(t, "customer verified by phone", d.Approval.Decision.Reason)
+	require.Empty(t, d.Approval.Decision.Reason, "the reviewer's free text is not part of the operational disclosure")
+	require.True(t, d.Approval.Decision.ReasonRecorded, "that a reason was recorded is")
 	require.NotNil(t, d.Approval.Decision.DecidedAt)
 	require.Equal(t, 0, d.Approval.Operation.AttemptCount, "approved, and nothing was dispatched by the approval")
 	require.Empty(t, d.Commands.Approve)
@@ -438,7 +504,16 @@ func TestApprovals_ConsoleAndReviewerShareFactsNotDisclosure(t *testing.T) {
 		require.Equal(t, rv.Bound.PolicyDigest, cv.Bound.PolicyDigest)
 		require.Equal(t, rv.Bound.DefinitionDigest, cv.Bound.DefinitionDigest)
 		require.Equal(t, rv.Current.Rule, cv.Current.Rule)
-		require.Equal(t, rv.Decision, cv.Decision)
+		require.Equal(t, rv.Decision == nil, cv.Decision == nil)
+		if rv.Decision != nil {
+			// Who decided, in which group, when and with which outcome are
+			// shared; the free-text reason is the reviewer's only.
+			want := *rv.Decision
+			want.Reason = ""
+			require.Equal(t, want, *cv.Decision)
+			require.Equal(t, approvedReason, rv.Decision.Reason)
+			require.True(t, cv.Decision.ReasonRecorded)
+		}
 		require.Equal(t, rv.Operation, cv.Operation)
 		require.Equal(t, rv.AfterApproval, cv.AfterApproval)
 
@@ -541,6 +616,327 @@ func TestApprovals_NoArgumentValueOnAnyRouteAndNoMutation(t *testing.T) {
 	d, err := f.svc.Approval(ctx, "", f.expired)
 	require.NoError(t, err)
 	require.Equal(t, action.ApprovalPending, d.Approval.Status, "an expired approval is reported, never closed, by a read")
+}
+
+// #565 review, finding 2. A reviewer's free-text reason can quote the exact
+// material arguments. The reason is recorded in the stored approval and in
+// the signed lifecycle record; a paired browser is not a reviewer, so no
+// console route may return it: not the approval detail, not a listing, and
+// not the evidence view of the linked lifecycle records. The authorized
+// reviewer surface keeps it, and the signed record is not modified.
+func TestApprovals_DecisionReasonStaysOnTheReviewerSurface(t *testing.T) {
+	ctx := context.Background()
+	f := newApprovalsFixture(t)
+	const reason = "verified by phone: refund of 987654.32 EUR for ticket T-SENTINEL-4711 is legitimate"
+	_, err := f.refund.Decide(ctx, action.DecideRequest{ApprovalID: f.pending, Approve: true, Reason: reason, Reviewer: reviewer("support-leads")})
+	require.NoError(t, err)
+	srv := httptest.NewServer(httpapi.Handler(f.svc))
+	defer srv.Close()
+	get := func(p string) string {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+p, nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "%s: %s", p, body)
+		return string(body)
+	}
+
+	d, err := f.svc.Approval(ctx, "", f.pending)
+	require.NoError(t, err)
+	require.Len(t, d.Lifecycle.Records, 3, "established, approval requested, decided")
+	paths := []string{
+		"/console/v1/approvals/" + f.pending, "/console/v1/approvals?state=decided", "/console/v1/overview", "/console/v1/use-cases/refund-bot",
+		"/console/v1/search?q=" + f.pending, "/console/v1/search?q=refund-big", "/console/v1/activity", "/console/v1/sessions",
+	}
+	decided := ""
+	for _, r := range d.Lifecycle.Records {
+		paths = append(paths, "/console/v1/evidence/"+r.ID)
+		if r.InvocationType == evidence.InvocationTypeActionLifecycle {
+			decided = r.ID // oldest first: the last lifecycle record is the decision
+		}
+	}
+	var leaks []string
+	for _, p := range paths {
+		body := get(p)
+		for _, s := range []string{"987654.32", "T-SENTINEL-4711", "verified by phone"} {
+			if strings.Contains(body, s) {
+				leaks = append(leaks, p)
+				break
+			}
+		}
+	}
+	require.Empty(t, leaks, "these console routes return the reviewer's free-text reason to a paired browser")
+
+	// The evidence view of the decision record: complete except for that
+	// one field, which it names, with where an approver reads it. The
+	// verification is the one over the complete stored record.
+	ed, err := f.svc.Evidence(ctx, decided, "")
+	require.NoError(t, err)
+	require.Equal(t, "valid", ed.Detail.Verification.State)
+	require.NotNil(t, ed.Detail.Record.ActionLifecycle)
+	require.Empty(t, ed.Detail.Record.ActionLifecycle.DecisionReason)
+	require.Equal(t, "apr_operator", ed.Detail.Record.ActionLifecycle.ReviewerPrincipal, "who decided is not withheld")
+	require.Equal(t, "support-leads", ed.Detail.Record.ActionLifecycle.ReviewerGroup)
+	require.NotEmpty(t, ed.Detail.Record.Signature)
+	require.Len(t, ed.Detail.Withheld, 1)
+	require.Equal(t, "action_lifecycle.decision_reason", ed.Detail.Withheld[0].Field)
+	require.Contains(t, ed.Detail.Withheld[0].Why, "verified over the complete stored record")
+	require.Equal(t, "talon approvals show "+f.pending, ed.Detail.Withheld[0].ReadWith)
+	// A record without a reviewer's text is returned whole, with no marker.
+	first, err := f.svc.Evidence(ctx, d.Lifecycle.Records[0].ID, "")
+	require.NoError(t, err)
+	require.Empty(t, first.Detail.Withheld)
+
+	// The console says THAT a reason was recorded and where to read it.
+	require.NotNil(t, d.Approval.Decision)
+	require.Empty(t, d.Approval.Decision.Reason)
+	require.True(t, d.Approval.Decision.ReasonRecorded)
+	require.Equal(t, "apr_operator", d.Approval.Decision.DecidedBy, "who decided, in which group and when stay visible")
+
+	// The authorized reviewer surface keeps the raw reason.
+	rv, err := f.refund.Review(ctx, f.pending)
+	require.NoError(t, err)
+	require.Equal(t, reason, rv.Decision.Reason)
+	require.True(t, rv.Decision.ReasonRecorded)
+
+	// The signed record is untouched: it still carries the reason and still
+	// verifies, read through the store (what `talon audit show` reads).
+	rec, err := f.ro.Detail(ctx, decided)
+	require.NoError(t, err)
+	require.Equal(t, "valid", rec.Verification.State)
+	require.Equal(t, reason, rec.Record.ActionLifecycle.DecisionReason)
+}
+
+// countsProblem reads the Overview's approval summary and returns the
+// unresolved total, or what is inconsistent in it: for each use case and for
+// the total the eligibility classes must sum to the unresolved count, and
+// the use cases must sum to the total.
+func (f *approvalsFixture) countsProblem() (unresolved int, problem string) {
+	sums := func(c console.ApprovalCounts) int {
+		e := c.Eligibility
+		return e.Actionable + e.PotentiallyActionable + e.NotDecidable + e.Unknown
+	}
+	sum := f.svc.Overview(context.Background(), "").Approvals
+	if sum.Total == nil || sum.Total.Eligibility == nil {
+		return 0, "no counts: " + sum.Availability.State + " " + sum.Availability.Error
+	}
+	if got := sums(*sum.Total); got != sum.Total.Unresolved {
+		return 0, fmt.Sprintf("total: the classes sum to %d, unresolved is %d", got, sum.Total.Unresolved)
+	}
+	perUseCase := 0
+	for _, u := range sum.UseCases {
+		if u.Eligibility == nil {
+			return 0, u.UseCase + ": no eligibility counts"
+		}
+		if got := sums(u.ApprovalCounts); got != u.Unresolved {
+			return 0, fmt.Sprintf("%s: the classes sum to %d, unresolved is %d", u.UseCase, got, u.Unresolved)
+		}
+		perUseCase += u.Unresolved
+	}
+	if perUseCase != sum.Total.Unresolved {
+		return 0, fmt.Sprintf("the use cases sum to %d, the total is %d", perUseCase, sum.Total.Unresolved)
+	}
+	return sum.Total.Unresolved, ""
+}
+
+// #565 review, finding 3. While approvals are being decided, every summary
+// the console computes is from one snapshot of the store: for each use case
+// and for the total, the eligibility classes sum to the unresolved count
+// they are reported with. (The exact interleaving, a decision committing
+// between the two statements, is forced deterministically in
+// action.TestUnresolvedCounts_OneSnapshotUnderAConcurrentDecision.)
+func TestApprovals_CountsSumToTheTotalUnderConcurrentDecisions(t *testing.T) {
+	ctx := context.Background()
+	f := newApprovalsFixture(t)
+	const n, readers = 200, 4
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		res, err := f.refund.Establish(ctx, action.EstablishRequest{OperationID: fmt.Sprintf("burst-%03d", i), Action: "create_refund_request", Arguments: json.RawMessage(`{"ticket_id":"T-1","amount":75,"currency":"EUR"}`)})
+		require.NoError(t, err)
+		ids = append(ids, res.Operation.Approval.ID)
+	}
+	check := f.countsProblem
+	total, problem := check()
+	require.Empty(t, problem)
+	require.Equal(t, n+3, total)
+
+	start, decided := make(chan struct{}), make(chan struct{})
+	var decideErr error
+	go func() {
+		defer close(decided)
+		<-start
+		for i, id := range ids {
+			if _, decideErr = f.refund.Decide(ctx, action.DecideRequest{ApprovalID: id, Approve: i%2 == 0, Reason: "burst", Reviewer: reviewer("support-leads")}); decideErr != nil {
+				return
+			}
+		}
+	}()
+	problems, reads := make(chan string, readers), make(chan int, readers)
+	for r := 0; r < readers; r++ {
+		go func() {
+			<-start
+			count := 0
+			for {
+				select {
+				case <-decided:
+					problems <- ""
+					reads <- count
+					return
+				default:
+				}
+				if _, p := check(); p != "" {
+					problems <- p
+					reads <- count
+					return
+				}
+				count++
+			}
+		}()
+	}
+	close(start)
+	summaries := 0
+	for r := 0; r < readers; r++ {
+		require.Empty(t, <-problems, "a summary computed while approvals were decided is inconsistent")
+		summaries += <-reads
+	}
+	<-decided
+	require.NoError(t, decideErr)
+	total, problem = check()
+	require.Empty(t, problem)
+	require.Equal(t, 3, total, "every burst approval was decided; the fixture's three remain")
+	t.Logf("%d consistent summaries from %d readers while %d approvals were decided", summaries, readers, n)
+}
+
+// cloneOlderStale inserts n approvals of the refund use case that are older
+// than every approval of the fixture and bound to a superseded policy.
+func (f *approvalsFixture) cloneOlderStale(n int) {
+	f.t.Helper()
+	ctx := context.Background()
+	tx, err := f.writer.DB().BeginTx(ctx, nil)
+	require.NoError(f.t, err)
+	defer func() { _ = tx.Rollback() }()
+	base := time.Now().UTC().Add(-10 * time.Minute)
+	for i := 0; i < n; i++ {
+		ref, at := fmt.Sprintf("clone-%05d", i), base.Add(time.Duration(i)*time.Millisecond)
+		_, err = tx.ExecContext(ctx, `INSERT INTO action_operations (ref, tenant_id, agent_id, operation_id, action, digest, schema_digest, definition_digest, projection_digest,
+				policy_digest, catalog_digest, execution_profile, binding_profile, destination_id, identity_source, verdict, rule_id, status, version, sequence,
+				approval_id, idempotency_key, review_json, origin_json, created_at, updated_at, outcome_provenance, outcome_code, attempt_count)
+			SELECT ?, tenant_id, agent_id, ?, action, digest, schema_digest, definition_digest, projection_digest,
+				'sha256:superseded', catalog_digest, execution_profile, binding_profile, destination_id, identity_source, verdict, rule_id, status, version, sequence,
+				?, ?, review_json, origin_json, ?, ?, outcome_provenance, outcome_code, attempt_count
+			FROM action_operations WHERE approval_id = ?`, ref, "op-"+ref, "apr_"+ref, "idem-"+ref, at, at, f.pending)
+		require.NoError(f.t, err)
+		_, err = tx.ExecContext(ctx, `INSERT INTO action_approvals (id, operation_ref, subject_digest, rule_id, groups_json, status, expires_at, created_at, version)
+			SELECT ?, ?, subject_digest, rule_id, groups_json, status, expires_at, ?, version FROM action_approvals WHERE id = ?`, "apr_"+ref, ref, at, f.pending)
+		require.NoError(f.t, err)
+	}
+	require.NoError(f.t, tx.Commit())
+}
+
+// #565 review, finding 4. A page stops at the listing's scan bound and can
+// be empty while the selection continues (here: thousands of older requests
+// that a running process would refuse precede the ones that await a
+// decision). An empty page with a cursor is not an empty selection, and a
+// page reached through a cursor is the end of a listing, not "no approvals".
+func TestApprovals_EmptyPageIsNotAnEmptySelection(t *testing.T) {
+	ctx := context.Background()
+	f := newApprovalsFixture(t)
+	f.cloneOlderStale(5000)
+	f.proveLoaded()
+
+	p1, err := f.svc.Approvals(ctx, "default", "", "", "", 0)
+	require.NoError(t, err)
+	require.Empty(t, p1.Items)
+	require.NotEmpty(t, p1.Next, "the selection continues")
+	require.NotEqual(t, console.StateEmpty, p1.Availability.State, "an empty page with a cursor must not read as an empty selection")
+	require.Equal(t, console.PageContinues, p1.Page)
+
+	p2, err := f.svc.Approvals(ctx, "default", "", "", p1.Next, 0)
+	require.NoError(t, err)
+	require.Len(t, p2.Items, 1, "the approval that awaits a decision is reached through the cursor")
+	require.Equal(t, f.pending, p2.Items[0].ApprovalID)
+	require.Empty(t, p2.Next)
+	require.Equal(t, console.PageEnd, p2.Page)
+
+	// A selection that really is empty says so, and only then.
+	none, err := f.svc.Approvals(ctx, "no-such-tenant", "", "", "", 0)
+	require.NoError(t, err)
+	require.Equal(t, console.StateEmpty, none.Availability.State)
+	require.Equal(t, console.PageEmptySelection, none.Page)
+
+	// The stored count never depended on a page.
+	require.Equal(t, 5002, useCaseCounts(t, f.svc.Overview(ctx, "default").Approvals, "default", "refund-bot").Unresolved)
+}
+
+// #565 review, finding 6. An installation that never used the Action
+// Gateway has none of the action tables: a true zero. A store that has only
+// SOME of them (an interrupted creation, a damaged or foreign database) is
+// not "no approvals": the console reports it as unreadable and reports no
+// count.
+func TestApprovals_IncompleteActionStoreIsNotAnUnusedInstallation(t *testing.T) {
+	ctx := context.Background()
+	f := newApprovalsFixture(t)
+	_, err := f.writer.DB().ExecContext(ctx, `DROP TABLE action_attempts`)
+	require.NoError(t, err)
+
+	sum := f.svc.Overview(ctx, "").Approvals
+	require.Equal(t, console.StateUnavailable, sum.Availability.State, "three approvals are pending in a store whose schema is incomplete")
+	require.Contains(t, sum.Availability.Error, "action_attempts")
+	require.Nil(t, sum.Total, "no count, and certainly no zero, for a store that cannot be read as a whole")
+	raw, _ := json.Marshal(sum)
+	require.NotContains(t, string(raw), "has not established any governed action")
+
+	list, err := f.svc.Approvals(ctx, "", "", "", "", 0)
+	require.NoError(t, err)
+	require.Equal(t, console.StateUnavailable, list.Availability.State)
+	require.Empty(t, list.Page)
+	_, err = f.svc.Approval(ctx, "", f.pending)
+	require.ErrorIs(t, err, console.ErrUnavailable, "an approval that exists is not 'not found' because another table is missing")
+
+	// A required column missing is the same kind of fact.
+	g := newApprovalsFixture(t)
+	_, err = g.writer.DB().ExecContext(ctx, `ALTER TABLE action_approvals DROP COLUMN decided_group`)
+	require.NoError(t, err)
+	sum = g.svc.Overview(ctx, "").Approvals
+	require.Equal(t, console.StateUnavailable, sum.Availability.State)
+	require.Contains(t, sum.Availability.Error, "action_approvals.decided_group")
+}
+
+// #565 review, finding 6. The lifecycle list of an approval is bounded. When
+// an operation has more signed records than the bound, the list says that it
+// is the oldest part of them and how to read them all; it never looks
+// complete.
+func TestApprovals_TruncatedLifecycleListSaysSo(t *testing.T) {
+	ctx := context.Background()
+	f := newApprovalsFixture(t)
+	var ref string
+	require.NoError(t, f.writer.DB().QueryRowContext(ctx, `SELECT operation_ref FROM action_approvals WHERE id = ?`, f.pending).Scan(&ref))
+
+	d, err := f.svc.Approval(ctx, "", f.pending)
+	require.NoError(t, err)
+	require.Len(t, d.Lifecycle.Records, 2)
+	require.False(t, d.Lifecycle.Truncated)
+	require.Equal(t, console.StateOK, d.Lifecycle.Availability.State)
+
+	// 60 more signed records of the same operation (as repeated refused
+	// claims would produce).
+	for i := 0; i < 60; i++ {
+		require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+			ID: fmt.Sprintf("act_more_%03d", i), CorrelationID: ref, TenantID: "default", AgentID: "refund-bot",
+			Timestamp: time.Now().UTC().Add(time.Duration(i) * time.Millisecond), InvocationType: evidence.InvocationTypeActionLifecycle,
+			PolicyDecision: evidence.PolicyDecision{Allowed: false, Action: "claim_refused"},
+		}))
+	}
+	d, err = f.svc.Approval(ctx, "", f.pending)
+	require.NoError(t, err)
+	require.Len(t, d.Lifecycle.Records, d.Lifecycle.Limit)
+	require.True(t, d.Lifecycle.Truncated, "62 records exist; the list holds %d", d.Lifecycle.Limit)
+	require.Equal(t, console.StatePartial, d.Lifecycle.Availability.State)
+	require.Contains(t, d.Lifecycle.Availability.Note, "oldest")
+	require.Contains(t, d.Lifecycle.Availability.Note, "talon audit verify --operation refund-big")
 }
 
 // A store that cannot be read is unavailable: never zero approvals, never

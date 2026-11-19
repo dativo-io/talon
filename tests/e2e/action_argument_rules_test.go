@@ -314,10 +314,13 @@ policies:
 		calls(a[0] + ": the approval itself")
 		if reason != "" {
 			// Step 7: the console reflects the decision; still nothing dispatched.
+			// The console says who decided and that a reason was recorded;
+			// the reason's text stays with approvers (the CLI shows it below).
 			d := consoleApproval(t, console, approvalID)
-			if dig(d, "approval", "status") != "approved" || dig(d, "approval", "decision", "reason") != reason || dig(d, "approval", "operation", "attempt_count") != float64(0) || dig(d, "commands", "approve") != nil && dig(d, "commands", "approve") != "" {
+			if dig(d, "approval", "status") != "approved" || dig(d, "approval", "decision", "reason_recorded") != true || dig(d, "approval", "decision", "reason") != nil || dig(d, "approval", "operation", "attempt_count") != float64(0) || dig(d, "commands", "approve") != nil && dig(d, "commands", "approve") != "" {
 				t.Fatalf("%s: the console does not reflect the decision: %v", a[0], d)
 			}
+			consoleNeverReturnsTheReason(t, console, approvalID, reason)
 			calls(a[0] + ": console after the decision")
 		}
 		if st, res = establish(a[0], a[1], a[3]); st != 409 || errCode(res) != "operation_conflict" {
@@ -384,9 +387,10 @@ policies:
 			"delete_records", "dry_run          false", "count            5",
 			"rule real-delete-needs-approval of the use case policy required approval by support-leads",
 		})
-		if d := consoleApproval(t, console, approvalID); dig(d, "approval", "status") != "rejected" || dig(d, "approval", "decision", "reason") != "wrong table" {
+		if d := consoleApproval(t, console, approvalID); dig(d, "approval", "status") != "rejected" || dig(d, "approval", "decision", "reason_recorded") != true || dig(d, "approval", "decision", "reason") != nil {
 			t.Fatalf("the console does not reflect the rejection: %v", d)
 		}
+		consoleNeverReturnsTheReason(t, console, approvalID, "wrong table")
 		if st, res = claim("op-delete-rejected"); st == 200 {
 			t.Fatalf("a rejected operation was claimed: %v", res)
 		}
@@ -602,6 +606,47 @@ func consoleApproval(t *testing.T, cc *consoleClient, approvalID string) map[str
 	var d map[string]any
 	consoleGet(t, cc, "/console/v1/approvals/"+approvalID, &d)
 	return d
+}
+
+// consoleNeverReturnsTheReason reads the approval and every signed
+// lifecycle record it links to through the console's API, as a paired
+// browser does, and fails when a response carries the reviewer's free-text
+// reason. The decision record must name the withheld field instead.
+func consoleNeverReturnsTheReason(t *testing.T, cc *consoleClient, approvalID, reason string) {
+	t.Helper()
+	status, body, _ := cc.do(http.MethodGet, "/console/v1/approvals/"+approvalID, "", nil)
+	if status != http.StatusOK || strings.Contains(body, reason) {
+		t.Fatalf("the console's approval detail returns the reviewer's reason (HTTP %d): %s", status, body)
+	}
+	var d map[string]any
+	mustJSON(t, body, &d)
+	records, _ := dig(d, "lifecycle", "records").([]any)
+	if len(records) == 0 {
+		t.Fatalf("no lifecycle record is linked from the approval: %s", body)
+	}
+	withheld := 0
+	for _, r := range records {
+		id, _ := r.(map[string]any)["id"].(string)
+		status, body, _ = cc.do(http.MethodGet, "/console/v1/evidence/"+id, "", nil)
+		if status != http.StatusOK || strings.Contains(body, reason) {
+			t.Fatalf("the console's evidence view of %s returns the reviewer's reason (HTTP %d): %s", id, status, body)
+		}
+		var ed map[string]any
+		mustJSON(t, body, &ed)
+		if dig(ed, "detail", "verification", "state") != "valid" {
+			t.Fatalf("%s must verify: %s", id, body)
+		}
+		if w, _ := dig(ed, "detail", "withheld").([]any); len(w) > 0 {
+			withheld++
+			first, _ := w[0].(map[string]any)
+			if first["field"] != "action_lifecycle.decision_reason" || first["read_with"] != "talon approvals show "+approvalID {
+				t.Fatalf("%s: the withheld field is not named with where to read it: %s", id, body)
+			}
+		}
+	}
+	if withheld != 1 {
+		t.Fatalf("exactly the decision record names a withheld field; got %d of %d records", withheld, len(records))
+	}
 }
 
 // operatorDiscovers is the console half of the operator journey: the

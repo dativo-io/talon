@@ -62,7 +62,21 @@ export function Approvals() {
             <SourceFreshness a={d.availability} />
           </div>
           <AvailabilityNotice a={d.availability} what="Approvals" />
-          {isMeasurement(d.availability) && d.items.length === 0 ? (
+          {/* Only "empty_selection" means that there is no approval. A page can
+              hold nothing while the selection continues, and an empty page
+              reached through "Next" is the end of a listing that had rows. */}
+          {isMeasurement(d.availability) && d.items.length === 0 && d.page === "continues" ? (
+            <div className="notice info" role="status" data-testid="approvals-continues">
+              <div>
+                <strong>Nothing in this part of the listing.</strong> No approval of this selection was among the rows read for this page; the selection is not exhausted.{" "}
+                <button type="button" onClick={() => d.next && setPages({ scope, stack: [...stack, d.next] })}>Read the next page</button>
+              </div>
+            </div>
+          ) : null}
+          {isMeasurement(d.availability) && d.items.length === 0 && d.page === "end" ? (
+            <EmptyState title="No further approvals in this selection">You reached the end of the listing. <button type="button" onClick={() => setPages({ scope, stack: stack.slice(0, -1) })} disabled={stack.length === 0}>Previous page</button></EmptyState>
+          ) : null}
+          {isMeasurement(d.availability) && d.items.length === 0 && d.page === "empty_selection" ? (
             <EmptyState title={state === "attention" ? "No approval awaits a decision in this scope" : "No approval in this selection"}>
               {state === "attention" ? <>Expired or stale requests are under <Link to={scoped("/approvals", tenant, { use_case: useCase, state: "unresolved" })}>All unresolved</Link>; past decisions under <Link to={scoped("/approvals", tenant, { use_case: useCase, state: "decided" })}>Decided and closed</Link>.</> : null}
             </EmptyState>

@@ -58,7 +58,9 @@ export function ApprovalsCard({ a, tenant }: { a: ApprovalsSummary | undefined; 
           <p className="small muted">
             “Unresolved in the store” is read from the store. Whether an unresolved approval can still be decided is inferred from the current configuration files:
             it reads “can be decided now” only where every running Talon process is proven to have loaded those files, “eligible per current files” otherwise, and
-            “unknown” where the files cannot say. The console decides nothing; a decision is taken with an approver credential (<code>talon approvals list</code>).
+            “unknown” where the files cannot say or where they differ from what a request was established under while no process is proven to run them. A request is
+            counted as no longer decidable only when its lifetime elapsed or the files proven loaded no longer match it. The console decides nothing; a decision is
+            taken with an approver credential (<code>talon approvals list</code>).
           </p>
         </details>
         <SourceFreshness a={a.availability} />

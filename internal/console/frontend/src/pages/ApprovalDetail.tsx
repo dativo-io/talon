@@ -108,7 +108,11 @@ function Body({ d, v, tenant }: { d: DetailDTO; v: ApprovalView; tenant: string 
                 <Badge tone={v.decision.status === "approved" ? "ok" : v.decision.status === "rejected" ? "error" : "neutral"}>{humanize(v.decision.status)}</Badge>{" "}
                 by {v.decision.decided_by || "—"}{v.decision.decided_group ? ` (group ${v.decision.decided_group})` : ""}
                 {v.decision.decided_at ? <> at <span title={utc(v.decision.decided_at)}>{utc(v.decision.decided_at)}</span></> : null}
-                {v.decision.reason ? <div>Reason given: “{v.decision.reason}”</div> : null}
+                {v.decision.reason_recorded ? (
+                  <div className="small" data-testid="approval-reason-recorded">
+                    A reason was recorded. It is the reviewer's own text and is not shown in the console; an approver of the required group reads it with <code>talon approvals show {v.approval_id}</code>.
+                  </div>
+                ) : null}
               </>
             ) : (
               <span>None yet</span>

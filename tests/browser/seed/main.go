@@ -414,7 +414,9 @@ func runRefundLifecycle(ctx context.Context, dir string, store *evidence.Store, 
 	want(expired, action.VerdictRequireApproval)
 	rejected := establish("refund-rejected", "99.50")
 	want(rejected, action.VerdictRequireApproval)
-	const rejectReason = "duplicate of an earlier refund request"
+	// The reviewer quotes the exact arguments in the reason (as people do):
+	// the console must never show or return this text.
+	const rejectReason = "duplicate of an earlier refund: 99.50 EUR for ticket T-refund-rejected"
 	_, err = svc.Decide(ctx, action.DecideRequest{ApprovalID: rejected.Operation.Approval.ID, Approve: false, Reason: rejectReason, Reviewer: lead})
 	must(err)
 	waiting := establish("refund-waiting", "137.25")

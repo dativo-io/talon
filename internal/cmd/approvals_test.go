@@ -114,7 +114,7 @@ func TestApprovalsList_Compact(t *testing.T) {
 	stale.Eligibility = action.Eligibility{State: action.EligibilityExpired, Class: action.ClassNotDecidable}
 	stale.ExpiresAt = now.Add(-time.Hour)
 	var b bytes.Buffer
-	printApprovalList(&b, &approvalsListResponse{Tenant: "default", State: action.SelectUnresolved, Approvals: []action.ApprovalSummary{row, stale}, Next: "CURSOR"}, now)
+	printApprovalList(&b, &approvalsListResponse{Tenant: "default", State: action.SelectUnresolved, Approvals: []action.ApprovalSummary{row, stale}, Next: "CURSOR"}, now, false)
 	out := b.String()
 	require.Regexp(t, `apr_0123456789abcdef0123\s+refund_payment\s+support-agent\s+can be decided\s+in 42m\s+finance-approvers`, out)
 	require.Regexp(t, `apr_ffffffffffffffffffff\s+refund_payment\s+support-agent\s+expired\s+expired\s+finance-approvers`, out)
@@ -124,7 +124,7 @@ func TestApprovalsList_Compact(t *testing.T) {
 		require.NotContains(t, out, absent)
 	}
 	b.Reset()
-	printApprovalList(&b, &approvalsListResponse{Tenant: "default", State: action.SelectAttention}, now)
+	printApprovalList(&b, &approvalsListResponse{Tenant: "default", State: action.SelectAttention}, now, false)
 	require.Contains(t, b.String(), "Approvals of your groups that need a decision in tenant default: none.")
 	require.Contains(t, b.String(), "talon approvals list --all")
 }
@@ -190,4 +190,110 @@ func TestApprovalsDecide_CLIRequiresAReasonForBothDecisions(t *testing.T) {
 		require.Equal(t, int64(1), hits.Load())
 		hits.Store(0)
 	}
+}
+
+// #565 review, finding 4 (reproduction): a page can be empty although the
+// selection is not exhausted (the server stops a page at its scan bound and
+// returns a cursor). The CLI must not print "none" then.
+func TestApprovalsList_EmptyPageWithACursorIsNotAnEmptySelection(t *testing.T) {
+	var b bytes.Buffer
+	now := time.Now().UTC()
+	printApprovalList(&b, &approvalsListResponse{Tenant: "acme", State: action.SelectAttention, Approvals: nil, Next: "Y3Vyc29y"}, now, false)
+	out := b.String()
+	require.NotContains(t, out, "none.", "the selection is not exhausted: nothing may claim it is empty\n%s", out)
+	require.NotContains(t, out, "More exist", "nothing was listed yet")
+	require.Contains(t, out, "The listing is NOT exhausted")
+	require.Contains(t, out, "Continue: talon approvals list --after Y3Vyc29y")
+
+	// The same for the other selections, with their flag in the command.
+	b.Reset()
+	printApprovalList(&b, &approvalsListResponse{Tenant: "acme", State: action.SelectUnresolved, Next: "Y3Vyc29y"}, now, true)
+	require.Contains(t, b.String(), "Continue: talon approvals list --all --after Y3Vyc29y")
+	require.NotContains(t, b.String(), "none.")
+
+	// A page reached with --after that holds nothing and has no cursor is
+	// the end of a listing, not an empty selection.
+	b.Reset()
+	printApprovalList(&b, &approvalsListResponse{Tenant: "acme", State: action.SelectAttention}, now, true)
+	require.Contains(t, b.String(), "no further approvals. This is the end of the listing.")
+	require.NotContains(t, b.String(), "none.")
+
+	// Only a first page without rows and without a cursor is "none".
+	b.Reset()
+	printApprovalList(&b, &approvalsListResponse{Tenant: "acme", State: action.SelectAttention}, now, false)
+	require.Contains(t, b.String(), "in tenant acme: none.")
+}
+
+// #565 review, finding 6. The approver credential is sent to --url. The URL
+// is therefore validated strictly and completely before any request: http
+// or https only, a host, no embedded credentials, no query or fragment (the
+// request path is appended to it), and plain http only to loopback unless
+// --allow-plaintext says the path is protected.
+func TestApprovalsURL_StrictValidation(t *testing.T) {
+	for _, tc := range []struct {
+		raw       string
+		plaintext bool
+		ok        bool
+		why       string
+	}{
+		{"http://localhost:8080", false, true, "loopback"},
+		{"http://127.0.0.1:8080/", false, true, "loopback, trailing slash"},
+		{"http://[::1]:8080", false, true, "IPv6 loopback"},
+		{"https://talon.example.com", false, true, "https"},
+		{"https://talon.example.com/talon/", false, true, "a path prefix behind a reverse proxy"},
+		{"http://talon.internal:8080", true, true, "plain http, stated as protected"},
+		{"http://talon.internal:8080", false, false, "plain http to a remote host"},
+		{"ftp://talon.example.com", true, false, "--allow-plaintext must not admit another scheme"},
+		{"gopher://localhost", false, false, "not http(s)"},
+		{"localhost:8080", false, false, "no scheme"},
+		{"talon.example.com", false, false, "no scheme"},
+		{"https://", false, false, "no host"},
+		{"https://:8443", false, false, "a port without a host"},
+		{"https://operator:secret@talon.example.com", false, false, "credentials embedded in the URL"},
+		{"https://talon.example.com?tenant=acme", false, false, "a query: the request path is appended to the base URL"},
+		{"https://talon.example.com/#frag", false, false, "a fragment"},
+		{"https://talon.example.com:notaport", false, false, "an invalid port"},
+		{"https://talon.example.com/a b", false, false, "whitespace"},
+		{"https://talon.example.com/talon?", false, false, "an empty query"},
+		{"https://talon.example.com/talon#", false, false, "an empty fragment"},
+		{"HTTPS://talon.example.com", false, true, "the scheme is case-insensitive"},
+		{" https://talon.example.com", false, false, "leading whitespace"},
+		{"https://talon.example.com\n.evil.example", false, false, "a control character"},
+		{"", false, false, "empty"},
+	} {
+		u, err := approvalsBaseURL(tc.raw, tc.plaintext)
+		if tc.ok {
+			require.NoError(t, err, "%q: %s", tc.raw, tc.why)
+			require.NotNil(t, u)
+		} else {
+			require.Error(t, err, "%q must be refused: %s", tc.raw, tc.why)
+			require.NotContains(t, err.Error(), "secret", "an error never repeats a password from the URL")
+		}
+	}
+
+	// The request path is appended to the validated base, prefix kept.
+	u, err := approvalsBaseURL("https://talon.example.com/talon/", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://talon.example.com/talon/v1/reviews?state=attention", approvalsEndpoint(u, "/v1/reviews?state=attention"))
+	u, err = approvalsBaseURL("http://localhost:8080", false)
+	require.NoError(t, err)
+	require.Equal(t, "http://localhost:8080/v1/reviews/apr_1", approvalsEndpoint(u, "/v1/reviews/apr_1"))
+}
+
+// No request leaves the process for a URL that fails validation: the
+// credential is never sent to a host the operator did not clearly name.
+func TestApprovalsRequest_InvalidURLSendsNothing(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { atomic.AddInt32(&hits, 1) }))
+	defer srv.Close()
+	t.Setenv(approverKeyEnv, "talon_appr_test_credential_0001")
+	old := approvalsURL
+	t.Cleanup(func() { approvalsURL = old })
+	for _, bad := range []string{srv.URL + "?x=1", srv.URL + "#f", strings.Replace(srv.URL, "http://", "http://operator:secret@", 1), strings.Replace(srv.URL, "http://", "ftp://", 1)} {
+		approvalsURL = bad
+		var out map[string]any
+		_, err := approvalsRequest(context.Background(), http.MethodGet, "/v1/reviews", nil, &out)
+		require.Error(t, err, bad)
+	}
+	require.Zero(t, atomic.LoadInt32(&hits), "a refused URL must not receive the credential")
 }

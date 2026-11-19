@@ -544,7 +544,7 @@ export interface ActionLifecycle {
   approver_groups?: string[];
   reviewer_principal?: string;
   reviewer_group?: string;
-  decision_reason?: string;
+  // decision_reason is never part of a console response: see WithheldField.
   attempt_status?: string;
   [key: string]: unknown;
 }
@@ -554,10 +554,19 @@ export interface Verification {
   checked_at: string;
 }
 
+// One field of the stored record that the console does not return (#565):
+// the reviewer's free-text reason on an approval decision record. The
+// verification was performed over the complete stored record.
+export interface WithheldField {
+  field: string;
+  why: string;
+  read_with?: string;
+}
+
 export interface EvidenceDetail {
   meta: Meta;
   availability: Availability;
-  detail?: { record: EvidenceRecord; verification: Verification; outcome: Outcome };
+  detail?: { record: EvidenceRecord; verification: Verification; outcome: Outcome; withheld?: WithheldField[] };
 }
 
 export interface StoreHealth {
@@ -914,6 +923,9 @@ export type Binding = "unchanged" | "changed" | "unknown";
 
 export interface Eligibility {
   // eligible | expired | stale_definition | stale_policy | use_case_not_served | unknown | decided
+  // A binding that differs from files NO process is proven to run is
+  // "unknown" (class unknown), with policy/definition "changed": the
+  // deciding process may still hold the configuration it was bound to.
   state: string;
   class: EligibilityClass;
   // runtime | runtime_confirmed | current_files | lifetime | record | none
@@ -973,6 +985,12 @@ export interface ApprovalList {
   use_case?: string;
   items: ApprovalSummaryRow[];
   next?: string;
+  // What this page says about the selection (Go decides it):
+  //   empty_selection  first page, no item, no cursor: the selection is empty
+  //   continues        a cursor exists; the page itself may hold no item
+  //   end              no cursor: the selection is exhausted with this page
+  // Absent when the store could not be read.
+  page?: "empty_selection" | "continues" | "end";
   limit: number;
   disclosure: string;
 }
@@ -1013,7 +1031,9 @@ export interface ApprovalView {
     established_at: string;
   };
   current: { basis: string; note?: string; rule?: string; rule_present: boolean; destination?: string };
-  decision?: { status: string; decided_at?: string; decided_by?: string; decided_group?: string; reason?: string };
+  // The reviewer's free-text reason is not part of the operational
+  // disclosure (it can quote the exact arguments): only that one was recorded.
+  decision?: { status: string; decided_at?: string; decided_by?: string; decided_group?: string; reason_recorded: boolean };
   operation: {
     operation_id: string;
     operation_ref: string;
@@ -1033,7 +1053,9 @@ export interface ApprovalDetail {
   meta: Meta;
   availability: Availability;
   approval: ApprovalView;
-  lifecycle: { availability: Availability; records: EvidenceIndex[]; limit: number };
+  // truncated: the operation has more signed records than `limit`; records
+  // holds the oldest ones and availability.note says how to read all.
+  lifecycle: { availability: Availability; records: EvidenceIndex[]; limit: number; truncated?: boolean };
   session_id?: string;
   commands: { show: string; approve?: string; reject?: string; verify: string };
   arguments_note: string;

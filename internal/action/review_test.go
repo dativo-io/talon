@@ -100,6 +100,8 @@ func TestClassifyApproval_BasisAndUnknown(t *testing.T) {
 	}
 	stalePolicy := f
 	stalePolicy.PolicyDigest = "sha256:other"
+	staleDefinition := f
+	staleDefinition.DefinitionDigest = "sha256:other"
 
 	for _, tc := range []struct {
 		name         string
@@ -115,6 +117,12 @@ func TestClassifyApproval_BasisAndUnknown(t *testing.T) {
 		{"policy unknown", f, with(func(c *CurrentConfig) { c.Policy = nil }), EligibilityUnknown, ClassUnknown, CurrentRuntime},
 		{"nothing readable", f, CurrentConfig{Basis: CurrentFiles, Unavailable: "the agent file cannot be read"}, EligibilityUnknown, ClassUnknown, "none"},
 		{"changed policy is certain although the definition is unknown", stalePolicy, with(func(c *CurrentConfig) { c.Definition = unknownDef }), EligibilityStalePolicy, ClassNotDecidable, CurrentRuntime},
+		{"changed policy per files a process is proven to run", stalePolicy, with(func(c *CurrentConfig) { c.Basis = CurrentFilesConfirmed }), EligibilityStalePolicy, ClassNotDecidable, CurrentFilesConfirmed},
+		// #565 review: files that no process is proven to run differ from
+		// the binding. The deciding process may still hold the configuration
+		// the approval was established under, so this is not a refusal.
+		{"changed policy per unconfirmed files is not a refusal", stalePolicy, with(func(c *CurrentConfig) { c.Basis = CurrentFiles }), EligibilityUnknown, ClassUnknown, CurrentFiles},
+		{"changed definition per unconfirmed files is not a refusal", staleDefinition, with(func(c *CurrentConfig) { c.Basis = CurrentFiles }), EligibilityUnknown, ClassUnknown, CurrentFiles},
 		{"use case not served", f, CurrentConfig{Basis: CurrentRuntime, NotServed: true}, EligibilityNotServed, ClassNotDecidable, CurrentRuntime},
 		{"lifetime needs no configuration", bindingFacts{Status: ApprovalPending, ExpiresAt: now}, CurrentConfig{Basis: CurrentFiles, Unavailable: "x"}, EligibilityExpired, ClassNotDecidable, "lifetime"},
 		{"decided", bindingFacts{Status: ApprovalRejected, ExpiresAt: now.Add(time.Hour)}, live, EligibilityDecided, ClassDecided, "record"},
@@ -126,6 +134,19 @@ func TestClassifyApproval_BasisAndUnknown(t *testing.T) {
 		require.NotEmpty(t, e.Explanation, tc.name)
 		require.Equal(t, tc.class == ClassActionable, e.Decidable(), tc.name)
 	}
+
+	// The comparison of the binding with the files is its own fact and is
+	// kept whatever the class is: an unresolved approval stays visible, and
+	// the reader still learns that the files differ.
+	e := classifyApproval(stalePolicy, with(func(c *CurrentConfig) { c.Basis = CurrentFiles }), now)
+	require.True(t, e.NeedsAttention(), "runtime eligibility is unknown: the approval stays in the default selection")
+	require.Equal(t, BindingChanged, e.Policy, "the file-binding comparison is preserved")
+	require.Equal(t, BindingUnchanged, e.Definition)
+	require.Contains(t, e.Explanation, "no running Talon process is proven")
+	e = classifyApproval(staleDefinition, with(func(c *CurrentConfig) { c.Basis = CurrentFiles }), now)
+	require.True(t, e.NeedsAttention())
+	require.Equal(t, BindingChanged, e.Definition)
+	require.Equal(t, BindingUnchanged, e.Policy)
 }
 
 func listAll(t *testing.T, r *Reader, q ApprovalListQuery) (items []ApprovalSummary, pages int) {
@@ -235,16 +256,15 @@ func TestListApprovals_UndecidableNeverHideActionable(t *testing.T) {
 	require.Equal(t, stale, expired)
 
 	// Counts: exact, whatever the page bound.
-	groups, complete, err := r.UnresolvedGroups(ctx, "acme", h.now)
+	counts, err := r.UnresolvedCounts(ctx, "acme", h.now)
 	require.NoError(t, err)
-	require.True(t, complete)
+	require.True(t, counts.GroupsComplete)
+	groups := counts.Groups
 	require.Len(t, groups, 1)
 	require.Equal(t, stale+1, groups[0].Unresolved)
 	require.Equal(t, stale, groups[0].Expired)
 	require.True(t, groups[0].Eligibility(h.svc.CurrentConfig(), h.now).Decidable())
-	totals, err := r.UnresolvedByUseCase(ctx, "")
-	require.NoError(t, err)
-	require.Equal(t, []UseCaseUnresolved{{Tenant: "acme", UseCase: "support-bot", Unresolved: stale + 1}}, totals)
+	require.Equal(t, []UseCaseUnresolved{{Tenant: "acme", UseCase: "support-bot", Unresolved: stale + 1}}, counts.ByUseCase)
 
 	// A policy change makes the fresh request stale too: nothing needs a
 	// decision, and the listing says so instead of listing it.
@@ -450,9 +470,9 @@ func TestReader_ReadOnlyConnectionAndNoMutation(t *testing.T) {
 	require.NoError(t, err)
 	defer ro.Close()
 	r := NewReader(ro)
-	ready, err := r.Ready(ctx)
+	schema, err := r.Schema(ctx)
 	require.NoError(t, err)
-	require.True(t, ready)
+	require.Equal(t, SchemaStatus{State: SchemaComplete}, schema)
 	cfg := func(string, string) CurrentConfig { return h.svc.CurrentConfig() }
 	for i := 0; i < 3; i++ {
 		rec, err := r.ApprovalRecord(ctx, id)
@@ -462,7 +482,7 @@ func TestReader_ReadOnlyConnectionAndNoMutation(t *testing.T) {
 			_, err = r.ListApprovals(ctx, ApprovalListQuery{Selection: sel, Now: h.now, Config: cfg})
 			require.NoError(t, err)
 		}
-		_, _, err = r.UnresolvedGroups(ctx, "", h.now)
+		_, err = r.UnresolvedCounts(ctx, "", h.now)
 		require.NoError(t, err)
 		_, _, _, err = r.ApprovalScope(ctx, id)
 		require.NoError(t, err)
@@ -474,16 +494,50 @@ func TestReader_ReadOnlyConnectionAndNoMutation(t *testing.T) {
 	require.Nil(t, rec)
 
 	// An installation that never served the Action Gateway has no action
-	// tables: not ready, and none are created.
+	// tables: the schema is absent, and none are created.
 	empty, err := evidence.NewStore(filepath.Join(t.TempDir(), "empty.db"), testSigningKey)
 	require.NoError(t, err)
 	defer empty.Close()
-	ready, err = NewReader(empty.DB()).Ready(ctx)
+	schema, err = NewReader(empty.DB()).Schema(ctx)
 	require.NoError(t, err)
-	require.False(t, ready)
+	require.Equal(t, SchemaStatus{State: SchemaAbsent}, schema)
 	var n int
 	require.NoError(t, empty.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'action_%'`).Scan(&n))
 	require.Zero(t, n)
+}
+
+// #565 review, finding 6. A store that exists in part is neither "unused"
+// nor readable: the reader names what is missing. Every table and column it
+// checks is one the repository creates, so the check cannot refuse a store
+// that this version wrote.
+func TestReader_SchemaDistinguishesAbsentCompleteAndIncomplete(t *testing.T) {
+	ctx := context.Background()
+	h := ruleHarness(t)
+	r := h.repo.Reader()
+	st, err := r.Schema(ctx)
+	require.NoError(t, err)
+	require.Equal(t, SchemaStatus{State: SchemaComplete}, st, "the schema the repository creates is complete for the reader")
+
+	_, err = h.store.DB().ExecContext(ctx, `ALTER TABLE action_approvals DROP COLUMN decided_group`)
+	require.NoError(t, err)
+	st, err = r.Schema(ctx)
+	require.NoError(t, err)
+	require.Equal(t, SchemaStatus{State: SchemaIncomplete, Missing: []string{"action_approvals.decided_group"}}, st)
+
+	_, err = h.store.DB().ExecContext(ctx, `DROP TABLE action_attempts`)
+	require.NoError(t, err)
+	st, err = r.Schema(ctx)
+	require.NoError(t, err)
+	require.Equal(t, SchemaIncomplete, st.State)
+	require.Equal(t, []string{"action_approvals.decided_group", "action_attempts"}, st.Missing)
+
+	// One table of three is still "incomplete", never "absent".
+	_, err = h.store.DB().ExecContext(ctx, `DROP TABLE action_approvals`)
+	require.NoError(t, err)
+	st, err = r.Schema(ctx)
+	require.NoError(t, err)
+	require.Equal(t, SchemaIncomplete, st.State)
+	require.Equal(t, []string{"action_approvals", "action_attempts"}, st.Missing)
 }
 
 // A storage failure is a storage failure, never "not found" and never an
@@ -499,7 +553,7 @@ func TestReview_StorageFailureIsNotNotFound(t *testing.T) {
 	require.Equal(t, CodeStoreUnavailable, CodeOf(err))
 	_, err = h.repo.Reader().ListApprovals(ctx, ApprovalListQuery{})
 	require.Error(t, err)
-	_, _, err = h.repo.Reader().UnresolvedGroups(ctx, "", h.now)
+	_, err = h.repo.Reader().UnresolvedCounts(ctx, "", h.now)
 	require.Error(t, err)
 }
 
@@ -557,4 +611,57 @@ func TestReview_ConsistentUnderConcurrentDecision(t *testing.T) {
 		}
 	}
 	require.Positive(t, n)
+}
+
+// #565 review, finding 3. The stored totals and the eligibility groups are
+// read in one snapshot. A decision that commits exactly between the two
+// statements (the seam makes that deterministic) is not seen by the second:
+// the groups sum to the totals they are reported with, and the next read
+// sees the decision in both.
+func TestUnresolvedCounts_OneSnapshotUnderAConcurrentDecision(t *testing.T) {
+	ctx := context.Background()
+	h := ruleHarness(t)
+	var ids []string
+	for i := 0; i < 4; i++ {
+		ids = append(ids, h.establish(t, fmt.Sprintf("op-%d", i), "create_refund_request", refund75).Operation.Approval.ID)
+		h.now = h.now.Add(time.Second)
+	}
+	// The reader is on its own read-only connection, as the console's is.
+	var path string
+	require.NoError(t, h.store.DB().QueryRowContext(ctx, `SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&path))
+	ro, err := sql.Open("sqlite3", "file:"+path+"?mode=ro&_busy_timeout=5000")
+	require.NoError(t, err)
+	defer ro.Close()
+	r := NewReader(ro)
+
+	sums := func(c *UnresolvedCounts) (total, grouped int) {
+		require.True(t, c.GroupsComplete)
+		for _, u := range c.ByUseCase {
+			total += u.Unresolved
+		}
+		for _, g := range c.Groups {
+			grouped += g.Unresolved
+		}
+		return total, grouped
+	}
+	decided := 0
+	r.betweenCounts = func() {
+		_, derr := h.svc.Decide(ctx, DecideRequest{ApprovalID: ids[decided], Approve: decided%2 == 0, Reason: "between the two statements", Reviewer: lead("ann")})
+		require.NoError(t, derr)
+		decided++
+	}
+	for want := 4; want > 0; want-- {
+		c, err := r.UnresolvedCounts(ctx, "", h.now)
+		require.NoError(t, err)
+		total, grouped := sums(c)
+		require.Equal(t, total, grouped, "the eligibility groups sum to the stored total they are reported with")
+		require.Equal(t, want, total, "the snapshot was taken before the decision that committed during the read")
+	}
+	require.Equal(t, 4, decided)
+	r.betweenCounts = nil
+	c, err := r.UnresolvedCounts(ctx, "", h.now)
+	require.NoError(t, err)
+	total, grouped := sums(c)
+	require.Zero(t, total)
+	require.Zero(t, grouped)
 }

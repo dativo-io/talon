@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -203,4 +204,49 @@ func mustJSON(t *testing.T, v any) string {
 	b, err := json.Marshal(v)
 	require.NoError(t, err)
 	return string(b)
+}
+
+// #565 review, finding 2, on the data plane: who can read a reviewer's
+// free-text reason. Not a defect, pinned: the reason is returned to an
+// authorized reviewer of the approval and to the application that requested
+// the action (the published v1.16.1 contract: its operation status and its
+// own evidence records, for an operation whose arguments it supplied), and
+// to nobody else. Another use case of the same tenant and a reviewer of
+// another group or tenant get "not found". The read-only console is not a
+// reviewer and never returns it (console.TestApprovals_DecisionReasonStaysOnTheReviewerSurface).
+func TestDecisionReason_DataPlaneSurfaces(t *testing.T) {
+	h := newACMEHTTPHarness(t)
+	st, res, raw := h.do("POST", "/v1/action-operations", acme.BillingKey, establishBodyJSON("op-reason", acme.BillingOnly, `{"invoice_id":"INV-7"}`))
+	require.Equal(t, http.StatusAccepted, st, raw)
+	approvalID, _ := acmeDig(res, "operation", "approval", "id").(string)
+	require.NotEmpty(t, approvalID)
+	const reason = "INV-7 matches the ledger entry"
+	st, _, raw = h.do("POST", "/v1/approvals/"+approvalID+"/decisions", h.reviewer.Bob.Token, `{"decision":"approve","reason":"`+reason+`"}`)
+	require.Equal(t, http.StatusOK, st, raw)
+
+	// The reviewer of the approval's group.
+	st, res, raw = h.do("GET", "/v1/reviews/"+approvalID, h.reviewer.Bob.Token, "")
+	require.Equal(t, http.StatusOK, st, raw)
+	require.Equal(t, reason, acmeDig(res, "decision", "reason"))
+	require.Equal(t, true, acmeDig(res, "decision", "reason_recorded"))
+
+	// A reviewer of another tenant with the same group name: not found.
+	st, _, raw = h.do("GET", "/v1/reviews/"+approvalID, h.reviewer.Mallory.Token, "")
+	require.Equal(t, http.StatusNotFound, st, raw)
+	require.NotContains(t, raw, reason)
+
+	// The signed decision record.
+	var decided string
+	require.NoError(t, h.store.DB().QueryRowContext(context.Background(),
+		`SELECT id FROM evidence WHERE invocation_type = 'action_lifecycle' AND evidence_json LIKE '%"decision_reason"%'`).Scan(&decided))
+
+	// The application that requested the action reads its own record.
+	st, _, raw = h.do("GET", "/v1/evidence/"+decided, acme.BillingKey, "")
+	require.Equal(t, http.StatusOK, st, raw)
+	require.Contains(t, raw, reason)
+
+	// Another use case of the same tenant does not.
+	st, _, raw = h.do("GET", "/v1/evidence/"+decided, acme.SupportKey, "")
+	require.Equal(t, http.StatusNotFound, st, raw)
+	require.NotContains(t, raw, reason)
 }

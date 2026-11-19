@@ -20,6 +20,10 @@ describe("approval wording", () => {
     expect(eligibilityView(e({ class: "potentially_actionable", basis: "current_files" }), "pending").label).toBe("Eligible per current files");
     expect(basisLabel("current_files")).toContain("not proven");
     expect(eligibilityView(e({ class: "unknown", state: "unknown" }), "pending").label).toBe("Eligibility unknown");
+    // Files differ from the binding, no process proven to run them: named as
+    // what it is, never as "not decidable".
+    expect(eligibilityView(e({ class: "unknown", state: "unknown", basis: "current_files", policy: "changed" }), "pending").label).toBe("Files changed, runtime not confirmed");
+    expect(eligibilityView(e({ class: "unknown", state: "unknown", basis: "current_files", definition: "changed" }), "pending").label).toBe("Files changed, runtime not confirmed");
     expect(eligibilityView(e({ class: "not_decidable", state: "expired" }), "pending").label).toBe("Expired, not decidable");
     expect(eligibilityView(e({ class: "decided", state: "decided" }), "rejected").label).toBe("Rejected");
   });

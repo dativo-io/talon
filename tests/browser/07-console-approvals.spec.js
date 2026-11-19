@@ -151,12 +151,41 @@ test("expired, rejected and approved requests: state, decision and outcome", asy
   await expect(table.locator(`tr[data-approval="${ap.rejected}"]`).getByText("Rejected")).toBeVisible();
   await expect(table.locator(`tr[data-approval="${ap.approved}"]`).getByText("Approved")).toBeVisible();
 
+  // The reviewer's reason quotes the exact arguments. A paired browser is
+  // not a reviewer: the console says that a reason was recorded and where
+  // an approver reads it, and neither shows nor receives its text.
+  const bodies = [];
+  page.on("response", async (resp) => {
+    if (resp.url().includes("/console/v1/")) bodies.push({ url: resp.url(), text: await resp.text().catch(() => "") });
+  });
   await table.locator(`tr[data-approval="${ap.rejected}"]`).getByRole("link", { name: ap.rejected }).click();
   const decision = page.getByTestId("approval-decision");
   await expect(decision).toContainText("rejected");
   await expect(decision).toContainText("by apr_support_lead (group support-leads)");
-  await expect(decision).toContainText(ap.reject_reason);
+  await expect(page.getByTestId("approval-reason-recorded")).toContainText("A reason was recorded");
+  await expect(page.getByTestId("approval-reason-recorded")).toContainText(`talon approvals show ${ap.rejected}`);
   await expect(page.getByTestId("approval-outcome")).toContainText("nothing was dispatched");
+  await expect(page.getByTestId("approval-detail")).not.toContainText(ap.reject_reason);
+  await expect(page.getByTestId("approval-detail")).not.toContainText("99.50");
+  // The linked signed record of the decision: the evidence page shows who
+  // decided and that a reason is recorded, names the withheld field, and
+  // the stored-record JSON it prints does not contain the text.
+  await page.getByTestId("approval-lifecycle").locator("tbody tr").last().getByRole("link").click();
+  await expect(page.getByTestId("evidence-reason-withheld")).toContainText("Recorded, not shown in the console");
+  await expect(page.getByTestId("evidence-reason-withheld")).toContainText(`talon approvals show ${ap.rejected}`);
+  await expect(page.getByTestId("evidence-withheld")).toContainText("action_lifecycle.decision_reason");
+  await expect(page.getByTestId("evidence-withheld")).toContainText("verified by Talon over the complete stored record");
+  await expect(page.getByText("Reviewer", { exact: true })).toBeVisible();
+  await expect(page.locator("main")).not.toContainText(ap.reject_reason);
+  await expect(page.locator("main")).not.toContainText("99.50");
+  await expect(page.locator("pre.json")).not.toContainText("decision_reason");
+
+  expect(bodies.some((b) => b.url.includes(`/approvals/${ap.rejected}`))).toBe(true);
+  expect(bodies.some((b) => b.url.includes("/console/v1/evidence/"))).toBe(true);
+  for (const b of bodies) {
+    expect(b.text, `${b.url} returns the reviewer's reason`).not.toContain(ap.reject_reason);
+    expect(b.text, `${b.url} returns an argument value quoted in the reason`).not.toContain("99.50");
+  }
 
   await page.goto(`/approvals/${ap.approved}`);
   await expect(page.getByTestId("approval-decision")).toContainText("approved");

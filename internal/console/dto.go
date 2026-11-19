@@ -209,6 +209,9 @@ type DecisionList struct {
 	Availability Availability     `json:"availability"`
 	Records      []evidence.Index `json:"records"`
 	Limit        int              `json:"limit"`
+	// Truncated: more records exist than Limit; Records is a part of them
+	// (Availability says which part and how to read all of them).
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // SessionList is a bounded page of sessions from two sources, each with its
@@ -238,12 +241,32 @@ type SessionDetail struct {
 	Timeline     *session.Timeline `json:"timeline,omitempty"`
 }
 
-// EvidenceDetail is evidence.RecordDetail: the record and the verification
-// performed for this read.
+// EvidenceDetail is evidence.RecordDetail under the console's operational
+// disclosure: the record and the verification performed for this read.
 type EvidenceDetail struct {
-	Meta         Meta                   `json:"meta"`
-	Availability Availability           `json:"availability"`
-	Detail       *evidence.RecordDetail `json:"detail,omitempty"`
+	Meta         Meta                  `json:"meta"`
+	Availability Availability          `json:"availability"`
+	Detail       *EvidenceRecordDetail `json:"detail,omitempty"`
+}
+
+// EvidenceRecordDetail is the stored record as the console returns it. The
+// verification is the one performed over the COMPLETE stored record. The
+// record itself is complete except for the fields listed in Withheld (#565):
+// a paired browser is not a reviewer, and the one free text a person writes
+// into signed evidence, an approval decision's reason, can quote the exact
+// arguments. The signed record is never modified; `talon audit show` on the
+// installation's host and the reviewer API return the complete record.
+type EvidenceRecordDetail struct {
+	*evidence.RecordDetail
+	Withheld []WithheldField `json:"withheld,omitempty"`
+}
+
+// WithheldField names one field of the stored record that this view does
+// not return, why, and how an authorized reader reads it.
+type WithheldField struct {
+	Field    string `json:"field"`
+	Why      string `json:"why"`
+	ReadWith string `json:"read_with,omitempty"`
 }
 
 // Costs is costs.Report with its availability: partial when the report names

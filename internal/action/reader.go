@@ -19,22 +19,103 @@ import (
 // path touches it; a Reader reports that as it is and never closes it.
 type Reader struct {
 	db *sql.DB
+	// betweenCounts is a test seam: it runs inside UnresolvedCounts between
+	// its two statements. nil outside tests.
+	betweenCounts func()
 }
 
 // NewReader returns a reader over the database that holds the action
 // tables (the evidence store's database).
 func NewReader(db *sql.DB) *Reader { return &Reader{db: db} }
 
-// Ready reports whether the action tables exist. An installation that
-// never served the Action Gateway has none: that is "no approvals", not an
-// error, and a reader never creates them.
-func (r *Reader) Ready(ctx context.Context) (bool, error) {
-	var n int
-	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('action_operations', 'action_approvals', 'action_attempts')`).Scan(&n)
+// States of the action store's schema as a reader finds it.
+const (
+	// SchemaAbsent: none of the action tables exists. The installation never
+	// established a governed action: "no approvals" is a true zero.
+	SchemaAbsent = "absent"
+	// SchemaComplete: every table and column a reader reads exists.
+	SchemaComplete = "complete"
+	// SchemaIncomplete: some of them exist and others do not (an
+	// interrupted creation, a damaged database, a store written by another
+	// version). Approvals may exist and cannot be read: never a zero.
+	SchemaIncomplete = "incomplete"
+)
+
+// SchemaStatus is the state of the action store's schema. Missing names the
+// tables ("action_attempts") and columns ("action_approvals.reason") a
+// reader needs and did not find; it is empty unless State is incomplete.
+type SchemaStatus struct {
+	State   string
+	Missing []string
+}
+
+// readSchema lists, per table, the columns the statements of this file and
+// of the record loaders read. A reader never creates or alters a table, so
+// it checks what it is about to read instead of assuming it.
+var readSchema = []struct {
+	table   string
+	columns []string
+}{
+	{"action_operations", []string{
+		"ref", "tenant_id", "agent_id", "operation_id", "action", "digest", "schema_digest", "definition_digest", "projection_digest",
+		"policy_digest", "catalog_digest", "execution_profile", "binding_profile", "destination_id", "identity_source", "verdict", "rule_id",
+		"status", "version", "sequence", "approval_id", "idempotency_key", "review_json", "origin_json", "created_at", "updated_at",
+		"terminal_at", "outcome_provenance", "outcome_code", "attempt_count",
+	}},
+	{"action_approvals", []string{
+		"id", "operation_ref", "subject_digest", "rule_id", "groups_json", "status", "expires_at", "created_at", "decided_at", "decided_by",
+		"decided_group", "reason", "version",
+	}},
+	{"action_attempts", []string{
+		"id", "operation_ref", "ordinal", "status", "idempotency_key", "started_at", "armed_at", "completed_at", "request_written",
+		"response_observed", "http_status", "result_provenance", "outcome_code", "outcome_ref",
+	}},
+}
+
+// Schema reports whether the action store can be read. It distinguishes an
+// installation that never used the Action Gateway (SchemaAbsent) from a
+// store that exists in part (SchemaIncomplete): the first is "no approvals",
+// the second is "approvals cannot be read" (#565 review).
+func (r *Reader) Schema(ctx context.Context) (SchemaStatus, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT m.name, p.name FROM sqlite_master m JOIN pragma_table_info(m.name) p
+		WHERE m.type = 'table' AND m.name IN ('action_operations', 'action_approvals', 'action_attempts')`)
 	if err != nil {
-		return false, err
+		return SchemaStatus{}, err
 	}
-	return n == 3, nil
+	defer rows.Close()
+	found := map[string]map[string]bool{}
+	for rows.Next() {
+		var table, column string
+		if err := rows.Scan(&table, &column); err != nil {
+			return SchemaStatus{}, err
+		}
+		if found[table] == nil {
+			found[table] = map[string]bool{}
+		}
+		found[table][column] = true
+	}
+	if err := rows.Err(); err != nil {
+		return SchemaStatus{}, err
+	}
+	if len(found) == 0 {
+		return SchemaStatus{State: SchemaAbsent}, nil
+	}
+	var missing []string
+	for _, t := range readSchema {
+		if found[t.table] == nil {
+			missing = append(missing, t.table)
+			continue
+		}
+		for _, c := range t.columns {
+			if !found[t.table][c] {
+				missing = append(missing, t.table+"."+c)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		return SchemaStatus{State: SchemaIncomplete, Missing: missing}, nil
+	}
+	return SchemaStatus{State: SchemaComplete}, nil
 }
 
 // ApprovalRecord reads one approval, its operation and its latest attempt
@@ -131,7 +212,10 @@ type ApprovalListQuery struct {
 	Config func(tenant, useCase string) CurrentConfig
 }
 
-// ApprovalPage is one page. Next is "" when the selection is exhausted.
+// ApprovalPage is one page. Next is "" exactly when the selection is
+// exhausted. A page ends at the listing's scan bound, so it can hold no item
+// and still carry a cursor: only an empty page WITHOUT a cursor, requested
+// without one, means that the selection is empty.
 //
 // Order and cursor are the approval's creation time and id, which never
 // change. A page therefore never repeats or skips an approval that stays in
@@ -336,14 +420,56 @@ func (g ApprovalGroup) Eligibility(cfg CurrentConfig, now time.Time) Eligibility
 	return classifyApproval(bindingFacts{Status: ApprovalPending, ExpiresAt: now.Add(time.Hour), Action: g.Action, PolicyDigest: g.PolicyDigest, DefinitionDigest: g.DefinitionDigest}, cfg, now)
 }
 
-// UnresolvedGroups counts every unresolved approval of a tenant ("" =
-// every tenant), grouped by what eligibility depends on. The counts are
-// computed in SQL over all rows: no page bound can make them wrong.
-// complete is false when there are more distinct groups than one request
-// reads; the groups returned are then a subset and must not be summed into
-// a total (use UnresolvedByUseCase for the stored totals).
-func (r *Reader) UnresolvedGroups(ctx context.Context, tenant string, now time.Time) (groups []ApprovalGroup, complete bool, err error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT o.tenant_id, o.agent_id, o.action, o.policy_digest, o.definition_digest,
+// UnresolvedCounts are the unresolved approvals of a tenant scope, counted
+// two ways from ONE snapshot of the store: per use case (the stored totals)
+// and grouped by what eligibility depends on (use case, action and bound
+// digests, with the number whose lifetime elapsed). Because both come from
+// the same snapshot, the groups of a use case sum to its total whatever
+// commits meanwhile.
+type UnresolvedCounts struct {
+	ByUseCase []UseCaseUnresolved
+	// Groups is nil when GroupsComplete is false: there are more distinct
+	// bindings than one request reads, and a subset must never be summed
+	// into a total.
+	Groups         []ApprovalGroup
+	GroupsComplete bool
+}
+
+// UseCaseUnresolved is the stored number of unresolved approvals of one
+// use case: a persisted fact, independent of any configuration.
+type UseCaseUnresolved struct {
+	Tenant     string
+	UseCase    string
+	Unresolved int
+}
+
+// UnresolvedCounts counts every unresolved approval of a tenant ("" = every
+// tenant). Both statements run in one read transaction, so a decision, an
+// expiry sweep or a new operation that commits between them cannot make the
+// eligibility groups disagree with the totals they are reported with (#565
+// review). The counts are computed in SQL over all rows: no page bound can
+// make them wrong.
+func (r *Reader) UnresolvedCounts(ctx context.Context, tenant string, now time.Time) (*UnresolvedCounts, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	out := &UnresolvedCounts{}
+	if out.ByUseCase, err = unresolvedByUseCase(ctx, tx, tenant); err != nil {
+		return nil, err
+	}
+	if r.betweenCounts != nil {
+		r.betweenCounts()
+	}
+	if out.Groups, out.GroupsComplete, err = unresolvedGroups(ctx, tx, tenant, now); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func unresolvedGroups(ctx context.Context, tx *sql.Tx, tenant string, now time.Time) (groups []ApprovalGroup, complete bool, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT o.tenant_id, o.agent_id, o.action, o.policy_digest, o.definition_digest,
 			COUNT(*), SUM(CASE WHEN a.expires_at <= ? THEN 1 ELSE 0 END)
 		FROM action_approvals a JOIN action_operations o ON o.ref = a.operation_ref
 		WHERE a.status = ? AND (? = '' OR o.tenant_id = ?)
@@ -365,23 +491,13 @@ func (r *Reader) UnresolvedGroups(ctx context.Context, tenant string, now time.T
 		return nil, false, err
 	}
 	if len(groups) > maxApprovalGroups {
-		return groups[:maxApprovalGroups], false, nil
+		return nil, false, nil
 	}
 	return groups, true, nil
 }
 
-// UseCaseUnresolved is the stored number of unresolved approvals of one
-// use case: a persisted fact, independent of any configuration.
-type UseCaseUnresolved struct {
-	Tenant     string
-	UseCase    string
-	Unresolved int
-}
-
-// UnresolvedByUseCase counts the approvals pending in the store per use
-// case of a tenant ("" = every tenant).
-func (r *Reader) UnresolvedByUseCase(ctx context.Context, tenant string) ([]UseCaseUnresolved, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT o.tenant_id, o.agent_id, COUNT(*)
+func unresolvedByUseCase(ctx context.Context, tx *sql.Tx, tenant string) ([]UseCaseUnresolved, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT o.tenant_id, o.agent_id, COUNT(*)
 		FROM action_approvals a JOIN action_operations o ON o.ref = a.operation_ref
 		WHERE a.status = ? AND (? = '' OR o.tenant_id = ?)
 		GROUP BY o.tenant_id, o.agent_id ORDER BY o.tenant_id, o.agent_id`, ApprovalPending, tenant, tenant)

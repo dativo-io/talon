@@ -28,6 +28,9 @@ export function eligibilityView(e: Eligibility, status: string): StateView {
     case "not_decidable":
       return { label: NOT_DECIDABLE[e.state] ?? "Not decidable", tone: "neutral" };
     case "unknown":
+      // The files differ from what the request was bound to, and no running
+      // process is proven to run those files: not a refusal.
+      if (e.policy === "changed" || e.definition === "changed") return { label: "Files changed, runtime not confirmed", tone: "warn" };
       return { label: "Eligibility unknown", tone: "warn" };
     default:
       return status === "approved"

@@ -43,6 +43,11 @@ func (c *ActionConfigs) For(tenant, name string) action.CurrentConfig {
 	return action.CurrentConfig{Basis: action.CurrentFiles, Unavailable: "no agent file defines this AI use case in this tenant (removed or renamed), so there is no current configuration to compare with"}
 }
 
+// afterGatewayConfigRead is a test seam: it runs right after the gateway
+// config was read, where a concurrent writer could replace the file. nil
+// outside tests.
+var afterGatewayConfigRead func()
+
 // BuildActionConfigs scans the agent files once and compiles every use
 // case's action configuration. in.Name and in.Tenant are not used.
 func BuildActionConfigs(ctx context.Context, in Inputs) *ActionConfigs {
@@ -56,7 +61,15 @@ func BuildActionConfigs(ctx context.Context, in Inputs) *ActionConfigs {
 	var baseline gateway.OrganizationPolicy
 	gwDigest := ""
 	if in.GatewayConfig != "" {
-		gw, err := gateway.LoadGatewayConfig(in.GatewayConfig)
+		// One read: the company policy that is compiled and the digest that
+		// is compared with what a running process reports are of the same
+		// bytes. A second read for the digest could confirm, against the
+		// runtime, a policy compiled from bytes the runtime never loaded
+		// (#565 review).
+		gw, digest, err := gateway.LoadGatewayConfigWithDigest(in.GatewayConfig)
+		if afterGatewayConfigRead != nil {
+			afterGatewayConfigRead()
+		}
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 		case err != nil:
@@ -64,7 +77,7 @@ func BuildActionConfigs(ctx context.Context, in Inputs) *ActionConfigs {
 			// company layer could not be read.
 			return unavailable("the gateway config cannot be loaded, so the company action policy is unknown")
 		default:
-			baseline, gwDigest = gw.OrganizationPolicy, fileDigest(in.GatewayConfig)
+			baseline, gwDigest = gw.OrganizationPolicy, digest
 		}
 	}
 	out := &ActionConfigs{byKey: map[string]action.CurrentConfig{}}
