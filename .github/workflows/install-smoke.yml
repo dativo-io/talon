@@ -208,7 +208,7 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
-      - name: Browser suite, People Analytics (#545) and console e2e on the published binary
+      - name: Browser suite, People Analytics (#545), console e2e and conditional actions (#205) on the published binary
         if: steps.cap.outputs.console == 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}

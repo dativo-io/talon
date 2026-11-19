@@ -106,8 +106,14 @@ release workflow also proves the console on what customers get, not on a source 
   pages, read-only boundary, signature verification, tamper detection, tenant scoping), the
   People Analytics real-process contract (#545: allowed call dispatched, forbidden export
   never reaches the HR backend, backend rejection is not a Talon denial, console = CLI =
-  browser) and the console e2e. Tests and fixtures come from the tag's checkout; Go compiles
-  the test harness only.
+  browser), the console e2e, and the conditional-action acceptance (#205,
+  `scripts/action-evidence-live.sh`: typed argument rules through the HTTP Action Gateway
+  against a counting downstream service — allowed, approval required and decided through
+  the approval API with an approver credential, denied — with the downstream call counts,
+  `talon audit verify` of each lifecycle and the records in Chromium). That step fails
+  unless the test executed, passed and used the released executable; a run that matched no
+  test or skipped is a failed gate. Tests and fixtures come from the tag's checkout; Go
+  compiles the test harness only.
 - `release-verify` runs `scripts/console-compose-smoke.sh` against
   `ghcr.io/dativo-io/talon:<version>` (pairing from the container log, the six pages' read
   endpoints, console/CLI signature parity, no legacy dashboard route, loopback-only

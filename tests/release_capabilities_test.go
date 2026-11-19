@@ -106,3 +106,32 @@ func stepIsVersionGuarded(lines []string, i int) bool {
 	}
 	return false
 }
+
+// The released executable is also the system under test of the
+// conditional-action acceptance (#205, #564): the release gate runs it, and
+// the script refuses a run in which the test did not execute or did not use
+// the binary it was given.
+func TestReleaseAcceptance_RunsConditionalActionsOnTheReleasedBinary(t *testing.T) {
+	read := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join("..", rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	gate := read("scripts/published-console-acceptance.sh")
+	if !strings.Contains(gate, `export TALON_BINARY="$BIN" TALON_E2E_BINARY="$BIN"`) || !strings.Contains(gate, "\nbash scripts/action-evidence-live.sh\n") {
+		t.Error("published-console-acceptance.sh must run scripts/action-evidence-live.sh with TALON_E2E_BINARY set to the released binary")
+	}
+	live := read("scripts/action-evidence-live.sh")
+	for _, want := range []string{
+		"-run '^TestE2E_ActionGateway_ArgumentRules$'",
+		"'^--- PASS: TestE2E_ActionGateway_ArgumentRules '",
+		"'^--- SKIP'",
+		`"e2e: binary under test is $TALON_E2E_BINARY "`,
+	} {
+		if !strings.Contains(live, want) {
+			t.Errorf("action-evidence-live.sh must require actual execution on the given binary; missing %q", want)
+		}
+	}
+}
