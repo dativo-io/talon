@@ -2,12 +2,14 @@
 # Which release-acceptance gates apply to a release tag.
 #
 #   scripts/release-capabilities.sh <tag>      # prints: console=true|false
+#                                              #         quickstart=true|false
 #
 # The Operations Console (talon ui, the talon-ui Compose service and their
 # acceptance scripts) ships from v1.17.0, release candidates included. An
 # audit of an older release (release.yml and install-smoke.yml with an
 # explicit tag) reports the console gates as NOT APPLICABLE instead of
-# failing on a feature that release never had.
+# failing on a feature that release never had. The published-image
+# quickstart (scripts/quickstart.sh, #463) ships from the same release.
 #
 # The rule is the VERSION, not the presence of a script or an asset: on a
 # console-enabled release a missing script or artifact is a failed gate,
@@ -30,3 +32,5 @@ if [ "$major" -gt "$CONSOLE_SINCE_MAJOR" ] || { [ "$major" -eq "$CONSOLE_SINCE_M
   console=true
 fi
 echo "console=$console"
+# The no-clone quickstart script is part of a release from the same version.
+echo "quickstart=$console"

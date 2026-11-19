@@ -51,7 +51,7 @@ Which reference to use:
 
 Then open `http://127.0.0.1:8787/` and enter the one-time pairing code from `docker compose logs talon-ui`. `scripts/console-compose-smoke.sh` takes the same `TALON_IMAGE` variable and checks, against that image: an unresolvable image stops the stack and nothing is built, both services run the named image, pairing, the six pages, signature verification parity with the CLI, and loopback-only publication.
 
-A quickstart that needs no checkout at all is tracked separately (#463).
+For a start that needs no checkout at all, use the published-image quickstart (`scripts/quickstart.sh`, see the [quickstart](../../docs/QUICKSTART.md)): one command with an explicit `TALON_VERSION`, no Compose file and no build.
 
 ## Run the Full Demo
 
