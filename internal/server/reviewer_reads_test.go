@@ -35,10 +35,19 @@ func TestReviewerReads_ScopedToTenantAndGroup(t *testing.T) {
 	require.Equal(t, acme.BillingOnly, acmeDig(res, "operation", "action"))
 	require.Equal(t, "REQUIRE_APPROVAL", acmeDig(res, "operation", "verdict"))
 	require.Equal(t, `"INV-7"`, strings.TrimSpace(mustJSON(t, acmeDig(res, "operation", "review", "invoice_id"))), "the reviewer sees the exact material value")
-	require.Contains(t, res["rule"], "requires approval by", "the reviewer reads why")
-	require.Contains(t, res["target"], h.down.URL(), "the reviewer reads where it would be dispatched")
-	require.Equal(t, true, res["policy_current"])
-	require.Equal(t, true, res["definition_current"])
+	require.Contains(t, acmeDig(res, "current", "rule"), "requires approval by", "the reviewer reads why")
+	require.Contains(t, acmeDig(res, "bound", "destination"), h.down.URL(), "the reviewer reads where it would be dispatched, as bound")
+	require.Equal(t, true, acmeDig(res, "current", "policy_unchanged"))
+	require.Equal(t, true, acmeDig(res, "current", "definition_unchanged"))
+	require.Equal(t, true, res["actionable"])
+	require.Equal(t, "actionable", res["actionability"])
+	require.Contains(t, res["after_approval"], "dispatches nothing")
+	st, bad, _ := h.do("GET", "/v1/reviews?state=everything", h.reviewer.Bob.Token, "")
+	require.Equal(t, http.StatusBadRequest, st)
+	require.Equal(t, action.CodeInvalidRequest, acmeErrCode(bad))
+	st, all, raw := h.do("GET", "/v1/reviews?state=all", h.reviewer.Bob.Token, "")
+	require.Equal(t, http.StatusOK, st, raw)
+	require.Equal(t, "all", all["state"])
 
 	// Everyone else: nothing listed, nothing shown, opaque not-found or 401.
 	for name, tok := range map[string]string{"other group (alice)": h.reviewer.Alice.Token, "other tenant (mallory)": h.reviewer.Mallory.Token} {

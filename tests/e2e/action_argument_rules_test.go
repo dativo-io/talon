@@ -267,12 +267,27 @@ policies:
 			t.Fatalf("claim %s before approval: %d %v", a[0], st, res)
 		}
 		calls(a[0] + " before a decision")
-		if a[0] == "op-refund-75" {
+		switch a[0] {
+		case "op-refund-75":
 			// The local reviewer path (#433): the approver reads exactly
 			// what they approve and decides through the CLI.
 			reviewRefundViaCLI(t, dir, c.base, leadKey, approvalID, down.srv.URL)
-		} else if approve(approvalID) != 200 {
-			t.Fatalf("approve %s", a[0])
+		case "op-deploy-prod":
+			// The same reviewer experience for an unrelated action: a
+			// production deployment required by a use-case string rule.
+			reviewViaCLI(t, dir, c.base, leadKey, approvalID, "approve", "release ticket REL-12", []string{
+				"Status:            CAN BE DECIDED NOW",
+				"Requested by:      AI use case support-bot (tenant default)",
+				"Action:            deploy_service",
+				`environment      "production"`, `service          "api"`,
+				"Required by:     rule prod-deploy-needs-approval (use_case policy), verdict REQUIRE_APPROVAL",
+				`Policy:          unchanged since establish. The rule: use_case argument rule prod-deploy-needs-approval: a call of deploy_service where environment eq "production" (string) requires approval by support-leads`,
+				"dispatches nothing",
+			})
+		default:
+			if approve(approvalID) != 200 {
+				t.Fatalf("approve %s", a[0])
+			}
 		}
 		calls(a[0] + ": the approval itself")
 		if st, res = establish(a[0], a[1], a[3]); st != 409 || errCode(res) != "operation_conflict" {
@@ -287,6 +302,24 @@ policies:
 			t.Fatalf("replay of %s must be refused: %d", a[0], st)
 		}
 		calls(a[0] + " replay")
+	}
+
+	// A rejection through the CLI closes the operation: nothing is ever
+	// dispatched for it, and a later claim is refused.
+	{
+		st, res := establish("op-delete-rejected", "delete_records", `{"table":"customers","count":5,"dry_run":false}`)
+		approvalID, _ := dig(res, "operation", "approval", "id").(string)
+		if st != 202 || approvalID == "" {
+			t.Fatalf("op-delete-rejected: %d %v", st, res)
+		}
+		reviewViaCLI(t, dir, c.base, leadKey, approvalID, "reject", "wrong table", []string{
+			"Action:            delete_records", "dry_run          false", "count            5",
+			"Required by:     rule real-delete-needs-approval (use_case policy), verdict REQUIRE_APPROVAL",
+		})
+		if st, res = claim("op-delete-rejected"); st == 200 {
+			t.Fatalf("a rejected operation was claimed: %v", res)
+		}
+		calls("rejected through the CLI")
 	}
 
 	// DENY: a condition with effect deny holds.
@@ -379,19 +412,23 @@ func reviewRefundViaCLI(t *testing.T, dir, base, leadKey, approvalID, downstream
 	}
 	out, stderr, code = RunTalon(t, dir, reviewerEnv, "approvals", "show", approvalID, url)
 	for _, want := range []string{
-		"Action:            create_refund_request",
+		"Status:            CAN BE DECIDED NOW: an eligible reviewer can approve or reject this now",
 		"Requested by:      AI use case support-bot (tenant default)",
-		"Target:            POST " + downstreamURL + "/refunds",
-		"Verdict:           REQUIRE_APPROVAL (rule company:refund-needs-approval, company policy)",
-		"Why:               company argument rule company:refund-needs-approval: a call of create_refund_request where amount gt 50 (decimal) requires approval by support-leads",
+		"Action:            create_refund_request",
 		"amount           75.00", `currency         "EUR"`, `ticket_id        "T-2"`,
+		"Bound when the operation was established (from its record):",
+		"Destination:     POST " + downstreamURL + "/refunds",
+		"Required by:     rule company:refund-needs-approval (company policy), verdict REQUIRE_APPROVAL",
+		"Policy:          unchanged since establish. The rule: company argument rule company:refund-needs-approval: a call of create_refund_request where amount gt 50 (decimal) requires approval by support-leads",
+		"Action definition: unchanged since establish (destination as bound).",
+		"After approval:    An approval authorizes this exact operation and dispatches nothing.",
 	} {
 		if code != 0 || !strings.Contains(out, want) {
 			t.Fatalf("approvals show missing %q: code=%d\n%s\n%s", want, code, out, stderr)
 		}
 	}
-	if strings.Contains(out, "WARNING") {
-		t.Fatalf("a current policy must not warn:\n%s", out)
+	if strings.Contains(out, "CHANGED") || strings.Contains(out, "CANNOT BE DECIDED") {
+		t.Fatalf("an unchanged configuration must not be reported as changed:\n%s", out)
 	}
 	if _, stderr, code := RunTalon(t, dir, reviewerEnv, "approvals", "approve", approvalID, url); code == 0 || !strings.Contains(stderr, "--reason is required") {
 		t.Fatalf("a decision needs a reason: code=%d %s", code, stderr)
@@ -400,7 +437,32 @@ func reviewRefundViaCLI(t *testing.T, dir, base, leadKey, approvalID, downstream
 	if code != 0 || !strings.Contains(out, "approved by apr_") || !strings.Contains(out, "is now authorized; nothing was dispatched") {
 		t.Fatalf("approvals approve: code=%d\n%s\n%s", code, out, stderr)
 	}
-	if out, _, _ = RunTalon(t, dir, reviewerEnv, "approvals", "list", url); !strings.Contains(out, "No pending approvals") {
+	if out, _, _ = RunTalon(t, dir, reviewerEnv, "approvals", "list", url); strings.Contains(out, approvalID) {
+		t.Fatalf("a decided approval leaves the list:\n%s", out)
+	}
+}
+
+// reviewViaCLI is the reviewer path for any action: list, show (every
+// expected line present), then the decision with a reason.
+func reviewViaCLI(t *testing.T, dir, base, leadKey, approvalID, decision, reason string, show []string) {
+	t.Helper()
+	env := map[string]string{"TALON_APPROVER_KEY": leadKey}
+	url := "--url=" + base
+	out, stderr, code := RunTalon(t, dir, env, "approvals", "list", url)
+	if code != 0 || !strings.Contains(out, approvalID) || !strings.Contains(out, "actionable") {
+		t.Fatalf("approvals list: code=%d\n%s\n%s", code, out, stderr)
+	}
+	out, stderr, code = RunTalon(t, dir, env, "approvals", "show", approvalID, url)
+	for _, want := range show {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Fatalf("approvals show missing %q: code=%d\n%s\n%s", want, code, out, stderr)
+		}
+	}
+	out, stderr, code = RunTalon(t, dir, env, "approvals", decision, approvalID, "--reason", reason, url)
+	if code != 0 || !strings.Contains(out, "nothing was dispatched by this decision") {
+		t.Fatalf("approvals %s: code=%d\n%s\n%s", decision, code, out, stderr)
+	}
+	if out, _, _ = RunTalon(t, dir, env, "approvals", "list", url); strings.Contains(out, approvalID) {
 		t.Fatalf("a decided approval leaves the list:\n%s", out)
 	}
 }

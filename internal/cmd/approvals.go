@@ -31,6 +31,8 @@ var (
 	approvalsURL    string
 	approvalsJSON   bool
 	approvalsReason string
+	// approvalsAll also lists pending approvals that can no longer be decided.
+	approvalsAll bool
 	// approvalsAllowPlaintext permits plain http to a non-loopback host.
 	approvalsAllowPlaintext bool
 )
@@ -49,7 +51,7 @@ the approved operation afterwards.`,
 
 var approvalsListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List pending approvals you may decide (oldest first)",
+	Short: "List the approvals you can decide now (oldest first); --all adds expired and stale ones",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		var out struct {
@@ -57,7 +59,11 @@ var approvalsListCmd = &cobra.Command{
 			Reviews []reviewResponse `json:"reviews"`
 			More    bool             `json:"more"`
 		}
-		raw, err := approvalsRequest(cmd.Context(), http.MethodGet, "/v1/reviews", nil, &out)
+		path := "/v1/reviews"
+		if approvalsAll {
+			path += "?state=all"
+		}
+		raw, err := approvalsRequest(cmd.Context(), http.MethodGet, path, nil, &out)
 		if err != nil {
 			return err
 		}
@@ -67,17 +73,25 @@ var approvalsListCmd = &cobra.Command{
 		}
 		w := cmd.OutOrStdout()
 		if len(out.Reviews) == 0 {
-			fmt.Fprintf(w, "No pending approvals you may decide in tenant %s.\n", out.Tenant)
+			if approvalsAll {
+				fmt.Fprintf(w, "No pending approvals of your groups in tenant %s.\n", out.Tenant)
+			} else {
+				fmt.Fprintf(w, "No approvals you can decide now in tenant %s. ('talon approvals list --all' also shows expired and stale requests.)\n", out.Tenant)
+			}
 			return nil
 		}
-		fmt.Fprintf(w, "Pending approvals in tenant %s (oldest first):\n\n", out.Tenant)
+		if approvalsAll {
+			fmt.Fprintf(w, "Pending approvals of your groups in tenant %s (those you can decide first, oldest first):\n\n", out.Tenant)
+		} else {
+			fmt.Fprintf(w, "Approvals you can decide now in tenant %s (oldest first):\n\n", out.Tenant)
+		}
 		for i := range out.Reviews {
 			r := &out.Reviews[i]
-			fmt.Fprintf(w, "  %s  %s  %s  op %s  expires %s  %s\n", r.Operation.Approval.ID, r.UseCase, r.Operation.Action, r.Operation.OperationID,
+			fmt.Fprintf(w, "  %s  %-16s  %s  %s  op %s  expires %s  %s\n", r.Operation.Approval.ID, r.Actionability, r.UseCase, r.Operation.Action, r.Operation.OperationID,
 				r.Operation.Approval.ExpiresAt.UTC().Format(time.RFC3339), compactReview(r.Operation.Review))
 		}
 		if out.More {
-			fmt.Fprintf(w, "\nMORE pending approvals exist beyond these %d (the oldest are shown first). Decide these, then list again.\n", len(out.Reviews))
+			fmt.Fprintf(w, "\nMORE exist beyond these %d (the oldest are shown first). Decide these, then list again.\n", len(out.Reviews))
 		}
 		fmt.Fprintf(w, "\nShow one with: talon approvals show <approval-id>\n")
 		return nil
@@ -159,13 +173,30 @@ type reviewOperation struct {
 }
 
 type reviewResponse struct {
-	Operation         reviewOperation `json:"operation"`
-	UseCase           string          `json:"use_case"`
-	Tenant            string          `json:"tenant"`
-	Target            string          `json:"target"`
-	Rule              string          `json:"rule"`
-	PolicyCurrent     bool            `json:"policy_current"`
-	DefinitionCurrent bool            `json:"definition_current"`
+	Operation     reviewOperation `json:"operation"`
+	UseCase       string          `json:"use_case"`
+	Tenant        string          `json:"tenant"`
+	Actionable    bool            `json:"actionable"`
+	Actionability string          `json:"actionability"`
+	Explanation   string          `json:"explanation"`
+	AfterApproval string          `json:"after_approval"`
+	Bound         struct {
+		RuleID           string    `json:"rule_id"`
+		RuleSource       string    `json:"rule_source"`
+		Destination      string    `json:"destination"`
+		ArgumentsDigest  string    `json:"arguments_digest"`
+		DefinitionDigest string    `json:"definition_digest"`
+		PolicyDigest     string    `json:"policy_digest"`
+		EstablishedAt    time.Time `json:"established_at"`
+	} `json:"bound"`
+	Current struct {
+		PolicyUnchanged     bool   `json:"policy_unchanged"`
+		DefinitionUnchanged bool   `json:"definition_unchanged"`
+		Rule                string `json:"rule"`
+		RulePresent         bool   `json:"rule_present"`
+		Destination         string `json:"destination"`
+		ActionDescription   string `json:"action_description"`
+	} `json:"current"`
 }
 
 func compactReview(review map[string]json.RawMessage) string {
@@ -181,14 +212,28 @@ func compactReview(review map[string]json.RawMessage) string {
 	return strings.Join(parts, " ")
 }
 
+// printReview answers, in this order, what an unfamiliar reviewer needs:
+// can I still decide, who asks for what, with which exact arguments, where
+// it would go, why approval is required, and what an approval does. Facts
+// bound when the operation was established are kept apart from the
+// configuration enforced now; today's configuration is never printed as if
+// it were the operation's history.
 func printReview(w io.Writer, r *reviewResponse) {
 	op := &r.Operation
+	status := "CAN BE DECIDED NOW"
+	if !r.Actionable {
+		status = "CANNOT BE DECIDED (" + r.Actionability + ")"
+	}
+	fmt.Fprintf(w, "Status:            %s: %s\n", status, r.Explanation)
+	if a := op.Approval; a != nil {
+		fmt.Fprintf(w, "Approval:          %s, %s, groups %s, expires %s\n", a.ID, a.Status, strings.Join(a.Groups, ","), a.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	fmt.Fprintf(w, "\nRequested by:      AI use case %s (tenant %s)\n", r.UseCase, r.Tenant)
 	fmt.Fprintf(w, "Action:            %s\n", op.Action)
-	fmt.Fprintf(w, "Requested by:      AI use case %s (tenant %s)\n", r.UseCase, r.Tenant)
-	fmt.Fprintf(w, "Operation:         %s (%s)\n", op.OperationID, op.Status)
-	fmt.Fprintf(w, "Target:            %s\n", r.Target)
-	fmt.Fprintf(w, "Verdict:           %s (rule %s, %s policy)\n", op.Verdict, op.MatchedRuleID, op.MatchedRuleSource)
-	fmt.Fprintf(w, "Why:               %s\n", r.Rule)
+	if r.Current.ActionDescription != "" {
+		fmt.Fprintf(w, "                   %s (description from the current catalog)\n", r.Current.ActionDescription)
+	}
+	fmt.Fprintf(w, "Operation:         %s (%s), established %s\n", op.OperationID, op.Status, r.Bound.EstablishedAt.UTC().Format(time.RFC3339))
 	fmt.Fprintf(w, "Arguments you approve (exact values; the digest binds them):\n")
 	keys := make([]string, 0, len(op.Review))
 	for k := range op.Review {
@@ -198,16 +243,34 @@ func printReview(w io.Writer, r *reviewResponse) {
 	for _, k := range keys {
 		fmt.Fprintf(w, "  %-16s %s\n", k, string(op.Review[k]))
 	}
-	fmt.Fprintf(w, "Digest:            %s\n", op.Digest)
-	if a := op.Approval; a != nil {
-		fmt.Fprintf(w, "Approval:          %s, %s, groups %s, expires %s\n", a.ID, a.Status, strings.Join(a.Groups, ","), a.ExpiresAt.UTC().Format(time.RFC3339))
+	fmt.Fprintf(w, "Arguments digest:  %s\n", r.Bound.ArgumentsDigest)
+
+	fmt.Fprintf(w, "\nBound when the operation was established (from its record):\n")
+	fmt.Fprintf(w, "  Destination:     %s\n", r.Bound.Destination)
+	fmt.Fprintf(w, "  Required by:     rule %s (%s policy), verdict %s\n", r.Bound.RuleID, r.Bound.RuleSource, op.Verdict)
+	fmt.Fprintf(w, "  Policy digest:   %s\n", r.Bound.PolicyDigest)
+	fmt.Fprintf(w, "  Definition:      %s\n", r.Bound.DefinitionDigest)
+
+	fmt.Fprintf(w, "\nConfiguration enforced now:\n")
+	switch {
+	case r.Current.PolicyUnchanged && r.Current.RulePresent:
+		fmt.Fprintf(w, "  Policy:          unchanged since establish. The rule: %s\n", r.Current.Rule)
+	case r.Current.RulePresent:
+		fmt.Fprintf(w, "  Policy:          CHANGED since establish. Rule %s as it reads TODAY (not necessarily as it read then): %s\n", r.Bound.RuleID, r.Current.Rule)
+	case r.Current.PolicyUnchanged:
+		fmt.Fprintf(w, "  Policy:          unchanged since establish.\n")
+	default:
+		fmt.Fprintf(w, "  Policy:          CHANGED since establish. The current policy has no rule %s; its original text is not recorded.\n", r.Bound.RuleID)
 	}
-	if !r.PolicyCurrent {
-		fmt.Fprintf(w, "WARNING: the approval-relevant policy changed since this operation was established; an approval now cannot be used (approval_binding_stale). The caller must create a new operation.\n")
+	switch {
+	case r.Current.DefinitionUnchanged:
+		fmt.Fprintf(w, "  Action definition: unchanged since establish (destination as bound).\n")
+	case r.Current.Destination != "":
+		fmt.Fprintf(w, "  Action definition: CHANGED since establish. Destination today: %s\n", r.Current.Destination)
+	default:
+		fmt.Fprintf(w, "  Action definition: CHANGED since establish. The action is no longer catalogued.\n")
 	}
-	if !r.DefinitionCurrent {
-		fmt.Fprintf(w, "WARNING: the trusted action definition changed since this operation was established; it cannot be dispatched.\n")
-	}
+	fmt.Fprintf(w, "\nAfter approval:    %s\n", r.AfterApproval)
 }
 
 // approvalsRequest calls the reviewer API with the approver credential from
@@ -293,6 +356,7 @@ func init() {
 	for _, c := range []*cobra.Command{approve, reject} {
 		c.Flags().StringVar(&approvalsReason, "reason", "", "why (recorded in the signed approval evidence; required)")
 	}
+	approvalsListCmd.Flags().BoolVar(&approvalsAll, "all", false, "also list pending approvals that can no longer be decided (expired, or bound to a changed policy or action definition)")
 	approvalsCmd.AddCommand(approvalsListCmd, approvalsShowCmd, approve, reject)
 	rootCmd.AddCommand(approvalsCmd)
 }

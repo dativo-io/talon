@@ -73,7 +73,7 @@ type ApproverResolver interface {
 // PendingApprovalLister lists the pending approvals of one tenant that one
 // of the given groups may decide (oldest first, bounded), and whether more
 // eligible ones exist beyond the bound.
-type PendingApprovalLister func(ctx context.Context, tenantScope string, groups []string, limit int) ([]action.PendingApproval, bool, error)
+type PendingApprovalLister func(ctx context.Context, tenantScope string, groups []string, q action.PendingQuery) ([]action.PendingApproval, bool, error)
 
 // WithApprovalLister enables GET /v1/reviews.
 func WithApprovalLister(l PendingApprovalLister) Option {
@@ -411,6 +411,10 @@ func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
 
 // handleReviewList lists the pending approvals the reviewer may decide:
 // the reviewer's tenant, at least one shared approver group, oldest first.
+// By default only approvals that can be decided NOW are listed; ?state=all
+// adds the ones that are still pending in the store but can no longer be
+// decided (expired, stale policy or definition), after the actionable ones,
+// each with its actionability.
 func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
 	if s.approvers == nil || s.approvalOwners == nil || s.pendingApprovals == nil {
 		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approvals are not configured", nil)
@@ -420,7 +424,29 @@ func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	pending, more, err := s.pendingApprovals(r.Context(), principal.TenantScope, principal.Groups, action.MaxPendingList)
+	state := r.URL.Query().Get("state")
+	if state == "" {
+		state = action.ReviewActionable
+	}
+	if state != action.ReviewActionable && state != "all" {
+		writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, "state must be 'actionable' (default) or 'all'", nil)
+		return
+	}
+	// One owning service per use case: its current policy and catalog
+	// decide whether an entry is still actionable.
+	owners := map[string]*action.Service{}
+	q := action.PendingQuery{Limit: action.MaxPendingList, IncludeNonActionable: state == "all", State: func(p *action.PendingApproval) string {
+		svc, seen := owners[p.AgentID]
+		if !seen {
+			svc, _ = s.approvalOwners(r.Context(), principal.TenantScope, p.ID)
+			owners[p.AgentID] = svc
+		}
+		if svc == nil {
+			return "" // the owning use case no longer declares a catalog
+		}
+		return svc.PendingState(p)
+	}}
+	pending, more, err := s.pendingApprovals(r.Context(), principal.TenantScope, principal.Groups, q)
 	if err != nil {
 		writeActionError(w, http.StatusServiceUnavailable, action.CodeStoreUnavailable, "reading pending approvals", nil)
 		return
@@ -428,12 +454,9 @@ func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
 	reviews := make([]*action.ReviewerView, 0, len(pending))
 	for i := range pending {
 		p := &pending[i]
-		if !sharesGroup(principal.Groups, p.Groups) {
+		svc := owners[p.AgentID]
+		if svc == nil || !sharesGroup(principal.Groups, p.Groups) {
 			continue
-		}
-		svc, ok := s.approvalOwners(r.Context(), principal.TenantScope, p.ID)
-		if !ok {
-			continue // the owning use case no longer declares a catalog
 		}
 		view, err := svc.Review(r.Context(), p.ID)
 		if err != nil {
@@ -441,7 +464,7 @@ func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
 		}
 		reviews = append(reviews, view)
 	}
-	// more is the completeness contract: false means every pending approval
-	// this reviewer may decide is in the answer.
-	writeActionJSON(w, http.StatusOK, map[string]any{"tenant": principal.TenantScope, "reviews": reviews, "more": more})
+	// more is the completeness contract: false means every approval of the
+	// requested state this reviewer may decide is in the answer.
+	writeActionJSON(w, http.StatusOK, map[string]any{"tenant": principal.TenantScope, "state": state, "reviews": reviews, "more": more})
 }
