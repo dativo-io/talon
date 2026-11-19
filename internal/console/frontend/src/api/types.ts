@@ -141,6 +141,8 @@ export interface UseCases {
   attention: AgentRow[] | null;
   runtime: Runtime;
   counter_windows: { requests_denied: string; fallbacks: string; failed_sessions: string };
+  // #565: per-use-case approval counts (AI Use Cases page).
+  approvals?: ApprovalsSummary;
 }
 
 export interface WindowBounds {
@@ -237,6 +239,7 @@ export interface Overview {
   use_cases: UseCases;
   today: Today;
   recent_events: RecentEvents;
+  approvals?: ApprovalsSummary;
   findings: Finding[];
 }
 
@@ -541,7 +544,7 @@ export interface ActionLifecycle {
   approver_groups?: string[];
   reviewer_principal?: string;
   reviewer_group?: string;
-  decision_reason?: string;
+  // decision_reason is never part of a console response: see WithheldField.
   attempt_status?: string;
   [key: string]: unknown;
 }
@@ -551,10 +554,19 @@ export interface Verification {
   checked_at: string;
 }
 
+// One field of the stored record that the console does not return (#565):
+// the reviewer's free-text reason on an approval decision record. The
+// verification was performed over the complete stored record.
+export interface WithheldField {
+  field: string;
+  why: string;
+  read_with?: string;
+}
+
 export interface EvidenceDetail {
   meta: Meta;
   availability: Availability;
-  detail?: { record: EvidenceRecord; verification: Verification; outcome: Outcome };
+  detail?: { record: EvidenceRecord; verification: Verification; outcome: Outcome; withheld?: WithheldField[] };
 }
 
 export interface StoreHealth {
@@ -742,6 +754,7 @@ export interface UseCaseDetail {
   costs: Costs;
   activity: Activity;
   effective_policy: Availability;
+  approvals?: ApprovalsSummary;
   // #533 PR 2: installation readiness, installation findings plus this use
   // case's own fleet finding, its newest records with outcome, and the
   // configuration issues attributed to its name.
@@ -935,4 +948,152 @@ export interface UseCaseVerification {
   // A presentation summary derived in Go; not a stored state.
   reading: { code: string; text: string };
   not_established: string[];
+}
+
+// ---- Approvals (#565) -----------------------------------------------------
+// Read-only. Every approval DTO is built under the OPERATIONAL disclosure:
+// argument names, never values. Exact values are read by an approver with
+// `talon approvals show`.
+
+export type EligibilityClass = "actionable" | "potentially_actionable" | "not_decidable" | "unknown" | "decided";
+export type Binding = "unchanged" | "changed" | "unknown";
+
+export interface Eligibility {
+  // eligible | expired | stale_definition | stale_policy | use_case_not_served | unknown | decided
+  // A binding that differs from files NO process is proven to run is
+  // "unknown" (class unknown), with policy/definition "changed": the
+  // deciding process may still hold the configuration it was bound to.
+  state: string;
+  class: EligibilityClass;
+  // runtime | runtime_confirmed | current_files | lifetime | record | none
+  basis: string;
+  explanation: string;
+  policy: Binding;
+  definition: Binding;
+}
+
+export interface ApprovalEligibilityCounts {
+  actionable: number;
+  potentially_actionable: number;
+  not_decidable: number;
+  unknown: number;
+}
+
+export interface ApprovalCounts {
+  // Pending in the store: a persisted fact.
+  unresolved: number;
+  // Inferred from the current configuration files; absent when it could not
+  // be established (never to be read as zero).
+  eligibility?: ApprovalEligibilityCounts;
+}
+
+export interface UseCaseApprovals extends ApprovalCounts {
+  tenant_id: string;
+  use_case: string;
+}
+
+export interface ApprovalsSummary {
+  availability: Availability;
+  total?: ApprovalCounts;
+  use_cases: UseCaseApprovals[] | null;
+  basis: string;
+}
+
+export interface ApprovalSummaryRow {
+  approval_id: string;
+  tenant: string;
+  use_case: string;
+  action: string;
+  status: string;
+  unresolved: boolean;
+  eligibility: Eligibility;
+  approver_groups: string[];
+  rule_id?: string;
+  created_at: string;
+  expires_at: string;
+  decided_at?: string;
+  decided_by?: string;
+}
+
+export interface ApprovalList {
+  meta: Meta;
+  availability: Availability;
+  state: "attention" | "unresolved" | "decided";
+  use_case?: string;
+  items: ApprovalSummaryRow[];
+  next?: string;
+  // What this page says about the selection (Go decides it):
+  //   empty_selection  first page, no item, no cursor: the selection is empty
+  //   continues        a cursor exists; the page itself may hold no item
+  //   end              no cursor: the selection is exhausted with this page
+  // Absent when the store could not be read.
+  page?: "empty_selection" | "continues" | "end";
+  limit: number;
+  disclosure: string;
+}
+
+export interface ApprovalAttempt {
+  ordinal: number;
+  status: string;
+  started_at: string;
+  completed_at?: string;
+  request_written: boolean;
+  response_observed: boolean;
+  http_status?: number;
+  result_provenance?: string;
+  outcome_code?: string;
+}
+
+export interface ApprovalView {
+  approval_id: string;
+  tenant: string;
+  use_case: string;
+  action: string;
+  action_description?: string;
+  status: string;
+  unresolved: boolean;
+  eligibility: Eligibility;
+  approver_groups: string[];
+  created_at: string;
+  expires_at: string;
+  disclosure: string;
+  // name only: the console DTO has no value field.
+  arguments: { name: string }[];
+  bound: {
+    rule_id?: string;
+    rule_source?: string;
+    destination: string;
+    definition_digest: string;
+    policy_digest: string;
+    established_at: string;
+  };
+  current: { basis: string; note?: string; rule?: string; rule_present: boolean; destination?: string };
+  // The reviewer's free-text reason is not part of the operational
+  // disclosure (it can quote the exact arguments): only that one was recorded.
+  decision?: { status: string; decided_at?: string; decided_by?: string; decided_group?: string; reason_recorded: boolean };
+  operation: {
+    operation_id: string;
+    operation_ref: string;
+    status: string;
+    verdict: string;
+    attempt_count: number;
+    outcome_code?: string;
+    outcome_provenance?: string;
+    latest_attempt?: ApprovalAttempt;
+    updated_at: string;
+    origin?: Record<string, string>;
+  };
+  after_approval: string;
+}
+
+export interface ApprovalDetail {
+  meta: Meta;
+  availability: Availability;
+  approval: ApprovalView;
+  // truncated: the operation has more signed records than `limit`; records
+  // holds the oldest ones and availability.note says how to read all.
+  lifecycle: { availability: Availability; records: EvidenceIndex[]; limit: number; truncated?: boolean };
+  session_id?: string;
+  commands: { show: string; approve?: string; reject?: string; verify: string };
+  arguments_note: string;
 }

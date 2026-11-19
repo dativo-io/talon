@@ -454,9 +454,11 @@ func (r *Report) organization(path string) (baseline gateway.OrganizationPolicy,
 	if path == "" {
 		return gateway.OrganizationPolicy{}, nil
 	}
-	f := &File{Path: path, Digest: fileDigest(path)}
+	// One read: the digest shown and compared with the runtime's is of the
+	// bytes the organization policy below was parsed from.
+	gw, digest, err := gateway.LoadGatewayConfigWithDigest(path)
+	f := &File{Path: path, Digest: digest}
 	r.CurrentFiles.GatewayConfig = f
-	gw, err := gateway.LoadGatewayConfig(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return gateway.OrganizationPolicy{}, nil

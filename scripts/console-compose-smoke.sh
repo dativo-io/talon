@@ -158,8 +158,8 @@ check "overview reports today's request count for tenant demo" grep -Eq '"reques
 # The console reads the very session the data plane just wrote (shared store, read-only connection).
 check "session written by the data plane is readable through the console" [ "$(status_of GET "$UI/console/v1/sessions/compose-smoke?tenant=demo" -b "$WORK/jar")" = "200" ]
 check "session summary counts the governed request" grep -Eq '"requests":1' "$WORK/body"
-# The six pages read from these endpoints; each answers the paired browser.
-for page in "overview?tenant=demo" "use-cases?tenant=demo" "use-cases/demo-agent?tenant=demo" "use-cases/demo-agent/effective-policy?tenant=demo" "sessions?tenant=demo" "costs?tenant=demo" "configuration" "system" "tenants"; do
+# The pages read from these endpoints; each answers the paired browser.
+for page in "overview?tenant=demo" "use-cases?tenant=demo" "use-cases/demo-agent?tenant=demo" "use-cases/demo-agent/effective-policy?tenant=demo" "approvals?tenant=demo" "sessions?tenant=demo" "costs?tenant=demo" "configuration" "system" "tenants"; do
   check "paired GET /console/v1/$page is 200" [ "$(status_of GET "$UI/console/v1/$page" -b "$WORK/jar")" = "200" ]
 done
 # Signed evidence: the console verifies the record the data plane signed, and

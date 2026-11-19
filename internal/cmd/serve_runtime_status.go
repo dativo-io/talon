@@ -85,9 +85,32 @@ func runtimeBase(cfg *config.Config) runtimestatus.Record {
 		base.ProxyConfig = configRef(serveProxyConfig)
 	}
 	if serveGateway {
-		base.GatewayConfig = configRef(serveGatewayConfig)
+		base.GatewayConfig = loadedConfigRef(serveGatewayConfig, loadedGatewayConfigDigest)
 	}
 	return base
+}
+
+// loadedGatewayConfigDigest is the SHA-256 of the bytes this process parsed
+// its gateway config from (gateway.LoadGatewayConfigWithDigest), set when
+// serve loads it. Empty until then.
+var loadedGatewayConfigDigest string
+
+// loadedConfigRef records a configuration file with the digest of the bytes
+// the process parsed it from. The console compares that digest with the
+// current file before it calls a policy "confirmed by the runtime", so it
+// must name what the process compiled: a digest taken with a second read of
+// the file would name other bytes when the file changed in between (#565
+// review). A process that has not loaded the file runs nothing of it (a
+// start-up that failed earlier): only then is the file as found recorded.
+func loadedConfigRef(path, loadedDigest string) *runtimestatus.ConfigRef {
+	if loadedDigest == "" {
+		return configRef(path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	return &runtimestatus.ConfigRef{Path: abs, Digest: loadedDigest, LoadedAt: time.Now().UTC()}
 }
 
 func catalogOf(v agentcatalog.FleetView, reloadEnabled bool) *runtimestatus.Catalog {
@@ -185,9 +208,9 @@ func classifyStartupFailure(err error) runtimestatus.StartupFailure {
 	}
 }
 
-// configRef records a loaded configuration file and the digest of its
-// current bytes. It is called once at start-up, right after the file was
-// loaded, so the digest describes what the process runs.
+// configRef records a configuration file and the digest of its bytes as the
+// file is found now. Where the process knows the bytes it parsed, use
+// loadedConfigRef instead.
 func configRef(path string) *runtimestatus.ConfigRef {
 	abs, err := filepath.Abs(path)
 	if err != nil {

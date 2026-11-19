@@ -5,6 +5,8 @@ package gateway
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -435,11 +437,30 @@ const (
 // LoadGatewayConfig loads gateway configuration from a YAML file (typically talon.config.yaml).
 // If the file has a top-level "gateway" key, that subtree is unmarshaled; otherwise the whole file is treated as GatewayConfig.
 func LoadGatewayConfig(path string) (*GatewayConfig, error) {
+	cfg, _, err := LoadGatewayConfigWithDigest(path)
+	return cfg, err
+}
+
+// LoadGatewayConfigWithDigest is LoadGatewayConfig plus the SHA-256 (hex) of
+// the exact bytes the configuration was parsed from. The file is read ONCE:
+// the digest and the returned configuration always describe the same bytes,
+// whatever replaces the file meanwhile. Use it wherever a digest of the
+// gateway config is published or compared (the runtime record of a running
+// process, the proof that a process loaded the current file): digesting the
+// file with a second read can name other bytes than the ones that were
+// compiled (#565 review). The digest is returned whenever the file could be
+// read, also when it does not parse.
+func LoadGatewayConfigWithDigest(path string) (cfg *GatewayConfig, digest string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading gateway config %s: %w", path, err)
+		return nil, "", fmt.Errorf("reading gateway config %s: %w", path, err)
 	}
+	sum := sha256.Sum256(data)
+	cfg, err = parseGatewayConfig(path, data)
+	return cfg, hex.EncodeToString(sum[:]), err
+}
 
+func parseGatewayConfig(path string, data []byte) (*GatewayConfig, error) {
 	var raw map[string]interface{}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing gateway config: %w", err)
