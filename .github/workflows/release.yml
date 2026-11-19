@@ -123,12 +123,19 @@ jobs:
           set -euo pipefail
           PREVIOUS_TAG="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)"
           echo "current tag: $RELEASE_TAG; release notes since: ${PREVIOUS_TAG:-<none: first release>}"
+          # The build image carries the newest goreleaser-cross Go of this
+          # line; the toolchain that compiles the release is the one go.mod
+          # names (a security patch release may be newer than the image).
+          # release-console-acceptance checks the released executable for it.
+          GO_TOOLCHAIN="go$(sed -n 's/^go //p' go.mod)"
+          echo "toolchain: $GO_TOOLCHAIN"
           docker run --rm --privileged \
             -v "$PWD:/work" -w /work \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$HOME/.docker:/root/.docker" \
             -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
             -e CGO_ENABLED=1 \
+            -e GOTOOLCHAIN="$GO_TOOLCHAIN" \
             -e GORELEASER_CURRENT_TAG="$RELEASE_TAG" \
             -e GORELEASER_PREVIOUS_TAG="$PREVIOUS_TAG" \
             ghcr.io/goreleaser/goreleaser-cross:v1.26.10 \
@@ -313,6 +320,11 @@ jobs:
           gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/assets" -p "$ARCHIVE" -p checksums.txt
           (cd "$RUNNER_TEMP/assets" && grep -F " $ARCHIVE" checksums.txt | sha256sum -c -)
           tar -C "$RUNNER_TEMP/talon" -xzf "$RUNNER_TEMP/assets/$ARCHIVE" talon
+          # The released executable was compiled by the toolchain go.mod names.
+          want="go$(sed -n 's/^go //p' go.mod)"
+          got="$(go version "$RUNNER_TEMP/talon/talon" | awk '{print $NF}')"
+          echo "released executable toolchain: $got (go.mod: $want)"
+          [ "$got" = "$want" ] || { echo "::error::the released talon was built with $got, go.mod names $want"; exit 1; }
       - name: Install Playwright (pinned) and Chromium
         if: steps.cap.outputs.console == 'true'
         working-directory: tests/browser
