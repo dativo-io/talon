@@ -36,6 +36,10 @@ var useCaseKeyRe = regexp.MustCompile(`talon_uc_[0-9a-f]{48}`)
 
 const piiPrompt = "Refund to IBAN DE89370400440532013000 for jan.kowalski@example.com"
 
+// onboardingProviderKey is the provider's key: Talon holds it in the vault
+// and the application never sees it.
+const onboardingProviderKey = "sk-fake-provider-key-never-sent-to-the-app"
+
 type onboarding struct {
 	t        *testing.T
 	dir      string
@@ -89,7 +93,7 @@ gateway:
 	if err := os.WriteFile(o.cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if out, code := o.talonStdin("sk-fake-provider-key-never-sent-to-the-app", "secrets", "set", "openai-api-key"); code != 0 {
+	if out, code := o.talonStdin(onboardingProviderKey, "secrets", "set", "openai-api-key"); code != 0 {
 		t.Fatalf("storing the provider key: %d\n%s", code, out)
 	}
 	return o
@@ -237,6 +241,42 @@ func (o *onboarding) wantCalls(want int64, why string) {
 	o.t.Helper()
 	if got := o.calls.Load(); got != want {
 		o.t.Fatalf("%s: the upstream received %d calls, want %d", why, got, want)
+	}
+}
+
+// noSecretInClearText fails when one of the secrets appears in clear text in
+// any file of the installation: the served processes' logs, the evidence
+// database, the vault file (which holds the values encrypted), runtime
+// records, the agent files and the company configuration.
+func (o *onboarding) noSecretInClearText(secrets ...string) {
+	o.t.Helper()
+	files := 0
+	err := filepath.WalkDir(o.dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files++
+		for _, secret := range secrets {
+			if bytes.Contains(raw, []byte(secret)) {
+				o.t.Errorf("a secret is in clear text in %s", strings.TrimPrefix(path, o.dir))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		o.t.Fatalf("reading the installation's files: %v", err)
+	}
+	for _, must := range []string{"serve.log", "evidence.db", "secrets.db"} {
+		if _, err := os.Stat(filepath.Join(o.dir, must)); err != nil {
+			o.t.Fatalf("the check did not cover %s: %v", must, err)
+		}
+	}
+	if files == 0 {
+		o.t.Fatal("the check read no file")
 	}
 }
 
@@ -497,6 +537,31 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	}
 	if err := os.RemoveAll(broken); err != nil {
 		t.Fatal(err)
+	}
+
+	// After the whole journey no credential has left the vault in clear
+	// text: neither application's key and not the provider's key, in no
+	// file of the installation (logs, evidence, vault file, runtime
+	// records, agent files, company configuration) and in nothing the
+	// console's read API returns.
+	o.noSecretInClearText(key1, key2, onboardingProviderKey)
+	for _, path := range []string{
+		"/console/v1/overview", "/console/v1/use-cases", "/console/v1/use-cases/customer-support", "/console/v1/use-cases/hr-copilot",
+		"/console/v1/use-cases/customer-support/effective-policy", "/console/v1/use-cases/hr-copilot/effective-policy",
+		"/console/v1/configuration", "/console/v1/system", "/console/v1/activity", "/console/v1/sessions", "/console/v1/costs",
+	} {
+		status, body, _ := cc.do(http.MethodGet, path, "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("GET %s: %d %s", path, status, body)
+		}
+		for _, secret := range []string{key1, key2, onboardingProviderKey} {
+			if strings.Contains(body, secret) {
+				t.Fatalf("the console returned a credential in %s", path)
+			}
+		}
+		if strings.Contains(body, "talon_uc_") {
+			t.Fatalf("the console returned something shaped like a use-case key in %s", path)
+		}
 	}
 }
 
