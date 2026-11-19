@@ -97,6 +97,18 @@ side: public downloads, no token, anonymous image pulls, `install.sh` under `sh`
 scratch directory, the installed binary byte-identical to the verified one, the public
 bytes identical to the draft's.
 
+**Which compiler built the release (#572).** `go.mod` names the Go version; the release build
+(`scripts/release-build.sh`, GoReleaser in the `goreleaser-cross` image) compiles with exactly
+that toolchain even when the image carries an older one. `release-verify` does not trust that:
+it runs `scripts/release-toolchain-check.sh`, which reads the compiler out of every distributed
+executable with `go version <file>` — `talon` in the linux archive and in the released image,
+each helper in the showcase bundle, `support-agent` in the released agent image, a darwin
+archive when present — and refuses to publish on a mismatch or an unreadable file. The
+`Release build (snapshot)` workflow runs the same build without a tag and without publishing
+when `go.mod`, `.goreleaser.yml`, the release Dockerfiles or the build script change
+(`gh workflow run release-build-snapshot.yml --ref <branch>` on demand). Offline test:
+`make test-release-verify`.
+
 **Operations Console acceptance on the released artifacts (#533).** Before publication the
 release workflow also proves the console on what customers get, not on a source build:
 

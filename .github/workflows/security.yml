@@ -7,10 +7,14 @@ on:
     paths:
       - 'go.mod'
       - 'go.sum'
+      - 'examples/openshell/agent/go.mod'
+      - 'examples/openshell/agent/go.sum'
   pull_request:
     paths:
       - 'go.mod'
       - 'go.sum'
+      - 'examples/openshell/agent/go.mod'
+      - 'examples/openshell/agent/go.sum'
 
 permissions:
   contents: read
@@ -25,12 +29,19 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.11'
+          go-version-file: go.mod
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
       - name: Run govulncheck
+        run: govulncheck ./...
+
+      # The sandbox agent is its own module (examples/openshell/agent): it
+      # ships in the showcase bundle and the talon-openshell-agent image, and
+      # `./...` above does not reach it.
+      - name: Run govulncheck on the OpenShell agent module
+        working-directory: examples/openshell/agent
         run: govulncheck ./...
 
   secret-scan:

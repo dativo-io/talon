@@ -1,0 +1,127 @@
+name: Release build (snapshot)
+
+# The release build, executed without a tag and without publishing anything
+# (#572): scripts/release-build.sh runs the same GoReleaser command in the
+# same goreleaser-cross image as release.yml, in --snapshot mode — archives,
+# checksums and both container images are built locally; no release is
+# created and no image is pushed. It answers, before a tag exists, what a
+# tag would otherwise be the first to find out: that the toolchain go.mod
+# names is obtained and used inside the build image, that CGO and the
+# arm64 cross build still work, and that the packaged executables run.
+#
+# Runs when what the release build reads changes, and on demand.
+
+on:
+  pull_request:
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - '.goreleaser.yml'
+      - 'Dockerfile.goreleaser'
+      - 'examples/openshell/agent/**'
+      - 'scripts/release-build.sh'
+      - 'scripts/release-toolchain-check.sh'
+      - '.github/workflows/release-build-snapshot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-build-snapshot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    name: GoReleaser snapshot in the release build image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build (same command as release.yml, nothing published)
+        run: bash scripts/release-build.sh snapshot
+
+      # What compiled each executable is read from the executable: the two
+      # GoReleaser builds as they sit in dist/, and the same files again as
+      # packaged in the archive and in the two images.
+      - name: Every built executable reports the toolchain go.mod names
+        run: |
+          set -euo pipefail
+          one() { # glob → the single file it must match
+            local m; m="$(compgen -G "$1" || true)"
+            if [ -z "$m" ] || [ "$(wc -l <<<"$m")" -ne 1 ]; then echo "::error::expected exactly one file for $1, found: ${m:-none}"; exit 1; fi
+            echo "$m"
+          }
+          TALON="$(one 'dist/talon_linux_amd64*/talon')"
+          AGENT_AMD64="$(one 'dist/support-agent_linux_amd64*/support-agent')"
+          AGENT_ARM64="$(one 'dist/support-agent_linux_arm64*/support-agent')"
+          ARCHIVE="$(one 'dist/talon_*_linux_amd64.tar.gz')"
+          (cd dist && grep -F " $(basename "$ARCHIVE")" checksums.txt | sha256sum -c -)
+          file "$TALON" | grep -q 'x86-64.*dynamically linked' || { echo "::error::talon is not a glibc-linked x86-64 executable: $(file "$TALON")"; exit 1; }
+          file "$AGENT_ARM64" | grep -q 'aarch64.*statically linked' || { echo "::error::support-agent arm64 is not a static aarch64 executable: $(file "$AGENT_ARM64")"; exit 1; }
+
+          TALON_IMAGE="$(jq -r '.[] | select(.type == "Docker Image") | .name' dist/artifacts.json | grep '/talon:' | head -n1)"
+          AGENT_IMAGE="$(jq -r '.[] | select(.type == "Docker Image") | .name' dist/artifacts.json | grep '/talon-openshell-agent:' | head -n1)"
+          if [ -z "$TALON_IMAGE" ] || [ -z "$AGENT_IMAGE" ]; then echo "::error::the snapshot did not build both images"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/x/archive"
+          tar -C "$RUNNER_TEMP/x/archive" -xzf "$ARCHIVE" talon
+          from_image() { local id; id="$(docker create "$1")"; docker cp "$id:$2" "$3"; docker rm "$id" >/dev/null; }
+          from_image "$TALON_IMAGE" /usr/local/bin/talon "$RUNNER_TEMP/x/image-talon"
+          from_image "$AGENT_IMAGE" /usr/local/bin/support-agent "$RUNNER_TEMP/x/image-support-agent"
+
+          bash scripts/release-toolchain-check.sh --go-mod go.mod \
+            "talon (goreleaser build, linux/amd64, CGO)=$TALON" \
+            "talon (linux_amd64 archive)=$RUNNER_TEMP/x/archive/talon" \
+            "talon (image $TALON_IMAGE)=$RUNNER_TEMP/x/image-talon" \
+            "support-agent (goreleaser build, linux/amd64)=$AGENT_AMD64" \
+            "support-agent (goreleaser build, linux/arm64)=$AGENT_ARM64" \
+            "support-agent (image $AGENT_IMAGE)=$RUNNER_TEMP/x/image-support-agent" \
+            | tee "$RUNNER_TEMP/toolchain.log"
+          # Annotations are readable without the job log.
+          while IFS= read -r line; do echo "::notice title=Release build toolchain::$line"; done < "$RUNNER_TEMP/toolchain.log"
+          { echo '### Compiler of every executable the snapshot built'; echo '```'; cat "$RUNNER_TEMP/toolchain.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "TALON=$TALON"; echo "AGENT_AMD64=$AGENT_AMD64"; echo "AGENT_ARM64=$AGENT_ARM64"
+            echo "TALON_IMAGE=$TALON_IMAGE"
+          } >> "$GITHUB_ENV"
+
+      # CGO and SQLite in the built artifact, not in a separate go build: the
+      # snapshot's image makes two governed decisions and verifies their
+      # signed evidence from its SQLite store (the no-clone quickstart).
+      - name: The built talon runs, and its SQLite evidence store works
+        run: |
+          set -euo pipefail
+          "$TALON" version
+          docker run --rm "$TALON_IMAGE" version
+          docker tag "$TALON_IMAGE" talon:release-snapshot
+          TALON_IMAGE=talon:release-snapshot TALON_QUICKSTART_NO_PULL=1 bash scripts/quickstart.sh
+
+      # What the compiler put into the executables. Binary mode sees which
+      # vulnerable symbols are linked in, not whether Talon calls them, so it
+      # is stricter than the reachability gate (Security workflow,
+      # `govulncheck ./...`), which stays the gate for dependencies. Here:
+      # any standard-library finding fails — that is the toolchain this
+      # build exists to verify — and dependency symbols are reported as
+      # warnings, never hidden.
+      - name: govulncheck on the built executables (no standard-library findings)
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          bad=0
+          for exe in "$TALON" "$AGENT_AMD64" "$AGENT_ARM64"; do
+            govulncheck -mode=binary -json "$exe" > "$RUNNER_TEMP/vuln.json"
+            jq -r 'select(.finding) | .finding | "\(.trace[0].module) \(.osv)"' "$RUNNER_TEMP/vuln.json" | sort -u > "$RUNNER_TEMP/vuln.txt"
+            stdlib="$(awk '$1 == "stdlib" {print $2}' "$RUNNER_TEMP/vuln.txt" | paste -sd' ' -)"
+            deps="$(awk '$1 != "stdlib" {print $2 " (" $1 ")"}' "$RUNNER_TEMP/vuln.txt" | paste -sd',' -)"
+            if [ -n "$stdlib" ]; then echo "::error title=govulncheck (binary)::$exe: standard-library vulnerabilities in the built executable: $stdlib"; bad=1; fi
+            if [ -n "$deps" ]; then echo "::warning title=govulncheck (binary)::$exe: vulnerable dependency symbols linked in (reachability is judged by the Security workflow): $deps"; fi
+            if [ -z "$stdlib$deps" ]; then echo "::notice title=govulncheck (binary)::$exe: no vulnerabilities found"; fi
+          done
+          exit "$bad"

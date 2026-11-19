@@ -17,13 +17,13 @@ import (
 func TestReleaseCapabilities_ConsoleApplicability(t *testing.T) {
 	script := filepath.Join("..", "scripts", "release-capabilities.sh")
 	for tag, want := range map[string]string{
-		"v1.15.4":      "console=false\nquickstart=false",
-		"v1.16.1":      "console=false\nquickstart=false",
-		"v1.16.9-rc.3": "console=false\nquickstart=false",
-		"v1.17.0-rc.1": "console=true\nquickstart=true",
-		"v1.17.0":      "console=true\nquickstart=true",
-		"v1.20.3":      "console=true\nquickstart=true",
-		"v2.0.0":       "console=true\nquickstart=true",
+		"v1.15.4":      "console=false\nquickstart=false\ntoolchain=false",
+		"v1.16.1":      "console=false\nquickstart=false\ntoolchain=false",
+		"v1.16.9-rc.3": "console=false\nquickstart=false\ntoolchain=false",
+		"v1.17.0-rc.1": "console=true\nquickstart=true\ntoolchain=true",
+		"v1.17.0":      "console=true\nquickstart=true\ntoolchain=true",
+		"v1.20.3":      "console=true\nquickstart=true\ntoolchain=true",
+		"v2.0.0":       "console=true\nquickstart=true\ntoolchain=true",
 	} {
 		out, err := exec.CommandContext(t.Context(), "bash", script, tag).Output()
 		if err != nil {
