@@ -30,4 +30,18 @@ fi
 npx playwright install chromium
 
 cd "$REPO_ROOT"
-TALON_ACTION_BROWSER=1 go test -count=1 -tags=e2e -timeout 6m -v -run '^TestE2E_ActionGateway_ArgumentRules$' ./tests/e2e/
+# TALON_E2E_BINARY (a release executable) is honoured by the e2e TestMain.
+# The run must have EXECUTED the test: `go test -run` exits 0 when the
+# pattern matches nothing or the test skips, so the PASS line is required.
+log="$(mktemp "${TMPDIR:-/tmp}/action-evidence-live.XXXXXX")"
+trap 'rm -f "$log"' EXIT
+TALON_ACTION_BROWSER=1 go test -count=1 -tags=e2e -timeout 6m -v -run '^TestE2E_ActionGateway_ArgumentRules$' ./tests/e2e/ 2>&1 | tee "$log"
+if ! grep -q '^--- PASS: TestE2E_ActionGateway_ArgumentRules ' "$log" || grep -q '^--- SKIP' "$log"; then
+  echo "FAIL action-evidence-live: TestE2E_ActionGateway_ArgumentRules did not execute and pass" >&2
+  exit 1
+fi
+if [ -n "${TALON_E2E_BINARY:-}" ] && ! grep -qF "e2e: binary under test is $TALON_E2E_BINARY " "$log"; then
+  echo "FAIL action-evidence-live: the run did not use TALON_E2E_BINARY=$TALON_E2E_BINARY" >&2
+  exit 1
+fi
+echo "PASS action-evidence-live: argument rules, approval through the approval API, deny, downstream counts, signed evidence"

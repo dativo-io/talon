@@ -288,6 +288,9 @@ policies:
 	require.NoError(t, err)
 	assert.Equal(t, "REQUIRE_APPROVAL", res.Verdict)
 	assert.Equal(t, action.ReasonArgumentRuleApproval, res.ReasonCode)
+	assert.Equal(t, "refund-needs-approval", res.MatchedRuleID)
+	assert.Equal(t, action.PolicySourceUseCase, res.MatchedRuleSource, "the layer is a field, not something to parse from the id")
+	assert.Equal(t, []string{"support-leads"}, res.ApproverGroups)
 
 	for name, c := range map[string][2]string{
 		"missing required argument":          {"notify_customer", `{}`},

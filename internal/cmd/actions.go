@@ -193,7 +193,12 @@ type actionsValidateResult struct {
 	// name-only verdict, which could read ALLOW.
 	Verdict       string `json:"verdict"`
 	MatchedRuleID string `json:"matched_rule_id,omitempty"`
-	Reason        string `json:"reason,omitempty"`
+	// MatchedRuleSource (company | use_case) and ApproverGroups mirror the
+	// Action Gateway's operation projection, so a script reads the layer
+	// and the reviewers from fields, not from the rule id or the reason.
+	MatchedRuleSource string   `json:"matched_rule_source,omitempty"`
+	ApproverGroups    []string `json:"approver_groups,omitempty"`
+	Reason            string   `json:"reason,omitempty"`
 	// ReasonCode is an INSPECTION code of this command, not an HTTP
 	// governance error code: argument_rule_deny | argument_rule_approval |
 	// argument_not_established | arguments_invalid.
@@ -244,6 +249,7 @@ var actionsValidateCmd = &cobra.Command{
 			res.Review = def.ReviewProjection(canonical)
 			verdict := cc.approvals.EvaluateArguments(def.Name, canonical)
 			res.Verdict, res.MatchedRuleID, res.Reason, res.ReasonCode = verdict.Outcome, verdict.RuleID, verdict.Reason, verdict.Code
+			res.MatchedRuleSource, res.ApproverGroups = verdict.Source, verdict.ApproverGroups
 		}
 		if actionsJSON {
 			if werr := writeActionsJSON(cmd.OutOrStdout(), res); werr != nil {
@@ -274,6 +280,9 @@ var actionsValidateCmd = &cobra.Command{
 				fmt.Fprintf(w, " (rule %s)", res.MatchedRuleID)
 			}
 			fmt.Fprintln(w)
+			if len(res.ApproverGroups) > 0 {
+				fmt.Fprintf(w, "Approver groups:    %s\n", strings.Join(res.ApproverGroups, ", "))
+			}
 			if res.Reason != "" {
 				fmt.Fprintf(w, "Reason:             %s\n", res.Reason)
 			}

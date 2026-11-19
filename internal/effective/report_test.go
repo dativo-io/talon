@@ -489,6 +489,24 @@ policies:
 	assert.Contains(t, string(raw), `"action_boundary"`)
 	assert.Contains(t, string(raw), `"decision_basis":"arguments"`)
 
+	// A company rule this use case's catalog cannot evaluate truthfully
+	// (the argument is not a required property here) is refused by validate
+	// and serve; the report says so instead of presenting it as effective.
+	require.NoError(t, os.WriteFile(f.gw, append(gw, []byte(`      action_approvals:
+        argument_rules:
+          service-guard: {actions: [deploy_service], argument: service, type: string, operator: ne, value: api, effect: deny}
+`)...), 0o600))
+	in = f.inputs()
+	in.Runtime, in.RuntimeReadable = &runtimestatus.View{Processes: []runtimestatus.Process{proc("gw", runtimestatus.RoleGateway, true)}}, true
+	r, err = Build(ctx, in)
+	require.NoError(t, err)
+	require.NotNil(t, r.ActionBoundary)
+	assert.Contains(t, r.ActionBoundary.Error, `company argument rule "company:service-guard" on action "deploy_service"`)
+	assert.Contains(t, r.ActionBoundary.Basis, "refused at load")
+	assert.False(t, r.ActionBoundary.ProvenActive)
+	assert.Empty(t, r.ActionBoundary.Actions)
+	assert.Empty(t, r.ActionBoundary.ArgumentRules)
+
 	// An unreadable company layer: no effective action policy is shown.
 	require.NoError(t, os.WriteFile(f.gw, []byte("gateway: [broken"), 0o600))
 	r, err = Build(ctx, f.inputs())
