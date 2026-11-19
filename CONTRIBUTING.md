@@ -127,7 +127,7 @@ release workflow also proves the console on what customers get, not on a source 
   test or skipped is a failed gate. Tests and fixtures come from the tag's checkout; Go
   compiles the test harness only.
 - `release-verify` runs `scripts/console-compose-smoke.sh` against
-  `ghcr.io/dativo-io/talon:<version>` (pairing from the container log, the six pages' read
+  `ghcr.io/dativo-io/talon:<version>` (pairing from the container log, the pages' read
   endpoints, console/CLI signature parity, no legacy dashboard route, loopback-only
   publication, restart independence).
 

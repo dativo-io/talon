@@ -18,12 +18,13 @@ talon ui serve --proxy-config proxy.talon.yaml   # also show the MCP proxy confi
 
 The browser asks for a one-time pairing code. Read it from the console's own output (`docker compose logs talon-ui`, or the terminal running `talon ui`); `talon ui pair` makes the running console print a fresh one to that same output (the `pair` command itself prints no code). Keep that output out of shared logging systems. Codes are single use and expire within ten minutes. The browser then holds a read-only session cookie; no admin, agent or vault key ever reaches it. When the session ends (expiry, logout, console restart), the page asks for a new code and returns to where you were. Details and the threat model: [console access](../reference/console-access.md).
 
-## The six pages
+## The pages
 
 | Page | Question it answers | Source |
 |---|---|---|
 | **Overview** | What needs attention across the installation and the selected tenant, and why? | operational readiness (runtime records, configuration digests, agent keys the processes report, store reads), findings, the `talon agents` fleet projection, today's counters, request-class activity buckets, recent operational events |
 | **AI Use Cases** | What AI use cases do we operate, how are they doing, how are they governed? | the same fleet rows, unchanged order; each use case's page has four sections: **Summary** (is it operating as expected?), **Sessions & Activity** (what happened when it ran?), **Policy & Runtime** (what is permitted, and which policy is active?), **Costs** (what does it cost?) |
+| **Approvals** | Which Action Gateway requests wait for a person, why do they need approval, and what was decided? | the action tables of the store, read-only; the same projection as `talon approvals` without argument values ([read contract §2.8](../reference/console-read-contract.md#28-approvals-565)) |
 | **Sessions** | What happened in this session, what did Talon decide, and was anything sent? | session store rows and evidence-observed session ids, summary and timeline from `talon session show` |
 | **Costs** | How much, where, and are budgets respected? | `talon costs --json` (`costs.Build`) |
 | **Configuration** | What is configured, and what can be proven active? | the gateway, agent and MCP proxy files, summarised server-side |
@@ -95,6 +96,14 @@ A further AI use case is another agent file and key under the same `talon.config
 
 *Each use case's effective policy lists its Action Gateway actions. An action with argument rules reads "Depends on arguments", never "Allowed"; every rule names the layer that declared it. "Proven active" appears only when every running `talon serve` reports this agent file and the gateway config it read the company action policy from.*
 
+![Approvals: a refund that waits for a decision and one whose lifetime elapsed, each with its state and required group](../assets/console/approvals.webp)
+
+*The Approvals page lists Action Gateway requests that wait for a person. "Eligible per current files" means the configuration files still match what the request was established under; it reads "Can be decided now" only when a running `talon serve` is proven to have loaded those files. When the files were changed and no running process is proven to run them, a request reads "Files changed, runtime not confirmed" and stays listed: the process may still hold the configuration it was established under. A request whose lifetime elapsed stays unresolved in the store and reads "Expired, not decidable". No argument name or value is listed, and a reviewer's reason is never shown: the console states that one was recorded.*
+
+![Approval detail: who asks for what, whether it can be decided, argument names without values, the rule that required approval, and the CLI commands](../assets/console/approval-detail.webp)
+
+*One approval: the requesting AI use case, whether it can still be decided and on what that statement rests, the argument **names**, the rule and policy layer that required approval, the decision and what happened afterwards, and the signed lifecycle records. The console shows no argument value and has no decision control: an approver reads the exact values with `talon approvals show <approval-id>` and decides with `talon approvals approve|reject`.*
+
 ![Evidence detail of a refund that needed a reviewer: approval required, not dispatched, the matched use-case rule, signature valid](../assets/console/action-evidence.webp)
 
 *An action lifecycle record shows the actual verdict, the matched rule and who declared it, and the operation's status. A refund waiting for a reviewer reads "Approval required — not dispatched", not "allowed". The record names the rule, never the call's argument values.*
@@ -137,7 +146,7 @@ Installation facts are never scoped: operational readiness, the System page and 
 
 ## What the console does not do
 
-It changes nothing: no configuration edits, no approvals, no budget changes, no runs. It shows only traffic and actions Talon intercepted; local shell commands, file edits and calls that bypass Talon are invisible to it. Client-asserted identities (session ids, clients) are attribution, not authentication.
+It changes nothing: no configuration edits, no approval decisions, no budget changes, no runs. It lists approvals and explains them, without the argument values: a paired browser is not a reviewer, and the tenant selection is a filter, not an access control. Values and decisions need an approver credential (`talon approvals`). It shows only traffic and actions Talon intercepted; local shell commands, file edits and calls that bypass Talon are invisible to it. Client-asserted identities (session ids, clients) are attribution, not authentication.
 
 ## Related
 

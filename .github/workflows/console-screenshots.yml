@@ -5,6 +5,7 @@ on:
     branches: [main, 'feat/**', 'fix/**', 'docs/**']
     paths:
       - 'internal/console/**'
+      - 'internal/action/**'
       - 'internal/fleet/**'
       - 'internal/fleetview/**'
       - 'internal/runtimestatus/**'
@@ -33,6 +34,7 @@ on:
     branches: [main]
     paths:
       - 'internal/console/**'
+      - 'internal/action/**'
       - 'internal/fleet/**'
       - 'internal/fleetview/**'
       - 'internal/runtimestatus/**'

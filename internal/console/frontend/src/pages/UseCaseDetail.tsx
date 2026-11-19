@@ -25,6 +25,7 @@ import { breakdownRows, budgetUsage, fieldValue, warningsFor, type Breakdown } f
 import { goDuration, humanize, integer, money, relative, utc, utcShort } from "../lib/format";
 import { outcomeStory } from "../lib/outcome";
 import { scoped, useScope } from "../lib/scope";
+import { ApprovalsCard } from "../components/Approvals";
 
 // The AI use case page answers four questions, one section each (#533 PR 2):
 // Summary (is it operating as expected?), Sessions & Activity (what happened
@@ -180,6 +181,7 @@ function ActivityAndSessions({ d, tenant, range, onRange }: { d: DetailDTO; tena
         </div>
       ) : null}
       <ActivitySection tenant={tenant} agent={row.name} range={range} onRange={onRange} />
+      <ApprovalsCard a={d.approvals} tenant={tenant} />
       <RecentDecisions d={d} />
       <section className="card" aria-labelledby="uc-sessions">
         <div className="card-head">

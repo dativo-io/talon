@@ -14,6 +14,7 @@ const NAV = [
   { group: "Operate", items: [
     { to: "/overview", label: "Overview" },
     { to: "/use-cases", label: "AI Use Cases" },
+    { to: "/approvals", label: "Approvals" },
     { to: "/sessions", label: "Sessions" },
     { to: "/costs", label: "Costs" },
   ] },

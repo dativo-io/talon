@@ -54,8 +54,8 @@ func Handler() http.Handler {
 // exactly one identifier segment (/use-cases/<name>, /sessions/<id>,
 // /evidence/<id>). Kept in step with the frontend router.
 var (
-	appPages    = map[string]bool{"overview": true, "use-cases": true, "sessions": true, "costs": true, "configuration": true, "system": true}
-	detailPages = map[string]bool{"use-cases": true, "sessions": true, "evidence": true}
+	appPages    = map[string]bool{"overview": true, "use-cases": true, "approvals": true, "sessions": true, "costs": true, "configuration": true, "system": true}
+	detailPages = map[string]bool{"use-cases": true, "approvals": true, "sessions": true, "evidence": true}
 )
 
 // IsAppRoute reports whether path is one of the console's page routes.

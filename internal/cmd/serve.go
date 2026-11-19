@@ -154,8 +154,12 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 
 	var openshellServer *openshell.Server
 	var preloadedGatewayCfg *gateway.GatewayConfig
+	loadedGatewayConfigDigest = ""
 	if serveGateway {
-		preloadedGatewayCfg, err = gateway.LoadGatewayConfig(serveGatewayConfig)
+		// The digest is of the bytes this configuration was parsed from. It
+		// is what the runtime record publishes: the process says which
+		// gateway config it RUNS, not what the file holds later.
+		preloadedGatewayCfg, loadedGatewayConfigDigest, err = gateway.LoadGatewayConfigWithDigest(serveGatewayConfig)
 		if err != nil {
 			return fmt.Errorf("loading gateway config for sovereignty: %w", err)
 		}
@@ -615,7 +619,8 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 		server.WithSovereigntyMode(cfg.EffectiveSovereigntyMode()),
 	}
 	if actionGW != nil {
-		opts = append(opts, server.WithActionGateway(actionGW.resolver(), actionGW.ownerResolver(), actionGW.approvers))
+		opts = append(opts, server.WithActionGateway(actionGW.resolver(), actionGW.ownerResolver(), actionGW.approvers),
+			server.WithApprovalReader(actionGW.repo.Reader(), actionGW.currentConfig))
 	}
 	opts = append(opts, []server.Option{
 		server.WithActiveRunTracker(activeRunTracker),
