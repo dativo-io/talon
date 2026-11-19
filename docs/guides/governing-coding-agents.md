@@ -63,7 +63,7 @@ This creates `agent.talon.yaml`, `agents/codex/agent.talon.yaml`, `talon.config.
 - **`response_pii_action: warn`** (organization baseline) — streams normally: the SSE stream reaches the developer as the provider emits it and is scanned *after* delivery; response PII is recorded in signed evidence as a post-delivery observation, not prevented (see [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) and [response PII actions and streaming](../reference/configuration.md#response-pii-actions-and-streaming)). `redact`/`block` are preventive and buffer the whole stream before release. Input-side scanning (`input_scan: true` → warn) still applies, and a per-agent downgrade to `allow` is deliberately not expressible.
 - **Long timeouts** (`request_timeout: 600s`) — the 120s default hard-cuts long coding generations (#230).
 - **Credential recognizers** — high-precision patterns for PEM private keys, AWS `AKIA...` ids, GitHub tokens, and `sk-ant-`/`sk-proj-` LLM keys. Talon is not a secret scanner; run gitleaks/trufflehog in pre-commit for repository hygiene — these cover prompt/response traffic only.
-- **`session_limits.max_cost: 10.00`** per agent — the per-session soft cap (see [step 4](#4-set-budgets)).
+- **`session_limits.max_cost: 10.00`** per agent — the per-session admission cap, estimate-based, not an invoice ceiling (see [step 4](#4-set-budgets)).
 
 **Identity topology choice** (this determines what "one session" means — see [session semantics](#session-semantics-what-one-session-means)):
 
@@ -158,7 +158,7 @@ Per agent, in its `agent.talon.yaml` — the agent's one override over the organ
 ```yaml
 policies:
   session_limits:
-    max_cost: 10.00   # soft cap per coding session
+    max_cost: 10.00   # admission cap per coding session (estimate-based)
   cost_limits:
     daily: 50.00
     monthly: 500.00
@@ -215,7 +215,7 @@ The mock provider speaks both the Anthropic Messages wire and the OpenAI Respons
 
 | Failure mode | Talon defense | Control / backing |
 |---|---|---|
-| Runaway spend inside one coding session | Per-session soft cap; new requests denied 403 with provider-native `session_budget_exceeded` | `max_session_cost`; `TestSessionBudget_SoftCapOvershoot` |
+| Runaway spend inside one coding session | Per-session estimate-based admission cap; new requests denied 403 with provider-native `session_budget_exceeded` | `max_session_cost`; `TestSessionBudget_ConcurrentReservationHardBound`, `TestSessionBudget_SingleRequestEstimateOvershoot` |
 | Session shifts spend to the other provider's route | Session spend accumulates cross-provider; denied on both routes | `TestSessionBudget_CrossProviderDeny` |
 | Two teams collide on the same session id | Sessions scoped per (tenant, agent) — separate sessions, separate budgets | `TestSessionBudget_AgentAndTenantIsolation` |
 | Hostile header value aimed at evidence or operator surfaces | Hygiene gate: token charset, ≤128 bytes, reject 400 (never truncate) | `TestGatewayOrchestration_HygieneRejectedAtGateway` |
@@ -246,7 +246,7 @@ The mock provider speaks both the Anthropic Messages wire and the OpenAI Respons
 | Before | After |
 |---|---|
 | Orchestrator → two providers directly | Orchestrator → Talon → both providers |
-| Spend per API key, unattributed | Per-session soft caps + per-agent daily/monthly caps |
+| Spend per API key, unattributed | Per-session and per-agent daily/monthly admission caps (estimate-based, not invoice ceilings) |
 | No idea which subagent did what | Per-subagent attribution in one session view |
 | Logs you hope are intact | Signed evidence; `talon audit verify --session` |
 

@@ -4,6 +4,18 @@ This page points you to the right doc for what you want to do. For the full docu
 
 ---
 
+## One command, no clone, no provider key
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/vX.Y.Z/scripts/quickstart.sh | TALON_VERSION=X.Y.Z bash
+```
+
+Needs Docker and `curl`. Replace `X.Y.Z` in both places with one published release (v1.17.0 or later); the script never assumes `latest`. The script is fetched from that release's tag, not from `main`, so the script and the image are the pair the release verification ran after publication. It pulls `ghcr.io/dativo-io/talon:X.Y.Z` anonymously, starts it on `127.0.0.1:18080` with a small company policy, and sends three requests: one carrying an IBAN and an email address (blocked: `pii_policy_violation`), one for a model the policy does not allow (denied: `model_not_allowed`) and one with an unknown key (refused: `401`). No model provider exists in this setup, so both decisions are Talon's own, made before any provider call. It then verifies the signature of both evidence records with `talon audit verify`, prints the image digest it ran and the elapsed time, and removes its container and volume (`TALON_QUICKSTART_KEEP=1` keeps them). `TALON_IMAGE` takes a digest pin instead of a version.
+
+What it does not show: a model answer, a redaction, the console, or a business action. For those, continue with the paths below: the [Operations Console from the published image](../examples/docker-compose/README.md) shows the same kind of decisions in the browser, and [add Talon to your existing app](guides/add-talon-to-existing-app.md) puts your own application behind it. The script prints both links for the version it ran.
+
+---
+
 ## Which path is yours?
 
 **1.** I have an existing app that calls OpenAI or Anthropic.  
@@ -32,7 +44,7 @@ See the [README install matrix](../README.md#install). Summary:
 | **linux/amd64 server** (verified installer path) | `curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh \| sh` — checksum-verified published archive, `TALON_VERSION=vX.Y.Z` to pin, `INSTALL_DIR` to choose the directory; or the release tarball + `checksums.txt` by hand |
 | **macOS** | The darwin archives on the release page (best effort, per-file `.sha256`; the same installer verifies them), or `git clone … && make install` / `go install github.com/dativo-io/talon/cmd/talon@latest` |
 | **arm64 Linux** | `git clone … && make install` or `go install …@latest` (no published archive; the installer refuses to build from source unless `TALON_INSTALL_ALLOW_SOURCE=1`) |
-| **No install** | [Docker Compose demo](../examples/docker-compose/README.md) or `docker pull ghcr.io/dativo-io/talon:<version>` |
+| **No install** | [Docker Compose demo](../examples/docker-compose/README.md) — with `TALON_IMAGE=ghcr.io/dativo-io/talon:<version>` and the `docker-compose.published.yml` override it runs the published image, data plane and console, without building Talon — or `docker pull ghcr.io/dativo-io/talon:<version>` |
 
 To check a published release before trusting it: `scripts/verify-release.sh --tag vX.Y.Z` (curl, jq, tar, sha256sum; no Go, no token) verifies checksums, the executable's version and commit against the tag, the OpenShell showcase manifest and bundle, and that both images are pullable anonymously.
 

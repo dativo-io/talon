@@ -41,10 +41,11 @@ If those are your questions, Talon sits in front of your existing OpenAI/Anthrop
 
 ## One control plane, four jobs
 
-### 1. Cost control — stop spend before it happens
+### 1. Cost control — stop disallowed spend before provider access
 
-- Per-agent daily/monthly caps: the request is denied *before* the provider call, not flagged after the money is gone.
-- Session budgets across providers, enforced by atomic reservation of each request's estimate (admission is estimate-based — see [limitations](LIMITATIONS.md)), plus cache-aware, currency-labeled cost attribution by tenant/agent from an editable pricing table.
+- Per-agent daily/monthly caps: admission checks settled spend plus in-flight estimates in the gateway process and denies requests that would exceed the cap *before* the provider call.
+- Session budgets across providers use atomic reservation of each request's estimate, preventing concurrent requests from bypassing the admission cap. Budget checks fail closed when required budget state or pricing is unavailable. Actual provider charges can exceed estimates: these are admission caps, not invoice ceilings (see [limitations](LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
+- Cache-aware, currency-labeled cost attribution by tenant/agent from an editable pricing table.
 
 → [Cap AI spend per agent](docs/guides/cost-governance-by-agent.md)
 
@@ -230,7 +231,7 @@ Full byte-level breakdown: [What Talon does to your request](docs/explanation/wh
 
 | Pillar | What you get | Details |
 |--------|--------------|---------|
-| **Cost control** | Per-agent daily/monthly caps evaluated before the call; session budgets (soft); cache-aware, currency-labeled per-request estimation from an editable pricing table; attribution by tenant/agent. | [Cap AI spend per agent](docs/guides/cost-governance-by-agent.md) |
+| **Cost control** | Estimate-based admission before provider access; per-agent daily/monthly caps with a process-local in-flight ledger; atomic session reservations across providers; fail-closed budget checks. Actual charges can exceed estimates ([limitations](LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)). Cache-aware, currency-labeled cost attribution by tenant/agent. | [Cap AI spend per agent](docs/guides/cost-governance-by-agent.md) |
 | **Reliability** | Error-driven, policy-valid provider fallback chains; connect/response-header timeout controls; provider-native error shapes; OTel GenAI traces. | [Fallback chains](docs/reference/configuration.md#provider-fallback-chains-error-driven-failover) · [Observability](docs/OBSERVABILITY.md) |
 | **Shared policy** | Presidio-compatible input/output PII scanning (EU identifiers + email, phone, card, passport, IP) with redact/block/warn; tool allowlists/forbidden globs filtered before the model; egress and sovereignty rules. | [Policy cookbook](docs/guides/policy-cookbook.md) |
 | **Session understanding** | Session identity (explicit/vendor/synthetic), session-scoped audit + cost rollups, metrics API + SSE stream with session drill-down. | [Governing coding agents](docs/guides/governing-coding-agents.md) · [Gateway metrics API](docs/reference/gateway-metrics-api.md) |

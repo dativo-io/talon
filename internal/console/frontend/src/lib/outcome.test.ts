@@ -5,6 +5,14 @@ import type { Outcome } from "../api/types";
 const o = (over: Partial<Outcome>): Outcome => ({ decision: "allowed", dispatch: "dispatched", downstream: "completed", basis: "test", ...over });
 
 describe("outcomeStory", () => {
+it("an action waiting for a reviewer is not told as an allow", () => {
+    const s = outcomeStory(o({ decision: "approval_required", dispatch: "not_dispatched", downstream: "none" }));
+    expect(s.headline).toBe("Approval required — not dispatched");
+    expect(s.detail).toContain("until an authorized reviewer approves it");
+    expect(s.headline).not.toContain("allowed");
+    expect(s.tone).toBe("warn");
+  });
+
   it("a denied, not-dispatched tool call never reached the destination", () => {
     const s = outcomeStory(o({ decision: "denied", dispatch: "not_dispatched", downstream: "none", tool: "hr_employee_export" }));
     expect(s.headline).toBe("Talon denied it — not dispatched");

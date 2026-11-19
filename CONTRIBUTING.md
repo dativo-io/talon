@@ -17,7 +17,7 @@ Thanks for helping improve Talon.
 
 ## Development Setup
 
-1. Install Go 1.26.10+ (`go.mod` pins the toolchain; `GOTOOLCHAIN=auto` fetches it on an older install)
+1. Install Go 1.26.11+ (`go.mod` pins the toolchain; `GOTOOLCHAIN=auto` fetches it on an older install)
 2. Install dependencies: `go mod download`
 3. Build: `make build`
 4. Test: `make test`
@@ -96,6 +96,46 @@ OpenShell sandbox) and only then publishes the release and moves the Docker `lat
 side: public downloads, no token, anonymous image pulls, `install.sh` under `sh` into a
 scratch directory, the installed binary byte-identical to the verified one, the public
 bytes identical to the draft's.
+
+**Operations Console acceptance on the released artifacts (#533).** Before publication the
+release workflow also proves the console on what customers get, not on a source build:
+
+- `release-console-acceptance` takes the linux executable out of the draft's archive
+  (checksum-verified) and runs `scripts/published-console-acceptance.sh` with it as the
+  system under test: the packaged console in Chromium (pairing, session expiry, the six
+  pages, read-only boundary, signature verification, tamper detection, tenant scoping), the
+  People Analytics real-process contract (#545: allowed call dispatched, forbidden export
+  never reaches the HR backend, backend rejection is not a Talon denial, console = CLI =
+  browser), the console e2e, and the conditional-action acceptance (#205,
+  `scripts/action-evidence-live.sh`: typed argument rules through the HTTP Action Gateway
+  against a counting downstream service — allowed, approval required and decided through
+  the approval API with an approver credential, denied — with the downstream call counts,
+  `talon audit verify` of each lifecycle and the records in Chromium). That step fails
+  unless the test executed, passed and used the released executable; a run that matched no
+  test or skipped is a failed gate. Tests and fixtures come from the tag's checkout; Go
+  compiles the test harness only.
+- `release-verify` runs `scripts/console-compose-smoke.sh` against
+  `ghcr.io/dativo-io/talon:<version>` (pairing from the container log, the six pages' read
+  endpoints, console/CLI signature parity, no legacy dashboard route, loopback-only
+  publication, restart independence).
+
+The Compose smoke runs the published-image path (`docker-compose.published.yml`: no Talon
+build section, so a failed pull can never become a source build) and first proves that an
+unresolvable image stops the stack and that both services run the named image. Contributors
+keep the source build: plain `docker compose up` in `examples/docker-compose`.
+
+**Releases that predate the console.** `scripts/release-capabilities.sh <tag>` is the
+applicability rule: the console ships from v1.17.0 (candidates included). An audit of an
+older release (`gh workflow run release.yml -f tag=v1.16.1`, or `install-smoke.yml`) reports
+the console gates as NOT APPLICABLE in the job summary. The rule is the version, never the
+presence of a file: on a console-enabled release a missing script or asset fails the gate.
+In an audit the console's tests, fixtures and Compose stack are checked out from the audited
+tag, not from the dispatching branch (`TestReleaseWorkflows_ConsoleGatesFollowTheApplicabilityRule`).
+
+`release-verify` publishes only when both passed. After publication,
+`gh workflow run install-smoke.yml -f tag=<tag>` repeats both from the customer's side
+(`console-acceptance`: the archive downloaded anonymously; `console-compose`: the image
+pulled anonymously). Locally: `scripts/published-console-acceptance.sh <talon-binary> [version]`.
 
 **Supported-platform guarantee (#359 MVP).** The gated installer path is **linux/amd64**: its
 archive is required, verified before publication and installed by `install.sh`. The darwin

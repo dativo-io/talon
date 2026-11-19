@@ -26,6 +26,33 @@ docker compose exec talon /usr/local/bin/talon audit list
 You'll see an evidence record with PII detected (email, IBAN), cost tracked,
 and HMAC signature.
 
+## Run a published release image (no Talon build)
+
+`docker compose up` above builds both Talon services (`talon`, `talon-ui`) from this checkout: the path for contributors and development CI. To run a **published** image instead, add the override file. Nothing of Talon is compiled; only the small mock provider is built locally:
+
+```bash
+TALON_IMAGE=ghcr.io/dativo-io/talon:<version> \
+  docker compose -f docker-compose.yml -f docker-compose.published.yml up
+```
+
+- `<version>` is a release without the leading `v` (for example `1.17.0`, or a candidate such as `1.17.0-rc.1`). The read-only console (`talon-ui`) is part of Talon from v1.17.0; an older image has no `talon ui` command and that service will not start.
+- The image is pulled anonymously from GHCR on every `up` (`TALON_PULL_POLICY` defaults to `always`).
+- **No fallback to a source build.** The override removes the `build:` sections, so an image that cannot be pulled stops the stack. (This is why the published path is a second file: with a `build:` section present, Compose answers a failed pull by building.) `TALON_IMAGE` is required and has no default.
+- The same image runs the data plane and the console. Ports stay on `127.0.0.1`, as in the default stack.
+- Needs Docker Compose v2.24 or newer.
+
+Which reference to use:
+
+| Purpose | Image reference |
+|---|---|
+| Evaluation | the newest stable release |
+| Production and reproducible demos | an explicit version, `ghcr.io/dativo-io/talon:<version>`, or its immutable digest `ghcr.io/dativo-io/talon@sha256:…` (printed by `scripts/verify-release.sh --tag v<version>`) |
+| Release acceptance | the exact candidate or stable tag under test, never a moving tag |
+
+Then open `http://127.0.0.1:8787/` and enter the one-time pairing code from `docker compose logs talon-ui`. `scripts/console-compose-smoke.sh` takes the same `TALON_IMAGE` variable and checks, against that image: an unresolvable image stops the stack and nothing is built, both services run the named image, pairing, the six pages, signature verification parity with the CLI, and loopback-only publication.
+
+For a start that needs no checkout at all, use the published-image quickstart (`scripts/quickstart.sh`, see the [quickstart](../../docs/QUICKSTART.md)): one command with an explicit `TALON_VERSION`, no Compose file and no build.
+
 ## Run the Full Demo
 
 ```bash

@@ -103,6 +103,32 @@ export function EvidencePage() {
             </DetailSection>
           </div>
 
+          {r.action_lifecycle ? (
+            <DetailSection title={tampered ? "Action decision — claimed, not verified" : "Action decision"} id="ev-action">
+              <dl className="facts">
+                <dt>Action</dt><dd><code>{r.action_lifecycle.action}</code></dd>
+                <dt>Operation</dt><dd><CopyableIdentifier value={r.action_lifecycle.operation_id} label="operation id" /></dd>
+                <dt>Lifecycle event</dt><dd>{humanize(r.action_lifecycle.event)} <span className="small muted">(transition {r.action_lifecycle.sequence})</span></dd>
+                <dt>Verdict</dt><dd>{r.action_lifecycle.verdict ? <code>{r.action_lifecycle.verdict}</code> : <span className="muted">not on this transition</span>}</dd>
+                <dt>Matched rule</dt>
+                <dd>
+                  {r.action_lifecycle.matched_rule_id ? (
+                    <><code>{r.action_lifecycle.matched_rule_id}</code>{r.action_lifecycle.matched_rule_source ? ` (declared by ${humanize(r.action_lifecycle.matched_rule_source)})` : ""}</>
+                  ) : (
+                    <span className="muted">none recorded</span>
+                  )}
+                </dd>
+                <dt>Operation status</dt><dd>{humanize(r.action_lifecycle.operation_status)}</dd>
+                {r.action_lifecycle.approval_status ? (<><dt>Approval</dt><dd>{humanize(r.action_lifecycle.approval_status)}{r.action_lifecycle.approver_groups?.length ? ` · groups ${r.action_lifecycle.approver_groups.join(", ")}` : ""}</dd></>) : null}
+                {r.action_lifecycle.reviewer_principal ? (<><dt>Reviewer</dt><dd>{r.action_lifecycle.reviewer_principal}{r.action_lifecycle.reviewer_group ? ` (${r.action_lifecycle.reviewer_group})` : ""}</dd></>) : null}
+                <dt>Approval policy digest</dt><dd><CopyableIdentifier value={r.action_lifecycle.policy_digest} label="approval policy digest" /></dd>
+              </dl>
+              <p className="small muted">
+                The record names the rule that decided, not the call's argument values. CLI: <code>talon audit verify --operation {r.action_lifecycle.operation_id}</code>
+              </p>
+            </DetailSection>
+          ) : null}
+
           <DetailSection title="Explanations" id="ev-explanations">
             {r.explanations && r.explanations.length > 0 ? (
               <div className="table-wrap">

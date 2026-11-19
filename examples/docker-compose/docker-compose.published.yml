@@ -1,0 +1,27 @@
+# Published-image path for the Talon demo stack: both Talon services run ONE
+# published image and nothing of Talon is built.
+#
+#   TALON_IMAGE=ghcr.io/dativo-io/talon:<version> \
+#     docker compose -f docker-compose.yml -f docker-compose.published.yml up
+#
+# - TALON_IMAGE is required; there is no default, so the stack never runs an
+#   image you did not name.
+# - `build: !reset null` removes the build section of the base file. With a
+#   build section present, Compose answers a failed pull by building from
+#   source; without one, a pull failure stops the stack.
+# - TALON_PULL_POLICY defaults to `always` (pull anonymously from the
+#   registry); `never` runs an image that is already local (release
+#   verification of a locally built release image).
+# - The mock provider is still built locally from ./mock-provider.
+# Needs Docker Compose v2.24 or newer (the `!reset` tag).
+
+services:
+  talon:
+    build: !reset null
+    image: ${TALON_IMAGE:?set TALON_IMAGE to a published Talon image, for example ghcr.io/dativo-io/talon:<version>}
+    pull_policy: ${TALON_PULL_POLICY:-always}
+
+  talon-ui:
+    build: !reset null
+    image: ${TALON_IMAGE:?set TALON_IMAGE to a published Talon image, for example ghcr.io/dativo-io/talon:<version>}
+    pull_policy: ${TALON_PULL_POLICY:-always}
