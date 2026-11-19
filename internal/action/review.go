@@ -1,165 +1,543 @@
 package action
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
 
-// ReviewerView is what an authenticated reviewer reads before deciding
-// (#433). It keeps two kinds of statement apart:
+// This file is the ONE projection of an approval for people (#433, #565):
+// the authenticated reviewer API, `talon approvals` and the read-only
+// Operations Console all render ApprovalView / ApprovalSummary built here
+// from the same rows by the same rules. The surfaces differ only in two
+// inputs:
 //
-//   - Bound: facts stored with the operation when it was established (the
-//     matched rule's id and layer, the destination, the digests). They are
-//     read from the operation record and never recomputed.
-//   - Current: the configuration this server enforces now (the rule as the
-//     current policy states it, the catalog's destination and description).
-//     It is what was bound only where the matching digest is unchanged; the
-//     view says so instead of presenting today's configuration as history.
-//     A historical rule text that the record does not carry is not
-//     reconstructed.
+//   - CurrentConfig: what "the configuration now" means for the caller. The
+//     deciding process passes the catalog and policy it enforces; the
+//     console passes what the current files compile to, and says whether a
+//     running process is proven to have loaded them.
+//   - Disclosure: which fields the caller may see. An authenticated approver
+//     who could decide the approval reads the exact review values; the
+//     console reads argument names only.
 //
-// Actionable and Actionability are computed by the same conditions, in the
-// same order, as the decision path; the decision path stays authoritative.
-type ReviewerView struct {
-	Operation *Projection `json:"operation"`
-	// UseCase and Tenant name the AI use case that asked for the action.
-	UseCase string `json:"use_case"`
-	Tenant  string `json:"tenant"`
-	// Actionable is true when a decision by an eligible reviewer would be
-	// accepted now. Actionability says why not otherwise.
-	Actionable    bool   `json:"actionable"`
-	Actionability string `json:"actionability"`
-	// Explanation states the actionability in one sentence.
-	Explanation string `json:"explanation"`
-	// AfterApproval states what an approval does and does not do.
-	AfterApproval string        `json:"after_approval"`
-	Bound         ReviewBound   `json:"bound"`
-	Current       ReviewCurrent `json:"current"`
+// Nothing here authorizes, expires, invalidates or decides anything. The
+// decision path (Service.Decide) stays the only authority; a view says what
+// that path would do, never the other way round.
+
+// Disclosure selects the fields a surface may read.
+type Disclosure int
+
+const (
+	// DiscloseReviewer: an authenticated approver credential that shares a
+	// group with the approval. Exact review values and the argument digest.
+	DiscloseReviewer Disclosure = iota + 1
+	// DiscloseOperational: the read-only Operations Console. A paired
+	// browser is not a reviewer, and its tenant selection is a filter, not
+	// authorization: argument NAMES only, no value, no digest of values, a
+	// destination reduced to scheme and host.
+	DiscloseOperational
+)
+
+func (d Disclosure) String() string {
+	if d == DiscloseReviewer {
+		return "reviewer"
+	}
+	return "operational"
 }
 
-// ReviewBound are the facts the operation record carries from establish.
-type ReviewBound struct {
+// Bases of a statement about the current configuration.
+const (
+	// CurrentRuntime: the process that would take the decision.
+	CurrentRuntime = "runtime"
+	// CurrentFilesConfirmed: compiled from the current files, and every
+	// running `talon serve` is proven to have loaded exactly these files.
+	CurrentFilesConfirmed = "runtime_confirmed"
+	// CurrentFiles: compiled from the current files only. Not a statement
+	// about what a running process enforces.
+	CurrentFiles = "current_files"
+)
+
+// CurrentConfig is the configuration an approval is compared with.
+type CurrentConfig struct {
+	// Basis is CurrentRuntime, CurrentFilesConfirmed or CurrentFiles.
+	Basis string
+	// NotServed: the deciding process does not serve the use case (runtime
+	// basis). A decision would be refused there.
+	NotServed bool
+	// Unavailable says why nothing can be established (files unreadable,
+	// policy does not compile, use case not in the files). Eligibility is
+	// then unknown, never assumed.
+	Unavailable string
+	// Policy is the effective action policy; nil when unknown.
+	Policy *ApprovalPolicy
+	// Definition returns the current trusted definition of an action.
+	// known=false: it cannot be established here (an action discovered
+	// from an MCP source that this reader does not discover). known=true
+	// with a nil definition: the action is not catalogued.
+	Definition func(action string) (def *Definition, known bool)
+	// Note explains the basis for a reader (for example why the files are
+	// not proven to be what a process runs).
+	Note string
+}
+
+// CatalogDefinitions adapts a compiled catalog to CurrentConfig.Definition:
+// every action of a compiled catalog is known.
+func CatalogDefinitions(c *Catalog) func(string) (*Definition, bool) {
+	return func(name string) (*Definition, bool) {
+		if c == nil {
+			return nil, false
+		}
+		d, _ := c.Lookup(name)
+		return d, true
+	}
+}
+
+// Eligibility states: whether a decision on an approval would be accepted.
+const (
+	EligibilityEligible        = "eligible"
+	EligibilityExpired         = "expired"
+	EligibilityStaleDefinition = "stale_definition"
+	EligibilityStalePolicy     = "stale_policy"
+	EligibilityNotServed       = "use_case_not_served"
+	EligibilityUnknown         = "unknown"
+	EligibilityDecided         = "decided"
+)
+
+// Classes group eligibility for discovery. They never merge "per current
+// files" with "confirmed by the runtime", or "unknown" with either.
+const (
+	// ClassActionable: unresolved, and a decision would be accepted now
+	// according to the deciding runtime (or files proven loaded by it).
+	ClassActionable = "actionable"
+	// ClassPotentiallyActionable: unresolved and eligible according to the
+	// current configuration FILES; no running process is proven to enforce
+	// them.
+	ClassPotentiallyActionable = "potentially_actionable"
+	// ClassNotDecidable: unresolved in the store, but a decision would be
+	// refused (lifetime elapsed, binding stale, use case not served).
+	ClassNotDecidable = "not_decidable"
+	// ClassUnknown: unresolved; eligibility cannot be established.
+	ClassUnknown = "unknown"
+	// ClassDecided: a completed decision (approved, rejected) or an
+	// approval the system closed (expired, invalidated). History.
+	ClassDecided = "decided"
+)
+
+// Comparison of a bound digest with the current configuration.
+const (
+	BindingUnchanged = "unchanged"
+	BindingChanged   = "changed"
+	BindingUnknown   = "unknown"
+)
+
+// Eligibility is the answer to "can this still be decided", with the basis
+// the answer rests on.
+type Eligibility struct {
+	State string `json:"state"`
+	Class string `json:"class"`
+	// Basis: runtime | runtime_confirmed | current_files (configuration),
+	// lifetime (the clock alone), record (the stored decision), none.
+	Basis       string `json:"basis"`
+	Explanation string `json:"explanation"`
+	// Policy and Definition compare the digests bound at establish with
+	// the current configuration: unchanged | changed | unknown.
+	Policy     string `json:"policy"`
+	Definition string `json:"definition"`
+}
+
+// Decidable reports whether the deciding runtime would accept a decision.
+// Only a runtime-based answer can be decidable.
+func (e Eligibility) Decidable() bool { return e.Class == ClassActionable }
+
+// NeedsAttention: unresolved and not known to be undecidable. The default
+// selection of every listing.
+func (e Eligibility) NeedsAttention() bool {
+	return e.Class == ClassActionable || e.Class == ClassPotentiallyActionable || e.Class == ClassUnknown
+}
+
+// bindingFacts are the stored facts eligibility is derived from.
+type bindingFacts struct {
+	Status           string
+	ExpiresAt        time.Time
+	Action           string
+	PolicyDigest     string
+	DefinitionDigest string
+}
+
+// classifyApproval mirrors the order of the decision path (Decide): a
+// closed approval, then lifetime, then the trusted definition, then the
+// approval-relevant policy. Where the current configuration is not known a
+// certain refusal is still reported (a changed digest is stale whatever the
+// unknown part is); otherwise the answer is unknown, never eligible.
+func classifyApproval(f bindingFacts, cfg CurrentConfig, now time.Time) Eligibility {
+	if f.Status != ApprovalPending {
+		return Eligibility{
+			State: EligibilityDecided, Class: ClassDecided, Basis: "record", Policy: BindingUnknown, Definition: BindingUnknown,
+			Explanation: "this approval is already " + f.Status + "; no further decision is possible",
+		}
+	}
+	e := Eligibility{Basis: cfg.Basis, Policy: BindingUnknown, Definition: BindingUnknown}
+	if cfg.Unavailable == "" && !cfg.NotServed {
+		e.Policy, e.Definition = comparePolicy(f, cfg), compareDefinition(f, cfg)
+	}
+	switch {
+	case !now.Before(f.ExpiresAt):
+		e.State, e.Class, e.Basis = EligibilityExpired, ClassNotDecidable, "lifetime"
+		e.Explanation = "the approval lifetime elapsed at " + f.ExpiresAt.UTC().Format(time.RFC3339) + "; a decision would be refused (approval_expired). The application must create a new operation"
+	case cfg.NotServed:
+		e.State, e.Class = EligibilityNotServed, ClassNotDecidable
+		e.Explanation = "the AI use case that owns this approval is not served by this Talon process (removed, or without an action catalog); a decision would be refused"
+	case cfg.Unavailable != "":
+		e.State, e.Class, e.Basis = EligibilityUnknown, ClassUnknown, "none"
+		e.Explanation = "whether this can still be decided cannot be established here: " + cfg.Unavailable
+	case e.Definition == BindingChanged:
+		e.State, e.Class = EligibilityStaleDefinition, ClassNotDecidable
+		e.Explanation = "the trusted action definition changed since this operation was established; a decision would be refused (approval_binding_stale). The application must create a new operation"
+	case e.Policy == BindingChanged:
+		e.State, e.Class = EligibilityStalePolicy, ClassNotDecidable
+		e.Explanation = "the approval-relevant policy changed since this operation was established; a decision would be refused (approval_binding_stale). The application must create a new operation"
+	case e.Definition == BindingUnknown || e.Policy == BindingUnknown:
+		e.State, e.Class = EligibilityUnknown, ClassUnknown
+		e.Explanation = "whether this can still be decided cannot be established here: the current " + unknownPart(e) + " cannot be compared with the one bound at establish"
+	default:
+		e.State = EligibilityEligible
+		e.Class, e.Explanation = eligibleClass(cfg.Basis)
+	}
+	if e.Class == ClassNotDecidable && cfg.Basis == CurrentFiles && e.Basis != "lifetime" {
+		e.Explanation += " (according to the current configuration files; no running process is proven to enforce them)"
+	}
+	return e
+}
+
+func eligibleClass(basis string) (class, explanation string) {
+	switch basis {
+	case CurrentRuntime:
+		return ClassActionable, "an eligible reviewer can approve or reject this now"
+	case CurrentFilesConfirmed:
+		return ClassActionable, "an eligible reviewer can approve or reject this now: every running Talon process loaded the configuration this was established under"
+	}
+	return ClassPotentiallyActionable, "eligible according to the current configuration files; no running Talon process is proven to enforce them, and the deciding process has the final word"
+}
+
+func unknownPart(e Eligibility) string {
+	switch {
+	case e.Definition == BindingUnknown && e.Policy == BindingUnknown:
+		return "action definition and policy"
+	case e.Definition == BindingUnknown:
+		return "action definition"
+	}
+	return "policy"
+}
+
+func comparePolicy(f bindingFacts, cfg CurrentConfig) string {
+	switch {
+	case cfg.Policy == nil:
+		return BindingUnknown
+	case cfg.Policy.Digest == f.PolicyDigest:
+		return BindingUnchanged
+	}
+	return BindingChanged
+}
+
+func compareDefinition(f bindingFacts, cfg CurrentConfig) string {
+	if cfg.Definition == nil {
+		return BindingUnknown
+	}
+	d, known := cfg.Definition(f.Action)
+	switch {
+	case !known:
+		return BindingUnknown
+	case d != nil && d.DefinitionDigest == f.DefinitionDigest:
+		return BindingUnchanged
+	}
+	return BindingChanged
+}
+
+// afterApprovalText is fixed: approval authorizes, it never dispatches.
+const afterApprovalText = "An approval authorizes this exact operation and dispatches nothing. The AI use case's application must then claim the operation; Talon re-checks the policy and the action definition at that claim and dispatches at most once. A rejection closes the operation."
+
+// ApprovalRecord is one approval with its operation and latest attempt, as
+// read in a single snapshot (Reader.ApprovalRecord).
+type ApprovalRecord struct {
+	Approval      *Approval
+	Operation     *Operation
+	LatestAttempt *Attempt
+}
+
+// ApprovalView is what a person reads about one approval. It keeps apart
+// what the operation record carries from establish (Bound), what the
+// configuration is now (Current, with its basis) and what happened since
+// (Decision, Operation).
+type ApprovalView struct {
+	ApprovalID string `json:"approval_id"`
+	Tenant     string `json:"tenant"`
+	// UseCase is the AI use case that asked for the action.
+	UseCase string `json:"use_case"`
+	Action  string `json:"action"`
+	// ActionDescription is the catalog's description under Current.Basis;
+	// empty when the action is not catalogued or the catalog is unknown.
+	ActionDescription string `json:"action_description,omitempty"`
+	// Status is the PERSISTED approval status (pending, approved,
+	// rejected, expired, invalidated). Unresolved is Status == pending: a
+	// stored fact, independent of any configuration.
+	Status         string      `json:"status"`
+	Unresolved     bool        `json:"unresolved"`
+	Eligibility    Eligibility `json:"eligibility"`
+	ApproverGroups []string    `json:"approver_groups"`
+	CreatedAt      time.Time   `json:"created_at"`
+	ExpiresAt      time.Time   `json:"expires_at"`
+	// Disclosure names the profile this view was built for; Arguments
+	// carry values only under "reviewer".
+	Disclosure    string            `json:"disclosure"`
+	Arguments     []ReviewArgument  `json:"arguments"`
+	Bound         ApprovalBound     `json:"bound"`
+	Current       ApprovalCurrent   `json:"current"`
+	Decision      *ApprovalDecision `json:"decision,omitempty"`
+	Operation     ApprovalOperation `json:"operation"`
+	AfterApproval string            `json:"after_approval"`
+}
+
+// ReviewArgument is one declared material argument. Value is the exact
+// stored review value and is present only for the reviewer disclosure.
+type ReviewArgument struct {
+	Name  string          `json:"name"`
+	Value json.RawMessage `json:"value,omitempty"`
+}
+
+// ApprovalBound are the facts the operation record carries from establish.
+// They are read from the record and never recomputed.
+type ApprovalBound struct {
 	RuleID     string `json:"rule_id,omitempty"`
 	RuleSource string `json:"rule_source,omitempty"` // company | use_case
-	// Destination is the trusted destination bound into the operation
-	// (for an HTTP action: method and URL).
-	Destination      string    `json:"destination"`
-	ArgumentsDigest  string    `json:"arguments_digest"`
+	// Destination is the trusted destination bound into the operation: for
+	// the reviewer the method and URL, for the operational disclosure the
+	// method, scheme and host.
+	Destination string `json:"destination"`
+	// ArgumentsDigest binds the exact arguments; reviewer disclosure only.
+	ArgumentsDigest  string    `json:"arguments_digest,omitempty"`
 	DefinitionDigest string    `json:"definition_digest"`
 	PolicyDigest     string    `json:"policy_digest"`
 	EstablishedAt    time.Time `json:"established_at"`
 }
 
-// ReviewCurrent is the configuration enforced now, next to whether it is
-// still the one the operation was bound under.
-type ReviewCurrent struct {
-	// PolicyUnchanged: the approval-relevant policy digest equals the bound
-	// one, so Rule below is exactly the rule that required this approval.
-	PolicyUnchanged bool `json:"policy_unchanged"`
-	// DefinitionUnchanged: the trusted action definition (schema, reviewer
-	// projection, destination, success contract) equals the bound one.
-	DefinitionUnchanged bool `json:"definition_unchanged"`
+// ApprovalCurrent is the configuration now, with the basis it is known on.
+type ApprovalCurrent struct {
+	Basis string `json:"basis"`
+	Note  string `json:"note,omitempty"`
 	// Rule states the rule with the bound id as the CURRENT policy defines
-	// it; empty when the current policy has no rule with that id.
+	// it. It is the rule that required this approval only where
+	// Eligibility.Policy is unchanged; a historical rule text that the
+	// record does not carry is not reconstructed.
 	Rule        string `json:"rule,omitempty"`
 	RulePresent bool   `json:"rule_present"`
-	// Destination and ActionDescription come from the current catalog;
-	// empty when the action is no longer catalogued.
-	Destination       string `json:"destination,omitempty"`
-	ActionDescription string `json:"action_description,omitempty"`
+	// Destination of the action in the current catalog.
+	Destination string `json:"destination,omitempty"`
 }
 
-// Actionability values of a reviewer view and of a queue entry.
-const (
-	ReviewActionable      = "actionable"
-	ReviewExpired         = "expired"
-	ReviewStaleDefinition = "stale_definition"
-	ReviewStalePolicy     = "stale_policy"
-)
-
-// afterApprovalText is fixed: approval authorizes, it never dispatches.
-const afterApprovalText = "An approval authorizes this exact operation and dispatches nothing. The AI use case's application must then claim the operation; Talon re-checks the policy and the action definition at that claim and dispatches at most once. A rejection closes the operation."
-
-// approvalActionability mirrors the order of the decision path (Decide):
-// an already closed approval, then lifetime, then the trusted definition,
-// then the approval-relevant policy.
-func approvalActionability(status string, expiresAt, now time.Time, definitionCurrent, policyCurrent bool) (state, explanation string) {
-	switch {
-	case status != ApprovalPending:
-		return status, "this approval is already " + status + "; no further decision is possible"
-	case !now.Before(expiresAt):
-		return ReviewExpired, "the approval lifetime elapsed at " + expiresAt.UTC().Format(time.RFC3339) + "; a decision would be refused (approval_expired). The application must create a new operation"
-	case !definitionCurrent:
-		return ReviewStaleDefinition, "the trusted action definition changed since this operation was established; a decision would be refused (approval_binding_stale). The application must create a new operation"
-	case !policyCurrent:
-		return ReviewStalePolicy, "the approval-relevant policy changed since this operation was established; a decision would be refused (approval_binding_stale). The application must create a new operation"
-	}
-	return ReviewActionable, "an eligible reviewer can approve or reject this now"
+// ApprovalDecision is the stored outcome of an approval that is no longer
+// pending. DecidedBy is an approver principal id, or "system" when Talon
+// closed it (expired, invalidated).
+type ApprovalDecision struct {
+	Status       string     `json:"status"`
+	DecidedAt    *time.Time `json:"decided_at,omitempty"`
+	DecidedBy    string     `json:"decided_by,omitempty"`
+	DecidedGroup string     `json:"decided_group,omitempty"`
+	Reason       string     `json:"reason,omitempty"`
 }
 
-// Review returns the reviewer view of one approval of this service's
-// tenant and agent. An approval of another agent or tenant is not found.
-func (s *Service) Review(ctx context.Context, approvalID string) (*ReviewerView, error) {
-	ap, err := getApproval(ctx, s.repo.db, approvalID)
-	if err != nil {
-		return nil, &Error{Code: CodeStoreUnavailable, Message: "reading approval", Err: err}
-	}
-	if ap == nil {
-		return nil, newErr(CodeNotFound, "approval not found")
-	}
-	op, err := getOperationByRef(ctx, s.repo.db, ap.OperationRef)
-	if err != nil || op == nil || op.TenantID != s.TenantID || op.AgentID != s.AgentID {
-		return nil, newErr(CodeNotFound, "approval not found")
-	}
-	proj, err := s.project(ctx, s.repo.db, op)
-	if err != nil {
-		return nil, err
-	}
-	v := &ReviewerView{
-		Operation:     proj,
-		UseCase:       op.AgentID,
-		Tenant:        op.TenantID,
+// ApprovalOperation is what happened to the operation the approval is for.
+type ApprovalOperation struct {
+	OperationID       string            `json:"operation_id"`
+	OperationRef      string            `json:"operation_ref"`
+	Status            string            `json:"status"`
+	Verdict           string            `json:"verdict"`
+	AttemptCount      int               `json:"attempt_count"`
+	OutcomeCode       string            `json:"outcome_code,omitempty"`
+	OutcomeProvenance string            `json:"outcome_provenance,omitempty"`
+	LatestAttempt     *ApprovalAttempt  `json:"latest_attempt,omitempty"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+	Origin            map[string]string `json:"origin,omitempty"`
+}
+
+// ApprovalAttempt is the dispatch facts of the latest execution attempt.
+type ApprovalAttempt struct {
+	Ordinal          int        `json:"ordinal"`
+	Status           string     `json:"status"`
+	StartedAt        time.Time  `json:"started_at"`
+	CompletedAt      *time.Time `json:"completed_at,omitempty"`
+	RequestWritten   bool       `json:"request_written"`
+	ResponseObserved bool       `json:"response_observed"`
+	HTTPStatus       int        `json:"http_status,omitempty"`
+	ResultProvenance string     `json:"result_provenance,omitempty"`
+	OutcomeCode      string     `json:"outcome_code,omitempty"`
+}
+
+// ApprovalSummary is one row of an approval listing. It never carries an
+// argument name or value: a listing is for finding an approval.
+type ApprovalSummary struct {
+	ApprovalID     string      `json:"approval_id"`
+	Tenant         string      `json:"tenant"`
+	UseCase        string      `json:"use_case"`
+	Action         string      `json:"action"`
+	Status         string      `json:"status"`
+	Unresolved     bool        `json:"unresolved"`
+	Eligibility    Eligibility `json:"eligibility"`
+	ApproverGroups []string    `json:"approver_groups"`
+	RuleID         string      `json:"rule_id,omitempty"`
+	CreatedAt      time.Time   `json:"created_at"`
+	ExpiresAt      time.Time   `json:"expires_at"`
+	DecidedAt      *time.Time  `json:"decided_at,omitempty"`
+	DecidedBy      string      `json:"decided_by,omitempty"`
+}
+
+// BuildApprovalView projects one approval record. It is a pure function of
+// the record, the current configuration, the disclosure and the clock.
+func BuildApprovalView(rec *ApprovalRecord, cfg CurrentConfig, disclosure Disclosure, now time.Time) *ApprovalView {
+	ap, op := rec.Approval, rec.Operation
+	v := &ApprovalView{
+		ApprovalID: ap.ID, Tenant: op.TenantID, UseCase: op.AgentID, Action: op.Action,
+		Status: ap.Status, Unresolved: ap.Status == ApprovalPending,
+		Eligibility:    classifyApproval(bindingOf(ap, op), cfg, now),
+		ApproverGroups: append([]string{}, ap.Groups...),
+		CreatedAt:      ap.CreatedAt, ExpiresAt: ap.ExpiresAt,
+		Disclosure: disclosure.String(), Arguments: reviewArguments(op.ReviewJSON, disclosure),
+		Bound: ApprovalBound{
+			RuleID: op.RuleID, RuleSource: RuleSource(op.RuleID),
+			Destination:      disclosedDestination(strings.TrimPrefix(op.DestinationID, "http:"), disclosure),
+			DefinitionDigest: op.DefinitionDigest, PolicyDigest: op.PolicyDigest, EstablishedAt: op.CreatedAt,
+		},
+		Current: ApprovalCurrent{Basis: cfg.Basis, Note: cfg.Note},
+		Operation: ApprovalOperation{
+			OperationID: op.OperationID, OperationRef: op.Ref, Status: op.Status, Verdict: op.Verdict,
+			AttemptCount: op.AttemptCount, OutcomeCode: op.OutcomeCode, OutcomeProvenance: op.OutcomeProvenance,
+			UpdatedAt: op.UpdatedAt, Origin: originOf(op.OriginJSON),
+		},
 		AfterApproval: afterApprovalText,
-		Bound: ReviewBound{
-			RuleID:           op.RuleID,
-			RuleSource:       proj.MatchedRuleSource,
-			Destination:      boundDestination(op.DestinationID),
-			ArgumentsDigest:  op.Digest,
-			DefinitionDigest: op.DefinitionDigest,
-			PolicyDigest:     op.PolicyDigest,
-			EstablishedAt:    op.CreatedAt,
-		},
-		Current: ReviewCurrent{
-			PolicyUnchanged:     s.Policy.Digest == op.PolicyDigest,
-			DefinitionUnchanged: s.definitionCurrent(op),
-		},
 	}
-	v.Current.Rule, v.Current.RulePresent = s.Policy.DescribeRule(op.RuleID)
-	if d, ok := s.Catalog.Lookup(op.Action); ok {
-		v.Current.Destination = strings.TrimSpace(d.Destination.Method + " " + d.Destination.URL)
-		v.Current.ActionDescription = d.Description
+	if disclosure == DiscloseReviewer {
+		v.Bound.ArgumentsDigest = op.Digest
 	}
-	v.Actionability, v.Explanation = approvalActionability(ap.Status, ap.ExpiresAt, s.now(), v.Current.DefinitionUnchanged, v.Current.PolicyUnchanged)
-	v.Actionable = v.Actionability == ReviewActionable
-	return v, nil
+	describeCurrent(v, op, cfg, disclosure)
+	if ap.Status != ApprovalPending {
+		v.Decision = &ApprovalDecision{Status: ap.Status, DecidedAt: ap.DecidedAt, DecidedBy: ap.DecidedBy, DecidedGroup: ap.DecidedGroup, Reason: ap.Reason}
+	}
+	if at := rec.LatestAttempt; at != nil {
+		v.Operation.LatestAttempt = &ApprovalAttempt{
+			Ordinal: at.Ordinal, Status: at.Status, StartedAt: at.StartedAt, CompletedAt: at.CompletedAt,
+			RequestWritten: at.RequestWritten, ResponseObserved: at.ResponseObserved, HTTPStatus: at.HTTPStatus,
+			ResultProvenance: at.ResultProvenance, OutcomeCode: at.OutcomeCode,
+		}
+	}
+	return v
 }
 
-// boundDestination renders the destination identity stored with the
-// operation ("http:POST https://…" for the HTTP adapter) for a reader.
-func boundDestination(id string) string {
-	return strings.TrimPrefix(id, "http:")
+// describeCurrent fills what the current configuration says about the
+// bound rule and action. Nothing is stated when it is not known.
+func describeCurrent(v *ApprovalView, op *Operation, cfg CurrentConfig, disclosure Disclosure) {
+	switch {
+	case cfg.Unavailable != "":
+		v.Current.Basis, v.Current.Note = "none", cfg.Unavailable
+		return
+	case cfg.NotServed:
+		v.Current.Note = "the AI use case is not served by this Talon process"
+		return
+	}
+	v.Current.Rule, v.Current.RulePresent = cfg.Policy.DescribeRule(op.RuleID)
+	if cfg.Definition == nil {
+		return
+	}
+	if d, known := cfg.Definition(op.Action); known && d != nil {
+		v.ActionDescription = d.Description
+		v.Current.Destination = disclosedDestination(strings.TrimSpace(d.Destination.Method+" "+d.Destination.URL), disclosure)
+	}
 }
 
-// PendingState is the actionability of a queue entry, computed from the
-// digests stored with its operation against this service's current policy
-// and catalog: the same conditions Review and the decision path apply.
-func (s *Service) PendingState(p *PendingApproval) string {
-	d, ok := s.Catalog.Lookup(p.Action)
-	state, _ := approvalActionability(ApprovalPending, p.ExpiresAt, s.now(), ok && d.DefinitionDigest == p.DefinitionDigest, s.Policy.Digest == p.PolicyDigest)
-	return state
+// SummarizeApproval projects one listing row from the stored facts.
+func SummarizeApproval(ap *Approval, op *Operation, cfg CurrentConfig, now time.Time) ApprovalSummary {
+	return ApprovalSummary{
+		ApprovalID: ap.ID, Tenant: op.TenantID, UseCase: op.AgentID, Action: op.Action,
+		Status: ap.Status, Unresolved: ap.Status == ApprovalPending,
+		Eligibility:    classifyApproval(bindingOf(ap, op), cfg, now),
+		ApproverGroups: append([]string{}, ap.Groups...), RuleID: op.RuleID,
+		CreatedAt: ap.CreatedAt, ExpiresAt: ap.ExpiresAt, DecidedAt: ap.DecidedAt, DecidedBy: ap.DecidedBy,
+	}
+}
+
+func bindingOf(ap *Approval, op *Operation) bindingFacts {
+	return bindingFacts{Status: ap.Status, ExpiresAt: ap.ExpiresAt, Action: op.Action, PolicyDigest: op.PolicyDigest, DefinitionDigest: op.DefinitionDigest}
+}
+
+// reviewArguments lists the declared material arguments in name order. The
+// stored reviewer projection is the only source; values are copied only
+// for the reviewer disclosure, so a view built for the console holds no
+// value anywhere in memory or on the wire.
+func reviewArguments(reviewJSON []byte, disclosure Disclosure) []ReviewArgument {
+	out := []ReviewArgument{}
+	if len(reviewJSON) == 0 {
+		return out
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(reviewJSON, &fields); err != nil {
+		return out
+	}
+	names := make([]string, 0, len(fields))
+	for k := range fields {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		a := ReviewArgument{Name: k}
+		if disclosure == DiscloseReviewer {
+			a.Value = fields[k]
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// disclosedDestination renders "METHOD URL" (or a bare URL). The
+// operational disclosure keeps the method, scheme and host: a path or
+// query of an operator-configured URL can carry identifiers.
+func disclosedDestination(dest string, disclosure Disclosure) string {
+	if disclosure == DiscloseReviewer || dest == "" {
+		return dest
+	}
+	parts := strings.Fields(dest)
+	u, err := url.Parse(parts[len(parts)-1])
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return strings.Join(parts[:len(parts)-1], " ")
+	}
+	parts[len(parts)-1] = u.Scheme + "://" + u.Host
+	return strings.Join(parts, " ")
+}
+
+// originOf returns the attribution facts stored with the operation (the
+// client-asserted session and the runtime's own references). Never a token.
+func originOf(raw []byte) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var f struct {
+		Runtime    string
+		SandboxRef string
+		SessionID  string
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for k, v := range map[string]string{"runtime": f.Runtime, "sandbox_ref": f.SandboxRef, "session_id": f.SessionID} {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // DescribeRule states a compiled rule of the effective policy in plain
@@ -188,145 +566,7 @@ func (ap *ApprovalPolicy) DescribeRule(ruleID string) (text string, present bool
 	return "", false
 }
 
-// PendingApproval is one entry of the reviewer queue: a persisted pending
-// approval with the facts needed to say whether it can still be decided.
-type PendingApproval struct {
-	ID               string
-	TenantID         string
-	AgentID          string
-	Action           string
-	PolicyDigest     string
-	DefinitionDigest string
-	Groups           []string
-	ExpiresAt        time.Time
-	// State is the actionability the query established (ReviewActionable,
-	// ReviewExpired, ReviewStaleDefinition, ReviewStalePolicy).
-	State string
-}
-
-// MaxPendingList bounds one pending-approvals listing.
-const MaxPendingList = 200
-
-// PendingQuery selects a reviewer's queue.
-type PendingQuery struct {
-	// Limit bounds the answer (1..MaxPendingList).
-	Limit int
-	// State returns the actionability of an entry; "" drops it (its use
-	// case is not served). nil treats lifetime as the only condition.
-	State func(*PendingApproval) string
-	// IncludeNonActionable also returns pending approvals that can no
-	// longer be decided (expired, stale), after the actionable ones.
-	IncludeNonActionable bool
-	// Now is the clock for lifetimes (zero: the wall clock).
-	Now time.Time
-}
-
-// PendingApprovals lists the persisted pending approvals of one tenant that
-// at least one of groups may decide, oldest first.
-//
-// The bound never hides an approval that can be decided behind ones that
-// cannot (#565 review): the group filter and the actionability are applied
-// BEFORE the bound, and the answer holds the actionable entries first. An
-// approval whose lifetime elapsed, or whose policy or definition changed,
-// stays "pending" in the store until someone touches it; without this
-// order 200 of them would fill every listing forever. more reports that
-// entries of the requested selection exist beyond limit.
-func (r *Repository) PendingApprovals(ctx context.Context, tenantID string, groups []string, q PendingQuery) (list []PendingApproval, more bool, err error) {
-	sel := pendingSelection{limit: q.Limit, includeRest: q.IncludeNonActionable}
-	if sel.limit <= 0 || sel.limit > MaxPendingList {
-		sel.limit = MaxPendingList
-	}
-	mine := map[string]bool{}
-	for _, g := range groups {
-		mine[g] = true
-	}
-	now := q.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	rows, err := r.db.QueryContext(ctx, `SELECT a.id, o.tenant_id, o.agent_id, o.action, o.policy_digest, o.definition_digest, a.groups_json, a.expires_at
-		FROM action_approvals a JOIN action_operations o ON o.ref = a.operation_ref
-		WHERE o.tenant_id = ? AND a.status = ? ORDER BY a.created_at, a.id`, tenantID, ApprovalPending)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	for rows.Next() && !sel.full() {
-		var p PendingApproval
-		var raw string
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.AgentID, &p.Action, &p.PolicyDigest, &p.DefinitionDigest, &raw, &p.ExpiresAt); err != nil {
-			return nil, false, err
-		}
-		_ = json.Unmarshal([]byte(raw), &p.Groups)
-		if !anyGroup(mine, p.Groups) {
-			continue
-		}
-		// Lifetime first: it needs no policy or catalog, so a long tail of
-		// expired approvals costs one comparison each.
-		switch {
-		case !now.Before(p.ExpiresAt):
-			p.State = ReviewExpired
-		case q.State != nil:
-			p.State = q.State(&p)
-		default:
-			p.State = ReviewActionable
-		}
-		sel.add(p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	list, more = sel.result()
-	return list, more, nil
-}
-
-func anyGroup(mine map[string]bool, groups []string) bool {
-	for _, g := range groups {
-		if mine[g] {
-			return true
-		}
-	}
-	return false
-}
-
-// pendingSelection collects a bounded queue answer: actionable entries
-// first, then (when asked for) the ones that can no longer be decided.
-type pendingSelection struct {
-	limit       int
-	includeRest bool
-	actionable  []PendingApproval
-	rest        []PendingApproval
-	more        bool
-}
-
-func (s *pendingSelection) add(p PendingApproval) {
-	switch {
-	case p.State == "":
-	case p.State == ReviewActionable:
-		if len(s.actionable) == s.limit {
-			s.more = true
-			return
-		}
-		s.actionable = append(s.actionable, p)
-	case s.includeRest:
-		if len(s.rest) == s.limit {
-			s.more = true
-			return
-		}
-		s.rest = append(s.rest, p)
-	}
-}
-
-// full: the answer holds limit actionable entries and is known to be
-// incomplete; nothing further can change it.
-func (s *pendingSelection) full() bool {
-	return s.more && len(s.actionable) == s.limit
-}
-
-func (s *pendingSelection) result() ([]PendingApproval, bool) {
-	rest := s.rest
-	if room := s.limit - len(s.actionable); len(rest) > room {
-		rest, s.more = rest[:room], true
-	}
-	return append(s.actionable, rest...), s.more
+// CurrentConfig is the configuration this service decides with.
+func (s *Service) CurrentConfig() CurrentConfig {
+	return CurrentConfig{Basis: CurrentRuntime, Policy: s.Policy, Definition: CatalogDefinitions(s.Catalog)}
 }

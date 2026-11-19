@@ -131,7 +131,9 @@ func (s *Service) Overview(ctx context.Context, tenant string) *Overview {
 		Today:        s.today(ctx, tenant),
 		RecentEvents: s.recentEvents(ctx, tenant, DefaultEventsLimit),
 	}
+	out.Approvals = s.approvalsSummary(ctx, tenant, uc.Runtime)
 	out.Findings = append(append([]Finding{}, out.Readiness.Findings...), useCaseFindings(uc.Attention, s.now())...)
+	out.Findings = append(out.Findings, approvalFindings(out.Approvals, s.now())...)
 	sortFindings(out.Findings)
 	return out
 }
@@ -269,7 +271,9 @@ func (s *Service) recentEvents(ctx context.Context, tenant string, limit int) Re
 
 // UseCases is the AI Use Cases list.
 func (s *Service) UseCases(ctx context.Context, tenant string) (Meta, UseCases) {
-	return s.meta(tenant), s.useCases(ctx, tenant)
+	uc := s.useCases(ctx, tenant)
+	uc.Approvals = s.approvalsSummary(ctx, tenant, uc.Runtime)
+	return s.meta(tenant), uc
 }
 
 // UseCase is one use case with its recent sessions, costs and activity, all
@@ -311,7 +315,9 @@ func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDet
 	// Installation readiness applies to every use case; the findings are
 	// the installation's plus this use case's own fleet finding.
 	out.Readiness = s.readiness(ctx, uc.Runtime)
+	out.Approvals = s.useCaseApprovals(ctx, scope, name, uc.Runtime)
 	out.Findings = append(append([]Finding{}, out.Readiness.Findings...), useCaseFindings([]fleet.AgentRow{*row}, s.now())...)
+	out.Findings = append(out.Findings, approvalFindings(out.Approvals, s.now())...)
 	sortFindings(out.Findings)
 	out.Issues = []agentcatalog.FleetIssue{}
 	for _, is := range uc.Issues {

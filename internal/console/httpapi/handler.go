@@ -40,6 +40,8 @@ const Prefix = "/console/v1"
 //	/console/v1/system
 //	/console/v1/configuration?tenant=
 //	/console/v1/search?q=&tenant=   (exact ids, use-case name prefix; bounded)
+//	/console/v1/approvals?tenant=&use_case=&state=attention|unresolved|decided&limit=&after=   (#565; compact rows, no argument name or value)
+//	/console/v1/approvals/{id}?tenant=   (argument NAMES only; values: talon approvals show)
 //	/console/v1/tenants   (tenant identities for the scope selector; not authorization)
 func Handler(svc *console.Service) http.Handler {
 	r := chi.NewRouter()
@@ -129,6 +131,29 @@ func Handler(svc *console.Service) http.Handler {
 				from = to.Add(-console.DefaultActivitySpan)
 			}
 			writeJSON(w, http.StatusOK, svc.Activity(req.Context(), q(req, "tenant"), q(req, "agent"), from, to, bucket))
+		})
+		// Approvals (#565): read-only, operational disclosure (argument
+		// names, never values). No decision route exists in this process.
+		r.Get("/approvals", func(w http.ResponseWriter, req *http.Request) {
+			limit, err := optionalInt(q(req, "limit"))
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_request", "limit: "+err.Error())
+				return
+			}
+			d, err := svc.Approvals(req.Context(), q(req, "tenant"), q(req, "use_case"), q(req, "state"), q(req, "after"), limit)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, d)
+		})
+		r.Get("/approvals/{id}", func(w http.ResponseWriter, req *http.Request) {
+			d, err := svc.Approval(req.Context(), q(req, "tenant"), chi.URLParam(req, "id"))
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, d)
 		})
 		r.Get("/tenants", func(w http.ResponseWriter, req *http.Request) {
 			writeJSON(w, http.StatusOK, svc.Tenants(req.Context()))

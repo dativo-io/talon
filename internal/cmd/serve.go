@@ -616,7 +616,7 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 	}
 	if actionGW != nil {
 		opts = append(opts, server.WithActionGateway(actionGW.resolver(), actionGW.ownerResolver(), actionGW.approvers),
-			server.WithApprovalLister(actionGW.repo.PendingApprovals))
+			server.WithApprovalReader(actionGW.repo.Reader(), actionGW.currentConfig))
 	}
 	opts = append(opts, []server.Option{
 		server.WithActiveRunTracker(activeRunTracker),

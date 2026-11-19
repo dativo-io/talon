@@ -118,6 +118,11 @@ type UseCases struct {
 	// CounterWindows are the rolling windows of the row counters (requests,
 	// denied, fallbacks, failed_sessions); spend_* use UTC day and month.
 	CounterWindows CounterWindows `json:"counter_windows"`
+	// Approvals are the per-use-case approval counts on the AI Use Cases
+	// page (#565). Kept apart from Rows: fleet health is not redefined by
+	// an approval waiting for a person. Empty on the embedded copy inside
+	// Overview, which carries its own Approvals section.
+	Approvals ApprovalsSummary `json:"approvals"`
 }
 
 // CounterWindows are Go duration strings ("1h0m0s").
@@ -161,8 +166,12 @@ type Overview struct {
 	UseCases     UseCases     `json:"use_cases"`
 	Today        Today        `json:"today"`
 	RecentEvents RecentEvents `json:"recent_events"`
-	// Findings are the installation findings followed by the canonical fleet
-	// rows that are not healthy (in Meta's tenant scope), most urgent first.
+	// Approvals counts the unresolved Action Gateway approvals of Meta's
+	// tenant scope (#565): stored counts and inferred eligibility, apart.
+	Approvals ApprovalsSummary `json:"approvals"`
+	// Findings are the installation findings, the canonical fleet rows that
+	// are not healthy and the use cases with approvals that may await a
+	// decision (in Meta's tenant scope), most urgent first.
 	Findings []Finding `json:"findings"`
 }
 
@@ -185,6 +194,8 @@ type UseCaseDetail struct {
 	// use case's own canonical fleet finding, most urgent first.
 	Readiness Readiness `json:"readiness"`
 	Findings  []Finding `json:"findings"`
+	// Approvals are this use case's approval counts (#565).
+	Approvals ApprovalsSummary `json:"approvals"`
 	// RecentDecisions are this use case's newest records with their outcome.
 	RecentDecisions DecisionList `json:"recent_decisions"`
 	// Issues are configuration issues the catalog attributes to this name
