@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ASSETS = ROOT / "docs/assets/console"
 MANIFEST = "baseline.json"
 ASSETS = (
-    "configuration.webp", "costs.webp", "evidence-verification.webp",
+    "action-evidence.webp", "action-policy.webp", "configuration.webp", "costs.webp", "evidence-verification.webp",
     "overview-attention.webp", "overview-mobile.webp", "session-investigation.webp",
     "showcase.webp", "system-diagnostics.webp", "tamper-detection.webp",
     "use-case-summary.webp",

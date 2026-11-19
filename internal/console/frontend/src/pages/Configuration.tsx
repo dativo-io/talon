@@ -117,6 +117,28 @@ function Organization({ c }: { c: ConfigDTO }) {
             </dl>
           </div>
           <p className="small muted">Amounts are in the pricing table's currency.</p>
+          {o.action_rules_error ? <div className="notice warn" role="status"><div>Company action rules do not compile: {o.action_rules_error}</div></div> : null}
+          {o.action_rules?.length ? (
+            <div className="stack" data-testid="company-action-rules">
+              <h3>Company action rules</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Rule</th><th>Actions</th><th>Condition</th><th>Effect</th></tr></thead>
+                  <tbody>
+                    {o.action_rules.map((x) => (
+                      <tr key={x.id}>
+                        <td><code>{x.id}</code></td>
+                        <td><code>{x.actions.join(", ")}</code></td>
+                        <td>{x.condition ? <><code>{x.condition}</code> <span className="small muted">({x.type})</span></> : <span className="muted">every call</span>}</td>
+                        <td>{x.effect === "deny" ? "Deny" : `Require approval by ${(x.approver_groups ?? []).join(", ")}`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="small muted">These apply to every use case's Action Gateway calls; a use case can add rules, never lift these. Rules only restrict. Each use case's page shows the composed policy.</p>
+            </div>
+          ) : null}
           {o.providers && o.providers.length > 0 ? (
             <div className="table-wrap">
               <table>

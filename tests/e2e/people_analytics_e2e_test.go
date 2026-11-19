@@ -491,39 +491,46 @@ func tamperRecord(t *testing.T, dbPath, id string) {
 	}
 }
 
-// runLiveBrowser runs tests/browser/live against this installation. It
-// writes the state file the browser helpers read (installation dir, console
-// log for pairing codes, binary) plus the expectations, and fails the test
-// when the spec fails. Node and the Playwright Chromium are required: when
-// TALON_PA_BROWSER=1 is set a missing tool is a failure, not a skip.
+// runLiveBrowser runs the People Analytics live spec against this
+// installation.
 func runLiveBrowser(t *testing.T, dir string, ui *uiProcess, proxyCfg string, byCorr map[string]evidence.Index) {
 	t.Helper()
-	browserDir, err := filepath.Abs("../browser")
-	if err != nil {
-		t.Fatal(err)
-	}
 	ids := map[string]string{
 		"allowed":     byCorr["corr-pa-allowed"].ID,
 		"forbidden":   byCorr["corr-pa-forbidden"].ID,
 		"invalid_sql": byCorr["corr-pa-invalid-sql"].ID,
 	}
-	port := strings.TrimPrefix(ui.base, "http://127.0.0.1:")
-	state := map[string]any{
-		"dir": dir, "uiLogPath": ui.log, "uiPort": port, "bin": binaryPath,
-		"env":     map[string]string{"TALON_DATA_DIR": dir, "TALON_SIGNING_KEY": testSigningKey, "TALON_SECRETS_KEY": testSecretsKey},
-		"fixture": map[string]any{"use_case": paAgent, "session": paSession, "evidence": ids, "proxy_config": proxyCfg},
+	runLiveBrowserSpec(t, dir, ui, "live/people-analytics.spec.js", nil,
+		map[string]any{"use_case": paAgent, "session": paSession, "evidence": ids, "proxy_config": proxyCfg})
+}
+
+// runLiveBrowserSpec runs one spec of tests/browser/live in Chromium against
+// a running console of this test's installation. It writes the state file
+// the browser helpers read (installation dir, console log for pairing codes,
+// the binary and environment for CLI parity) and the spec's fixture.
+func runLiveBrowserSpec(t *testing.T, dir string, ui *uiProcess, spec string, env map[string]string, fixture map[string]any) {
+	t.Helper()
+	browserDir, err := filepath.Abs("../browser")
+	if err != nil {
+		t.Fatal(err)
 	}
+	port := strings.TrimPrefix(ui.base, "http://127.0.0.1:")
+	stateEnv := map[string]string{"TALON_DATA_DIR": dir, "TALON_SIGNING_KEY": testSigningKey, "TALON_SECRETS_KEY": testSecretsKey}
+	for k, v := range env {
+		stateEnv[k] = v
+	}
+	state := map[string]any{"dir": dir, "uiLogPath": ui.log, "uiPort": port, "bin": binaryPath, "env": stateEnv, "fixture": fixture}
 	raw, _ := json.Marshal(state)
 	statePath := filepath.Join(dir, "browser-state.json")
 	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(t.Context(), "npx", "playwright", "test", "--config", "playwright.live.config.js")
+	cmd := exec.CommandContext(t.Context(), "npx", "playwright", "test", "--config", "playwright.live.config.js", spec)
 	cmd.Dir = browserDir
 	cmd.Env = append(os.Environ(), "TALON_BROWSER_STATE="+statePath, "TALON_CONSOLE_URL="+ui.base)
 	out, err := cmd.CombinedOutput()
-	t.Logf("live browser run:\n%s", out)
+	t.Logf("live browser run (%s):\n%s", spec, out)
 	if err != nil {
-		t.Fatalf("live browser spec failed: %v", err)
+		t.Fatalf("live browser spec %s failed: %v", spec, err)
 	}
 }

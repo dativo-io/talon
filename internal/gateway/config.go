@@ -323,7 +323,11 @@ type OrgConstraints struct {
 // agent file: exact catalog names or trailing-* prefixes, and approver groups
 // of tenant-scoped approver principals.
 type ActionApprovalsConstraint struct {
-	Rules map[string]policy.ApprovalRuleConfig `yaml:"rules" json:"rules"`
+	Rules map[string]policy.ApprovalRuleConfig `yaml:"rules,omitempty" json:"rules,omitempty"`
+	// ArgumentRules (#205): company-wide typed conditions on one argument of
+	// matching actions, each requiring approval or denying. A use case can
+	// add its own rules but never lift these.
+	ArgumentRules map[string]policy.ArgumentRuleConfig `yaml:"argument_rules,omitempty" json:"argument_rules,omitempty"`
 }
 
 // CompanyActionPolicy projects the organization policy's action-relevant
@@ -341,6 +345,15 @@ func (o *OrganizationPolicy) CompanyActionPolicy(source string) *action.CompanyA
 		c.Rules = make(map[string]action.CompanyApprovalRule, len(o.Constraints.ActionApprovals.Rules))
 		for id, r := range o.Constraints.ActionApprovals.Rules {
 			c.Rules[id] = action.CompanyApprovalRule{Actions: append([]string(nil), r.Actions...), ApproverGroups: append([]string(nil), r.ApproverGroups...)}
+		}
+		if len(o.Constraints.ActionApprovals.ArgumentRules) > 0 {
+			c.ArgumentRules = make(map[string]policy.ArgumentRuleConfig, len(o.Constraints.ActionApprovals.ArgumentRules))
+			for id := range o.Constraints.ActionApprovals.ArgumentRules {
+				r := o.Constraints.ActionApprovals.ArgumentRules[id]
+				r.Actions = append([]string(nil), r.Actions...)
+				r.ApproverGroups = append([]string(nil), r.ApproverGroups...)
+				c.ArgumentRules[id] = r
+			}
 		}
 	}
 	return c
@@ -804,8 +817,8 @@ func (c *GatewayConfig) Validate() error {
 	// The company action policy (#425) compiles into every use case: a rule
 	// without actions or groups, an illegal pattern, or two company rules
 	// that match one action with different groups is a load error.
-	if c.OrganizationPolicy.Constraints.ActionApprovals != nil && len(c.OrganizationPolicy.Constraints.ActionApprovals.Rules) == 0 {
-		return fmt.Errorf("gateway organization_policy.constraints.action_approvals: rules are required (remove the block to configure no company approval rule)")
+	if aa := c.OrganizationPolicy.Constraints.ActionApprovals; aa != nil && len(aa.Rules) == 0 && len(aa.ArgumentRules) == 0 {
+		return fmt.Errorf("gateway organization_policy.constraints.action_approvals: rules or argument_rules are required (remove the block to configure no company approval requirement)")
 	}
 	if cp := c.OrganizationPolicy.CompanyActionPolicy(""); cp != nil {
 		// forbidden_tools keep the gateway's glob vocabulary; a malformed glob

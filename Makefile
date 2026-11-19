@@ -59,7 +59,7 @@ test-mcp-governance-smoke: ## MCP governance-contract smoke (#372): extension + 
 test-action-catalog-smoke: ## Trusted action catalog smoke (#427): CLI inspection, catalog in the runtime generation, mcp-sourced action not executable, source refresh/last-known-good against the built binary (no keys)
 	@bash scripts/action-catalog-smoke.sh
 
-test-action-smoke: ## Exact governed-action smoke (#458) + one company action policy (#425/#426/#428): DENY = 0 dispatch, approval = 0 until a reviewer decides, one dispatch, replay/conflict/unknown, company rule over two use cases, stale approval invalidated across a restart, audit verify — against the built binary (no keys); also smoke section 41 and a PR CI step
+test-action-smoke: ## Exact governed-action smoke (#458) + one company action policy (#425/#426/#428): DENY = 0 dispatch, approval = 0 until a reviewer decides, one dispatch, replay/conflict/unknown, company rule over two use cases, stale approval invalidated across a restart, audit verify; argument rules (#205): one typed rule form over refund amount, deletion count/dry-run and deployment environment — against the built binary (no keys); also smoke section 41 and a PR CI step
 	@bash scripts/action-smoke.sh
 
 test-console-smoke: ## Operations-console smoke (#535/#536/#537, no keys, no Docker): read model opened read-only on a live `talon serve --gateway` store == `talon agents/costs/session/audit --json`, across a restart and after the data plane stops; `talon metrics` fails loudly without the admin key or server; `talon ui serve` real-binary pairing, read-only boundary, reissue and restart independence; also smoke section 43 and a PR CI step

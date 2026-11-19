@@ -58,6 +58,22 @@ func TestE2E_QuickstartScript_LocalBinary(t *testing.T) {
 		}
 	}
 
+	// The advertised command fetches the script from the release tag, the
+	// same reference install-smoke.yml executes after publication; a script
+	// from main is not a version-pinned installation (#563).
+	for _, doc := range []string{script, filepath.Join("..", "..", "docs", "QUICKSTART.md")} {
+		b, err := os.ReadFile(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "https://raw.githubusercontent.com/dativo-io/talon/vX.Y.Z/scripts/quickstart.sh | TALON_VERSION=X.Y.Z bash") {
+			t.Errorf("%s does not advertise the release-tag-pinned quickstart command", doc)
+		}
+		if strings.Contains(string(b), "talon/main/scripts/quickstart.sh") {
+			t.Errorf("%s advertises the quickstart script from main", doc)
+		}
+	}
+
 	// Without a version or image the script refuses instead of assuming latest.
 	cmd = exec.Command("bash", script)
 	cmd.Env = append(os.Environ(), "TALON_VERSION=", "TALON_IMAGE=", "TALON_QUICKSTART_BIN=")

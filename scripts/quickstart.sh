@@ -6,7 +6,10 @@
 # in this setup, so nothing can be dispatched — and verifies the signed
 # evidence of both. It prints the image digest it ran and the elapsed time.
 #
-#   curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/quickstart.sh | TALON_VERSION=X.Y.Z bash
+#   curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/vX.Y.Z/scripts/quickstart.sh | TALON_VERSION=X.Y.Z bash
+#
+# Fetch the script from the release tag it runs (vX.Y.Z), not from main: the
+# tag is what release verification executed against that image.
 #
 # Environment:
 #   TALON_VERSION          release to run (X.Y.Z); image ghcr.io/dativo-io/talon:<version>
