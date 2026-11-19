@@ -4,6 +4,8 @@ This page points you to the right doc for what you want to do. For the full docu
 
 ---
 
+**Trying Talon and connecting an application are two different paths.** The command below is *Try Talon*: real policy decisions and signed evidence from the published image, with no provider key and no application of yours. To put an existing application under your company policy (a registered use case with its own key, verified activation and traffic), follow [connect an existing application](guides/add-talon-to-existing-app.md).
+
 ## One command, no clone, no provider key
 
 ```bash

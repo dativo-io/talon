@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,9 +42,14 @@ type onboarding struct {
 	cfgPath  string
 	upstream *httptest.Server
 	calls    atomic.Int64
-	port     int
-	url      string
-	stop     func()
+	// hold, when armed, makes the upstream keep exactly the next request
+	// open until the channel is closed: a request that is in flight at the
+	// provider. holding is signalled once that request has arrived.
+	hold    atomic.Pointer[chan struct{}]
+	holding chan struct{}
+	port    int
+	url     string
+	stop    func()
 }
 
 // newOnboarding prepares an installation the way the documentation does:
@@ -51,9 +57,13 @@ type onboarding struct {
 // provider's key in the vault. No use case exists yet.
 func newOnboarding(t *testing.T) *onboarding {
 	t.Helper()
-	o := &onboarding{t: t, dir: t.TempDir()}
+	o := &onboarding{t: t, dir: t.TempDir(), holding: make(chan struct{}, 1)}
 	o.upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		o.calls.Add(1)
+		if release := o.hold.Swap(nil); release != nil {
+			o.holding <- struct{}{}
+			<-*release
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl_onboarding","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`))
 	}))
@@ -187,9 +197,9 @@ func (o *onboarding) waitLoaded(name string) {
 }
 
 func traffic(r *effective.Report, boundary string) effective.TrafficObservation {
-	for _, t := range r.Verification.Traffic {
-		if t.Boundary == boundary {
-			return t
+	for i := range r.Verification.Traffic {
+		if r.Verification.Traffic[i].Boundary == boundary {
+			return r.Verification.Traffic[i]
 		}
 	}
 	return effective.TrafficObservation{}
@@ -238,7 +248,7 @@ func (o *onboarding) gatewayRecords() map[string]int {
 		o.t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT agent_id, COUNT(*) FROM evidence WHERE invocation_type = 'gateway' GROUP BY agent_id`)
+	rows, err := db.QueryContext(context.Background(), `SELECT agent_id, COUNT(*) FROM evidence WHERE invocation_type = 'gateway' GROUP BY agent_id`)
 	if err != nil {
 		o.t.Fatal(err)
 	}
@@ -347,7 +357,7 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 		t.Fatalf("talon audit verify %s: %d\n%s\n%s", g.EvidenceID, code, vout, stderr)
 	}
 	text, _, _ := o.talon("agents", "show", "customer-support", "--effective")
-	for _, want := range []string{"4. Connection and verification", "Authenticated traffic observed under the expected policy", "llm_gateway:", "signature valid; policy matches_current", "not established by the above:"} {
+	for _, want := range []string{"5. Connection and verification", "Authenticated traffic observed under the expected policy", "llm_gateway:", "signature valid; policy matches_current", "not established by the above:"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("talon agents show --effective misses %q:\n%s", want, text)
 		}
@@ -365,7 +375,7 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	consoleGet(t, cc, "/console/v1/use-cases/customer-support/effective-policy", &dto)
 	cliV, _ := json.Marshal(o.report("customer-support").Verification)
 	uiV, _ := json.Marshal(dto.Report.Verification)
-	if string(cliV) != string(uiV) {
+	if !bytes.Equal(cliV, uiV) {
 		t.Fatalf("the console and the CLI must state the same verification:\nCLI     %s\nconsole %s", cliV, uiV)
 	}
 
@@ -401,7 +411,7 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 		t.Fatalf("evidence is scoped to each application (and an unknown key leaves none): %v", got)
 	}
 	companyAfter, _ := os.ReadFile(o.cfgPath)
-	if string(companyBefore) != string(companyAfter) {
+	if !bytes.Equal(companyBefore, companyAfter) {
 		t.Fatal("registering applications changed the company configuration")
 	}
 
@@ -425,6 +435,41 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 		t.Fatalf("a request under the current policy verifies again: %s", r.Verification.Reading.Text)
 	}
 
+	// A use case cannot weaken a mandatory company rule from its own file:
+	// it asks for "redact" where the company floor is "block". After the
+	// reload the effective policy still blocks, the canonical projection
+	// says which layer won, and a request with personal data is still
+	// refused before the provider.
+	weaker := strings.Replace(string(agentFile), "cost_limits: {}", "data_classification:\n    input_scan: true\n    redact_pii: true\n  cost_limits:\n    daily: 5", 1)
+	if err := os.WriteFile(path, []byte(weaker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o.waitLoaded("customer-support")
+	r = o.report("customer-support")
+	var pii struct{ effective, winner, useCase string }
+	for _, rule := range r.Effective.Rules {
+		if rule.Rule == "pii_action" {
+			pii.effective, pii.winner = rule.Effective, rule.Winner
+			for _, c := range rule.Candidates {
+				if c.Source == "use_case" {
+					pii.useCase = c.Value
+				}
+			}
+		}
+	}
+	if r.Effective.PIIAction != "block" || pii.effective != "block" || pii.winner != "organization.defaults" || pii.useCase != "redact" {
+		t.Fatalf("the company floor must win over the use case's weaker value: effective=%s rule=%+v", r.Effective.PIIAction, pii)
+	}
+	before := o.calls.Load()
+	if res := o.sdk(key1, piiPrompt); res.OK || res.Status != 400 || res.Code != "pii_policy_violation" {
+		t.Fatalf("a use case that asks for a weaker PII action is still blocked by the company floor: %+v", res)
+	}
+	o.wantCalls(before, "the request the company floor blocks reached the provider zero times")
+	if res := o.sdk(key1, "Summarise ticket T-33 in five words."); !res.OK {
+		t.Fatalf("a permitted request under the tightened file: %+v", res)
+	}
+	o.wantCalls(before+1, "a permitted request under the tightened file")
+
 	// An invalid file appears in the fleet: the reload is rejected, the
 	// last-known-good generation keeps serving both applications, a new
 	// registration is refused without writing, and nothing claims the
@@ -443,7 +488,7 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	if res := o.sdk(key2, "Still there?"); !res.OK {
 		t.Fatalf("last-known-good must keep serving the second application: %+v", res)
 	}
-	o.wantCalls(6, "both applications on last-known-good")
+	o.wantCalls(before+3, "both applications on last-known-good")
 	if out, stderr, code := o.talon("agents", "add", "third-app"); code == 0 || !strings.Contains(stderr, "does not validate") {
 		t.Fatalf("a registration into an invalid fleet must be refused: %d\n%s\n%s", code, out, stderr)
 	}
@@ -460,6 +505,42 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 func (o *onboarding) chat(key string) int {
 	o.t.Helper()
 	return chatThroughGateway(o.t, o.url, key, "")
+}
+
+// inFlight sends one request that the upstream keeps open, and returns once
+// it is in flight at the provider. release lets the provider answer; the
+// returned channel then yields the HTTP status the application received
+// (0 when the request failed).
+func (o *onboarding) inFlight(key string) (release func(), status <-chan int) {
+	o.t.Helper()
+	gate := make(chan struct{})
+	o.hold.Store(&gate)
+	done := make(chan int, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, o.url+"/v1/proxy/openai/v1/chat/completions",
+			strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"a request that is in flight"}]}`))
+		if err != nil {
+			done <- 0
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- 0
+			return
+		}
+		_ = resp.Body.Close()
+		done <- resp.StatusCode
+	}()
+	select {
+	case <-o.holding:
+	case st := <-done:
+		o.t.Fatalf("the request never reached the provider: HTTP %d", st)
+	case <-time.After(20 * time.Second):
+		o.t.Fatal("the request never reached the provider")
+	}
+	return sync.OnceFunc(func() { close(gate) }), done
 }
 
 // TestE2E_Onboarding_CredentialLifecycle: one active key per use case, and
@@ -506,7 +587,38 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 		t.Fatalf("before the restart the new key is not active: HTTP %d", st)
 	}
 	o.wantCalls(3, "before the restart")
-	o.stop()
+	// The restart is a graceful stop (SIGTERM): a request that is in flight
+	// at the provider is not cut off. The process stops accepting new
+	// connections, waits for the answer, delivers it, and only then exits.
+	releaseOld, inFlightOld := o.inFlight(key)
+	defer releaseOld()
+	stopped := make(chan struct{})
+	go func() { o.stop(); close(stopped) }()
+	o.waitFor("the stopping process to refuse new connections", func() bool {
+		conn, err := (&net.Dialer{Timeout: 200 * time.Millisecond}).DialContext(context.Background(), "tcp", fmt.Sprintf("127.0.0.1:%d", o.port))
+		if err == nil {
+			_ = conn.Close()
+		}
+		return err != nil
+	})
+	select {
+	case <-stopped:
+		t.Fatal("the process exited while a request was still in flight at the provider")
+	case st := <-inFlightOld:
+		t.Fatalf("the in-flight request ended before the provider answered: HTTP %d", st)
+	default:
+	}
+	releaseOld()
+	select {
+	case st := <-inFlightOld:
+		if st != 200 {
+			t.Fatalf("a request in flight during the graceful restart must finish: HTTP %d", st)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the in-flight request never finished")
+	}
+	<-stopped
+	o.wantCalls(4, "the request that was in flight during the restart")
 	o.serve()
 	if st := o.chat(key); st != 401 {
 		t.Fatalf("after the restart the OLD key must be rejected: HTTP %d", st)
@@ -514,16 +626,44 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 	if st := o.chat(replacement); st != 200 {
 		t.Fatalf("after the restart the NEW key must work: HTTP %d", st)
 	}
-	o.wantCalls(4, "the replaced key: one accepted request, the old key reached the provider zero times")
+	o.wantCalls(5, "the replaced key: one accepted request, the old key reached the provider zero times")
 	if st := o.chat(other); st != 200 {
 		t.Fatalf("the other application is unaffected by the replacement: HTTP %d", st)
 	}
-	o.wantCalls(5, "the other application")
+	o.wantCalls(6, "the other application")
 
 	// Emergency disable: a configuration change, effective when the running
-	// process has loaded it — verified, not assumed.
-	if out, stderr, code := o.talon("agents", "disable", "customer-support"); code != 0 {
-		t.Fatalf("agents disable: %d\n%s\n%s", code, out, stderr)
+	// process has loaded it — verified, not assumed. First the hard case:
+	// another file of the fleet is invalid, so the reload is rejected, the
+	// last-known-good generation keeps serving and the disable is NOT
+	// active, although the file says "disabled". The report says exactly
+	// that: configured as disabled, and the running process has another
+	// version of the file.
+	broken := filepath.Join(o.dir, "agents", "broken")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "agent.talon.yaml"), []byte("agent:\n  name: broken\n  typo_field: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dout, stderr, code := o.talon("agents", "disable", "customer-support")
+	if code != 0 || !strings.Contains(dout, "last-known-good") {
+		t.Fatalf("agents disable with an invalid fleet must succeed and warn that the running fleet keeps last-known-good: %d\n%s\n%s", code, dout, stderr)
+	}
+	time.Sleep(3 * time.Second) // several reload intervals, every one rejected
+	if st := o.chat(replacement); st != 200 {
+		t.Fatalf("while the reload is rejected the disable is not active and last-known-good keeps serving: HTTP %d", st)
+	}
+	if r := o.report("customer-support"); r.Verification.Configured != "disabled" || r.Loaded.State == runtimestatus.LoadedMatchesFile {
+		t.Fatalf("configured as disabled but not loaded must not read as active: configured=%s loaded=%s (%s)", r.Verification.Configured, r.Loaded.State, r.Loaded.Reason)
+	}
+	// A request of the use case is in flight at the provider when the
+	// disable becomes active.
+	release, inFlight := o.inFlight(replacement)
+	defer release()
+	// The fleet is fixed: the next reload activates the disable.
+	if err := os.RemoveAll(broken); err != nil {
+		t.Fatal(err)
 	}
 	o.waitFor("the running process to refuse the disabled use case", func() bool { return o.chat(replacement) != 200 })
 	before := o.calls.Load()
@@ -531,6 +671,24 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 		t.Fatalf("a disabled use case is refused as itself (authenticated, then denied), not as an unknown key: HTTP %d", st)
 	}
 	o.wantCalls(before, "a disabled use case reaches the provider zero times")
+	// The disable refuses NEW work; the request that was already in flight
+	// is not cut off: when the provider answers, the application gets its
+	// answer.
+	select {
+	case st := <-inFlight:
+		t.Fatalf("the in-flight request ended before the provider answered: HTTP %d", st)
+	default:
+	}
+	release()
+	select {
+	case st := <-inFlight:
+		if st != 200 {
+			t.Fatalf("a request in flight when the disable became active must finish: HTTP %d", st)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the in-flight request never finished after the provider answered")
+	}
+	o.wantCalls(before, "the in-flight request was counted when it reached the provider, before the disable")
 	if r := o.report("customer-support"); r.Verification.Configured != "disabled" || r.Verification.Reading.Code != effective.ReadingDisabled {
 		t.Fatalf("the report must say the use case is configured as disabled: %+v", r.Verification.Reading)
 	}
@@ -603,5 +761,4 @@ func TestE2E_Onboarding_ConcurrentProcessesOneWinner(t *testing.T) {
 	o.serve()
 	defer func() { o.stop() }()
 	o.waitFor("the winner's key to authenticate", func() bool { return o.chat(winner) == 200 })
-	_ = context.Background()
 }

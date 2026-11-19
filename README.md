@@ -92,7 +92,8 @@ Active policy is always enforced — there is no observe-and-forward posture —
 
 | I have… | Start here |
 |---------|-----------|
-| An existing OpenAI/Anthropic app | [Change the base URL](#drop-in-openai-proxy) |
+| An existing OpenAI/Anthropic app to put under company policy | [Connect an existing application](docs/guides/add-talon-to-existing-app.md): `talon agents add`, point the SDK at Talon, verify with `talon agents show <name> --effective`; a second application is one more command |
+| An existing app, just to try the drop-in shape locally | [Change the base URL](#drop-in-openai-proxy) (dev quickstart, one local identity, no company policy) |
 | OpenClaw or a coding agent | [Use the integration pack](#integration-paths) |
 | A new agent to build | `talon init` → `talon run` ([guide](docs/tutorials/first-governed-agent.md)) |
 

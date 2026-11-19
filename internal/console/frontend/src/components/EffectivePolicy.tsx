@@ -117,6 +117,7 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
 
       <section aria-labelledby="eff-last">
         <h3 id="eff-last">4. Last recorded decision</h3>
+        <p className="small muted">The newest request decision recorded for this use case at any boundary. Registration, enable/disable and reload records are operator events, not decisions; how the caller was identified is section 5.</p>
         {r.last_decision ? (
           <dl className="facts">
             <dt>Evidence</dt><dd><Link to={scoped(`/evidence/${encodeURIComponent(r.last_decision.evidence_id)}`, tenant)}>{r.last_decision.evidence_id}</Link> <span className="small muted">{utc(r.last_decision.timestamp)} · {r.last_decision.invocation_type}</span></dd>
@@ -126,11 +127,94 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
             <dt>Recorded agent policy vs current file</dt><dd>{humanize(r.last_decision.agent_file)}</dd>
             <dt>Recorded effective policy</dt><dd>{humanize(r.last_decision.effective_policy)}</dd>
           </dl>
-        ) : <p className="muted">No decision recorded for this AI use case.</p>}
+        ) : <p className="muted">No authenticated request of this AI use case is recorded.</p>}
         {r.last_decision?.note ? <p className="small muted">{r.last_decision.note}</p> : null}
       </section>
+
+      <VerificationSection v={r.verification} tenant={tenant} />
       {r.notes?.length ? <ul className="small muted">{r.notes.map((n) => <li key={n}>{n}</li>)}</ul> : null}
     </div>
+  );
+}
+
+const BOUNDARY: Record<string, string> = { llm_gateway: "LLM gateway", mcp_proxy: "MCP proxy", action_gateway: "Action Gateway" };
+
+const POLICY: Record<string, { label: string; tone: "ok" | "warn" | "error" | "info" }> = {
+  matches_current: { label: "Policy matches the current files", tone: "ok" },
+  differs_from_current: { label: "Policy differs from the current files", tone: "warn" },
+  not_recorded: { label: "Policy not proven", tone: "info" },
+  unverified: { label: "Not verified", tone: "error" },
+};
+
+// readingTone colours the one-line reading; the text and the code are Go's.
+export function readingTone(code: string): "ok" | "warn" | "error" | "info" | "neutral" {
+  if (code === "traffic_observed_policy_matches") return "ok";
+  if (code === "traffic_record_unverified") return "error";
+  if (code === "traffic_observed_policy_differs" || code === "evidence_unavailable") return "warn";
+  if (code === "traffic_observed_identity_not_established") return "info";
+  if (code === "disabled") return "neutral";
+  return "info";
+}
+
+// VerificationSection renders effective.Verification (#472): independent
+// observations, each with its source. Configured, loaded, observed traffic
+// and policy match are separate facts; none implies another, and nothing
+// here says the application is "governed".
+export function VerificationSection({ v, tenant }: { v: EffectiveReport["verification"]; tenant: string }) {
+  if (!v) return null;
+  return (
+    <section aria-labelledby="eff-verification" data-testid="verification">
+      <h3 id="eff-verification">5. Connection and verification</h3>
+      <div className={`notice ${readingTone(v.reading.code) === "ok" ? "info" : readingTone(v.reading.code) === "error" ? "error" : readingTone(v.reading.code) === "warn" ? "warn" : "info"}`} role="status" data-testid="verification-reading" data-code={v.reading.code}>
+        <div>{v.reading.text}</div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Boundary</th><th>Traffic of this use case</th><th>Record</th><th>Policy it was evaluated under</th></tr></thead>
+          <tbody>
+            {v.traffic.map((o) => (
+              <tr key={o.boundary} data-boundary={o.boundary} data-state={o.state}>
+                <td>{BOUNDARY[o.boundary] ?? o.boundary}<div className="small muted">{o.establishes}</div></td>
+                <td>
+                  {o.state === "observed" ? (
+                    <>
+                      {o.identity_proven ? <Badge tone="ok" plain>Observed, authenticated</Badge> : <Badge tone="info" plain>Observed, caller's identity not established</Badge>}{" "}
+                      <span className="small" title={utc(o.timestamp)}>{utc(o.timestamp)}</span>
+                      {o.outcome ? <div><DecisionOutcome o={o.outcome} compact /></div> : null}
+                      {o.identity ? <div className="small muted">Identity: {o.identity}</div> : null}
+                      {o.last_dispatch ? (
+                        <div className="small">Last dispatch: <Link to={scoped(`/evidence/${encodeURIComponent(o.last_dispatch.evidence_id)}`, tenant)}>{o.last_dispatch.evidence_id}</Link> <DecisionOutcome o={o.last_dispatch.outcome} compact /></div>
+                      ) : null}
+                    </>
+                  ) : o.state === "unavailable" ? (
+                    <><Badge tone="warn">Unavailable</Badge> <span className="small">{o.error}</span></>
+                  ) : (
+                    <span className="muted">None recorded</span>
+                  )}
+                </td>
+                <td>
+                  {o.evidence_id ? (
+                    <>
+                      <Link to={scoped(`/evidence/${encodeURIComponent(o.evidence_id)}`, tenant)}>{o.evidence_id}</Link>
+                      <div>{o.verification === "valid" ? <Badge tone="ok" plain>Signature valid</Badge> : <Badge tone="error">Signature invalid</Badge>}</div>
+                      {o.event ? <div className="small muted">{humanize(o.event)}</div> : null}
+                    </>
+                  ) : <span className="muted">—</span>}
+                </td>
+                <td>
+                  {o.policy ? <><Badge tone={POLICY[o.policy]?.tone ?? "info"} plain>{POLICY[o.policy]?.label ?? humanize(o.policy)}</Badge><div className="small muted">{o.policy_note}</div></> : <span className="muted">—</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <details>
+        <summary className="small">What these observations do not establish</summary>
+        <ul className="small muted">{v.not_established.map((n) => <li key={n}>{n}</li>)}</ul>
+      </details>
+      <p className="small muted">Configured: {v.configured}. Whether a running process has loaded this file is section 2; whether a request arrived and under which policy is this section. Each is established separately.</p>
+    </section>
   );
 }
 

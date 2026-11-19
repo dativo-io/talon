@@ -56,6 +56,10 @@ const (
 	ReadingTrafficDiffers    = "traffic_observed_policy_differs"
 	ReadingTrafficNotProven  = "traffic_observed_policy_not_proven"
 	ReadingTrafficUnverified = "traffic_record_unverified"
+	// ReadingTrafficIdentityUnknown: records attributed to the use case
+	// exist, but none establishes that its own credential was presented
+	// (MCP proxy records, records of the no-key quickstart profile).
+	ReadingTrafficIdentityUnknown = "traffic_observed_identity_not_established"
 )
 
 // Interception boundaries an observation can belong to.
@@ -94,8 +98,14 @@ type TrafficObservation struct {
 	InvocationType string     `json:"invocation_type,omitempty"`
 	// Event is the Action Gateway lifecycle event of the record.
 	Event string `json:"event,omitempty"`
-	// Identity says how the request was tied to this use case.
-	Identity string `json:"identity,omitempty"`
+	// Identity says how the request was tied to this use case, and
+	// IdentityProven whether the record establishes that the use case's own
+	// credential (its Talon key, or a verified workload identity) was
+	// presented. MCP proxy records do not record it: the proxy attributes a
+	// call to the presented agent key when there is one, and to its own
+	// configured agent name on an admin-key or development-open request.
+	Identity       string `json:"identity,omitempty"`
+	IdentityProven bool   `json:"identity_proven"`
 	// Outcome separates Talon's decision from dispatch and the destination's
 	// answer (evidence.OutcomeOf).
 	Outcome *evidence.Outcome `json:"outcome,omitempty"`
@@ -136,23 +146,35 @@ type boundarySpec struct {
 	boundary    string
 	types       []string
 	establishes string
+	// keyAuthenticated: every record of these types under a use case was
+	// produced by a request that presented that use case's credential.
+	// True for the LLM gateway (a key resolves to exactly one use case or
+	// the request is rejected; a delegated request carries a verified
+	// workload identity; the one keyless identity, the quickstart profile,
+	// is marked on its records and excluded in identityOf) and the Action
+	// Gateway (the agent key is required; admin keys and development-open
+	// requests are refused). False for the MCP proxy, whose records do not
+	// say how the caller was identified.
+	keyAuthenticated bool
 }
 
 var boundarySpecs = []boundarySpec{
 	{
-		boundary:    BoundaryLLMGateway,
-		types:       []string{"gateway"},
-		establishes: "a request that presented this use case's Talon key reached the LLM gateway and Talon recorded its decision. A denied request establishes the connection and the policy evaluation, not that a provider was reached or answered",
+		boundary:         BoundaryLLMGateway,
+		types:            []string{"gateway"},
+		keyAuthenticated: true,
+		establishes:      "a request that presented this use case's Talon key reached the LLM gateway and Talon recorded its decision. A denied request establishes the connection and the policy evaluation, not that a provider was reached or answered",
 	},
 	{
 		boundary:    BoundaryMCPProxy,
 		types:       []string{"proxy_tool_call", "proxy_tool_blocked", "proxy_upstream_error"},
-		establishes: "a tool call of this use case reached the MCP proxy and Talon recorded its decision. It says nothing about model traffic",
+		establishes: "a tool call attributed to this use case reached the MCP proxy and Talon recorded its decision. MCP proxy records do not record how the caller was identified, so this does not establish that the use case's key was presented. It says nothing about model traffic",
 	},
 	{
-		boundary:    BoundaryActionGateway,
-		types:       []string{evidence.InvocationTypeActionLifecycle},
-		establishes: "the application established a governed action operation with this use case's identity. Establishing or authorizing an operation is not dispatching it: see the last dispatch. It says nothing about model traffic",
+		boundary:         BoundaryActionGateway,
+		types:            []string{evidence.InvocationTypeActionLifecycle},
+		keyAuthenticated: true,
+		establishes:      "the application established a governed action operation with this use case's identity. Establishing or authorizing an operation is not dispatching it: see the last dispatch. It says nothing about model traffic",
 	},
 }
 
@@ -224,7 +246,8 @@ func observeBoundary(ctx context.Context, in verificationInputs, spec boundarySp
 	ts := ev.Timestamp
 	out := det.Outcome
 	o.State, o.EvidenceID, o.Timestamp, o.InvocationType = TrafficObserved, ev.ID, &ts, ev.InvocationType
-	o.Outcome, o.Verification, o.Identity = &out, det.Verification.State, identityOf(ev)
+	o.Outcome, o.Verification = &out, det.Verification.State
+	o.Identity, o.IdentityProven = identityOf(ev, spec, det.Verification.State == "valid")
 	if ev.ActionLifecycle != nil {
 		o.Event = ev.ActionLifecycle.Event
 	}
@@ -266,13 +289,36 @@ func newestQualifying(ctx context.Context, in verificationInputs, spec boundaryS
 	return newest, dispatch, nil
 }
 
-// identityOf says how the record's request was tied to the use case, from
-// what the record carries.
-func identityOf(ev *evidence.Evidence) string {
-	if w := ev.WorkloadIdentity; w != nil && w.Status == "verified" {
-		return "verified workload identity (" + strings.TrimSpace(w.Runtime+" "+w.AuthMethod) + ")"
+// identityOf says how the record's request was tied to the use case and
+// whether the record establishes that the use case's own credential was
+// presented. Nothing is established by a record whose signature fails.
+func identityOf(ev *evidence.Evidence, spec boundarySpec, verified bool) (text string, proven bool) {
+	switch {
+	case !verified:
+		return "not established: the record's signature does not verify", false
+	case hasAnnotation(ev, annotationQuickstart):
+		// The one LLM gateway identity that is not backed by a key
+		// (gateway.NewQuickstartIdentity): the no-key quickstart profile.
+		return "no credential: the request came through the no-key quickstart profile, which serves one synthetic identity without a key", false
+	case ev.WorkloadIdentity != nil && ev.WorkloadIdentity.Status == "verified":
+		return "verified workload identity (" + strings.TrimSpace(ev.WorkloadIdentity.Runtime+" "+ev.WorkloadIdentity.AuthMethod) + ")", true
+	case spec.keyAuthenticated:
+		return "the use case's Talon key (at this boundary a request with an unknown key is rejected before any record is written)", true
 	}
-	return "the use case's Talon key (a request with an unknown key is rejected before any record is written)"
+	return "not recorded: the MCP proxy attributes a call to the presented agent key when there is one, and to its own configured agent name on an admin-key or development-open request; the record does not say which", false
+}
+
+// annotationQuickstart is the gateway annotation every record of the no-key
+// quickstart profile carries (gateway.gatewayAnnotationsForEvidence).
+const annotationQuickstart = "quickstart_mode"
+
+func hasAnnotation(ev *evidence.Evidence, name string) bool {
+	for _, a := range ev.GatewayAnnotations {
+		if a == name {
+			return true
+		}
+	}
+	return false
 }
 
 // comparePolicy compares what the record says it was evaluated under with
@@ -345,9 +391,10 @@ func compareGatewayPolicy(o *TrafficObservation, d *evidence.PolicyDigests, in v
 	}
 }
 
-// observe fills section 4 of the report: observed traffic and the last
-// decision, the newest record of an authenticated request per interception
-// boundary, each re-read through the verifying path.
+// observe fills sections 4 and 5 of the report: the observed traffic (the
+// newest request record per interception boundary, each re-read through the
+// verifying path, with whether it establishes the use case's own credential)
+// and the last decision taken from it.
 func (r *Report) observe(ctx context.Context, in Inputs, vin verificationInputs) {
 	r.Verification = buildVerification(ctx, vin)
 	un := r.Verification.unavailable()
@@ -358,7 +405,7 @@ func (r *Report) observe(ctx context.Context, in Inputs, vin verificationInputs)
 		r.Notes = append(r.Notes, "last decision unavailable: the evidence could not be read for "+strings.Join(un, ", "))
 	}
 	if r.LastDecision = lastDecisionOf(r.Verification); r.LastDecision == nil && in.Evidence != nil && len(un) == 0 {
-		r.Notes = append(r.Notes, "no authenticated request of this use case is recorded yet (registration, enable/disable and reload records are operator events, not decisions)")
+		r.Notes = append(r.Notes, "no request of this use case is recorded yet at any interception boundary (registration, enable/disable and reload records are operator events, not decisions)")
 	}
 }
 
@@ -368,6 +415,22 @@ func (v *Verification) newestObserved() *TrafficObservation {
 	for i := range v.Traffic {
 		o := &v.Traffic[i]
 		if o.State != TrafficObserved || o.Timestamp == nil {
+			continue
+		}
+		if newest == nil || o.Timestamp.After(*newest.Timestamp) {
+			newest = o
+		}
+	}
+	return newest
+}
+
+// newestProven returns the newest observed record whose request is
+// established to have presented the use case's own credential.
+func (v *Verification) newestProven() *TrafficObservation {
+	var newest *TrafficObservation
+	for i := range v.Traffic {
+		o := &v.Traffic[i]
+		if o.State != TrafficObserved || o.Timestamp == nil || !o.IdentityProven {
 			continue
 		}
 		if newest == nil || o.Timestamp.After(*newest.Timestamp) {
@@ -403,8 +466,8 @@ func readingOf(v *Verification, loaded runtimestatus.Loaded) Reading {
 	if v.Configured == "disabled" {
 		return Reading{ReadingDisabled, "Configured as disabled (agent.enabled: false): new work is refused once a running process has loaded this file; " + activation + "."}
 	}
-	newest := v.newestObserved()
-	if newest == nil {
+	latest := v.newestObserved()
+	if latest == nil {
 		if un := v.unavailable(); len(un) > 0 {
 			return Reading{ReadingEvidenceUnknown, "Whether authenticated traffic was observed is not known: the evidence could not be read for " + strings.Join(un, ", ") + "; " + activation + "."}
 		}
@@ -416,10 +479,22 @@ func readingOf(v *Verification, loaded runtimestatus.Loaded) Reading {
 		}
 		return Reading{ReadingNotLoaded, "Registered, not loaded: " + activation + ", and no authenticated traffic has been observed."}
 	}
+	// A newest record that fails verification is stated first, whatever
+	// older or other records say.
+	if latest.Verification != "valid" {
+		return Reading{ReadingTrafficUnverified, fmt.Sprintf("A record exists but does not verify: the newest record is at the %s at %s (%s), and its signature is invalid, so nothing on it is established; %s.",
+			boundaryLabel(latest.Boundary), latest.Timestamp.UTC().Format(time.RFC3339), latest.EvidenceID, activation)}
+	}
+	// Otherwise the reading speaks about the newest record that establishes
+	// the use case's own credential. Records that do not (MCP proxy records)
+	// are described as what they are.
+	newest := v.newestProven()
+	if newest == nil {
+		return Reading{ReadingTrafficIdentityUnknown, fmt.Sprintf("Traffic attributed to this use case was observed, but an authenticated connection is not established: the newest record is at the %s at %s (%s); caller identity %s; %s.",
+			boundaryLabel(latest.Boundary), latest.Timestamp.UTC().Format(time.RFC3339), latest.EvidenceID, latest.Identity, activation)}
+	}
 	where := fmt.Sprintf("the newest authenticated request was recorded at the %s at %s (%s)", boundaryLabel(newest.Boundary), newest.Timestamp.UTC().Format(time.RFC3339), newest.EvidenceID)
 	switch newest.Policy {
-	case PolicyUnverified:
-		return Reading{ReadingTrafficUnverified, "A record exists but does not verify: " + where + ", and its signature is invalid, so nothing on it is established; " + activation + "."}
 	case PolicyMatchesCurrent:
 		return Reading{ReadingTrafficMatches, "Authenticated traffic observed under the expected policy: " + where + "; its signature verifies and its recorded policy equals what the current files compile to; " + activation + "."}
 	case PolicyDiffers:

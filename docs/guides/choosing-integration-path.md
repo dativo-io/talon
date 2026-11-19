@@ -16,6 +16,8 @@ Use this guide to pick a real enforcement boundary: model API gateway, HTTP Acti
 
 ---
 
+These paths are ways to connect **one AI use case** (one `agent.talon.yaml`, one identity, one Talon key), not kinds of application: a use case registered with `talon agents add` can use the LLM gateway, the Action Gateway and the MCP proxy with the same key. `talon agents show <name> --effective` reports per boundary whether an authenticated request of the use case has been observed there.
+
 ## In short
 
 - **HTTP Action Gateway** — Binds the exact operation identity, normalized payload and trusted destination. The runtime establishes the operation and later claims an attempt; an authorized approver can decide without dispatching it. MCP-discovered action definitions can be catalogued, but MCP execution is not yet wired into this path (#431); the HTTP adapter refuses those definitions.
@@ -38,7 +40,7 @@ You now know which Talon path fits your situation (MCP proxy, LLM gateway, or na
 
 | I want to… | Doc |
 |------------|-----|
-| Route my existing app through Talon | [Add Talon to your existing app](add-talon-to-existing-app.md) |
+| Register an existing application, connect it and verify it | [Connect an existing application](add-talon-to-existing-app.md) (`talon agents add`, then `talon agents show <name> --effective`) |
 | Route OpenClaw or CoPaw through Talon | [OpenClaw](openclaw-integration.md), [CoPaw](copaw-integration.md) |
 | Wrap a third-party AI vendor (Zendesk, Intercom) | [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md) |
 | Authorize a high-impact HTTP action | [Action Gateway](../reference/action-gateway.md) |

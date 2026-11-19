@@ -119,17 +119,36 @@ type registrationResult struct {
 	EvidenceID string
 }
 
-// Steps of a registration, in order. registrationFault is called after
-// each; tests use it to fail or to kill the process at an exact point.
+// Steps of a registration, in order.
 const (
 	stepIntentRecorded = "intent_recorded"
 	stepKeyStored      = "key_stored"
 	stepFilePublished  = "file_published"
 	stepFleetValidated = "fleet_validated"
 	stepCompleted      = "completed"
+	// stepRollbackRecord is the signed rollback record of a failed
+	// registration (a fault point only: it is not a step of a successful one).
+	stepRollbackRecord = "rollback_record"
 )
 
-var registrationFault = func(step string) error { return nil }
+// registrationFault is the fault-injection seam of a registration. It is a
+// no-op in the product; tests replace it to fail or to kill the process at
+// an exact point. It is called at two kinds of point:
+//
+//	"fail:<step>"  before the step: a returned error is the step's OWN
+//	               failure (the vault write failed, the record could not be
+//	               written), and the step is not performed;
+//	"<step>"       after the step succeeded: a returned error is a failure
+//	               between this step and the next.
+var registrationFault = func(point string) error { return nil }
+
+// faultOr performs do unless the step's own failure is injected.
+func faultOr(step string, do func() error) error {
+	if err := registrationFault("fail:" + step); err != nil {
+		return err
+	}
+	return do()
+}
 
 // planRegistration validates everything that needs no write: the
 // installation mode, the existing fleet, the name, the vault, earlier
@@ -320,7 +339,7 @@ func executeRegistration(ctx context.Context, cfg *config.Config, plan *agentsAd
 		}},
 	}
 	for i, st := range steps {
-		if err := st.do(); err != nil {
+		if err := faultOr(st.name, st.do); err != nil {
 			if i == 0 {
 				return nil, fmt.Errorf("recording the registration intent as signed evidence (nothing else was written): %w", err)
 			}
@@ -330,7 +349,11 @@ func executeRegistration(ctx context.Context, cfg *config.Config, plan *agentsAd
 			return nil, run.undo(err)
 		}
 	}
-	id, err := run.record(registration.TypeRegistered, "key: generated and stored as vault secret "+plan.SecretName+" (the value is never recorded)", "intent: "+intentID)
+	var id string
+	err = faultOr(stepCompleted, func() (err error) {
+		id, err = run.record(registration.TypeRegistered, "key: generated and stored as vault secret "+plan.SecretName+" (the value is never recorded)", "intent: "+intentID)
+		return err
+	})
 	if err != nil {
 		return nil, run.undo(fmt.Errorf("recording the registration as signed evidence: %w", err))
 	}
@@ -447,11 +470,21 @@ func (r *registrationRun) undo(cause error) error {
 	if len(left) > 0 {
 		notes = append(notes, "NOT removed: "+strings.Join(left, "; "))
 	}
-	if _, err := r.record(registration.TypeRolledBack, notes...); err != nil {
-		left = append(left, fmt.Sprintf("the rollback could not be recorded as evidence (%v); 'talon doctor' reports this registration as interrupted", err))
+	recordErr := faultOr(stepRollbackRecord, func() error {
+		_, err := r.record(registration.TypeRolledBack, notes...)
+		return err
+	})
+	unrecorded := ""
+	if recordErr != nil {
+		unrecorded = fmt.Sprintf("the rollback could not be recorded as evidence (%v): the signed intent has no terminal record, so 'talon doctor' and the next 'talon agents add %s' report this registration as interrupted", recordErr, r.plan.Name)
 	}
-	if len(left) > 0 {
+	switch {
+	case len(left) > 0 && unrecorded != "":
+		return fmt.Errorf("%w; the registration was NOT fully undone: %s; and %s", cause, strings.Join(left, "; "), unrecorded)
+	case len(left) > 0:
 		return fmt.Errorf("%w; the registration was NOT fully undone: %s", cause, strings.Join(left, "; "))
+	case unrecorded != "":
+		return fmt.Errorf("%w; what this registration created was removed (%s), but %s", cause, strings.Join(did, "; "), unrecorded)
 	}
 	return fmt.Errorf("%w; nothing of this registration was left behind", cause)
 }

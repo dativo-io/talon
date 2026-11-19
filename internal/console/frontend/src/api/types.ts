@@ -876,6 +876,10 @@ export interface EffectiveReport {
   };
   mcp_boundary?: { proxy: string; file: string; scope: string; tools: ToolAccess[]; error?: string; proven_active: boolean; proof: BoundaryProof };
   action_boundary?: ActionBoundary;
+  // #472: configured state, observed authenticated traffic per boundary and
+  // its policy comparison. Computed in Go (effective.Verification); the
+  // console renders it and derives nothing.
+  verification?: UseCaseVerification;
   last_decision?: {
     evidence_id: string;
     timestamp: string;
@@ -898,4 +902,37 @@ export interface EffectivePolicyDTO {
   meta: Meta;
   availability: Availability;
   report?: EffectiveReport;
+}
+
+// ---- Connection and verification (#472) -----------------------------------
+
+export interface TrafficObservation {
+  boundary: "llm_gateway" | "mcp_proxy" | "action_gateway";
+  state: "observed" | "none" | "unavailable";
+  establishes: string;
+  evidence_id?: string;
+  timestamp?: string;
+  invocation_type?: string;
+  event?: string;
+  identity?: string;
+  // true when the record establishes that the use case's own credential was
+  // presented (LLM gateway, Action Gateway); false for MCP proxy records,
+  // which do not record how the caller was identified, for records of the
+  // no-key quickstart profile, and for a record whose signature fails.
+  identity_proven: boolean;
+  outcome?: Outcome;
+  verification?: "valid" | "invalid";
+  // matches_current | differs_from_current | not_recorded | unverified
+  policy?: string;
+  policy_note?: string;
+  last_dispatch?: { evidence_id: string; timestamp: string; outcome: Outcome; verification: "valid" | "invalid" };
+  error?: string;
+}
+
+export interface UseCaseVerification {
+  configured: "enabled" | "disabled";
+  traffic: TrafficObservation[];
+  // A presentation summary derived in Go; not a stored state.
+  reading: { code: string; text: string };
+  not_established: string[];
 }

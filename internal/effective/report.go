@@ -12,9 +12,13 @@
 //     compiles from the current files, with each selected rule's winning
 //     layer, plus the MCP proxy's own pre-dispatch decision per tool
 //     (mcp.EvaluateToolAccess);
-//  4. last decision: the newest signed evidence record of the use case, with
-//     the policy identity it recorded, compared to the current files only by
-//     recorded digests — never assumed to have run under the current file.
+//  4. last decision: the newest request-decision record of the use case at
+//     an interception boundary (never an operator event), with the policy
+//     identity it recorded, compared to the current files only by recorded
+//     digests — never assumed to have run under the current file;
+//  5. connection and verification (traffic.go): per boundary, the newest
+//     record, whether it establishes the use case's own credential, and
+//     whether its recorded policy equals what the current files compile to.
 package effective
 
 import (

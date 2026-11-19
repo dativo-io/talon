@@ -215,6 +215,18 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 		}
 	}
 
+	// No secret leakage: the key is nowhere in the evidence database, the
+	// agent files or the company configuration, and the vault holds it
+	// encrypted, not in clear text.
+	for _, path := range []string{cfg.EvidenceDBPath(), cfg.EvidenceDBPath() + "-wal", cfg.SecretsDBPath(), cfg.SecretsDBPath() + "-wal", os.Getenv("TALON_GATEWAY_CONFIG")} {
+		raw, rerr := os.ReadFile(path)
+		if os.IsNotExist(rerr) {
+			continue
+		}
+		require.NoError(t, rerr)
+		require.NotContains(t, string(raw), key1, "the key in clear text in %s", path)
+	}
+
 	// A second, unrelated use case: same command, same company policy, no
 	// policy copied, nothing of the first one or of the company changed.
 	out.Reset()
@@ -323,6 +335,9 @@ func TestAgentsAdd_FailureAtEveryStepIsRolledBack(t *testing.T) {
 			agentsAddTenant = "acme"
 			var seen []string
 			registrationFault = func(s string) error {
+				if strings.HasPrefix(s, "fail:") {
+					return nil
+				}
 				seen = append(seen, s)
 				if s == step {
 					if s == stepFilePublished || s == stepFleetValidated {
@@ -393,6 +408,103 @@ func TestAgentsAdd_FailureAtEveryStepIsRolledBack(t *testing.T) {
 		recs := registrationRecords(t, cfg, "acme", "refund-bot")
 		require.Len(t, recs[registration.TypeRegistered], 1)
 		require.Empty(t, recs[registration.TypeRolledBack])
+	})
+}
+
+// A step ITSELF fails (the intent cannot be recorded, the vault refuses the
+// write, the file cannot be published, the fleet check fails, the
+// completion record cannot be written): nothing usable is left, the signed
+// rollback says what was cleaned up, and no key is shown. When even the
+// rollback record cannot be written, the artifacts are still removed, the
+// error says so, and the dangling intent is detected and closed by the
+// next registration.
+func TestAgentsAdd_AStepItselfFails(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		step    string
+		cleanup string // what the rollback record says; "" = no rollback record at all
+	}{
+		{stepIntentRecorded, ""},
+		{stepKeyStored, "cleanup: nothing had been created"},
+		{stepFilePublished, "cleanup: removed the key this registration stored"},
+		{stepFleetValidated, "cleanup: removed the agent file; removed the key this registration stored"},
+		{stepCompleted, "cleanup: removed the agent file; removed the key this registration stored"},
+	} {
+		t.Run(tc.step, func(t *testing.T) {
+			cfg, agentsDir := setupAddFleet(t)
+			resetAgentsAddFlags(t)
+			agentsAddTenant = "acme"
+			registrationFault = func(point string) error {
+				if point == "fail:"+tc.step {
+					return errors.New("injected: " + tc.step + " itself failed")
+				}
+				return nil
+			}
+			var out bytes.Buffer
+			err := runAgentsAdd(ctx, &out, cfg, "refund-bot")
+			require.ErrorContains(t, err, "injected: "+tc.step+" itself failed")
+			require.Empty(t, printedKeyRe.FindString(out.String()+err.Error()))
+			_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
+			require.True(t, os.IsNotExist(statErr), "no agent file or directory is left")
+			_, ok := vaultValue(t, cfg, "refund-bot-talon-key")
+			require.False(t, ok, "no key is left")
+			require.True(t, registered(t, agentsDir, "support"))
+
+			recs := registrationRecords(t, cfg, "acme", "refund-bot")
+			require.Empty(t, recs[registration.TypeRegistered], "no completion record")
+			if tc.cleanup == "" {
+				// The intent itself could not be recorded: nothing was written anywhere.
+				require.ErrorContains(t, err, "nothing else was written")
+				require.Empty(t, recs)
+			} else {
+				require.ErrorContains(t, err, "nothing of this registration was left behind")
+				require.Len(t, recs[registration.TypeIntent], 1)
+				require.Len(t, recs[registration.TypeRolledBack], 1)
+				reasons := strings.Join(recs[registration.TypeRolledBack][0].PolicyDecision.Reasons, " | ")
+				require.Contains(t, reasons, "cause: ")
+				require.Contains(t, reasons, tc.cleanup)
+			}
+			in, ierr := interruptedRegistrations(ctx, cfg, "refund-bot")
+			require.NoError(t, ierr)
+			require.Empty(t, in)
+		})
+	}
+
+	t.Run("neither the completion nor the rollback record can be written", func(t *testing.T) {
+		cfg, agentsDir := setupAddFleet(t)
+		resetAgentsAddFlags(t)
+		agentsAddTenant = "acme"
+		registrationFault = func(point string) error {
+			if point == "fail:"+stepCompleted || point == "fail:"+stepRollbackRecord {
+				return errors.New("evidence store unavailable")
+			}
+			return nil
+		}
+		var out bytes.Buffer
+		err := runAgentsAdd(ctx, &out, cfg, "refund-bot")
+		require.ErrorContains(t, err, "what this registration created was removed (removed the agent file; removed the key this registration stored)")
+		require.ErrorContains(t, err, "the rollback could not be recorded as evidence")
+		require.ErrorContains(t, err, "talon doctor")
+		require.NotContains(t, err.Error(), "nothing of this registration was left behind", "an unrecorded rollback is not reported as a clean one")
+		require.Empty(t, printedKeyRe.FindString(out.String()+err.Error()))
+		_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
+		require.True(t, os.IsNotExist(statErr))
+		_, ok := vaultValue(t, cfg, "refund-bot-talon-key")
+		require.False(t, ok)
+
+		// The signed intent has no terminal record: detected, and closed by
+		// the next registration, which works because nothing was left.
+		in, ierr := interruptedRegistrations(ctx, cfg, "refund-bot")
+		require.NoError(t, ierr)
+		require.Len(t, in, 1)
+		registrationFault = func(string) error { return nil }
+		out.Reset()
+		require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
+		require.Contains(t, out.String(), "is now recorded as rolled back")
+		require.NotEmpty(t, printedKeyRe.FindString(out.String()))
+		in, ierr = interruptedRegistrations(ctx, cfg, "refund-bot")
+		require.NoError(t, ierr)
+		require.Empty(t, in)
 	})
 }
 
@@ -502,6 +614,7 @@ func TestAgentsAdd_CrashHelper(t *testing.T) {
 // back. The existing use case is never affected.
 func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 	ctx := context.Background()
+	const supportKey = "talon_uc_the_existing_application_key_000000000000001"
 	for _, tc := range []struct {
 		step          string
 		key, file     bool
@@ -523,6 +636,13 @@ func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 			agentsDir := env["TALON_AGENTS_DIR"]
 			resetAgentsAddFlags(t)
 			agentsAddTenant = "acme"
+			// The existing application has its key in the vault, as in a
+			// running installation.
+			require.NoError(t, cfg.EnsureDataDir())
+			seed, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+			require.NoError(t, err)
+			require.NoError(t, seed.Set(ctx, "support-talon-key", []byte(supportKey), secrets.ACL{}))
+			require.NoError(t, seed.Close())
 
 			child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAgentsAdd_CrashHelper$")
 			child.Env = append(os.Environ(), "TALON_TEST_CRASH_STEP="+tc.step)
@@ -548,6 +668,15 @@ func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 			in, err := interruptedRegistrations(ctx, cfg, "refund-bot")
 			require.NoError(t, err)
 			require.Len(t, in, 1, "the interruption is detected from the signed intent")
+
+			// A restart of `talon serve` after the interruption: the start-up
+			// identity registry (the function serve calls) builds, the
+			// existing application's key still authenticates as itself, and
+			// whatever the interrupted registration left is served only under
+			// a key nobody has ever seen.
+			ids := serveIdentities(t, cfg)
+			require.Equal(t, "support", ids[supportKey], "the existing application keeps working across a restart")
+			require.Equal(t, tc.file, hasIdentity(ids, "refund-bot"), "a half-registered use case is served exactly when its file was published")
 
 			var out bytes.Buffer
 			err = runAgentsAdd(ctx, &out, cfg, "refund-bot")
@@ -591,8 +720,83 @@ func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 			in, err = interruptedRegistrations(ctx, cfg, "refund-bot")
 			require.NoError(t, err)
 			require.Empty(t, in)
+
+			// After the recovery a restart serves both applications, the new
+			// one under the key that was just shown.
+			ids = serveIdentities(t, cfg)
+			require.Equal(t, "support", ids[supportKey])
+			require.Equal(t, "refund-bot", ids[key])
 		})
 	}
+
+	// Death after the completion record, before the key was shown: the
+	// registration IS complete (it is not "interrupted"), the use case is
+	// registered, and its key was never seen by anyone. The operator
+	// replaces the key (the lost-key procedure); nothing is rolled back.
+	t.Run(stepCompleted, func(t *testing.T) {
+		env := addEnv(t, t.TempDir(), "")
+		for k, v := range env {
+			t.Setenv(k, v)
+		}
+		cfg, err := config.Load()
+		require.NoError(t, err)
+		resetAgentsAddFlags(t)
+		agentsAddTenant = "acme"
+		child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAgentsAdd_CrashHelper$")
+		child.Env = append(os.Environ(), "TALON_TEST_CRASH_STEP="+stepCompleted)
+		var childOut bytes.Buffer
+		child.Stdout, child.Stderr = &childOut, &childOut
+		err = child.Run()
+		var exit *exec.ExitError
+		require.ErrorAs(t, err, &exit)
+		ws, _ := exit.Sys().(syscall.WaitStatus)
+		require.True(t, ws.Signaled() && ws.Signal() == syscall.SIGKILL, "%v\n%s", err, childOut.String())
+		require.Empty(t, printedKeyRe.FindString(childOut.String()), "the key is printed only after the completion step returned")
+
+		require.True(t, registered(t, env["TALON_AGENTS_DIR"], "refund-bot"))
+		_, hasKey := vaultValue(t, cfg, "refund-bot-talon-key")
+		require.True(t, hasKey)
+		recs := registrationRecords(t, cfg, "acme", "refund-bot")
+		require.Len(t, recs[registration.TypeRegistered], 1)
+		in, err := interruptedRegistrations(ctx, cfg, "refund-bot")
+		require.NoError(t, err)
+		require.Empty(t, in, "a completed registration is not an interrupted one")
+		err = runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot")
+		require.ErrorContains(t, err, "already registered")
+	})
+}
+
+// serveIdentities builds the identity registry exactly as `talon serve`
+// does at start for an agents_dir fleet and returns key → use case for
+// every key in the vault that authenticates.
+func serveIdentities(t *testing.T, cfg *config.Config) map[string]string {
+	t.Helper()
+	ctx := context.Background()
+	store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+	require.NoError(t, err)
+	defer store.Close()
+	reg, _, err := buildServeIdentityRegistryFromDir(ctx, cfg.AgentsDir, store, "")
+	require.NoError(t, err, "serve must be able to start")
+	out := map[string]string{}
+	for _, id := range reg.Identities() {
+		// The key itself is in the vault under the use case's binding; read
+		// it as that use case to map it back.
+		sec, gerr := store.Get(ctx, id.Name+"-talon-key", id.TenantID, id.Name)
+		require.NoError(t, gerr)
+		resolved, ok := reg.ResolveKey(string(sec.Value))
+		require.True(t, ok)
+		out[string(sec.Value)] = resolved.Name
+	}
+	return out
+}
+
+func hasIdentity(ids map[string]string, name string) bool {
+	for _, n := range ids {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAgentsAdd_DryRunWritesNothing(t *testing.T) {

@@ -98,8 +98,7 @@ func renderEffective(w io.Writer, r *effective.Report) {
 		}
 	}
 	renderActionBoundary(w, r.ActionBoundary)
-	renderVerification(w, r.Verification)
-	fmt.Fprintln(w, "\n5. Last recorded decision (the newest authenticated request at any boundary)")
+	fmt.Fprintln(w, "\n4. Last recorded decision (the newest request decision recorded for this use case at any boundary)")
 	if d := r.LastDecision; d != nil {
 		if d.Verification != "valid" {
 			fmt.Fprintf(w, "   %s: SIGNATURE INVALID — changed after signing; not authenticated\n", d.EvidenceID)
@@ -113,6 +112,7 @@ func renderEffective(w io.Writer, r *effective.Report) {
 	} else {
 		fmt.Fprintln(w, "   none")
 	}
+	renderVerification(w, r.Verification)
 	for _, n := range r.Notes {
 		fmt.Fprintf(w, "\nnote: %s\n", n)
 	}
@@ -123,7 +123,7 @@ func renderEffective(w io.Writer, r *effective.Report) {
 // per boundary with its policy comparison, the one-line reading and what is
 // not established. The wording is the projection's; nothing is decided here.
 func renderVerification(w io.Writer, v *effective.Verification) {
-	fmt.Fprintln(w, "\n4. Connection and verification")
+	fmt.Fprintln(w, "\n5. Connection and verification")
 	if v == nil {
 		fmt.Fprintln(w, "   not available")
 		return
@@ -134,7 +134,11 @@ func renderVerification(w io.Writer, v *effective.Verification) {
 		o := &v.Traffic[i]
 		switch o.State {
 		case effective.TrafficObserved:
-			line := fmt.Sprintf("observed %s (%s", o.Timestamp.UTC().Format(time.RFC3339), o.EvidenceID)
+			observed := "observed"
+			if !o.IdentityProven {
+				observed = "observed, caller's identity not established,"
+			}
+			line := fmt.Sprintf("%s %s (%s", observed, o.Timestamp.UTC().Format(time.RFC3339), o.EvidenceID)
 			if o.Event != "" {
 				line += ", " + o.Event
 			}
@@ -151,7 +155,7 @@ func renderVerification(w io.Writer, v *effective.Verification) {
 		case effective.TrafficUnavailable:
 			fmt.Fprintf(w, "   %-15s unavailable — %s\n", o.Boundary+":", o.Error)
 		default:
-			fmt.Fprintf(w, "   %-15s no authenticated request recorded\n", o.Boundary+":")
+			fmt.Fprintf(w, "   %-15s no request of this use case recorded\n", o.Boundary+":")
 		}
 	}
 	fmt.Fprintln(w, "   not established by the above:")

@@ -8,7 +8,7 @@ This reference describes Talon's auth model across gateway traffic, tenant-scope
 
 | Key type | Source | Primary use | Header |
 |---|---|---|---|
-| **Agent key** | Talon vault, bound via `agent.key.secret_name` in `agent.talon.yaml` — mint with `talon secrets set <name> "$(openssl rand -hex 24)"` | Workload identity: authenticates `/v1/proxy` traffic **and** tenant-scoped API access, scoped to the agent's derived tenant | `Authorization: Bearer <agent_key>` (the gateway also accepts `x-api-key: <agent_key>`) |
+| **Agent key** | Talon vault, bound via `agent.key.secret_name` in `agent.talon.yaml` — issued by `talon agents add <name>` (generated, shown once), or stored with `talon secrets set <name>` (value on stdin) | Workload identity: authenticates `/v1/proxy` traffic **and** tenant-scoped API access, scoped to the agent's derived tenant | `Authorization: Bearer <agent_key>` (the gateway also accepts `x-api-key: <agent_key>`) |
 | **Approver credential** | `talon approver add --tenant <t> --groups <g>` (256-bit, revocable, versioned; prefix `talon_appr_`) | Human reviewer authority: decisions on Action Gateway approvals, tenant-scoped and policy-authorized by group | `Authorization: Bearer talon_appr_…` on `POST /v1/approvals/{id}/decisions` only |
 | **Console browser session** | Minted by the console process (`talon ui serve`) when a browser redeems the one-time pairing code printed to the process log; see [console access](console-access.md) | Read-only access to the console's own `/console/v1/*` read API, nothing else: the console process has no data-plane route and the data plane ignores the cookie | `talon_console_session` cookie (HttpOnly, SameSite=Strict), set and validated only by the console process |
 | **Admin key** | `TALON_ADMIN_KEY` env var | Operator authority: cross-tenant reads and metrics, secrets, policy admin, and the **legacy** Plan Review and tool-approval decisions (current behavior; converging on approver credentials under #430/#433) | `X-Talon-Admin-Key: <key>` (preferred), `Authorization: Bearer <key>` (fallback) |
@@ -63,7 +63,17 @@ Evidence distinction:
 
 ## Key rotation
 
-- **Agent key:** write a new value to the same vault secret (`talon secrets set <secret_name> "$(openssl rand -hex 24)"`) and restart `talon serve` (a secret-only change is not digest-detected, so rotation still needs a restart or a file-touch even with periodic reload running). One active key per agent — there is never a window with two concurrently-active keys.
+- **Agent key (replacement, also for a lost or exposed key):** write a new value to the same vault secret through stdin, with the use case's ACL, and restart `talon serve`:
+
+  ```bash
+  printf '%s' "$NEW_KEY" | talon secrets set <name>-talon-key --tenant <tenant> --agent <name>
+  ```
+
+  A secret-only change is not a configuration change: the periodic reload does not pick it up, and until the restart the running process accepts the old key and rejects the new one. After the restart the old key gets 401 and the new one works. One active key per use case: there is never a window with two concurrently active keys. Never pass a key as a command argument. The restart affects every use case the process serves; a graceful stop (SIGTERM) refuses new connections and lets in-flight requests finish for up to 30 seconds before exiting, a killed process cuts them off.
+- **`talon secrets rotate <name>` is not a key replacement:** it re-encrypts the same value with a fresh nonce. The same key keeps authenticating.
+- **Emergency disable:** `talon agents disable <name>` (`agent.enabled: false`) refuses new work once the running process has loaded the change (within `agents_reload_interval`; in-flight requests finish; a rejected reload leaves the previous generation serving). Verify with `talon agents show <name> --effective`.
+- **Revocation:** remove the use case's directory from `agents_dir`; after the reload (or a restart) its key is an unknown key (401); then `talon secrets delete <name>-talon-key`.
+- *(Backed by `TestE2E_Onboarding_CredentialLifecycle` against a real `talon serve --gateway` with a counting upstream. Full procedure: [replace or revoke a key](../guides/add-talon-to-existing-app.md#replace-or-revoke-a-key).)*
 - **Admin key:** rotate `TALON_ADMIN_KEY` through your secret manager/deploy workflow.
 
 ---

@@ -112,6 +112,16 @@ func TestVerification_OperatorAndOtherRecordsAreNotTraffic(t *testing.T) {
 	assert.Equal(t, ReadingLoadedNoTraffic, r.Verification.Reading.Code)
 	assert.Nil(t, r.LastDecision)
 
+	// Runtime records exist but cannot be read: activation is unknown, never
+	// "not loaded" and never "loaded".
+	in.Runtime, in.RuntimeReadable = &runtimestatus.View{}, false
+	r, err = Build(ctx, in)
+	require.NoError(t, err)
+	assert.Equal(t, runtimestatus.LoadedUnknown, r.Loaded.State)
+	assert.Equal(t, ReadingLoadUnknown, r.Verification.Reading.Code)
+	assert.Contains(t, r.Verification.Reading.Text, "is not known")
+	in.RuntimeReadable = true
+
 	// Running, but another version of the file: registered, not loaded.
 	in.Runtime = &runtimestatus.View{Processes: []runtimestatus.Process{runningRecord("gw1", []string{runtimestatus.RoleGateway}, "another-digest", "x", "")}}
 	r, err = Build(ctx, in)
@@ -144,6 +154,7 @@ func TestVerification_DeniedAuthenticatedRequest(t *testing.T) {
 	assert.Equal(t, "denied", o.Outcome.Decision)
 	assert.NotEqual(t, evidence.DispatchDispatched, o.Outcome.Dispatch)
 	assert.Contains(t, o.Identity, "Talon key")
+	assert.True(t, o.IdentityProven)
 	assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code)
 	assert.Contains(t, strings.Join(r.Verification.NotEstablished, "\n"), "that a provider was reached")
 	require.NotNil(t, r.LastDecision)
@@ -209,6 +220,7 @@ func TestVerification_StaleMissingTamperedUnavailable(t *testing.T) {
 		o := observation(t, r, BoundaryLLMGateway)
 		assert.Equal(t, "invalid", o.Verification)
 		assert.Equal(t, PolicyUnverified, o.Policy, "digests that happen to match are not compared on an unauthenticated record")
+		assert.False(t, o.IdentityProven, "nothing is established by a record that fails verification")
 		assert.Equal(t, ReadingTrafficUnverified, r.Verification.Reading.Code)
 	})
 
@@ -224,7 +236,7 @@ func TestVerification_StaleMissingTamperedUnavailable(t *testing.T) {
 		}
 		assert.Equal(t, ReadingEvidenceUnknown, r.Verification.Reading.Code)
 		assert.Nil(t, r.LastDecision)
-		assert.NotContains(t, strings.Join(r.Notes, "\n"), "no authenticated request of this use case is recorded yet", "unavailable is not 'none'")
+		assert.NotContains(t, strings.Join(r.Notes, "\n"), "no request of this use case is recorded yet", "unavailable is not 'none'")
 	})
 
 	t.Run("no evidence store", func(t *testing.T) {
@@ -289,6 +301,106 @@ func TestVerification_ActionOnlyUseCase(t *testing.T) {
 	require.NotNil(t, a.LastDispatch)
 	assert.Equal(t, "completed", a.LastDispatch.EvidenceID)
 	assert.NotContains(t, strings.Join(r.Verification.NotEstablished, "\n"), "that a governed action reached its destination")
+}
+
+// MCP proxy records do not record how the caller was identified (the proxy
+// uses the presented agent key when there is one, and its own configured
+// agent name on admin-key or development-open requests). They are shown as
+// what they are and never establish an authenticated connection; a record
+// that does establish the use case's credential is what the reading speaks
+// about, and a newest record that fails verification is stated first.
+func TestVerification_IdentityIsProvenOnlyWhereTheRecordEstablishesIt(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	t.Run("MCP proxy records only", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		f.put(t, "mcp", "proxy_tool_call", now, nil)
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		m := observation(t, r, BoundaryMCPProxy)
+		assert.Equal(t, TrafficObserved, m.State)
+		assert.False(t, m.IdentityProven)
+		assert.Contains(t, m.Identity, "not recorded")
+		assert.Contains(t, m.Establishes, "does not establish that the use case's key was presented")
+		assert.Equal(t, PolicyNotRecorded, m.Policy)
+		assert.Equal(t, ReadingTrafficIdentityUnknown, r.Verification.Reading.Code)
+		assert.Contains(t, r.Verification.Reading.Text, "an authenticated connection is not established")
+		assert.Contains(t, r.Verification.Reading.Text, "caller identity not recorded")
+		assert.NotContains(t, r.Verification.Reading.Text, "Authenticated traffic observed")
+		require.NotNil(t, r.LastDecision, "the newest decision at any boundary is still pointed at")
+		assert.Equal(t, "mcp", r.LastDecision.EvidenceID)
+	})
+
+	t.Run("a record of the no-key quickstart profile", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		agentDigest, effDigest := f.currentDigests(t)
+		f.put(t, "quickstart", "gateway", now, func(ev *evidence.Evidence) {
+			ev.GatewayAnnotations = []string{"quickstart_mode"}
+			ev.PolicyDecision.PolicyDigests = &evidence.PolicyDigests{Agent: agentDigest, Effective: effDigest}
+		})
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		g := observation(t, r, BoundaryLLMGateway)
+		assert.Equal(t, TrafficObserved, g.State)
+		assert.False(t, g.IdentityProven, "the quickstart identity is the one LLM gateway identity without a key")
+		assert.Contains(t, g.Identity, "no credential")
+		assert.Equal(t, ReadingTrafficIdentityUnknown, r.Verification.Reading.Code)
+		assert.Contains(t, r.Verification.Reading.Text, "caller identity no credential")
+		assert.NotContains(t, r.Verification.Reading.Text, "Authenticated traffic observed")
+	})
+
+	t.Run("an authenticated LLM request and a newer MCP record", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		agentDigest, effDigest := f.currentDigests(t)
+		f.put(t, "llm", "gateway", now.Add(-time.Minute), func(ev *evidence.Evidence) {
+			ev.PolicyDecision.PolicyDigests = &evidence.PolicyDigests{Agent: agentDigest, Effective: effDigest}
+		})
+		f.put(t, "mcp", "proxy_tool_call", now, nil)
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		assert.True(t, observation(t, r, BoundaryLLMGateway).IdentityProven)
+		assert.False(t, observation(t, r, BoundaryMCPProxy).IdentityProven)
+		assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code, "the reading speaks about the record that establishes the credential")
+		assert.Contains(t, r.Verification.Reading.Text, "(llm)")
+		assert.Equal(t, "mcp", r.LastDecision.EvidenceID, "the last decision is the newest record at any boundary")
+	})
+
+	t.Run("a verified workload identity", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		f.put(t, "delegated", "gateway", now, func(ev *evidence.Evidence) {
+			ev.WorkloadIdentity = &evidence.WorkloadIdentity{Status: "verified", Runtime: "openshell", AuthMethod: "hop_assertion"}
+		})
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		g := observation(t, r, BoundaryLLMGateway)
+		assert.True(t, g.IdentityProven)
+		assert.Contains(t, g.Identity, "verified workload identity (openshell hop_assertion)")
+	})
+
+	t.Run("a newest record that fails verification is stated first", func(t *testing.T) {
+		f := peopleAnalytics(t)
+		agentDigest, effDigest := f.currentDigests(t)
+		f.put(t, "llm", "gateway", now.Add(-time.Minute), func(ev *evidence.Evidence) {
+			ev.PolicyDecision.PolicyDigests = &evidence.PolicyDigests{Agent: agentDigest, Effective: effDigest}
+		})
+		f.put(t, "mcp-tampered", "proxy_tool_blocked", now, func(ev *evidence.Evidence) {
+			ev.PolicyDecision = evidence.PolicyDecision{Allowed: false, Action: "deny"}
+		})
+		db, err := sql.Open("sqlite3", filepath.Join(f.dir, "evidence.db"))
+		require.NoError(t, err)
+		defer db.Close()
+		_, err = db.ExecContext(ctx, `UPDATE evidence SET evidence_json = replace(evidence_json, '"allowed":false', '"allowed":true') WHERE id = 'mcp-tampered'`)
+		require.NoError(t, err)
+		r, err := Build(ctx, f.inputs())
+		require.NoError(t, err)
+		m := observation(t, r, BoundaryMCPProxy)
+		assert.Equal(t, "invalid", m.Verification)
+		assert.False(t, m.IdentityProven)
+		assert.Contains(t, m.Identity, "signature does not verify")
+		assert.Equal(t, ReadingTrafficUnverified, r.Verification.Reading.Code)
+		assert.Equal(t, PolicyMatchesCurrent, observation(t, r, BoundaryLLMGateway).Policy, "the valid record at another boundary keeps its own facts")
+	})
 }
 
 // The lookup is an indexed range read per invocation type, and it is scoped

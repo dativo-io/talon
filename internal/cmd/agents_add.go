@@ -148,8 +148,8 @@ func printAgentsAddResult(ctx context.Context, out io.Writer, cfg *config.Config
 
 	fmt.Fprintf(out, `
 Verify the first request
-  talon agents show %[1]s --effective   # section 2: loaded by a running process; section 4: authenticated traffic observed, and under which policy
-  talon audit verify <evidence-id>      # the signature of the record section 4 names
+  talon agents show %[1]s --effective   # section 2: loaded by a running process; section 5: authenticated traffic observed, and under which policy
+  talon audit verify <evidence-id>      # the signature of the record section 5 names
   talon agents show %[1]s               # health, spend and requests
 
 Not verified by this command
