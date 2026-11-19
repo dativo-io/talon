@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "inputs": {
-    ".github/workflows/console-screenshots.yml": "a99dc1cac0ab188b82f72ef7f3bdf58e2d0217b0",
-    "go.mod": "b71b9c01a605dc3d550911a0a483453f6ca26d24",
+    ".github/workflows/console-screenshots.yml": "b13b7de80950d821f58e0102a634b41213910285",
+    "go.mod": "0cc9161825dbbadc11cf269da77dd07fce6bcbde",
     "go.sum": "e981ed060a861fe97cda1f51f149a41d3e8bf06b",
     "internal/cmd/agent_bridge.go": "5ae199375031bad7efdd8a0d4edf9e59d0f60aa8",
     "internal/cmd/agents.go": "f074b126bd3754c6edc853db07b22c514e97d6e3",
@@ -186,17 +186,17 @@
     "tests/browser/seed/main.go": "66fbed4edab31c78a4fa6cd19904c1d2f10d30b0"
   },
   "assets": {
-    "action-evidence.webp": "c95cd584bcf905e6efd12d7bf82b9be93fa818bc",
+    "action-evidence.webp": "97cbb7a6dc9f481374295b8916f9bb5038c04435",
     "action-policy.webp": "b1d927b8dd8b8e1d9824c9b17360323c8cdd250c",
-    "configuration.webp": "9ccd5351329301e4f1a71ad041759e4fc0b0fc8d",
+    "configuration.webp": "c940f951d10ef88e374aca95a12d74a19d0d4802",
     "costs.webp": "72fbbee8d4de1a7a46382a38288758af42d0b514",
-    "evidence-verification.webp": "d65831d6fe9033f9cef8aade0f7e8750d99906a8",
+    "evidence-verification.webp": "002c3bb251bcbdbbca188b128b062478c4599405",
     "overview-attention.webp": "628508dd03988cb24401b3e9f4453365d21929d5",
     "overview-mobile.webp": "6e9eb0aa770187a7ec7c5eb5004ee79649489fbd",
-    "session-investigation.webp": "d0ad79217ae84ff5e3e4b062ab2450f09f908a05",
-    "showcase.webp": "5a0b5dde908ee27a740c542fc3da81bef104c3d3",
-    "system-diagnostics.webp": "a31187a599ea96d8a4e750a62fe09db67a820538",
-    "tamper-detection.webp": "c32d9b66ff8770de3f5d1675319fac938e25947e",
-    "use-case-summary.webp": "69f09454fba712f84f1692e8e8f51c79fc1337d7"
+    "session-investigation.webp": "80c777dc2bd4ee0db42c98979a1e2739eedce786",
+    "showcase.webp": "0c80f8a4c7c27d305a8667fad46e92181f1af495",
+    "system-diagnostics.webp": "921442c1b4dd259792084e3b977e73ddf3a2de02",
+    "tamper-detection.webp": "ff58393e8d5a2e5edd597e5b1ffcecc7be9f3e9d",
+    "use-case-summary.webp": "4cef36258d73b94ecb34b9d61b2705b32827edba"
   }
 }
