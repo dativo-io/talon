@@ -226,7 +226,7 @@ The use case's evidence stays in the store. The name can be registered again lat
 
 A registration writes to three places that share no transaction: the evidence store, the vault and the agent file. It is not atomic. It works in a fixed order (signed intent, key, file, fleet check, signed completion) and prints the key only after the completion record.
 
-- **It fails with an error.** It removes exactly what it created, writes a signed rollback record that says what it removed, and tells you whether anything was left. You can run the command again.
+- **It fails with an error.** It removes exactly what it created, writes a signed rollback record that says what it removed, and tells you whether anything was left. You can run the command again. If the evidence store is the part that failed, the rollback cannot be recorded: what was created is still removed, the error says so, and the next registration of the name records the rollback.
 - **The process dies** (killed, power loss). Nothing is cleaned up, but no key was shown, so nobody can use what it left. The next `talon agents add <name>` and `talon doctor` report the interrupted registration, name what it left and the commands to remove it:
 
   ```bash
