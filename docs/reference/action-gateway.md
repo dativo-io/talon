@@ -204,7 +204,7 @@ The approval path of an argument rule is the existing approval API; nothing else
 2. **The application calls** `POST /v1/action-operations`. When a rule requires approval the answer is `202` with `operation.verdict: REQUIRE_APPROVAL`, `matched_rule_id`, `matched_rule_source` and the approval (`approval.id`, `approval.approver_groups`, expiry). Nothing is dispatched.
 3. **The application hands the approval id to a reviewer** through whatever channel the team uses. Talon does not notify anyone and has no list of pending approvals: the calling application is the only holder of the id.
 4. **The reviewer decides:** the application reads `GET /v1/approvals/{approval_id}` with its agent key (the approval and the reviewer projection of the exact arguments) and shows it to the reviewer; the reviewer sends `POST /v1/approvals/{approval_id}/decisions` with the approver credential and `{"decision": "approve" | "reject", "reason": "..."}` records the decision. A decision dispatches nothing.
-5. **The application claims** with `POST /v1/action-operations/{operation_id}/attempts`; only then is the approved call dispatched, exactly once.
+5. **The application claims** with `POST /v1/action-operations/{operation_id}/attempts`; only then does Talon dispatch the approved call, at most once (see [What "at most once" covers](#what-at-most-once-covers)).
 
 The Operations Console is read-only: it shows the rules (use-case page, Configuration) and the signed lifecycle records of an operation (evidence detail), and it cannot approve, reject or list pending approvals.
 
@@ -301,6 +301,15 @@ An HTTP status is never a business outcome by itself. What Talon observed and wh
 
 Redirects are never followed: the approved destination is the only destination an attempt may contact, and a 3xx from it is an observed non-success (`dispatch_redirect_refused`, `unknown`).
 
+### What "at most once" covers
+
+Talon's guarantee is about **its own dispatch**, not about the business effect in the destination system.
+
+- **What Talon guarantees.** For one operation (tenant, use case, `operation_id`), Talon sends at most one request that may have reached the destination. Concurrent claims yield one attempt, a completed or `unknown` operation is closed, a restart never re-sends, and the HTTP client never replays or follows a redirect. The only retry is after `failed` / `not_dispatched`, where Talon observed that the request never left it.
+- **Where the guarantee ends.** It holds within the durable state of one installation: the operation records in its evidence database. Restoring an older copy of that database, or sending the same request under a new `operation_id`, is outside it. Keeping `operation_id` stable for one business intent is the calling application's job.
+- **What Talon does not guarantee.** Exactly one business effect. Talon cannot see inside the destination: it may apply the effect and fail to answer, apply it twice on its own, or apply nothing and answer `200`. Every dispatch carries the operation's `Idempotency-Key` header; an exactly-once effect additionally needs the destination to deduplicate on it.
+- **What `unknown` means.** The request may have reached the destination and Talon holds no trusted evidence of the result: the effect may have happened, or not. It is neither a failure nor "no effect". Talon closes the operation, purges the sealed payload and refuses a retry, because a second request could apply the effect twice. This release has no reconciliation command: a person checks the destination system, and if the effect did not happen the application submits a new operation with a new `operation_id`.
+
 **Arm vs. observe.** Before dispatch Talon commits `attempt_armed` (`dispatch_armed: true`), the durable pre-effect marker meaning "a dispatch may now occur"; after it a crash recovers as `unknown`. `request_written` and `response_observed` are the dispatcher's own observations and are recorded only at completion; after a crash they are false, because Talon did not durably observe them.
 
 ## Semantics that are tested
@@ -311,7 +320,7 @@ Redirects are never followed: the approved destination is the only destination a
 - **Tenant-scoped approval, opaque ids.** A `support-leads` credential of tenant A presenting a tenant-B approval id gets the same `404 not_found` as for a nonexistent id; tenant B's operation version, lifecycle sequence, evidence count and approval status are unchanged and dispatch count stays 0 (owner resolution is scoped by the principal's trusted tenant before any operation is loaded; `Decide` re-checks the tenant as defense in depth).
 - **Revalidation at claim and at decision.** Current definition digest and approval-relevant policy digest must match at **both** points: a reviewer decision on a pending approval whose policy (company or use case: groups, forbidden actions, lifetime) changed since establishment is refused and the approval is invalidated with signed evidence, never reinterpreted under the new rule; a current DENY blocks even an approved operation; first-attempt claim checks approval expiry; the sealed payload must open.
 - **Company policy reaches every use case and cannot be weakened.** The shared ACME scenario (`internal/testutil/acme`, test ids `A1-*`/`A2-*`/`A3-*`) proves it at every level: the pure compiler, the service, runtime generation (company digest in the generation id, frozen across reloads, malformed policy never activates), the real router, and the built binary across a restart with a changed company rule (`make test-action-smoke`, smoke section 41 of `make test-smoke`, and a named PR CI step).
-- **At most one effect.** Concurrent claims yield exactly one attempt; a succeeded operation is permanently closed; the dispatcher never replays at the transport level.
+- **At most one dispatch.** Concurrent claims yield exactly one attempt; a succeeded operation is permanently closed; the dispatcher never replays at the transport level. This is Talon's dispatch, not an exactly-once business effect (see above).
 - **Crash recovery.** Interrupted after claim but before arm → retryable `failed/not_dispatched`; after arm (before the call, after the write, or after the response) → `unknown`, payload purged, no retry.
 - **Evidence.** Every transition is a signed `action_lifecycle` record (spec 1.12) whose generic `status` is explicit (`queued`, `running`, `completed`, `failed`, `denied`, `cancelled`, `unknown`) — an ambiguous outcome is `unknown` at both the lifecycle and the generic level, never the empty-means-completed default; `talon audit verify --operation <id>` verifies signatures and lifecycle consistency (arm before completion, observed write + response for success, no attempt after close, reviewer tenant = operation tenant); tampered fields and impossible orders fail.
 - **Referential integrity.** The evidence database connection enforces SQLite foreign keys; an approval, attempt or sealed payload cannot exist without its operation.
@@ -321,5 +330,6 @@ Redirects are never followed: the approved destination is the only destination a
 ```bash
 make test-action-smoke             # built binary, mock downstream, no keys (= scripts/action-smoke.sh; smoke section 41; PR CI step)
 scripts/action-catalog-smoke.sh    # trusted sources: CLI inspection, catalog in the generation, refresh/last-known-good
+TALON_E2E_BINARY=/path/to/talon bash scripts/action-evidence-live.sh   # argument rules, approval API, deny, downstream counts, signed evidence, on a given executable; run on the released binary by release.yml and install-smoke.yml
 go test ./internal/action/...      # domain, repository, concurrency, verifier, MCP source discovery (official go-sdk upstream)
 ```
