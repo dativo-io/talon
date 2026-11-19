@@ -35,6 +35,10 @@ for (const theme of ["light", "dark"]) {
       // refund that needed approval, and the one the company rule denied).
       ["20-action-evidence", `/evidence/${f.action.approval_evidence}`],
       ["21-action-evidence-denied", `/evidence/${f.action.denied_evidence}`],
+      // Approvals (#565): the request that waits for a decision, as the
+      // operator finds it, and its detail (argument names only).
+      ["22-approvals", "/approvals?state=unresolved"],
+      ["23-approval-detail", `/approvals/${f.action.approvals.waiting}`],
     ];
     for (const [name, url] of pages) {
       await page.goto(url);

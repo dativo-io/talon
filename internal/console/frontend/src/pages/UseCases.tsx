@@ -9,6 +9,7 @@ import { isMeasurement } from "../lib/availability";
 import { goDuration, integer, money, relative, utc } from "../lib/format";
 import { scoped, useScope } from "../lib/scope";
 import { rowSpend } from "../lib/costs";
+import { UseCaseApprovalsCell } from "../components/Approvals";
 
 type Resp = { meta: Meta; use_cases: UseCasesDTO };
 
@@ -85,6 +86,7 @@ export function UseCases() {
                     <th className="num">Fallbacks ({goDuration(uc.counter_windows?.fallbacks)})</th>
                     <th className="num">Failed sessions ({goDuration(uc.counter_windows?.failed_sessions)})</th>
                     <th className="num">Last request</th>
+                    <th>Approvals</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -104,6 +106,7 @@ export function UseCases() {
                       <td className="num">{integer(r.fallbacks)}</td>
                       <td className="num">{integer(r.failed_sessions)}</td>
                       <td className="num" title={utc(r.last_run)}>{relative(r.last_run)}</td>
+                      <td className="small"><UseCaseApprovalsCell a={uc.approvals} tenant={r.tenant_id} name={r.name} /></td>
                     </tr>
                   ))}
                 </tbody>

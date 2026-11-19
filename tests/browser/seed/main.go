@@ -65,6 +65,24 @@ type actionExpectations struct {
 	DeniedID        string `json:"denied_evidence"`           // 900.00: establishing record, DENY (company rule)
 	DownstreamCalls int64  `json:"downstream_calls"`
 	ApprovedOp      string `json:"approved_operation"`
+	// Approvals an operator finds in the console (#565), by approval id.
+	Approvals approvalExpectations `json:"approvals"`
+}
+
+// approvalExpectations are the approvals of refund-bot after the seed: one
+// waiting for a decision, one approved (and dispatched), one rejected, one
+// whose lifetime elapsed while it was still pending. ArgumentValues are the
+// exact argument values of the waiting request: no console page may show
+// them.
+type approvalExpectations struct {
+	Waiting        string   `json:"waiting"`
+	WaitingOp      string   `json:"waiting_operation"`
+	Approved       string   `json:"approved"`
+	Rejected       string   `json:"rejected"`
+	RejectReason   string   `json:"reject_reason"`
+	Expired        string   `json:"expired"`
+	ArgumentValues []string `json:"argument_values"`
+	Unresolved     int      `json:"unresolved"`
 }
 
 func must(err error) {
@@ -129,6 +147,7 @@ policies:
 actions:
   definitions:
     create_refund_request:
+      description: "Refund a customer payment"
       input_schema:
         type: object
         additionalProperties: false
@@ -384,6 +403,28 @@ func runRefundLifecycle(ctx context.Context, dir string, store *evidence.Store, 
 	if _, err := svc.Execute(ctx, "refund-900"); action.CodeOf(err) != action.CodePolicyDenied {
 		must(fmt.Errorf("a denied refund must not dispatch: %v", err))
 	}
+	// Approvals for the console's approval pages (#565): a request that
+	// waits for a decision, one a support lead rejected, and one whose
+	// lifetime elapsed while it was still pending. None of them dispatches.
+	lead := action.ReviewerPrincipal{
+		PrincipalID: "apr_support_lead", TenantScope: tenant, Subject: "support-lead", Groups: []string{"support-leads"},
+		CredentialID: "cred_support_lead", CredentialVersion: 1, Revalidate: func(context.Context) (bool, error) { return true, nil },
+	}
+	expired := establish("refund-expired", "61.75")
+	want(expired, action.VerdictRequireApproval)
+	rejected := establish("refund-rejected", "99.50")
+	want(rejected, action.VerdictRequireApproval)
+	const rejectReason = "duplicate of an earlier refund request"
+	_, err = svc.Decide(ctx, action.DecideRequest{ApprovalID: rejected.Operation.Approval.ID, Approve: false, Reason: rejectReason, Reviewer: lead})
+	must(err)
+	waiting := establish("refund-waiting", "137.25")
+	want(waiting, action.VerdictRequireApproval)
+	// The one hand-written change of this fixture: nobody touched this
+	// approval before its lifetime ended, so it is still pending in the
+	// store. (Talon closes an expired approval only when the decision path
+	// reaches it; the console must report it without closing it.)
+	_, err = store.DB().ExecContext(ctx, `UPDATE action_approvals SET expires_at = ? WHERE id = ?`, time.Now().UTC().Add(-2*time.Hour), expired.Operation.Approval.ID)
+	must(err)
 	if got := refunds.calls.Load(); got != 2 {
 		must(fmt.Errorf("the refund service was called %d times, want 2 (30.00 and the approved 75.00)", got))
 	}
@@ -409,5 +450,10 @@ func runRefundLifecycle(ctx context.Context, dir string, store *evidence.Store, 
 		DeniedID:        record("refund-900", evidence.ActionEventOperationEstablished),
 		DownstreamCalls: refunds.calls.Load(),
 		ApprovedOp:      "refund-75",
+		Approvals: approvalExpectations{
+			Waiting: waiting.Operation.Approval.ID, WaitingOp: "refund-waiting", Approved: pending.Operation.Approval.ID,
+			Rejected: rejected.Operation.Approval.ID, RejectReason: rejectReason, Expired: expired.Operation.Approval.ID,
+			ArgumentValues: []string{"137.25", "T-refund-waiting"}, Unresolved: 2,
+		},
 	}
 }

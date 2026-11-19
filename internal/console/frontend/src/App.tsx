@@ -8,6 +8,8 @@ import { Pair } from "./pages/Pair";
 import { Overview } from "./pages/Overview";
 import { UseCases } from "./pages/UseCases";
 import { UseCaseDetail } from "./pages/UseCaseDetail";
+import { Approvals } from "./pages/Approvals";
+import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Sessions } from "./pages/Sessions";
 import { SessionDetail } from "./pages/SessionDetail";
 import { EvidencePage } from "./pages/Evidence";
@@ -52,6 +54,8 @@ export function App() {
         <Route path="/overview" element={<Overview />} />
         <Route path="/use-cases" element={<UseCases />} />
         <Route path="/use-cases/:name" element={<UseCaseDetail />} />
+        <Route path="/approvals" element={<Approvals />} />
+        <Route path="/approvals/:id" element={<ApprovalDetail />} />
         <Route path="/sessions" element={<Sessions />} />
         <Route path="/sessions/:id" element={<SessionDetail />} />
         <Route path="/evidence/:id" element={<EvidencePage />} />

@@ -198,13 +198,19 @@ Nested argument paths, several arguments in one rule, `and`/`or`, set membership
 
 ### Approving a conditional action: what the operator does
 
-1. **Create the reviewer once:** `talon approver add --name <name> --tenant <tenant> --groups <group>` prints an approver credential (shown once). The group must be one the rule names.
-2. **The application calls** `POST /v1/action-operations`. When a rule requires approval the answer is `202` with `operation.verdict: REQUIRE_APPROVAL`, `matched_rule_id`, `matched_rule_source` and the approval (`approval.id`, `approval.approver_groups`, expiry). Nothing is dispatched.
-3. **The reviewer finds the request** with `talon approvals list` (or `GET /v1/reviews`), using their own approver credential: every request of their tenant and groups that can be decided now. Talon does not notify anyone; the reviewer looks, or the application tells them.
-4. **The reviewer reads and decides:** `talon approvals show <id>` states who asks for what, the exact arguments, the bound destination, the rule and whether the request is still actionable; `talon approvals approve|reject <id> --reason "..."` (or `POST /v1/approvals/{approval_id}/decisions`) records the decision. A decision dispatches nothing. See [Reviewing approvals](#reviewing-approvals-talon-approvals-433).
-5. **The application claims** with `POST /v1/action-operations/{operation_id}/attempts`; only then does Talon dispatch the approved call, at most once (see [What "at most once" covers](#what-at-most-once-covers)).
+The standard OSS setup is one **platform operator** who runs the installation and also holds approval authority. That authority is never implied by the admin key: the operator provisions an approver credential for themselves, explicitly, and uses it only to decide.
 
-The Operations Console is read-only: it shows the rules (use-case page, Configuration) and the signed lifecycle records of an operation (evidence detail), and it cannot approve, reject or list pending approvals.
+1. **Provision your own approver credential, once:** `talon approver add --name <you> --tenant <tenant> --groups <group>` prints a `talon_appr_…` credential (shown once). The group must be one the rule names. Keep it apart from `TALON_ADMIN_KEY`: the admin key manages the installation and cannot approve; the approver credential approves and cannot manage. A team that wants a separate reviewer issues that person their own credential the same way.
+2. **The application calls** `POST /v1/action-operations`. When a rule requires approval the answer is `202` with `operation.verdict: REQUIRE_APPROVAL`, `matched_rule_id`, `matched_rule_source` and the approval (`approval.id`, `approval.approver_groups`, expiry). Nothing is dispatched.
+3. **Discover the request** in the Operations Console (Overview shows how many approvals may await a decision, the **Approvals** page lists them) or with `talon approvals list`. Talon notifies nobody.
+4. **Understand why approval is required:** the console's approval page names the requesting AI use case, the action, the rule and policy layer that required approval, whether the policy and action definition are still the ones the request was established under, and the argument **names**. It never shows argument values.
+5. **Read the exact arguments with the CLI:** `talon approvals show <approval-id>` (credential in `TALON_APPROVER_KEY`) prints the exact material values, the bound destination and everything above.
+6. **Decide with a reason:** `talon approvals approve|reject <approval-id> --reason "..."`. A decision dispatches nothing.
+7. **The console reflects the decision:** who decided, when, the reason, and afterwards what happened to the operation.
+8. **The application claims** with `POST /v1/action-operations/{operation_id}/attempts`; only that authorized claim makes Talon dispatch the approved call, at most once (see [What "at most once" covers](#what-at-most-once-covers)).
+9. **Verify the lifecycle:** `talon audit verify --operation <operation-id>` checks every signed record and their consistency.
+
+The Operations Console is read-only: it lists approvals and explains them, and it has no decision control and no decision route. See [Reviewing approvals](#reviewing-approvals-talon-approvals-433) and the [console read contract](console-read-contract.md#28-approvals-565).
 
 ## Trusted MCP sources (`actions.sources`)
 
@@ -275,31 +281,52 @@ A reviewer is a local approver principal (`talon approver add --name lead-1 --te
 
 ```bash
 export TALON_APPROVER_KEY=...              # the credential from 'talon approver add'
-talon approvals list                      # approvals of my tenant and groups that I can decide now (--all: also expired and stale ones)
-talon approvals show apr_...              # exactly what I would authorize
+talon approvals list                      # what needs a decision (oldest first)
+talon approvals list --all                # every unresolved approval, also expired and stale ones
+talon approvals list --decided            # history: approved, rejected, expired, invalidated (newest first)
+talon approvals show apr_...              # exactly what I would authorize, why, and what happened
+talon approvals show apr_... --technical  # plus identifiers, digests and timestamps
 talon approvals approve apr_... --reason "customer verified"
 talon approvals reject  apr_... --reason "duplicate refund"
 ```
 
-`list` shows what can be decided **now**. A request whose lifetime elapsed, or whose policy or action definition changed after it was established, stays in the store as `pending` but can never be decided; it is not listed, so such requests cannot crowd out one that can be decided. `talon approvals list --all` adds them after the actionable ones, each marked `expired`, `stale_policy` or `stale_definition`.
+`list` is compact: one line per approval with its complete id, the action, the AI use case, the state, the remaining lifetime and the required groups. It prints no argument name or value. The default listing holds the approvals that can be decided **now**. A request whose lifetime elapsed, or whose policy or action definition changed after it was established, stays in the store as `pending` but can never be decided; `--all` lists those too, each with its state (`expired`, `stale policy`, `stale definition`, `use case not served`). `--decided` lists history. A listing longer than one page prints the `--after <cursor>` command for the next one.
 
 `show` answers, in this order:
-- **Status:** whether a decision would be accepted now, and why not otherwise. It is computed by the same conditions as the decision itself, which stays authoritative;
-- **who asks for what:** the AI use case, the action (with the catalog's description) and the operation;
-- **the exact material arguments** from the reviewer projection, with the digest that binds them. An argument a rule decides on is always among them: declaring it `review.non_material` is refused at load;
-- **bound when the operation was established:** the destination, the rule id and its layer, the policy and definition digests. These are read from the operation's record;
-- **the configuration enforced now:** whether the policy and the action definition are unchanged since then. Only when the policy is unchanged is the printed rule text exactly the rule that required this approval. After a change the text is labelled as today's, and when the current policy no longer has the rule nothing is printed for it: the original text is not recorded and is not reconstructed;
-- **after approval:** an approval authorizes this exact operation and dispatches nothing; the application then claims, Talon re-checks and dispatches at most once.
+- **what is asked, by whom:** the catalog's description of the action, the action name, the AI use case and tenant;
+- **Status:** whether a decision would be accepted now and until when, or why not. It is computed by the same conditions as the decision itself, which stays authoritative;
+- **Arguments:** the exact material values from the reviewer projection. An argument a rule decides on is always among them: declaring it `review.non_material` is refused at load;
+- **Destination:** the trusted destination bound when the operation was established;
+- **Why:** the rule and policy layer that required approval. Only when the policy is unchanged is the printed rule text exactly the rule that required this approval. After a change the text is labelled as today's, and when the current policy no longer has the rule nothing is printed for it: the original text is not recorded and is not reconstructed;
+- **Still current:** whether the policy and the action definition are unchanged since establish;
+- **Decision:** none yet, or who decided (principal and group), when and with which reason;
+- **Outcome:** the operation's status and, once the application has claimed it, the dispatch attempt and the destination's answer as recorded;
+- **Approve / Reject:** the commands with the complete approval id, shown only while a decision would be accepted;
+- **After approval:** an approval authorizes this exact operation and dispatches nothing; the application then claims, Talon re-checks and dispatches at most once.
 
-A decision dispatches nothing. The AI use case's runtime claims the approved operation afterwards, and Talon re-checks the binding, the policy and its argument rules before any claim. `--reason` is required and recorded in the signed approval evidence. The command refuses to send the credential over plain `http` to a non-loopback host unless `--allow-plaintext` is given (for a protected network path). `--json` prints the server's answer.
+`--technical` adds the approval and operation identifiers, the rule id, the arguments, policy and definition digests, timestamps, the latest attempt and the `talon audit verify --operation` command. `--json` prints the server's answer on every subcommand.
+
+**Reasons.** The CLI requires `--reason` for an approval **and** for a rejection, and sends nothing without one: the reason is recorded in the signed approval evidence. The decision API (`POST /v1/approvals/{approval_id}/decisions`) keeps the validation it was published with in v1.16.1, so existing API clients keep working: a reason is required for a rejection only, and is at most 1024 characters. *(`TestApprovalsDecide_CLIRequiresAReasonForBothDecisions`, `TestDecisionAPI_ReasonContractIsTheV1161One`.)*
+
+**The credential on the wire.** The command refuses to send the credential over plain `http` to a non-loopback host unless `--allow-plaintext` is given (for a protected network path), and it never follows a redirect: a redirect could name another host, or the same host over plain http, so the command stops and asks for the final URL. *(`TestApprovalsRequest_NeverFollowsARedirectWithTheCredential`.)*
+
+A decision dispatches nothing. The AI use case's runtime claims the approved operation afterwards, and Talon re-checks the binding, the policy and its argument rules before any claim.
 
 | Route | Credential | Answer |
 |---|---|---|
-| `GET /v1/reviews[?state=actionable\|all]` | approver only | `{tenant, state, reviews: [ReviewerView], more}`: approvals of the credential's tenant that share at least one approver group, oldest first, at most 200. Default `state=actionable`: only approvals a decision would be accepted for now. `state=all` adds pending approvals that can no longer be decided, after the actionable ones. The group filter and the actionability are applied before the bound, so neither other groups' approvals nor expired or stale ones hide an actionable one. `more: false` means the selection is complete; `more: true` means further ones exist (decide, then list again). There is no cursor |
-| `GET /v1/reviews/{approval_id}` | approver only | `ReviewerView`: `operation` (the projection), `use_case`, `tenant`, `actionable`, `actionability` (`actionable`, `expired`, `stale_definition`, `stale_policy`, or the approval's closed status), `explanation`, `after_approval`, `bound` (`rule_id`, `rule_source`, `destination`, `arguments_digest`, `definition_digest`, `policy_digest`, `established_at`: from the operation record) and `current` (`policy_unchanged`, `definition_unchanged`, `rule`, `rule_present`, `destination`, `action_description`: the configuration enforced now); `404 not_found` for another tenant's approval or one none of the reviewer's groups may decide |
-| `POST /v1/approvals/{approval_id}/decisions` | approver only | the decision (unchanged) |
+| `GET /v1/reviews[?state=attention\|unresolved\|decided][&limit=1..100][&after=<next>]` | approver only | `{tenant, state, approvals: [ApprovalSummary], next}`: compact rows (`approval_id`, `tenant`, `use_case`, `action`, `status`, `unresolved`, `eligibility`, `approver_groups`, `rule_id`, `created_at`, `expires_at`, `decided_at`, `decided_by`) of the credential's tenant that share at least one approver group. No argument name or value. `attention` (default): unresolved approvals a decision would be accepted for now, oldest first. `unresolved`: every approval still pending in the store, each with why it can or cannot be decided. `decided`: approved, rejected, expired and invalidated, newest first. The tenant, group and eligibility filters are applied before the page bound, so neither other groups' approvals nor expired or stale ones hide a decidable one. `next` is empty exactly when the selection is exhausted; pass it as `after`. `503 store_unavailable` when the store cannot be read: never an empty list |
+| `GET /v1/reviews/{approval_id}` | approver only | `ApprovalView`: `approval_id`, `tenant`, `use_case`, `action`, `action_description`, `status` (the stored status), `unresolved`, `eligibility`, `approver_groups`, `created_at`, `expires_at`, `disclosure: "reviewer"`, `arguments[] {name, value}` (the exact review values), `bound` (`rule_id`, `rule_source`, `destination`, `arguments_digest`, `definition_digest`, `policy_digest`, `established_at`: from the operation record), `current` (`basis`, `rule`, `rule_present`, `destination`: the configuration this process enforces now), `decision` (`status`, `decided_at`, `decided_by`, `decided_group`, `reason`), `operation` (`operation_id`, `operation_ref`, `status`, `verdict`, `attempt_count`, `outcome_code`, `latest_attempt`), `after_approval`. Pending, decided and closed approvals are all readable, including one whose use case or action definition no longer exists. `404 not_found` for another tenant's approval or one none of the reviewer's groups may decide; `503 store_unavailable` on a storage failure |
+| `POST /v1/approvals/{approval_id}/decisions` | approver only | the decision (unchanged since v1.16.1) |
 
-Admin keys, agent keys, revoked and rotated-away credentials get `401 approval_not_authorized` on every reviewer route. Reads never change an operation, an approval or the evidence. The view shows the declared `review.fields` exactly and nothing else of the payload: a field declared `non_material` never appears in it. *(Backed by `TestReviewerReads_ScopedToTenantAndGroup`, `TestReview_ShowsDeclaredFieldsOnly`, `TestReview_BoundFactsSurviveConfigurationChanges`, `TestPendingApprovals_FilterBeforeBoundAndReportMore`, `TestPendingApprovals_NonActionableNeverHideActionable`, `TestE2E_ActionGateway_ArgumentRules`.)*
+`eligibility` is `{state, class, basis, explanation, policy, definition}`. `state`: `eligible`, `expired`, `stale_definition`, `stale_policy`, `use_case_not_served`, `unknown`, `decided`. `class`: `actionable` (a decision would be accepted now), `not_decidable`, `decided`, and, only where the reader is not the deciding process (the Operations Console), `potentially_actionable` and `unknown`. `basis` says what the statement rests on (`runtime` on these routes; `lifetime` for an expired approval; `record` for a decided one). `policy` and `definition` compare the digests bound at establish with the current configuration: `unchanged`, `changed`, `unknown`.
+
+**Paging.** Order and cursor are the approval's creation time and id, which never change. A listing therefore never repeats or skips an approval that stays in the selection. An approval whose state changes between two requests (it is decided, it expires, the configuration changes) is reported with the state it has when its position is read, and is absent from pages already delivered and from a selection it has left; `state=decided` lists it afterwards. *(`TestListApprovals_StateChangesBetweenPages`.)*
+
+**Authorization before disclosure.** A single-approval read first reads the approval's tenant and approver groups, and reads and projects the record that carries the review values only for a reviewer of that tenant who holds one of those groups. A view is read in one transaction, so it never mixes the state before and after a concurrent decision. *(`TestReviewerReads_ScopedToTenantAndGroup`, `TestReview_ConsistentUnderConcurrentDecision`.)*
+
+**One projection, two disclosures.** The reviewer API, the CLI and the Operations Console render the same projection (`action.BuildApprovalView`): the same stored facts, the same eligibility rules, the same wording of the rule. They differ in what is disclosed. A reviewer who could decide the approval reads the exact values, the arguments digest and the full destination. The console, whose browser session is not a reviewer, reads argument names only, no digest of values, and a destination reduced to method, scheme and host. *(`TestReview_DisclosureProfiles`, `TestApprovals_ConsoleAndReviewerShareFactsNotDisclosure`.)*
+
+Admin keys, agent keys, revoked and rotated-away credentials get `401 approval_not_authorized` on every reviewer route. Reads never change an operation, an approval, an attempt or the evidence: an approval whose lifetime elapsed is reported as expired and stays `pending` in the store until the decision path reaches it. The view shows the declared `review.fields` exactly and nothing else of the payload: a field declared `non_material` never appears in it. *(Backed by `TestReviewerReads_ScopedToTenantAndGroup`, `TestReviewerReads_StorageFailureIsNotAnEmptyAnswer`, `TestReviewerReads_UseCaseNoLongerServed`, `TestReview_DisclosureProfiles`, `TestReview_BoundFactsSurviveConfigurationChanges`, `TestListApprovals_FilterBeforeBoundAndCompleteAcrossPages`, `TestListApprovals_UndecidableNeverHideActionable`, `TestReader_ReadOnlyConnectionAndNoMutation`, `TestE2E_ActionGateway_ArgumentRules`.)*
 
 ## Endpoints
 

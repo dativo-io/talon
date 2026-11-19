@@ -10,10 +10,10 @@ import (
 )
 
 func TestIsAppRoute(t *testing.T) {
-	for _, p := range []string{"/overview", "/use-cases", "/use-cases/hr-analytics-assistant", "/sessions", "/sessions/s-1", "/sessions/s-1/", "/evidence/proxy_ab12", "/costs", "/configuration", "/system"} {
+	for _, p := range []string{"/overview", "/use-cases", "/use-cases/hr-analytics-assistant", "/approvals", "/approvals/apr_0123456789abcdef0123", "/sessions", "/sessions/s-1", "/sessions/s-1/", "/evidence/proxy_ab12", "/costs", "/configuration", "/system"} {
 		assert.True(t, IsAppRoute(p), p)
 	}
-	for _, p := range []string{"/evidence", "/decisions", "/agents", "/sessions/a/b", "/console/v1/overview", "/console/auth/pair", "/v1/secrets", "/static", "/overview/x", "/../etc/passwd", "/sessions//x", "", "overview"} {
+	for _, p := range []string{"/evidence", "/decisions", "/agents", "/approvals/apr_1/decisions", "/sessions/a/b", "/console/v1/overview", "/console/auth/pair", "/v1/secrets", "/static", "/overview/x", "/../etc/passwd", "/sessions//x", "", "overview"} {
 		assert.False(t, IsAppRoute(p), p)
 	}
 }

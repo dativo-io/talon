@@ -119,7 +119,7 @@ export function EvidencePage() {
                   )}
                 </dd>
                 <dt>Operation status</dt><dd>{humanize(r.action_lifecycle.operation_status)}</dd>
-                {r.action_lifecycle.approval_status ? (<><dt>Approval</dt><dd>{humanize(r.action_lifecycle.approval_status)}{r.action_lifecycle.approver_groups?.length ? ` · groups ${r.action_lifecycle.approver_groups.join(", ")}` : ""}</dd></>) : null}
+                {r.action_lifecycle.approval_status ? (<><dt>Approval</dt><dd>{humanize(r.action_lifecycle.approval_status)}{r.action_lifecycle.approver_groups?.length ? ` · groups ${r.action_lifecycle.approver_groups.join(", ")}` : ""}{r.action_lifecycle.approval_id && !tampered ? <> · <Link to={scoped(`/approvals/${encodeURIComponent(r.action_lifecycle.approval_id)}`, r.tenant_id)}>open the approval</Link></> : null}</dd></>) : null}
                 {r.action_lifecycle.reviewer_principal ? (<><dt>Reviewer</dt><dd>{r.action_lifecycle.reviewer_principal}{r.action_lifecycle.reviewer_group ? ` (${r.action_lifecycle.reviewer_group})` : ""}</dd></>) : null}
                 <dt>Approval policy digest</dt><dd><CopyableIdentifier value={r.action_lifecycle.policy_digest} label="approval policy digest" /></dd>
               </dl>

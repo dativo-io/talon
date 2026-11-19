@@ -27,6 +27,9 @@ SHOTS = {
     # signed record of a refund that needed a reviewer.
     'action-policy': ('light-19-action-policy.png', 0, 100000),
     'action-evidence': ('light-20-action-evidence.png', 0, 1800),
+    # Approvals (#565): what the operator discovers in the read-only console.
+    'approvals': ('light-22-approvals.png', 0, 620),
+    'approval-detail': ('light-23-approval-detail.png', 0, 1500),
 }
 for name, (filename, y0, y1) in SHOTS.items():
     original = Image.open(SRC / filename).convert('RGB')
