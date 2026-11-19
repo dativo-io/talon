@@ -109,6 +109,7 @@ test-rego: install-opa ## OPA/Rego policy tests with the pinned OPA (installs it
 test-release-verify: ## Offline failure-injection tests of the published-artifact path (#359): scripts/verify-release.sh + scripts/install.sh against a fake release on 127.0.0.1 (altered binary, modified/missing manifest digest, version/commit mismatch, registry without digest, unparseable metadata, private image, draft, relative paths) and scripts/release-platform-report.sh (darwin outcome classification); no Docker, no network
 	@bash ./scripts/test-verify-release.sh
 	@bash ./scripts/test-release-platform-report.sh
+	@bash ./scripts/test-release-toolchain-check.sh
 
 verify-release: ## Verify a PUBLISHED release from the public artifacts (TAG=vX.Y.Z, default latest): checksums, executable version/commit, showcase manifest digest, bundle, anonymous image pulls, install.sh
 	@bash ./scripts/verify-release.sh --tag "$(or $(TAG),latest)" --install "$(CURDIR)/dist/verify-release-install"

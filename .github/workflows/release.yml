@@ -123,23 +123,11 @@ jobs:
           set -euo pipefail
           PREVIOUS_TAG="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)"
           echo "current tag: $RELEASE_TAG; release notes since: ${PREVIOUS_TAG:-<none: first release>}"
-          # The build image carries the newest goreleaser-cross Go of this
-          # line; the toolchain that compiles the release is the one go.mod
-          # names (a security patch release may be newer than the image).
-          # release-console-acceptance checks the released executable for it.
-          GO_TOOLCHAIN="go$(sed -n 's/^go //p' go.mod)"
-          echo "toolchain: $GO_TOOLCHAIN"
-          docker run --rm --privileged \
-            -v "$PWD:/work" -w /work \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$HOME/.docker:/root/.docker" \
-            -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
-            -e CGO_ENABLED=1 \
-            -e GOTOOLCHAIN="$GO_TOOLCHAIN" \
-            -e GORELEASER_CURRENT_TAG="$RELEASE_TAG" \
-            -e GORELEASER_PREVIOUS_TAG="$PREVIOUS_TAG" \
-            ghcr.io/goreleaser/goreleaser-cross:v1.26.10 \
-            release --clean
+          # One command for the release and for its snapshot rehearsal
+          # (release-build-snapshot.yml). The toolchain is the one go.mod
+          # names; release-verify reads it back from every executable.
+          GITHUB_TOKEN="$GH_TOKEN" GORELEASER_CURRENT_TAG="$RELEASE_TAG" GORELEASER_PREVIOUS_TAG="$PREVIOUS_TAG" \
+            bash scripts/release-build.sh release
 
   # OpenShell showcase bundle (#482/#463/#507): the canonical runner, its
   # helpers and a sha256 manifest naming the pinned agent image AND the digest
@@ -320,11 +308,6 @@ jobs:
           gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/assets" -p "$ARCHIVE" -p checksums.txt
           (cd "$RUNNER_TEMP/assets" && grep -F " $ARCHIVE" checksums.txt | sha256sum -c -)
           tar -C "$RUNNER_TEMP/talon" -xzf "$RUNNER_TEMP/assets/$ARCHIVE" talon
-          # The released executable was compiled by the toolchain go.mod names.
-          want="go$(sed -n 's/^go //p' go.mod)"
-          got="$(go version "$RUNNER_TEMP/talon/talon" | awk '{print $NF}')"
-          echo "released executable toolchain: $got (go.mod: $want)"
-          [ "$got" = "$want" ] || { echo "::error::the released talon was built with $got, go.mod names $want"; exit 1; }
       - name: Install Playwright (pinned) and Chromium
         if: steps.cap.outputs.console == 'true'
         working-directory: tests/browser
@@ -459,8 +442,45 @@ jobs:
           set -euo pipefail
           bash scripts/release-capabilities.sh "$RELEASE_TAG" | tee -a "$GITHUB_OUTPUT"
           if ! grep -q '^console=true$' "$GITHUB_OUTPUT"; then
-            echo "### Operations console from the released image and published-image quickstart: NOT APPLICABLE — $RELEASE_TAG predates them (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Compiler check, operations console from the released image and published-image quickstart: NOT APPLICABLE — $RELEASE_TAG predates them (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
           fi
+      # Which compiler produced what customers receive, read from the
+      # artifacts themselves (#572): `talon` in the linux archive and in the
+      # released image, every helper in the showcase bundle, `support-agent`
+      # in the released agent image, and a darwin archive when the release
+      # has one. Each must report the toolchain the RELEASE's go.mod names
+      # (fetched at the tag: in an audit this checkout is the dispatching
+      # branch). The builder image's tag and GOTOOLCHAIN are not evidence.
+      # Both images are linux/amd64, the only platform they are published for.
+      - uses: actions/setup-go@v5
+        if: steps.cap.outputs.toolchain == 'true'
+        with:
+          go-version-file: go.mod
+      - name: Every distributed executable was compiled by the toolchain the release's go.mod names
+        if: steps.cap.outputs.toolchain == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          gh api -H 'Accept: application/vnd.github.raw' "repos/$GH_REPO/contents/go.mod?ref=$RELEASE_TAG" > "$RUNNER_TEMP/release-go.mod"
+          mkdir -p "$RUNNER_TEMP/image-bin"
+          from_image() { # image path-in-image destination
+            local id
+            docker pull -q --platform linux/amd64 "$1" >/dev/null
+            id="$(docker create --platform linux/amd64 "$1")"
+            docker cp "$id:$2" "$3"
+            docker rm "$id" >/dev/null
+          }
+          from_image "ghcr.io/dativo-io/talon:${VERSION}" /usr/local/bin/talon "$RUNNER_TEMP/image-bin/talon"
+          from_image "ghcr.io/dativo-io/talon-openshell-agent:${VERSION}" /usr/local/bin/support-agent "$RUNNER_TEMP/image-bin/support-agent"
+          bash scripts/release-toolchain-check.sh --go-mod "$RUNNER_TEMP/release-go.mod" \
+            --assets-dir "$RUNNER_TEMP/assets" --version "$VERSION" --work-dir "$RUNNER_TEMP/toolchain" \
+            "talon (image ghcr.io/dativo-io/talon:${VERSION}, linux/amd64)=$RUNNER_TEMP/image-bin/talon" \
+            "support-agent (image ghcr.io/dativo-io/talon-openshell-agent:${VERSION}, linux/amd64)=$RUNNER_TEMP/image-bin/support-agent" \
+            | tee "$RUNNER_TEMP/toolchain.log"
+          { echo '### Compiler of every distributed executable'; echo '```'; cat "$RUNNER_TEMP/toolchain.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Check out the release's own Compose stack and smoke
         if: steps.cap.outputs.console == 'true'
         uses: actions/checkout@v4
@@ -590,7 +610,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           cp "$RUNNER_TEMP/showcase-validate.log" artifacts/ 2>/dev/null || true
-          cp "$RUNNER_TEMP/verify-draft.log" "$RUNNER_TEMP/verify-draft.json" "$RUNNER_TEMP/platform-assets.md" "$RUNNER_TEMP/verify-public.log" "$RUNNER_TEMP/public/verify-public.json" artifacts/ 2>/dev/null || true
+          cp "$RUNNER_TEMP/verify-draft.log" "$RUNNER_TEMP/verify-draft.json" "$RUNNER_TEMP/platform-assets.md" "$RUNNER_TEMP/toolchain.log" "$RUNNER_TEMP/verify-public.log" "$RUNNER_TEMP/public/verify-public.json" artifacts/ 2>/dev/null || true
           for d in /tmp/talon-openshell-showcase.*; do
             [ -d "$d/logs" ] || continue
             dest="artifacts/$(basename "$d")"
