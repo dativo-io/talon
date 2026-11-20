@@ -402,7 +402,7 @@ func TestAgentsOverview_KeepsConfiguredRuntimeAndTrafficApart(t *testing.T) {
 	// Registered, valid, never loaded, never seen: it says exactly that.
 	assert.Regexp(t, `^new-app\s+enabled\s+not loaded\s+none observed\s+\$0\.00 / \$500\.00\s+—$`, line("new-app"))
 	assert.Regexp(t, `^support\s+enabled\s+loaded\s+2m ago\s+\$12\.40 / \$500\.00\s+—$`, line("support"))
-	assert.Regexp(t, `^refunds\s+enabled\s+older version\s+3h ago\s+.*blocked: daily budget exhausted`, line("refunds"))
+	assert.Regexp(t, `^refunds\s+enabled\s+other version\s+3h ago\s+.*blocked: daily budget exhausted`, line("refunds"))
 	assert.Regexp(t, `^paused\s+stopped\s+loaded\s+none observed\s+.*stopped: disabled by operator$`, line("paused"))
 	assert.NotContains(t, out, "healthy", "the listing never says 'healthy': absence of a signal is not a working application")
 	assert.Contains(t, out, "Fleet issues (1)")

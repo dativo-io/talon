@@ -91,7 +91,7 @@ func runtimeWord(view *runtimestatus.View, readable bool, r *fleet.AgentRow) str
 	case runtimestatus.LoadedMatchesFile:
 		return "loaded"
 	case runtimestatus.LoadedDiffersFromFile:
-		return "older version"
+		return "other version"
 	case runtimestatus.NotInActiveGeneration:
 		return "not loaded"
 	}
@@ -208,7 +208,7 @@ func runtimeLine(r *effective.Report) string {
 	case runtimestatus.LoadedMatchesFile:
 		return "loaded by the running Talon process"
 	case runtimestatus.LoadedDiffersFromFile:
-		return "the running Talon process has loaded ANOTHER version of this file"
+		return fmt.Sprintf("the running Talon process reports ANOTHER version of this file (it refreshes its report every %s)", runtimestatus.DefaultInterval)
 	case runtimestatus.NotInActiveGeneration:
 		return "not loaded: a Talon process is running without this use case"
 	}
