@@ -7,31 +7,46 @@
 #   TALON_BIN    talon binary (default: bin/talon, then `talon` on PATH)
 #   N8N_EXPECT   expected `n8n --version` (default: the pinned release below)
 #
-# Scenarios (each checks the refund service's own call counter):
-#   30.00 EUR                         → one dispatch
-#   75.00 EUR                         → zero until a separately authenticated
-#                                       reviewer approves; then one
-#   900.00 EUR                        → zero
-#   rejected / expired approval       → zero
-#   changed amount, same operation     → conflict, zero
-#   distinct request_id, same ticket   → independently authorized operation
-#   replay of a finished ticket       → "refunded" from Talon's record, no second dispatch
-#   concurrent identical requests     → one dispatch
-#   Talon stopped before dispatch     → the run fails, zero
-#   refund service drops the answer   → UNKNOWN, no retry
-#   unauthenticated webhook caller    → refused by n8n, zero
-#   malformed request                 → refused before Talon, zero
+# The installation is set up the way the README documents it: the company
+# configuration of the example, `talon agents add refund-bot`, the example's
+# fragment appended to the registered agent file, `talon approver add`, and
+# decisions through `talon approvals`.
+#
+# Every scenario checks the refund service's own call counter:
+#   ingress          unauthenticated / wrong caller; malformed ticket, amount,
+#                    currency, request_id → refused before Talon, zero
+#   allow            30.00 and 50.00 EUR → one dispatch each
+#   approval         50.01, 75.00 and 500.00 EUR → zero until a separately
+#                    authenticated reviewer approves; then one each
+#   deny             500.01 and 900.00 EUR → the company's rule, zero
+#   reviewer         the workflow's key and the admin key cannot decide
+#   rejection/expiry → zero
+#   answers          an altered, contradictory or malformed answer to
+#                    "establish" → no claim, zero
+#   identity         changed arguments under one operation → conflict, zero;
+#                    replay → recorded answer, no second dispatch; two stable
+#                    request_ids on one ticket → two operations
+#   concurrency      four identical requests → one dispatch
+#   failures         Talon unreachable before the operation exists → zero;
+#                    connection lost DURING the claim → the run fails, the
+#                    operation completed in Talon, a retry reports it and
+#                    dispatches nothing more; the refund service drops its
+#                    answer → UNKNOWN, never retried
+#   proof            every refund-service call carries Talon's idempotency
+#                    key; every lifecycle verifies; `talon agents show`
 set -euo pipefail
 
 PINNED_N8N="2.48.5"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXAMPLE="$REPO_ROOT/examples/n8n-refund"
 N8N_BIN="${N8N_BIN:?set N8N_BIN to the n8n executable of release $PINNED_N8N}"
 TALON_BIN="${TALON_BIN:-}"
 if [ -z "$TALON_BIN" ]; then
   if [ -x "$REPO_ROOT/bin/talon" ]; then TALON_BIN="$REPO_ROOT/bin/talon"; else TALON_BIN="$(command -v talon)"; fi
 fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/n8n-refund-live.XXXXXX")"
-REFUND_PORT="${REFUND_PORT:-19411}"; TALON_PORT="${TALON_PORT:-19412}"; N8N_PORT="${N8N_PORT:-19413}"
+REFUND_PORT="${REFUND_PORT:-19411}"; TALON_PORT="${TALON_PORT:-19412}"; N8N_PORT="${N8N_PORT:-19413}"; LINK_PORT="${LINK_PORT:-19414}"
+TALON_URL="http://127.0.0.1:${TALON_PORT}"
 WEBHOOK="http://127.0.0.1:${N8N_PORT}/webhook/talon-refund"
 pids=()
 failures=0
@@ -100,43 +115,124 @@ python3 "$WORK/refund_service.py" "$REFUND_PORT" & pids+=($!)
 wait_http "http://127.0.0.1:${REFUND_PORT}/health" 20
 refunds() { curl -fsS "http://127.0.0.1:${REFUND_PORT}/count" | python3 -c 'import json,sys; print(json.load(sys.stdin)["calls"])'; }
 
-# ---- Talon: the example use case, a reviewer, short approval lifetime -----
-export TALON_DATA_DIR="$WORK/talon-data" TALON_AGENTS_DIR="$WORK/agents" TALON_GATEWAY_CONFIG="$WORK/absent.yaml"
+# ---- the network link between n8n and Talon -------------------------------
+# n8n reaches Talon through this pass-through. Its modes stand for what a
+# network path or a faulty intermediary can do to Talon's answers:
+#   cut-claim         a claim reaches Talon, Talon answers, and the answer is
+#                     dropped: a connection lost DURING a claim
+#   tamper-id         the answer to "establish" names another operation
+#   tamper-arguments  ... carries other arguments than were requested
+#   tamper-status     ... is delivered with a conflict status
+#   tamper-body       ... is not JSON
+cat >"$WORK/link.py" <<'PY'
+import json, sys, threading, urllib.request, urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+upstream, state, lock = sys.argv[2], {"mode": "ok", "cut": 0, "tampered": 0}, threading.Lock()
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _relay(self):
+        if self.path.startswith("/__link/"):
+            with lock:
+                if self.path.startswith("/__link/mode/"): state["mode"] = self.path.rsplit("/", 1)[-1]
+                body = ("%s %d %d" % (state["mode"], state["cut"], state["tampered"])).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+        data = self.rfile.read(int(self.headers.get("Content-Length", "0") or 0)) or None
+        req = urllib.request.Request(upstream + self.path, data=data, method=self.command)
+        for k, v in self.headers.items():
+            if k.lower() not in ("host", "content-length", "connection", "accept-encoding"): req.add_header(k, v)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r: code, headers, body = r.status, r.headers, r.read()
+        except urllib.error.HTTPError as e: code, headers, body = e.code, e.headers, e.read()
+        except OSError:   # Talon is not reachable: neither is it through this link
+            self.close_connection = True; self.connection.close(); return
+        with lock: mode = state["mode"]
+        if mode == "cut-claim" and self.command == "POST" and self.path.endswith("/attempts"):
+            with lock: state["cut"] += 1   # Talon has answered; the caller never hears it
+            self.close_connection = True; self.connection.close(); return
+        if mode.startswith("tamper-") and self.command == "POST" and self.path == "/v1/action-operations":
+            with lock: state["tampered"] += 1
+            if mode == "tamper-status": code = 409
+            elif mode == "tamper-body": body = b'{"operation": {"verdict": "ALLOW"'
+            else:
+                answer = json.loads(body)
+                if mode == "tamper-id": answer["operation"]["operation_id"] += "-other"
+                if mode == "tamper-arguments": answer["operation"]["review"]["amount"] = "1.00"
+                body = json.dumps(answer).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", headers.get("Content-Type", "application/json"))
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    do_GET = do_POST = _relay
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+python3 "$WORK/link.py" "$LINK_PORT" "$TALON_URL" & pids+=($!)
+link() { curl -fsS "http://127.0.0.1:${LINK_PORT}/__link/$1"; }
+
+# ---- Talon: the installation, set up as the README documents it -----------
+export TALON_DATA_DIR="$WORK/talon-data" TALON_AGENTS_DIR="$WORK/agents" TALON_GATEWAY_CONFIG="$WORK/talon.config.yaml"
 export TALON_SECRETS_KEY="0123456789abcdef0123456789abcdef" TALON_SIGNING_KEY="n8n-live-signing-key-0123456789abcdef-0123456789" TALON_ADMIN_KEY="n8n-live-admin-key-0001"
-mkdir -p "$TALON_DATA_DIR" "$TALON_AGENTS_DIR/refund-bot"
-sed -e "s#https://refunds.internal/v1/refunds#http://127.0.0.1:${REFUND_PORT}/refunds#" -e 's#expires_after: 30m#expires_after: 25s#' \
-  "$REPO_ROOT/examples/n8n-refund/agent.talon.yaml" >"$TALON_AGENTS_DIR/refund-bot/agent.talon.yaml"
-AGENT_KEY="n8n-live-refund-bot-key-000000000001"
+unset TALON_APPROVER_KEY
+cp "$EXAMPLE/talon.config.yaml" "$WORK/talon.config.yaml"
 talon() { (cd "$WORK" && "$TALON_BIN" "$@"); }
-talon secrets set refund-bot-talon-key "$AGENT_KEY" >/dev/null
+view() { talon agents show refund-bot 2>&1; }
+
+# 1. Register the AI use case. Its Talon key is issued once, here.
+registration="$(talon agents add refund-bot --tenant acme --owner support-operations --description "Support refunds requested from the n8n workflow" 2>&1)"
+AGENT_KEY="$(printf '%s\n' "$registration" | grep -oE 'talon_uc_[0-9a-f]{48}' | head -n1)"
+[ -n "$AGENT_KEY" ] || { echo "the registration issued no key" >&2; printf '%s\n' "$registration" | grep -v talon_uc_ >&2; exit 1; }
+check "talon agents add registers refund-bot under the company policy" "$(printf '%s\n' "$registration" | grep -c 'Registered refund-bot (tenant acme)')" "1"
+# 2. Add the action and the use case's own rule to the registered file.
+sed -e "s#https://refunds.internal/v1/refunds#http://127.0.0.1:${REFUND_PORT}/refunds#" -e 's#expires_after: 30m#expires_after: 25s#' \
+  "$EXAMPLE/use-case-action.append.yaml" >>"$TALON_AGENTS_DIR/refund-bot/agent.talon.yaml"
 talon validate >/dev/null
+# Registered is not connected: nothing runs yet.
+check "before talon serve the use case is not active" "$(view | grep -c 'Status      Not active')" "1"
+# 3. A reviewer: a separate identity with its own credential.
 REVIEWER_KEY="$(talon approver add --name lead-1 --tenant acme --groups support-leads | grep -oE 'talon_appr_cred_[0-9a-f]+\.[A-Za-z0-9_-]+' | head -n1)"
 [ -n "$REVIEWER_KEY" ] || { echo "no reviewer credential" >&2; exit 1; }
 start_talon() {
-  (cd "$WORK" && exec "$TALON_BIN" serve --port "$TALON_PORT") >>"$WORK/talon.log" 2>&1 &
+  (cd "$WORK" && exec "$TALON_BIN" serve --host 127.0.0.1 --port "$TALON_PORT" --gateway --gateway-config talon.config.yaml) >>"$WORK/talon.log" 2>&1 &
   talon_pid=$!; pids+=("$talon_pid")
-  wait_http "http://127.0.0.1:${TALON_PORT}/health" 30
+  wait_http "${TALON_URL}/health" 30
 }
 start_talon
-# The reviewer is a separate identity: its own credential, Talon's reviewer
-# API, never n8n and never the workflow's key.
-approval_of() { # approval_of <ticket> → the pending approval id of refund-<ticket> ("" if none)
-  curl -sS "http://127.0.0.1:${TALON_PORT}/v1/action-operations/refund-$1" -H "Authorization: Bearer ${AGENT_KEY}" |
-    python3 -c 'import json,sys
-try:
-    a = (json.load(sys.stdin).get("operation") or {}).get("approval") or {}
-    print(a.get("id", "") if a.get("status") == "pending" else "")
-except Exception:
-    print("")'
+wait_http "http://127.0.0.1:${LINK_PORT}/health" 20
+check "a running Talon has loaded the use case; no request has arrived" "$(view | grep -cE 'Status      Waiting for its first request|Runtime     loaded by the running Talon process')" "2"
+
+# The reviewer works with `talon approvals` and its own credential: never
+# n8n, never the workflow's key, never the admin key.
+approvals() { (cd "$WORK" && TALON_APPROVER_KEY="$REVIEWER_KEY" "$TALON_BIN" approvals "$@" --url "$TALON_URL"); }
+approval_of() { # approval_of <operation id> → the id of its approval that can be decided now ("" if none)
+  # As a reviewer does it: the listing names what needs a decision, and
+  # `show` says which exact operation an approval authorizes.
+  local id
+  for id in $(approvals list --json 2>/dev/null | python3 -c 'import json,sys
+try: print(" ".join(a.get("approval_id", "") for a in json.load(sys.stdin).get("approvals", [])))
+except Exception: pass'); do
+    if approvals show "$id" --json 2>/dev/null | python3 -c 'import json,sys
+def has(x, want):
+    if isinstance(x, dict): return x.get("operation_id") == want or any(has(v, want) for v in x.values())
+    if isinstance(x, list): return any(has(v, want) for v in x)
+    return False
+try: sys.exit(0 if has(json.load(sys.stdin), sys.argv[1]) else 1)
+except Exception: sys.exit(1)' "$1"; then echo "$id"; return 0; fi
+  done
+  echo ""
 }
-wait_pending() { # wait_pending <ticket>
+wait_pending() { # wait_pending <operation id>
   local deadline=$(( $(date +%s) + 30 )) id=""
   while [ -z "$id" ] && [ "$(date +%s)" -lt "$deadline" ]; do id="$(approval_of "$1")"; [ -n "$id" ] || sleep 1; done
   echo "$id"
 }
-decide() { # decide <approval id> approve|reject <reason>
-  curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${TALON_PORT}/v1/approvals/$1/decisions" \
-    -H "Authorization: Bearer ${REVIEWER_KEY}" -H 'Content-Type: application/json' -d "{\"decision\":\"$2\",\"reason\":\"$3\"}"
+decide() { # decide <approval id> approve|reject <reason> → "ok" or "refused"
+  if approvals "$2" "$1" --reason "$3" >/dev/null 2>&1; then echo ok; else echo refused; fi
+}
+operation() { # operation <operation id> <field path> → the field of Talon's record, read with the use case's key
+  curl -sS "${TALON_URL}/v1/action-operations/$1" -H "Authorization: Bearer ${AGENT_KEY}" | python3 -c 'import json,sys
+try:
+    v = (json.load(sys.stdin).get("operation") or {})
+    for k in sys.argv[1].split("."): v = (v or {}).get(k)
+    print("" if v is None else v)
+except Exception: print("")' "$2"
 }
 
 # ---- n8n: import the real credentials and the real workflow, publish, start
@@ -145,13 +241,14 @@ export N8N_DIAGNOSTICS_ENABLED=false N8N_VERSION_NOTIFICATIONS_ENABLED=false N8N
 export GENERIC_TIMEZONE=UTC N8N_LOG_LEVEL=warn N8N_TEMPLATES_ENABLED=false
 mkdir -p "$N8N_USER_FOLDER"
 WEBHOOK_SECRET="n8n-live-webhook-caller-secret"
-cat >"$WORK/credentials.json" <<JSON
+( umask 077; cat >"$WORK/credentials.json" <<JSON
 [
   {"id": "talon-refund-bot-key", "name": "Talon refund-bot key", "type": "httpHeaderAuth", "data": {"name": "Authorization", "value": "Bearer ${AGENT_KEY}"}},
   {"id": "refund-webhook-caller", "name": "Refund webhook caller", "type": "httpHeaderAuth", "data": {"name": "X-Refund-Caller", "value": "${WEBHOOK_SECRET}"}}
 ]
 JSON
-python3 - "$REPO_ROOT/examples/n8n-refund/refund-approval.workflow.json" "$WORK/workflow.json" "http://127.0.0.1:${TALON_PORT}" <<'PY'
+)
+python3 - "$EXAMPLE/refund-approval.workflow.json" "$WORK/workflow.json" "http://127.0.0.1:${LINK_PORT}" <<'PY'
 import json, sys
 wf = json.load(open(sys.argv[1]))
 wf["id"] = "talonrefundlive01"
@@ -182,84 +279,157 @@ try: print(json.load(open(sys.argv[1])).get("result",""))
 except Exception: print("")' "$WORK/resp")"
 }
 refund() { printf '{"ticket_id":"%s","amount":"%s","currency":"EUR"}' "$1" "$2"; }
+approved_refund() { # approved_refund <ticket> <amount> <reason>: the request waits, a reviewer approves, it is refunded
+  local before; before="$(refunds)"
+  call "$(refund "$1" "$2")" >"$WORK/$1.out" &
+  local run=$! approval
+  approval="$(wait_pending "refund-$1")"
+  check "$2 EUR waits for a reviewer" "$([ -n "$approval" ] && echo pending)" "pending"
+  check "$2 EUR: zero dispatch before the decision" "$(refunds)" "$before"
+  check "$2 EUR: the reviewer approves with talon approvals" "$(decide "$approval" approve "$3")" "ok"
+  wait "$run"
+  check "$2 EUR is refunded after the approval" "$(cat "$WORK/$1.out")" "200 refunded"
+  check "$2 EUR: exactly one dispatch" "$(refunds)" "$((before + 1))"
+}
 
-echo; echo "== ingress"
+echo; echo "== ingress: nothing reaches Talon"
 st="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$WEBHOOK" -H 'Content-Type: application/json' -d "$(refund T-1 30.00)")"
 check "an unauthenticated webhook caller is refused by n8n" "$st" "403"
 st="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$WEBHOOK" -H 'Content-Type: application/json' -H 'X-Refund-Caller: wrong' -d "$(refund T-1 30.00)")"
 check "a wrong webhook credential is refused by n8n" "$st" "403"
 check "a malformed ticket id is refused before Talon" "$(call '{"ticket_id":"T-1/../x","amount":"30.00","currency":"EUR"}')" "400 invalid_request"
+check "a missing ticket id is refused before Talon" "$(call '{"amount":"30.00","currency":"EUR"}')" "400 invalid_request"
 check "a numeric (non-string) amount is refused before Talon" "$(call '{"ticket_id":"T-2","amount":30,"currency":"EUR"}')" "400 invalid_request"
-check "no refund so far" "$(refunds)" "0"
+check "a missing amount is refused before Talon" "$(call '{"ticket_id":"T-2","currency":"EUR"}')" "400 invalid_request"
+check "an amount with three fractional digits is refused before Talon" "$(call '{"ticket_id":"T-2","amount":"30.001","currency":"EUR"}')" "400 invalid_request"
+check "a negative amount is refused before Talon" "$(call '{"ticket_id":"T-2","amount":"-30.00","currency":"EUR"}')" "400 invalid_request"
+check "a missing currency is refused before Talon" "$(call '{"ticket_id":"T-2","amount":"30.00"}')" "400 invalid_request"
+check "a malformed currency is refused before Talon" "$(call '{"ticket_id":"T-2","amount":"30.00","currency":"euro"}')" "400 invalid_request"
+check "a malformed request_id is refused before Talon" "$(call '{"ticket_id":"T-2","amount":"30.00","currency":"EUR","request_id":"invalid/path"}')" "400 invalid_request"
+check "ingress: no refund" "$(refunds)" "0"
+# A well-formed currency the action does not accept reaches Talon and is
+# refused by the action's trusted schema: nothing is bound, nothing dispatched.
+check "a currency outside the action's schema is refused by Talon, not refunded" "$(call '{"ticket_id":"T-3","amount":"30.00","currency":"USD"}')" "409 not_authorized"
+check "schema refusal: no refund" "$(refunds)" "0"
 
-echo; echo "== allow, deny"
+echo; echo "== allow: at or below 50.00"
 check "30.00 EUR is refunded" "$(call "$(refund T-30 30.00)")" "200 refunded"
-check "30.00 EUR: one dispatch" "$(refunds)" "1"
-check "replaying the finished ticket answers 'refunded' from Talon's record" "$(call "$(refund T-30 30.00)")" "200 refunded"
-check "replay: no second dispatch" "$(refunds)" "1"
-check "900.00 EUR is denied" "$(call "$(refund T-900 900.00)")" "403 denied"
-check "900.00 EUR: zero dispatch" "$(refunds)" "1"
+check "30.00 EUR: exactly one dispatch" "$(refunds)" "1"
+check "50.00 EUR (the boundary) is refunded without a reviewer" "$(call "$(refund T-50 50.00)")" "200 refunded"
+check "50.00 EUR: exactly one dispatch" "$(refunds)" "2"
+check "replaying a finished operation answers 'refunded' from Talon's record" "$(call "$(refund T-30 30.00)")" "200 refunded"
+check "replay: no second dispatch" "$(refunds)" "2"
 
-echo; echo "== approval by a separately authenticated reviewer"
+echo; echo "== an answer that is not Talon's verdict for this operation never leads to a claim"
+# Talon allows each of these 40.00 refunds and records the operation as
+# authorized. The answer the workflow receives is altered on the way. The
+# workflow must not claim: the operation stays authorized, nothing is
+# dispatched.
+tampered() { # tampered <mode> <ticket> <what>
+  local before; before="$(refunds)"
+  link "mode/$1" >/dev/null
+  check "$3: the workflow reports no authorization" "$(call "$(refund "$2" 40.00)")" "409 not_authorized"
+  link mode/ok >/dev/null
+  check "$3: Talon had authorized the operation, and it was never claimed" "$(operation "refund-$2" operation_status) $(operation "refund-$2" attempt_count)" "authorized 0"
+  check "$3: zero dispatch" "$(refunds)" "$before"
+}
+tampered tamper-id T-41 "the answer names another operation"
+tampered tamper-arguments T-42 "the answer carries other arguments"
+tampered tamper-status T-43 "an ALLOW delivered with a conflict status"
+tampered tamper-body T-44 "an answer that is not JSON"
+check "the four answers were really altered on the way" "$(link state | cut -d' ' -f3)" "4"
+
+echo; echo "== deny: above 500.00 (the company's rule)"
+check "500.01 EUR is denied" "$(call "$(refund T-501 500.01)")" "403 denied"
+check "500.01 EUR is denied by the company's rule, not the use case's" "$(operation refund-T-501 matched_rule_source)" "company"
+check "900.00 EUR is denied" "$(call "$(refund T-900 900.00)")" "403 denied"
+check "deny: zero dispatch" "$(refunds)" "2"
+check "a denied refund cannot be obtained under another id for the same ticket" "$(call '{"ticket_id":"T-900","amount":"900.00","currency":"EUR","request_id":"again"}')" "403 denied"
+check "deny under another id: zero dispatch" "$(refunds)" "2"
+
+echo; echo "== approval: above 50.00, at or below 500.00"
 call "$(refund T-75 75.00)" >"$WORK/t75.out" &
 t75=$!
-approval="$(wait_pending T-75)"
+approval="$(wait_pending refund-T-75)"
 check "75.00 EUR waits for a reviewer" "$([ -n "$approval" ] && echo pending)" "pending"
-check "75.00 EUR: zero dispatch before the decision" "$(refunds)" "1"
-check "changed amount under the same ticket is a conflict, not a refund" "$(call "$(refund T-75 450.00)" | cut -d' ' -f1)" "409"
-check "the workflow's own key cannot approve" "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${TALON_PORT}/v1/approvals/${approval}/decisions" -H "Authorization: Bearer ${AGENT_KEY}" -H 'Content-Type: application/json' -d '{"decision":"approve","reason":"self"}')" "401"
-check "the reviewer approves" "$(decide "$approval" approve "customer verified")" "200"
+check "75.00 EUR: zero dispatch before the decision" "$(refunds)" "2"
+shown="$(approvals show "$approval" 2>&1 || true)"
+check "talon approvals show names the action and the exact amount" "$(printf '%s\n' "$shown" | grep -q 'create_refund_request' && printf '%s\n' "$shown" | grep -q '75\.00' && echo yes || echo no)" "yes"
+check "changed arguments under the same operation are a conflict, not a refund" "$(call "$(refund T-75 450.00)")" "409 not_authorized"
+check "the workflow's own key cannot decide (reviewer API)" "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${TALON_URL}/v1/approvals/${approval}/decisions" -H "Authorization: Bearer ${AGENT_KEY}" -H 'Content-Type: application/json' -d '{"decision":"approve","reason":"self"}')" "401"
+check "the workflow's own key cannot decide (talon approvals)" "$( (cd "$WORK" && TALON_APPROVER_KEY="$AGENT_KEY" "$TALON_BIN" approvals approve "$approval" --reason self --url "$TALON_URL" >/dev/null 2>&1) && echo decided || echo refused)" "refused"
+check "the admin key cannot decide" "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${TALON_URL}/v1/approvals/${approval}/decisions" -H "X-Talon-Admin-Key: ${TALON_ADMIN_KEY}" -H "Authorization: Bearer ${TALON_ADMIN_KEY}" -H 'Content-Type: application/json' -d '{"decision":"approve","reason":"admin"}')" "401"
+check "refused decisions: still zero dispatch" "$(refunds)" "2"
+check "the reviewer approves with talon approvals" "$(decide "$approval" approve "customer verified")" "ok"
 wait "$t75"
 check "75.00 EUR is refunded after the approval" "$(cat "$WORK/t75.out")" "200 refunded"
-check "75.00 EUR: one dispatch" "$(refunds)" "2"
+check "75.00 EUR: exactly one dispatch" "$(refunds)" "3"
+approved_refund T-5001 50.01 "just above the use case's threshold"
+approved_refund T-500 500.00 "the upper boundary"
+check "approvals: five dispatches so far" "$(refunds)" "5"
 
 echo; echo "== rejection and expiry"
 call "$(refund T-76 76.00)" >"$WORK/t76.out" &
 t76=$!
-approval="$(wait_pending T-76)"
-check "the reviewer rejects" "$(decide "$approval" reject "duplicate")" "200"
+approval="$(wait_pending refund-T-76)"
+check "the reviewer rejects with talon approvals" "$(decide "$approval" reject "duplicate")" "ok"
 wait "$t76"
 check "a rejected approval is not refunded" "$(cat "$WORK/t76.out")" "409 not_approved"
 check "the approval lifetime is 25s here; an undecided approval expires" "$(call "$(refund T-77 77.00)")" "409 not_approved"
-check "rejection and expiry: zero dispatch" "$(refunds)" "2"
+check "rejection and expiry: zero dispatch" "$(refunds)" "5"
 
 echo; echo "== concurrent identical requests"
 for i in 1 2 3 4; do call "$(refund T-31 31.00)" >"$WORK/c$i.out" & cpid[i]=$!; done
 for i in 1 2 3 4; do wait "${cpid[$i]}"; done
-check "four concurrent requests for one ticket: one dispatch" "$(refunds)" "3"
+check "four concurrent requests for one operation: one dispatch" "$(refunds)" "6"
 # Each run answers from Talon's state: the one that claimed reports the
 # refund, one that arrives after it reports the same recorded refund, one
 # that raced it reports 409. None causes a second dispatch.
 check "at least one of them reports the refund" "$([ "$(cat "$WORK"/c[1-4].out | grep -c '200 refunded' || true)" -ge 1 ] && echo yes)" "yes"
 
-echo; echo "== ambiguous outcome"
-curl -fsS "http://127.0.0.1:${REFUND_PORT}/mode/lossy" >/dev/null
-check "the refund service drops its answer: the workflow reports UNKNOWN" "$(call "$(refund T-32 32.00)")" "202 unknown"
-check "the refund service was called once" "$(refunds)" "4"
-curl -fsS "http://127.0.0.1:${REFUND_PORT}/mode/ok" >/dev/null
-check "a second request for the unknown ticket still reports UNKNOWN" "$(call "$(refund T-32 32.00)")" "202 unknown"
-check "unknown: no blind retry" "$(refunds)" "4"
-
 echo; echo "== distinct operations sharing one business ticket"
-check "second legitimate request on T-30 is independently authorized" "$(call '{"ticket_id":"T-30","amount":"30.00","currency":"EUR","request_id":"second"}')" "200 refunded"
-check "two distinct requests on one ticket: two dispatches" "$(refunds)" "5"
-check "retry reuses the exact second request identity" "$(call '{"ticket_id":"T-30","amount":"30.00","currency":"EUR","request_id":"second"}')" "200 refunded"
-check "same request_id: no duplicate dispatch" "$(refunds)" "5"
-check "invalid request_id fails before Talon" "$(call '{"ticket_id":"T-30","amount":"30.00","currency":"EUR","request_id":"invalid/path"}')" "400 invalid_request"
-check "invalid request_id: no extra dispatch" "$(refunds)" "5"
+check "a second legitimate request on T-30 is an operation of its own" "$(call '{"ticket_id":"T-30","amount":"30.00","currency":"EUR","request_id":"second"}')" "200 refunded"
+check "two requests on one ticket: two dispatches" "$(refunds)" "7"
+check "a retry reuses the same request_id" "$(call '{"ticket_id":"T-30","amount":"30.00","currency":"EUR","request_id":"second"}')" "200 refunded"
+check "same request_id: no duplicate dispatch" "$(refunds)" "7"
 
-echo; echo "== Talon unavailable"
+echo; echo "== the refund service accepts the request and loses its answer"
+curl -fsS "http://127.0.0.1:${REFUND_PORT}/mode/lossy" >/dev/null
+check "the workflow reports UNKNOWN" "$(call "$(refund T-32 32.00)")" "202 unknown"
+check "the refund service was called once" "$(refunds)" "8"
+curl -fsS "http://127.0.0.1:${REFUND_PORT}/mode/ok" >/dev/null
+check "the same request again still reports UNKNOWN" "$(call "$(refund T-32 32.00)")" "202 unknown"
+check "unknown: no blind retry" "$(refunds)" "8"
+
+echo; echo "== the connection to Talon is lost during the claim"
+link mode/cut-claim >/dev/null
+st="$(call "$(refund T-34 34.00)" | cut -d' ' -f1)"
+check "the claim reached Talon and its answer was dropped on the way back" "$(link state | cut -d' ' -f2)" "1"
+check "the run fails: it reports neither a refund nor that none happened" "$([ "$st" -ge 500 ] && echo failed || echo "$st")" "failed"
+check "Talon's record of the operation is authoritative" "$(operation refund-T-34 operation_status)" "succeeded"
+link mode/ok >/dev/null
+check "the same request again reports the recorded refund" "$(call "$(refund T-34 34.00)")" "200 refunded"
+
+echo; echo "== Talon unavailable before the operation exists"
+before_outage="$(refunds)"
 kill "$talon_pid"; wait "$talon_pid" 2>/dev/null || true
 st="$(call "$(refund T-33 33.00)" | cut -d' ' -f1)"
 check "with Talon stopped the run fails (no fallback path)" "$([ "$st" -ge 500 ] && echo failed || echo "$st")" "failed"
-check "Talon stopped: zero dispatch" "$(refunds)" "5"
+check "Talon stopped: zero dispatch" "$(refunds)" "$before_outage"
 start_talon
 
-echo; echo "== signed evidence"
-for op in refund-T-30 refund-T-75 refund-T-900 refund-T-76 refund-T-32 refund-T-30-second; do
+echo; echo "== no bypass, and proof"
+check "every call the refund service received carried Talon's idempotency key" "$(curl -fsS "http://127.0.0.1:${REFUND_PORT}/count" | python3 -c 'import json,sys
+s = json.load(sys.stdin); keys = s["keys"]
+print("yes" if len(keys) == s["calls"] and all(keys) else "no")')" "yes"
+check "the workflow export names no refund service" "$(grep -c "127.0.0.1:${REFUND_PORT}\|refunds.internal" "$WORK/workflow.json" || true)" "0"
+for op in refund-T-30 refund-T-50 refund-T-75 refund-T-5001 refund-T-500 refund-T-501 refund-T-900 refund-T-76 refund-T-77 refund-T-31 refund-T-32 refund-T-34 refund-T-30-second; do
   out="$(talon audit verify --operation "$op" 2>&1 || true)"
   check "lifecycle of $op verifies" "$(echo "$out" | grep -c 'INVALID' || true)" "0"
 done
+check "talon agents show names the use case's newest Action Gateway record, from this installation's evidence" "$(view | grep -c '· Action Gateway ·' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
+echo "--- talon agents show refund-bot"; view | sed -n 1,24p
+echo "--- refund service: $(refunds) calls"
 
 echo
 if [ "$failures" -eq 0 ]; then echo "PASS n8n-refund-live on n8n $n8n_version"; else echo "FAIL n8n-refund-live: $failures failed"; exit 1; fi

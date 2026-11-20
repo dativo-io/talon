@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/dativo-io/talon/internal/action"
+	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
 )
 
@@ -27,7 +28,8 @@ import (
 //   - the claim is reachable only from ALLOW and from an authorized approval;
 //   - Talon being unreachable stops the workflow (no continue-on-fail).
 // These are static checks. The live behaviour is scripts/n8n-refund-live.sh.
-// The example agent file compiles to the documented verdicts.
+// The example's company config and use-case fragment compile to the
+// documented verdicts, and the company constraint cannot be relaxed.
 
 type n8nWorkflow struct {
 	Nodes []struct {
@@ -38,6 +40,8 @@ type n8nWorkflow struct {
 		Credentials map[string]json.RawMessage `json:"credentials"`
 		OnError     string                     `json:"onError"`
 		ContinueOn  bool                       `json:"continueOnFail"`
+		RetryOnFail bool                       `json:"retryOnFail"`
+		MaxTries    int                        `json:"maxTries"`
 	} `json:"nodes"`
 	Connections map[string]struct {
 		Main [][]struct {
@@ -89,6 +93,70 @@ func TestN8nRefundWorkflow_SafetyProperties(t *testing.T) {
 	checkN8nClaimReachability(t, &wf)
 	checkN8nFirstOutput(t, &wf, "Talon verdict", "allow")
 	checkN8nFirstOutput(t, &wf, "Approval state", "authorized")
+	checkN8nAnswersAreValidated(t, &wf)
+}
+
+// checkN8nAnswersAreValidated: a verdict, an approval state and an outcome
+// are read only from an answer that carries exactly the requested operation
+// (id, action, bound arguments), and a verdict or a read only from a
+// successful HTTP status. An error body, a conflict, a stale or foreign
+// operation and a malformed answer never lead to a claim. The claim is never
+// retried by n8n.
+func checkN8nAnswersAreValidated(t *testing.T, wf *n8nWorkflow) {
+	t.Helper()
+	const sameOperation = ".operation_id === $('Validate request').first().json.operation_id"
+	const sameArguments = ".review.amount === $('Validate request').first().json.body.amount"
+	for _, tc := range []struct{ node, status string }{
+		{"Talon verdict", "$json.body.operation.verdict === 'ALLOW' && ($json.statusCode === 200 || $json.statusCode === 201)"},
+		{"Talon verdict", "$json.body.operation.verdict === 'REQUIRE_APPROVAL' && ($json.statusCode === 200 || $json.statusCode === 202)"},
+		{"Talon verdict", "$json.body.operation.verdict === 'DENY' && $json.statusCode === 403 && $json.body.operation.operation_status === 'denied'"},
+		{"Approval state", "$json.statusCode === 200"},
+		{"Outcome", ""},
+	} {
+		expr := n8nSwitchExpression(t, wf, tc.node)
+		for _, want := range []string{
+			"$json.body.operation" + sameOperation, ".action === 'create_refund_request'", "$json.body.operation" + sameArguments,
+			".review.ticket_id === $('Validate request').first().json.body.ticket_id", ".review.currency === $('Validate request').first().json.body.currency", "'NONE'",
+		} {
+			if !strings.Contains(expr, want) {
+				t.Errorf("%s must read Talon's answer only for exactly the requested operation; its expression lacks %q", tc.node, want)
+			}
+		}
+		if tc.status != "" && !strings.Contains(expr, tc.status) {
+			t.Errorf("%s must tie what it reads to the HTTP status Talon gives for it (%s), not only to a field in the body", tc.node, tc.status)
+		}
+	}
+	for i := range wf.Nodes {
+		n := &wf.Nodes[i]
+		if n.Type == "n8n-nodes-base.httpRequest" && (n.RetryOnFail || n.MaxTries > 0) {
+			t.Errorf("HTTP node %q retries on failure: a claim whose outcome is unknown must never be repeated by n8n", n.Name)
+		}
+	}
+}
+
+func n8nSwitchExpression(t *testing.T, wf *n8nWorkflow, node string) string {
+	t.Helper()
+	for i := range wf.Nodes {
+		if wf.Nodes[i].Name != node {
+			continue
+		}
+		var rules struct {
+			Values []struct {
+				Conditions struct {
+					Conditions []struct {
+						LeftValue string `json:"leftValue"`
+					} `json:"conditions"`
+				} `json:"conditions"`
+			} `json:"values"`
+		}
+		_ = json.Unmarshal(wf.Nodes[i].Parameters["rules"], &rules)
+		if len(rules.Values) == 0 || len(rules.Values[0].Conditions.Conditions) == 0 {
+			t.Fatalf("node %q has no switch expression", node)
+		}
+		return rules.Values[0].Conditions.Conditions[0].LeftValue
+	}
+	t.Fatalf("node %q not found", node)
+	return ""
 }
 
 // checkN8nNodes: stock nodes only, no continue-on-fail, and every HTTP call
@@ -227,27 +295,91 @@ func checkN8nFirstOutput(t *testing.T, wf *n8nWorkflow, node, wantKey string) {
 	t.Errorf("node %q not found", node)
 }
 
+// registeredRefundBot writes the agent file the documented setup produces:
+// the file `talon agents add refund-bot` generates (its policy-relevant
+// part), with the example's fragment appended, as the README says.
+func registeredRefundBot(t *testing.T, fragment string) (dir string) {
+	t.Helper()
+	const generated = "agent:\n  name: \"refund-bot\"\n  description: \"Support refunds requested from the n8n workflow\"\n  version: 1.0.0\n  tenant_id: \"acme\"\n  key:\n    secret_name: \"refund-bot-talon-key\"\n\npolicies:\n  cost_limits: {}   # inherit organization_policy.defaults daily_cost / monthly_cost\n"
+	dir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(generated+fragment), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// The example's two policy layers compile to the documented verdicts: the
+// use case's own rule (approval above 50.00) and the company's constraint
+// (no refund above 500.00). The company constraint cannot be relaxed from
+// the use case's file.
 func TestN8nRefundWorkflow_ExamplePolicyCompiles(t *testing.T) {
-	dir := filepath.Join("..", "examples", "n8n-refund")
-	pol, err := policy.LoadPolicy(context.Background(), "agent.talon.yaml", false, dir)
+	ctx := context.Background()
+	example := filepath.Join("..", "examples", "n8n-refund")
+	fragment, err := os.ReadFile(filepath.Join(example, "use-case-action.append.yaml"))
 	if err != nil {
-		t.Fatalf("example agent file: %v", err)
+		t.Fatal(err)
 	}
-	cat, err := action.CompileCatalog(pol.Actions, nil)
+	gw, err := gateway.LoadGatewayConfig(filepath.Join(example, "talon.config.yaml"))
 	if err != nil {
-		t.Fatalf("example catalog: %v", err)
+		t.Fatalf("example company config: %v", err)
 	}
-	ap, err := action.CompileApprovalPolicy(pol)
-	if err != nil {
-		t.Fatalf("example policy: %v", err)
+	company := gw.OrganizationPolicy.CompanyActionPolicy("talon.config.yaml")
+	compile := func(t *testing.T, fragment string) *action.ApprovalPolicy {
+		t.Helper()
+		pol, err := policy.LoadPolicy(ctx, "agent.talon.yaml", false, registeredRefundBot(t, fragment))
+		if err != nil {
+			t.Fatalf("the registered agent file with the fragment appended: %v", err)
+		}
+		cat, err := action.CompileCatalog(pol.Actions, nil)
+		if err != nil {
+			t.Fatalf("example catalog: %v", err)
+		}
+		ap, err := action.CompileEffectiveActionPolicy(pol, company)
+		if err != nil {
+			t.Fatalf("example policy: %v", err)
+		}
+		if err := ap.ValidateAgainstCatalog(cat); err != nil {
+			t.Fatalf("example rules against the example catalog: %v", err)
+		}
+		return ap
 	}
-	if err := ap.ValidateAgainstCatalog(cat); err != nil {
-		t.Fatalf("example rules against the example catalog: %v", err)
+	verdict := func(ap *action.ApprovalPolicy, amount string) action.Verdict {
+		return ap.EvaluateArguments("create_refund_request", []byte(`{"amount":"`+amount+`","currency":"EUR","ticket_id":"T-1"}`))
 	}
-	for amount, want := range map[string]string{"30.00": action.VerdictAllow, "75.00": action.VerdictRequireApproval, "900.00": action.VerdictDeny} {
-		v := ap.EvaluateArguments("create_refund_request", []byte(`{"amount":"`+amount+`","currency":"EUR","ticket_id":"T-1"}`))
-		if v.Outcome != want {
-			t.Errorf("amount %s: %s, want %s (%s)", amount, v.Outcome, want, v.Reason)
+
+	ap := compile(t, string(fragment))
+	for _, tc := range []struct{ amount, want, source string }{
+		{"30.00", action.VerdictAllow, ""},
+		{"50.00", action.VerdictAllow, ""},
+		{"50.01", action.VerdictRequireApproval, action.PolicySourceUseCase},
+		{"75.00", action.VerdictRequireApproval, action.PolicySourceUseCase},
+		{"500.00", action.VerdictRequireApproval, action.PolicySourceUseCase},
+		{"500.01", action.VerdictDeny, action.PolicySourceCompany},
+		{"900.00", action.VerdictDeny, action.PolicySourceCompany},
+	} {
+		v := verdict(ap, tc.amount)
+		if v.Outcome != tc.want || v.Source != tc.source {
+			t.Errorf("amount %s: %s from %q, want %s from %q (%s)", tc.amount, v.Outcome, v.Source, tc.want, tc.source, v.Reason)
+		}
+	}
+
+	// A use case cannot relax the company's constraint. Its file declares a
+	// far higher limit of its own, and drops its approval rule: 500.01 is
+	// still denied by the company's rule.
+	relaxed := strings.Replace(string(fragment), `        value: "50.00"
+        effect: require_approval
+        approver_groups: [support-leads]`, `        value: "100000.00"
+        effect: deny`, 1)
+	if relaxed == string(fragment) {
+		t.Fatal("the fragment's use-case rule was not found: update this test with the fragment")
+	}
+	ap = compile(t, relaxed)
+	if v := verdict(ap, "75.00"); v.Outcome != action.VerdictAllow {
+		t.Errorf("with the use case's own rule loosened, 75.00 is %s, want ALLOW (the use case may loosen its OWN rule)", v.Outcome)
+	}
+	for _, amount := range []string{"500.01", "900.00", "99999.00"} {
+		if v := verdict(ap, amount); v.Outcome != action.VerdictDeny || v.Source != action.PolicySourceCompany {
+			t.Errorf("a use case relaxed the company constraint: %s is %s from %q, want DENY from the company", amount, v.Outcome, v.Source)
 		}
 	}
 }
