@@ -48,7 +48,7 @@ The first line under the name is the answer:
 Four facts are shown side by side and none stands for another:
 
 - **Configured:** what the file says.
-- **Runtime:** whether a running process has loaded exactly this file, from that process's own record. A file on disk is not a use case that is served.
+- **Runtime:** whether a running process has loaded exactly this file, from that process's own record (refreshed every five seconds). A file on disk is not a use case that is served.
 - **Traffic:** what was observed. No observation is shown as "no request observed", never as a healthy application.
 - **Health:** budget, denial and failure signals. The absence of a signal says nothing about whether the application is connected.
 
@@ -124,7 +124,7 @@ talon agents show <name>
 
 `disable` sets `agent.enabled: false` in the use case's file and writes a signed record. **It is not immediate.** It takes effect when the running process has loaded the change: at most one `agents_reload_interval`. Requests already in flight finish. Confirm it rather than assume it:
 
-- the view reads **Disabled**, and `Runtime` reads *loaded by the running Talon process* (while it reads *ANOTHER version*, the process still serves the enabled file);
+- the view reads **Disabled**, and `Runtime` reads *loaded by the running Talon process*. While it reads *ANOTHER version*, the process has not reported the changed file yet: either it still serves the enabled file, or it loaded the change in the last seconds (a process refreshes its own record every five seconds). Look again;
 - a request with the use case's key is refused as that use case (HTTP 403 `agent_disabled`), not as an unknown key, and the provider is not called.
 
 If another file in the fleet is invalid, the re-scan is rejected and the disable is **not** active although the file says disabled. Fix the fleet (`talon validate`) or restart `talon serve`; a start reads the files as they are.

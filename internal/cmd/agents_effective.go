@@ -135,6 +135,12 @@ func renderVerification(w io.Writer, v *effective.Verification) {
 		return
 	}
 	fmt.Fprintf(w, "   %s\n", v.Reading.Text)
+	if v.Next.Text != "" {
+		fmt.Fprintf(w, "   next: %s\n", v.Next.Text)
+		for _, c := range v.Next.Commands {
+			fmt.Fprintf(w, "         %s\n", c)
+		}
+	}
 	fmt.Fprintf(w, "   configured: %s\n", v.Configured)
 	renderCredential(w, v.Credential)
 	for i := range v.Traffic {
