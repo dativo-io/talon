@@ -80,7 +80,7 @@ For a demo, temporarily lower the agent's `cost_limits.daily` (for example `0.01
 talon serve --host 127.0.0.1 --gateway --gateway-config=path/to/talon.config.yaml
 ```
 
-Start it with `TALON_ADMIN_KEY` set, as in [connect an existing application](add-talon-to-existing-app.md#prerequisites): without the admin key the administrative endpoints accept every request, and without `--host` the server listens on every network interface.
+Start it with `TALON_ADMIN_KEY` set, as in [connect an existing application](add-talon-to-existing-app.md#1-prepare-talon-once): without the admin key the administrative endpoints accept every request, and without `--host` the server listens on every network interface.
 
 Ensure provider keys are in the vault. Give the value on stdin so it never appears in the process list or the shell history:
 

@@ -18,22 +18,18 @@ What it does not show: a model answer, a redaction, the console, or a business a
 
 ---
 
-## Which path is yours?
+## After trying it
 
-**1.** I have an existing app that calls OpenAI or Anthropic.  
-→ [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
+**Connect your existing application.** One guide: prepare Talon once, register the application with one command, change two settings in it, and see that it works. Every further application is that one command again.
 
-**1a.** I want the fastest OpenAI-compatible local drop-in (no gateway YAML).  
-→ [OpenAI proxy quickstart](tutorials/proxy-quickstart.md)
+→ [Connect an existing application](guides/add-talon-to-existing-app.md), then [operate AI use cases](guides/operate-ai-use-cases.md) for day two.
 
-**2.** I'm building something new and want controls from day one.  
-→ [Your first governed agent](tutorials/first-governed-agent.md)
+Other things to look at, none of which you need first:
 
-**3.** I want to understand how it works before touching anything (no API key).  
-→ [60-second demo (no API key)](tutorials/quickstart-demo.md)
-
-**4.** I need to review what an auditor handoff looks like.  
-→ [Sample auditor pack](../examples/auditor-pack/README.md)
+- [OpenAI proxy quickstart](tutorials/proxy-quickstart.md): the drop-in shape on your own machine, one local identity, no company policy.
+- [Your first governed agent](tutorials/first-governed-agent.md): building a new agent on Talon's own runtime.
+- [60-second demo](tutorials/quickstart-demo.md): the Docker Compose stack from a clone, no API key.
+- [Sample auditor pack](../examples/auditor-pack/README.md): what an auditor handoff looks like.
 
 ---
 
@@ -78,7 +74,7 @@ talon run "Your query here"
 # administrative endpoints accept every request (development mode), and
 # without --host the server listens on every interface: set both. For a real
 # installation generate the keys into a 0600 file instead of exporting them
-# in the shell (docs/guides/add-talon-to-existing-app.md, "Prerequisites").
+# in the shell (docs/guides/add-talon-to-existing-app.md, "1. Prepare Talon").
 export TALON_ADMIN_KEY="$(openssl rand -hex 32)"
 talon serve --host 127.0.0.1 --port 8080
 
