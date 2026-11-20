@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,14 +175,53 @@ func waitForHealth(t *testing.T, url string, timeout time.Duration, stderr *byte
 	t.Fatalf("serve not healthy within %s; stderr:\n%s", timeout, stderr.String())
 }
 
+// freePort returns a loopback TCP port that was free a moment ago and that
+// this test process has not handed out before.
+//
+// The kernel may give two consecutive ":0" probes the SAME port once the
+// first listener is closed (measured: 25 of 200,000 consecutive pairs on
+// Linux 6.8). A test that asks for two ports for one process (the OpenShell
+// tests: the middleware listener and the HTTP listener of `talon serve`)
+// then starts a server that cannot bind its second listener. Remembering
+// what was handed out removes that collision. A port can still be taken by
+// another process between this probe and the server's bind; that window is
+// inherent to probing and is not closed here.
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen free port: %v", err)
+	freePortMu.Lock()
+	defer freePortMu.Unlock()
+	for attempt := 0; attempt < 200; attempt++ {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen free port: %v", err)
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		_ = l.Close()
+		if !freePortSeen[port] {
+			freePortSeen[port] = true
+			return port
+		}
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatal("no unused loopback port found in 200 probes")
+	return 0
+}
+
+var (
+	freePortMu   sync.Mutex
+	freePortSeen = map[int]bool{}
+)
+
+// A port is never handed out twice in one test process, so two ports
+// requested for one server are always different.
+func TestFreePort_NeverRepeats(t *testing.T) {
+	seen := map[int]bool{}
+	for i := 0; i < 1500; i++ {
+		p := freePort(t)
+		if seen[p] {
+			t.Fatalf("port %d was handed out twice", p)
+		}
+		seen[p] = true
+	}
 }
 
 func runCommand(t *testing.T, dir string, timeout time.Duration, env map[string]string, args ...string) (int, string) {

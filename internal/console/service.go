@@ -131,7 +131,9 @@ func (s *Service) Overview(ctx context.Context, tenant string) *Overview {
 		Today:        s.today(ctx, tenant),
 		RecentEvents: s.recentEvents(ctx, tenant, DefaultEventsLimit),
 	}
+	out.Approvals = s.approvalsSummary(ctx, tenant, uc.Runtime)
 	out.Findings = append(append([]Finding{}, out.Readiness.Findings...), useCaseFindings(uc.Attention, s.now())...)
+	out.Findings = append(out.Findings, approvalFindings(out.Approvals, s.now())...)
 	sortFindings(out.Findings)
 	return out
 }
@@ -269,7 +271,9 @@ func (s *Service) recentEvents(ctx context.Context, tenant string, limit int) Re
 
 // UseCases is the AI Use Cases list.
 func (s *Service) UseCases(ctx context.Context, tenant string) (Meta, UseCases) {
-	return s.meta(tenant), s.useCases(ctx, tenant)
+	uc := s.useCases(ctx, tenant)
+	uc.Approvals = s.approvalsSummary(ctx, tenant, uc.Runtime)
+	return s.meta(tenant), uc
 }
 
 // UseCase is one use case with its recent sessions, costs and activity, all
@@ -311,7 +315,9 @@ func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDet
 	// Installation readiness applies to every use case; the findings are
 	// the installation's plus this use case's own fleet finding.
 	out.Readiness = s.readiness(ctx, uc.Runtime)
+	out.Approvals = s.useCaseApprovals(ctx, scope, name, uc.Runtime)
 	out.Findings = append(append([]Finding{}, out.Readiness.Findings...), useCaseFindings([]fleet.AgentRow{*row}, s.now())...)
+	out.Findings = append(out.Findings, approvalFindings(out.Approvals, s.now())...)
 	sortFindings(out.Findings)
 	out.Issues = []agentcatalog.FleetIssue{}
 	for _, is := range uc.Issues {
@@ -548,7 +554,36 @@ func (s *Service) Evidence(ctx context.Context, id, tenant string) (*EvidenceDet
 	if tenant != "" && d.Record.TenantID != tenant {
 		return nil, fmt.Errorf("%w: evidence %q", ErrNotFound, id)
 	}
-	return &EvidenceDetail{Meta: s.meta(tenant), Availability: ok(SourceEvidenceStore, s.now()), Detail: d}, nil
+	return &EvidenceDetail{Meta: s.meta(tenant), Availability: ok(SourceEvidenceStore, s.now()), Detail: operationalRecord(d)}, nil
+}
+
+const (
+	withheldDecisionReason = "action_lifecycle.decision_reason"
+	withheldReasonWhy      = "free text written by the reviewer, which can quote the exact arguments; it is not part of the console's operational disclosure. The signature was verified over the complete stored record, so the record shown here does not reproduce it"
+)
+
+// operationalRecord applies the console's operational disclosure to a
+// stored record (#565 review). Evidence carries no prompt, response or
+// argument value, with one exception a person can create: the free-text
+// reason of an Action Gateway approval decision, which a reviewer may fill
+// with the exact arguments. The console returns the record without that
+// text and says so. d (and the signed record it holds) is not modified, and
+// its verification stays the one computed over the complete record.
+func operationalRecord(d *evidence.RecordDetail) *EvidenceRecordDetail {
+	out := &EvidenceRecordDetail{RecordDetail: d}
+	if d == nil || d.Record == nil || d.Record.ActionLifecycle == nil || d.Record.ActionLifecycle.DecisionReason == "" {
+		return out
+	}
+	rec, lifecycle := *d.Record, *d.Record.ActionLifecycle
+	lifecycle.DecisionReason = ""
+	rec.ActionLifecycle = &lifecycle
+	out.RecordDetail = &evidence.RecordDetail{Record: &rec, Verification: d.Verification, Outcome: d.Outcome}
+	w := WithheldField{Field: withheldDecisionReason, Why: withheldReasonWhy}
+	if lifecycle.ApprovalID != "" {
+		w.ReadWith = "talon approvals show " + lifecycle.ApprovalID
+	}
+	out.Withheld = []WithheldField{w}
+	return out
 }
 
 // ------------------------------------------------------------------- costs

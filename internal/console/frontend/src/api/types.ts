@@ -141,6 +141,8 @@ export interface UseCases {
   attention: AgentRow[] | null;
   runtime: Runtime;
   counter_windows: { requests_denied: string; fallbacks: string; failed_sessions: string };
+  // #565: per-use-case approval counts (AI Use Cases page).
+  approvals?: ApprovalsSummary;
 }
 
 export interface WindowBounds {
@@ -237,6 +239,7 @@ export interface Overview {
   use_cases: UseCases;
   today: Today;
   recent_events: RecentEvents;
+  approvals?: ApprovalsSummary;
   findings: Finding[];
 }
 
@@ -431,7 +434,8 @@ export type Dispatch = "not_dispatched" | "dispatched" | "unknown" | "not_record
 export type Downstream = "none" | "completed" | "rejected" | "failed" | "unknown" | "not_recorded" | "cache";
 
 export interface Outcome {
-  decision: "allowed" | "denied";
+  // approval_required: an Action Gateway operation waiting for a reviewer.
+  decision: "allowed" | "denied" | "approval_required";
   dispatch: Dispatch;
   downstream: Downstream;
   response_withheld?: boolean;
@@ -518,7 +522,30 @@ export interface EvidenceRecord {
   failover?: { role: string; provider: string; model?: string; error_class?: string; chain_position: number };
   enforcement?: { mechanism: string; boundary: string; decision_authority: string; provenance: string };
   orchestration?: Record<string, unknown>;
+  action_lifecycle?: ActionLifecycle;
   signature: string;
+  [key: string]: unknown;
+}
+
+// One signed Action Gateway lifecycle transition (evidence.ActionLifecycle):
+// the decision facts the record carries. Argument values are never part of it.
+export interface ActionLifecycle {
+  event: string;
+  sequence: number;
+  operation_id: string;
+  action: string;
+  policy_digest: string;
+  verdict?: string;
+  matched_rule_id?: string;
+  matched_rule_source?: string;
+  operation_status: string;
+  approval_id?: string;
+  approval_status?: string;
+  approver_groups?: string[];
+  reviewer_principal?: string;
+  reviewer_group?: string;
+  // decision_reason is never part of a console response: see WithheldField.
+  attempt_status?: string;
   [key: string]: unknown;
 }
 
@@ -527,10 +554,19 @@ export interface Verification {
   checked_at: string;
 }
 
+// One field of the stored record that the console does not return (#565):
+// the reviewer's free-text reason on an approval decision record. The
+// verification was performed over the complete stored record.
+export interface WithheldField {
+  field: string;
+  why: string;
+  read_with?: string;
+}
+
 export interface EvidenceDetail {
   meta: Meta;
   availability: Availability;
-  detail?: { record: EvidenceRecord; verification: Verification; outcome: Outcome };
+  detail?: { record: EvidenceRecord; verification: Verification; outcome: Outcome; withheld?: WithheldField[] };
 }
 
 export interface StoreHealth {
@@ -570,9 +606,22 @@ export interface ProviderView {
   fallback?: string[];
 }
 
+// One company action rule; condition is absent for a name-based approval
+// rule, which applies to every call of its actions.
+export interface CompanyActionRule {
+  id: string;
+  actions: string[];
+  condition?: string;
+  type?: string;
+  effect: "require_approval" | "deny";
+  approver_groups?: string[];
+}
+
 export interface OrganizationConfig {
   availability: Availability;
   source_path?: string;
+  action_rules?: CompanyActionRule[];
+  action_rules_error?: string;
   pii_action?: string;
   response_pii_action?: string;
   daily_cost?: number;
@@ -705,6 +754,7 @@ export interface UseCaseDetail {
   costs: Costs;
   activity: Activity;
   effective_policy: Availability;
+  approvals?: ApprovalsSummary;
   // #533 PR 2: installation readiness, installation findings plus this use
   // case's own fleet finding, its newest records with outcome, and the
   // configuration issues attributed to its name.
@@ -771,6 +821,48 @@ export interface BoundaryProof {
   instance_ids?: string[];
 }
 
+export interface ActionApprovalRule { id: string; source: string; approver_groups: string[]; actions?: string[] }
+
+// One argument rule (#205): a typed condition on one argument with a
+// restrictive effect, and the layer (company | use_case) that declared it.
+export interface ActionArgumentRule {
+  id: string;
+  source: string;
+  argument: string;
+  type: string;
+  operator: string;
+  value: string;
+  condition: string;
+  effect: "require_approval" | "deny";
+  approver_groups?: string[];
+  actions?: string[];
+}
+
+// decision_basis "arguments": verdict is only the baseline; a call's
+// arguments can make it stricter, never looser.
+export interface ActionDecision {
+  action: string;
+  verdict: string;
+  verdict_source?: string;
+  decision_basis: "name" | "arguments";
+  approval_rules?: ActionApprovalRule[];
+  argument_rules?: ActionArgumentRule[];
+}
+
+export interface ActionBoundary {
+  basis: string;
+  proven_active: boolean;
+  proof: BoundaryProof; // every running talon serve: agent file + the gateway config its company action policy came from
+  policy_digest?: string;
+  approval_expires_after?: string;
+  forbidden_actions?: string[];
+  actions: ActionDecision[];
+  approval_rules?: ActionApprovalRule[];
+  argument_rules?: ActionArgumentRule[];
+  error?: string;
+  notes?: string[];
+}
+
 export interface EffectiveReport {
   use_case: string;
   tenant_id: string;
@@ -796,6 +888,11 @@ export interface EffectiveReport {
     providers?: { name: string; enabled: boolean; effective_digest: string; forbidden_tools?: string[]; allowed_models?: string[] }[];
   };
   mcp_boundary?: { proxy: string; file: string; scope: string; tools: ToolAccess[]; error?: string; proven_active: boolean; proof: BoundaryProof };
+  action_boundary?: ActionBoundary;
+  // #472: configured state, observed authenticated traffic per boundary and
+  // its policy comparison. Computed in Go (effective.Verification); the
+  // console renders it and derives nothing.
+  verification?: UseCaseVerification;
   last_decision?: {
     evidence_id: string;
     timestamp: string;
@@ -818,4 +915,233 @@ export interface EffectivePolicyDTO {
   meta: Meta;
   availability: Availability;
   report?: EffectiveReport;
+}
+
+// ---- Connection and verification (#472) -----------------------------------
+
+export interface TrafficObservation {
+  boundary: "llm_gateway" | "mcp_proxy" | "action_gateway";
+  state: "observed" | "none" | "unavailable";
+  establishes: string;
+  evidence_id?: string;
+  timestamp?: string;
+  invocation_type?: string;
+  event?: string;
+  identity?: string;
+  // true when the record establishes that the use case's own credential was
+  // presented (LLM gateway, Action Gateway); false for MCP proxy records,
+  // which do not record how the caller was identified, for records of the
+  // no-key quickstart profile, and for a record whose signature fails.
+  identity_proven: boolean;
+  // Which credential the request was authenticated with, as far as the
+  // recorded times establish it: current | previous | not_established |
+  // unknown | not_applicable. Evidence does not record the credential a
+  // request presented; the note says what the attribution rests on.
+  credential?: string;
+  credential_note?: string;
+  session_id?: string;
+  outcome?: Outcome;
+  verification?: "valid" | "invalid";
+  // matches_current | differs_from_current | not_recorded | unverified |
+  // bound_at_establishment (an Action Gateway record that is not the
+  // establishment: it carries the policy bound to the operation then, not
+  // one evaluated for this event)
+  policy?: string;
+  policy_note?: string;
+  last_dispatch?: { evidence_id: string; timestamp: string; outcome: Outcome; verification: "valid" | "invalid" };
+  error?: string;
+}
+
+// What is known about the credential the use case presents now: the
+// vault's own record of when a value was written under the secret name
+// (never a value), the signed registration record, and what the runtime
+// records establish about the running processes.
+export interface UseCaseCredential {
+  // not_recorded: a key is stored, but the vault holds no record of when its
+  // value was written (the vault predates value versions).
+  state: "known" | "absent" | "no_key" | "unknown" | "not_recorded";
+  secret_name?: string;
+  since?: string;
+  // Values written under the secret name since the vault records versions.
+  generation: number;
+  // only_value | only_value_since_record | earlier_values | not_recorded.
+  // From the vault's version record, which commits with every write.
+  history: string;
+  registration?: { evidence_id: string; at: string; verification: "valid" | "invalid" };
+  // holds_current | predates_current | not_established | not_running | unknown
+  runtime: string;
+  runtime_note: string;
+  note?: string;
+}
+
+// The one thing to do next, or that nothing needs doing: a fixed mapping
+// from the report's facts, computed in Go (effective.NextStep). The console
+// prints it; it derives nothing.
+export interface UseCaseNextStep {
+  code: string;
+  text: string;
+  commands?: string[];
+}
+
+export interface UseCaseVerification {
+  configured: "enabled" | "disabled";
+  credential: UseCaseCredential | null;
+  next: UseCaseNextStep;
+  // Whether a running process that serves this use case's requests has
+  // loaded the current agent file: the loaded proof restricted to the
+  // processes with `role` ("gateway" when the requests arrive at the LLM
+  // gateway; absent when any Talon process serves them).
+  serving: { role?: string; state: string; reason: string; active_policy_digest?: string; instance_ids?: string[] };
+  traffic: TrafficObservation[];
+  // A presentation summary derived in Go; not a stored state.
+  reading: { code: string; text: string };
+  not_established: string[];
+}
+
+// ---- Approvals (#565) -----------------------------------------------------
+// Read-only. Every approval DTO is built under the OPERATIONAL disclosure:
+// argument names, never values. Exact values are read by an approver with
+// `talon approvals show`.
+
+export type EligibilityClass = "actionable" | "potentially_actionable" | "not_decidable" | "unknown" | "decided";
+export type Binding = "unchanged" | "changed" | "unknown";
+
+export interface Eligibility {
+  // eligible | expired | stale_definition | stale_policy | use_case_not_served | unknown | decided
+  // A binding that differs from files NO process is proven to run is
+  // "unknown" (class unknown), with policy/definition "changed": the
+  // deciding process may still hold the configuration it was bound to.
+  state: string;
+  class: EligibilityClass;
+  // runtime | runtime_confirmed | current_files | lifetime | record | none
+  basis: string;
+  explanation: string;
+  policy: Binding;
+  definition: Binding;
+}
+
+export interface ApprovalEligibilityCounts {
+  actionable: number;
+  potentially_actionable: number;
+  not_decidable: number;
+  unknown: number;
+}
+
+export interface ApprovalCounts {
+  // Pending in the store: a persisted fact.
+  unresolved: number;
+  // Inferred from the current configuration files; absent when it could not
+  // be established (never to be read as zero).
+  eligibility?: ApprovalEligibilityCounts;
+}
+
+export interface UseCaseApprovals extends ApprovalCounts {
+  tenant_id: string;
+  use_case: string;
+}
+
+export interface ApprovalsSummary {
+  availability: Availability;
+  total?: ApprovalCounts;
+  use_cases: UseCaseApprovals[] | null;
+  basis: string;
+}
+
+export interface ApprovalSummaryRow {
+  approval_id: string;
+  tenant: string;
+  use_case: string;
+  action: string;
+  status: string;
+  unresolved: boolean;
+  eligibility: Eligibility;
+  approver_groups: string[];
+  rule_id?: string;
+  created_at: string;
+  expires_at: string;
+  decided_at?: string;
+  decided_by?: string;
+}
+
+export interface ApprovalList {
+  meta: Meta;
+  availability: Availability;
+  state: "attention" | "unresolved" | "decided";
+  use_case?: string;
+  items: ApprovalSummaryRow[];
+  next?: string;
+  // What this page says about the selection (Go decides it):
+  //   empty_selection  first page, no item, no cursor: the selection is empty
+  //   continues        a cursor exists; the page itself may hold no item
+  //   end              no cursor: the selection is exhausted with this page
+  // Absent when the store could not be read.
+  page?: "empty_selection" | "continues" | "end";
+  limit: number;
+  disclosure: string;
+}
+
+export interface ApprovalAttempt {
+  ordinal: number;
+  status: string;
+  started_at: string;
+  completed_at?: string;
+  request_written: boolean;
+  response_observed: boolean;
+  http_status?: number;
+  result_provenance?: string;
+  outcome_code?: string;
+}
+
+export interface ApprovalView {
+  approval_id: string;
+  tenant: string;
+  use_case: string;
+  action: string;
+  action_description?: string;
+  status: string;
+  unresolved: boolean;
+  eligibility: Eligibility;
+  approver_groups: string[];
+  created_at: string;
+  expires_at: string;
+  disclosure: string;
+  // name only: the console DTO has no value field.
+  arguments: { name: string }[];
+  bound: {
+    rule_id?: string;
+    rule_source?: string;
+    destination: string;
+    definition_digest: string;
+    policy_digest: string;
+    established_at: string;
+  };
+  current: { basis: string; note?: string; rule?: string; rule_present: boolean; destination?: string };
+  // The reviewer's free-text reason is not part of the operational
+  // disclosure (it can quote the exact arguments): only that one was recorded.
+  decision?: { status: string; decided_at?: string; decided_by?: string; decided_group?: string; reason_recorded: boolean };
+  operation: {
+    operation_id: string;
+    operation_ref: string;
+    status: string;
+    verdict: string;
+    attempt_count: number;
+    outcome_code?: string;
+    outcome_provenance?: string;
+    latest_attempt?: ApprovalAttempt;
+    updated_at: string;
+    origin?: Record<string, string>;
+  };
+  after_approval: string;
+}
+
+export interface ApprovalDetail {
+  meta: Meta;
+  availability: Availability;
+  approval: ApprovalView;
+  // truncated: the operation has more signed records than `limit`; records
+  // holds the oldest ones and availability.note says how to read all.
+  lifecycle: { availability: Availability; records: EvidenceIndex[]; limit: number; truncated?: boolean };
+  session_id?: string;
+  commands: { show: string; approve?: string; reject?: string; verify: string };
+  arguments_note: string;
 }

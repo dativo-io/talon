@@ -35,6 +35,10 @@ var (
 	agentsQueueJSON   bool
 )
 
+// offlineFleetLabel marks rows that were projected from the local files and
+// stores because no Talon server answered (the `offline` field of --json).
+// The human views do not use it: they show this machine's installation from
+// its own sources, or a named server's facts alone (humanFleet).
 const offlineFleetLabel = "OFFLINE — CONFIG VIEW (no running gateway found; runtime state may differ)"
 
 func init() {
@@ -54,7 +58,7 @@ func bindAgentsQueueFlags(cmd *cobra.Command) {
 
 var agentsShowCmd = &cobra.Command{
 	Use:   "show <name>",
-	Short: "Show one agent's operational summary (state, health, cost vs caps, signals)",
+	Short: "Show one AI use case: what is happening with it and what to do next (--effective: the full report)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runAgentShow,
 }
@@ -69,26 +73,40 @@ type fleetResponse struct {
 }
 
 func runAgentsList(cmd *cobra.Command, _ []string) error {
+	quietOperatorLogs(cmd)
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	rows, issues, label, err := resolveFleet(ctx, cmd, cfg, agentsQueueTenant)
-	if err != nil {
-		return err
-	}
 	if agentsQueueJSON {
+		rows, issues, label, err := resolveFleet(ctx, cmd, cfg, agentsQueueTenant)
+		if err != nil {
+			return err
+		}
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
 			"offline": label != "", "agents": rows, "fleet_issues": issues,
 		})
 	}
-	renderAgentsTable(cmd.OutOrStdout(), rows, issues, label)
+	rows, issues, serverURL, err := humanFleet(ctx, cmd, cfg, agentsQueueTenant)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if serverURL != "" {
+		// A server's rows: this machine's runtime records say nothing about
+		// them, so the RUNTIME column is not filled from them.
+		renderAgentsOverview(cmd.OutOrStdout(), rows, issues, serverViewNote(serverURL), nil, false, now)
+		return nil
+	}
+	view, readable := installationRuntime(cfg, now)
+	renderAgentsOverview(cmd.OutOrStdout(), rows, issues, localViewNote(&view, readable), &view, readable, now)
 	return nil
 }
 
 func runAgentShow(cmd *cobra.Command, args []string) error {
+	quietOperatorLogs(cmd)
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 	name := args[0]
@@ -97,20 +115,50 @@ func runAgentShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 	if agentsShowEffective {
+		if err := refuseEffectiveFromServer(cmd); err != nil {
+			return err
+		}
 		return runAgentShowEffective(ctx, cmd, cfg, name)
 	}
-	rows, _, label, err := resolveFleet(ctx, cmd, cfg, agentsQueueTenant)
+	return showUseCase(ctx, cmd, cfg, name)
+}
+
+// showUseCase is `talon agents show <name>` for a loaded configuration.
+func showUseCase(ctx context.Context, cmd *cobra.Command, cfg *config.Config, name string) error {
+	if agentsQueueJSON {
+		rows, _, _, err := resolveFleet(ctx, cmd, cfg, agentsQueueTenant)
+		if err != nil {
+			return err
+		}
+		for i := range rows {
+			if rows[i].Name == name {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(rows[i])
+			}
+		}
+		return fmt.Errorf("unknown agent %q: discovered agents: %s", name, strings.Join(agentRowNames(rows), ", "))
+	}
+	rows, _, serverURL, err := humanFleet(ctx, cmd, cfg, agentsQueueTenant)
 	if err != nil {
 		return err
 	}
 	for i := range rows {
-		if rows[i].Name == name {
-			if agentsQueueJSON {
-				return json.NewEncoder(cmd.OutOrStdout()).Encode(rows[i])
-			}
-			renderAgentShow(cmd.OutOrStdout(), rows[i], label)
+		if rows[i].Name != name {
+			continue
+		}
+		now := time.Now().UTC()
+		if serverURL != "" {
+			// A server's row is shown as what it is. Nothing of this
+			// machine's policy, evidence or runtime records is put next to it.
+			renderServerUseCase(cmd.OutOrStdout(), &rows[i], serverURL, now)
 			return nil
 		}
+		// This machine's installation: the row, and what the fleet row does
+		// not hold (whether a running process loaded the use case, the
+		// newest request, the next step), all from its own files, evidence
+		// and runtime records.
+		report, rerr := buildUseCaseReport(ctx, cfg, name, agentsQueueTenant, agentsShowProxyConfig)
+		renderUseCase(cmd.OutOrStdout(), &rows[i], report, rerr, now)
+		return nil
 	}
 	return fmt.Errorf("unknown agent %q: discovered agents: %s", name, strings.Join(agentRowNames(rows), ", "))
 }
@@ -155,6 +203,57 @@ func resolveFleet(ctx context.Context, cmd *cobra.Command, cfg *config.Config, t
 	}
 	// No Talon server reachable (unreachable or a non-Talon port occupant).
 	return offlineWithLabel(ctx, cfg, tenant)
+}
+
+// humanFleet returns the rows a HUMAN view shows, and the server they came
+// from ("" = this machine's installation).
+//
+// A human view puts the rows next to operational facts: which process has
+// loaded a use case, its policy, its newest request. Those facts are read
+// from this machine's files, evidence store and runtime records. A server's
+// rows describe the server's installation, and nothing in an existing read
+// contract says whether that is this machine's: a fleet generation is a
+// digest of configuration content, so two installations with the same
+// configuration share it. The two sources are therefore never combined
+// (#567 review):
+//
+//   - an explicit --url <server>: that server's rows, shown alone, with the
+//     statement that nothing was verified;
+//   - otherwise: this machine's installation, projected from its own files
+//     and evidence. A server that answers at the default address is not
+//     asked.
+//
+// The machine contract (--json) is unchanged: resolveFleet, server-first.
+func humanFleet(ctx context.Context, cmd *cobra.Command, cfg *config.Config, tenant string) (rows []fleet.AgentRow, issues []agentcatalog.FleetIssue, serverURL string, err error) {
+	if explicitServerURL(cmd) != "" {
+		fr, ferr := fetchServerFleet(ctx, agentsQueueURL, tenant)
+		if ferr != nil {
+			return nil, nil, "", fmt.Errorf("querying %s: %w (an explicit --url is authoritative; run the command without --url for this machine's installation)", agentsQueueURL, ferr)
+		}
+		return fr.Agents, fr.FleetIssues, agentsQueueURL, nil
+	}
+	rows, issues, err = offlineFleet(ctx, cfg, tenant)
+	return rows, issues, "", err
+}
+
+// refuseEffectiveFromServer refuses `--effective --url <server>`. The
+// effective report is built from this machine's files, evidence and runtime
+// records; printed for a command that names a server, it would read as that
+// server's report.
+func refuseEffectiveFromServer(cmd *cobra.Command) error {
+	if u := explicitServerURL(cmd); u != "" {
+		return fmt.Errorf("--effective reports this machine's installation (its files, evidence and runtime records) and cannot be read from a server: --url %s is not used by it. Run it without --url here, or on the host of that server's installation", u)
+	}
+	return nil
+}
+
+// explicitServerURL is the server the caller named with --url ("" when the
+// flag was not given, or was given empty to ask for the local view).
+func explicitServerURL(cmd *cobra.Command) string {
+	if !cmd.Flags().Changed("url") {
+		return ""
+	}
+	return strings.TrimSpace(agentsQueueURL)
 }
 
 // offlineWithLabel projects the local config and attaches the offline banner.
@@ -262,99 +361,6 @@ func agentRowNames(rows []fleet.AgentRow) []string {
 		names[i] = rows[i].Name
 	}
 	return names
-}
-
-func renderAgentsTable(w io.Writer, rows []fleet.AgentRow, issues []agentcatalog.FleetIssue, label string) {
-	if label != "" {
-		fmt.Fprintln(w, label)
-		fmt.Fprintln(w)
-	}
-	fmt.Fprintf(w, "%-22s %-9s %-16s %-24s %s\n", "AGENT", "STATE", "HEALTH", "COST", "WHY")
-	fmt.Fprintf(w, "%-22s %-9s %-16s %-24s %s\n", "-----", "-----", "------", "----", "---")
-	for i := range rows {
-		r := &rows[i]
-		fmt.Fprintf(w, "%-22s %-9s %-16s %-24s %s\n", r.Name, r.State, r.Health, r.CostString(), r.Why)
-	}
-	if len(rows) == 0 {
-		fmt.Fprintln(w, "(no agents discovered)")
-	}
-	if len(issues) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "fleet issues (%d) — fix or remove by path; never-valid files are not agents:\n", len(issues))
-		for _, iss := range issues {
-			fmt.Fprintf(w, "  %s: %s\n", iss.Path, iss.Reason)
-		}
-	}
-}
-
-func renderAgentShow(w io.Writer, r fleet.AgentRow, label string) {
-	if label != "" {
-		fmt.Fprintln(w, label)
-		fmt.Fprintln(w)
-	}
-	fmt.Fprintf(w, "Agent:  %s  (tenant %s)\n", r.Name, r.TenantID)
-	fmt.Fprintf(w, "State:  %s\n", r.State)
-	fmt.Fprintf(w, "Health: %s\n", r.Health)
-	fmt.Fprintf(w, "Why:    %s\n", r.Why)
-	for _, c := range r.Causes {
-		fmt.Fprintf(w, "  - %s: %s\n", c.Kind, c.Detail)
-	}
-	fmt.Fprintln(w)
-	renderAgentUseCase(w, r.UseCase)
-	fmt.Fprintf(w, "Cost (month-to-date): %s\n", monthCostLine(r))
-	fmt.Fprintf(w, "Cost (today):         %s\n", dayCostLine(r))
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Signals (rolling windows):")
-	fmt.Fprintf(w, "  requests (1h):         %d (%d denied)\n", r.Requests, r.Denied)
-	fmt.Fprintf(w, "  fallbacks (1h):        %d\n", r.Fallbacks)
-	fmt.Fprintf(w, "  failed sessions (24h): %d\n", r.FailedSessions)
-	if !r.LastRun.IsZero() {
-		fmt.Fprintf(w, "Last run: %s\n", r.LastRun.UTC().Format(time.RFC3339))
-	}
-	fmt.Fprintf(w, "Config:   %s\n", r.ConfigPath)
-	if r.PolicyDigest != "" {
-		fmt.Fprintf(w, "Digest:   %s\n", r.PolicyDigest)
-	}
-	if r.ConfigError != "" {
-		fmt.Fprintf(w, "Config rejected: %s (last-known-good is serving)\n", r.ConfigError)
-	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Detail: `talon costs --agent`, `talon session`, `talon agents score` (layered effective policy + recent sessions/denials/fallbacks: #305).")
-}
-
-// renderAgentUseCase prints the operating record declared in the agent's
-// config (#382). Purely declared metadata — no health/budget/policy
-// computation happens here; owners are attribution for the reader, never
-// authentication of the named people.
-func renderAgentUseCase(w io.Writer, uc *fleet.UseCase) {
-	if uc == nil {
-		return
-	}
-	fmt.Fprintln(w, "Use case (declared in config):")
-	if uc.Purpose != "" {
-		fmt.Fprintf(w, "  Purpose:     %s\n", uc.Purpose)
-	}
-	if uc.Department != "" {
-		fmt.Fprintf(w, "  Department:  %s\n", uc.Department)
-	}
-	if uc.Criticality != "" {
-		fmt.Fprintf(w, "  Criticality: %s\n", uc.Criticality)
-	}
-	owners := [][2]string{
-		{"business", uc.OwnerBusiness},
-		{"technical", uc.OwnerTechnical},
-		{"budget", uc.OwnerBudget},
-		{"risk", uc.OwnerRisk},
-	}
-	for _, o := range owners {
-		if o[1] != "" {
-			fmt.Fprintf(w, "  Owner (%s): %s\n", o[0], o[1])
-		}
-	}
-	for _, ref := range uc.References {
-		fmt.Fprintf(w, "  Reference:   %s\n", ref)
-	}
-	fmt.Fprintln(w)
 }
 
 // notComparable is the cost text when the row says the period's spend is

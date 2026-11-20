@@ -170,3 +170,15 @@ func (ag *actionGateway) ownerResolver() server.ApprovalOwnerResolver {
 		return svc, true
 	}
 }
+
+// currentConfig is the catalog and policy this process decides with for
+// one use case, in its current generation: what a reviewer read compares an
+// approval with. A use case this process does not serve (removed, or
+// without a catalog) is reported as such; its approvals stay inspectable.
+func (ag *actionGateway) currentConfig(tenant, useCase string) action.CurrentConfig {
+	svc, err := ag.serviceIn(ag.holder.Current(), strings.TrimSpace(tenant), useCase)
+	if err != nil || svc == nil {
+		return action.CurrentConfig{Basis: action.CurrentRuntime, NotServed: true}
+	}
+	return svc.CurrentConfig()
+}

@@ -1,0 +1,10 @@
+{
+  "name": "talon-onboarding-acceptance",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The application side of Talon's onboarding acceptance (#472): the official OpenAI Node SDK, pinned, pointed at a running Talon gateway.",
+  "type": "module",
+  "dependencies": {
+    "openai": "7.59.0"
+  }
+}

@@ -428,20 +428,20 @@ func TestACME_A1_U16_CompanyDigestEncodingIsUnambiguous(t *testing.T) {
 	}
 	cases := map[string][2][]byte{
 		"one literal pattern vs two patterns": {
-			companyCanonical([]string{"delete_customer,notify_customer"}, rule(acme.FinanceLeads)),
-			companyCanonical([]string{"delete_customer", "notify_customer"}, rule(acme.FinanceLeads)),
+			companyCanonical([]string{"delete_customer,notify_customer"}, rule(acme.FinanceLeads), nil),
+			companyCanonical([]string{"delete_customer", "notify_customer"}, rule(acme.FinanceLeads), nil),
 		},
 		"one group vs two groups": {
-			companyCanonical([]string{acme.DeleteAction}, rule("finance,ops")),
-			companyCanonical([]string{acme.DeleteAction}, rule("finance", "ops")),
+			companyCanonical([]string{acme.DeleteAction}, rule("finance,ops"), nil),
+			companyCanonical([]string{acme.DeleteAction}, rule("finance", "ops"), nil),
 		},
 		"pattern that looks like a rule line vs a rule": {
-			companyCanonical([]string{"x\ncompany rule company:r actions=a groups=g"}, nil),
-			companyCanonical([]string{"x"}, []ApprovalRule{{ID: "company:r", Source: PolicySourceCompany, Actions: []string{"a"}, ApproverGroups: []string{"g"}}}),
+			companyCanonical([]string{"x\ncompany rule company:r actions=a groups=g"}, nil, nil),
+			companyCanonical([]string{"x"}, []ApprovalRule{{ID: "company:r", Source: PolicySourceCompany, Actions: []string{"a"}, ApproverGroups: []string{"g"}}}, nil),
 		},
 		"no forbidden list vs one empty-looking pattern": {
-			companyCanonical(nil, rule(acme.FinanceLeads)),
-			companyCanonical([]string{""}, rule(acme.FinanceLeads)),
+			companyCanonical(nil, rule(acme.FinanceLeads), nil),
+			companyCanonical([]string{""}, rule(acme.FinanceLeads), nil),
 		},
 	}
 	for name, c := range cases {
@@ -451,7 +451,7 @@ func TestACME_A1_U16_CompanyDigestEncodingIsUnambiguous(t *testing.T) {
 		})
 	}
 	// Determinism: the same normalized input always yields the same bytes.
-	require.Equal(t, companyCanonical([]string{acme.DeleteAction}, rule(acme.FinanceLeads)), companyCanonical([]string{acme.DeleteAction}, rule(acme.FinanceLeads)))
+	require.Equal(t, companyCanonical([]string{acme.DeleteAction}, rule(acme.FinanceLeads), nil), companyCanonical([]string{acme.DeleteAction}, rule(acme.FinanceLeads), nil))
 }
 
 // A1-U17 (review round 2): approver_groups follow the grammar of the local

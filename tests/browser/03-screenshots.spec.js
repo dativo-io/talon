@@ -31,12 +31,24 @@ for (const theme of ["light", "dark"]) {
       ["16-evidence-export-denied", `/evidence/${f.export_denied_evidence}`],
       ["17-costs-all-tenants", "/costs"],
       ["18-session-proof", `/sessions/${f.session}?agent=${f.use_case}`],
+      // Action Gateway (#205): records of refund-bot's genuine lifecycle (the
+      // refund that needed approval, and the one the company rule denied).
+      ["20-action-evidence", `/evidence/${f.action.approval_evidence}`],
+      ["21-action-evidence-denied", `/evidence/${f.action.denied_evidence}`],
+      // Approvals (#565): the request that waits for a decision, as the
+      // operator finds it, and its detail (argument names only).
+      ["22-approvals", "/approvals?state=unresolved"],
+      ["23-approval-detail", `/approvals/${f.action.approvals.waiting}`],
     ];
     for (const [name, url] of pages) {
       await page.goto(url);
       await page.waitForLoadState("networkidle");
       await page.screenshot({ path: path.join(dir, `${theme}-${name}.png`), fullPage: true });
     }
+    // The Action Gateway block of refund-bot's effective policy, as rendered.
+    await page.goto(`/use-cases/${f.action.use_case}`);
+    await page.waitForLoadState("networkidle");
+    await page.getByTestId("action-boundary").screenshot({ path: path.join(dir, `${theme}-19-action-policy.png`) });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/sessions/${f.session}`);
     await page.waitForLoadState("networkidle");

@@ -45,6 +45,7 @@ const SOURCE_LABELS: Record<string, string> = {
   config_files: "configuration files",
   runtime_probe: "runtime probe",
   none: "no source",
+  action_store: "action store (approvals)",
 };
 
 export function sourceLabel(source: string | undefined): string {

@@ -205,9 +205,9 @@ policies:
     max_cost: 10.00
 ```
 
-This is a **soft cap**: a new request is denied once accrued session spend plus the pre-request estimate exceeds the limit — HTTP 403 with a provider-native error body (deny reason `session_budget_exceeded`), and the evidence record carries a structured `session_budget` detail (`limit`, `spent`, `estimate`).
+This is an **estimate-based admission cap**, not an invoice ceiling: a new request is denied once settled plus in-flight session spend plus the request's pre-request estimate exceeds the limit (reserved atomically; a request whose real cost exceeds its estimate can overshoot by that difference, [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)) — HTTP 403 with a provider-native error body (deny reason `session_budget_exceeded`), and the evidence record carries a structured `session_budget` detail (`limit`, `spent`, `estimate`).
 
-Honest semantics, stated plainly ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)): one in-flight request whose real cost exceeds its estimate can overshoot the cap, and N concurrent first requests are bounded only by N × per-request cost. Atomic reservation is tracked as #144. The behavior is pinned by `TestSessionBudget_SoftCapOvershoot`, `TestSessionBudget_ConcurrentBurstBound`, and the rest of `TestSessionBudget_*` in `internal/gateway/session_budget_test.go`.
+Honest semantics, stated plainly ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)): one in-flight request whose real cost exceeds its own estimate can overshoot the cap by that difference, and the next request is denied. Concurrent requests do not multiply the overshoot: each request's estimate is reserved atomically in the session store before policy evaluation (#144), so a 5-request burst against a 3-request cap admits exactly 3. The behavior is pinned by `TestSessionBudget_SingleRequestEstimateOvershoot`, `TestSessionBudget_ConcurrentReservationHardBound`, and the rest of `TestSessionBudget_*` in `internal/gateway/session_budget_test.go`.
 
 Session budgets stack with the agent's daily/monthly caps (`policies.cost_limits`); session spend accumulates across provider routes for one agent (`TestSessionBudget_CrossProviderDeny`), and sessions from one agent never affect another agent's budget (`TestSessionBudget_AgentAndTenantIsolation`).
 
@@ -236,7 +236,7 @@ Tighten one rule at a time (`redact` before `block`; raise a budget before lower
 | Input PII action `warn` (`input_scan: true`, no redact), not `redact` | Redaction mangles code. `warn` records findings in evidence and lets the request flow. |
 | `request_timeout: 600s` | Bounds non-streaming calls and the header wait (which defaults to `request_timeout`). Live SSE streams are bounded by silence — `stream_idle_timeout` — not total duration (#217). Codex additionally aborts idle streams at ~300s on its side. |
 | `responses_store_mode: preserve` | Codex's `store: false` is an explicit retention decision; the gateway must not silently reverse it (`TestConformanceResponses_StoreModes`). |
-| `session_limits.max_cost` as a soft cap | Denies the *next* request over the limit rather than killing in-flight streams; see step 7 for the overshoot bounds. |
+| `session_limits.max_cost` is an admission cap, not an invoice ceiling | Denies the *next* request over the limit rather than killing in-flight streams; see step 7 for the overshoot bounds. |
 | Credential recognizers, not a secret scanner | The `agent.talon.yaml` recognizers cover high-precision formats only (PEM, `AKIA...`, `ghp_...`, `sk-ant-...`/`sk-proj-...`) in prompt/response traffic. Talon is not a repository secret scanner — keep gitleaks/trufflehog in pre-commit. |
 
 ## What Talon does not see

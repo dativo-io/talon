@@ -230,3 +230,106 @@ func TestActionsCLI_SourceFailureIsAnError(t *testing.T) {
 	assert.Contains(t, err.Error(), "actions.sources.refunds")
 	assert.False(t, strings.Contains(out, "Catalog digest"), "no partial catalog is printed")
 }
+
+// Invalid arguments never yield an apparent ALLOW (#564 review): the Action
+// Gateway refuses them before any policy decision, so validate reports
+// REFUSED with the inspection code arguments_invalid, for an action that is
+// ALLOW by name and for one with argument rules alike. Arguments the schema
+// accepts but a rule cannot establish are DENY argument_not_established.
+func TestActionsCLI_ValidateNeverAllowsInvalidArguments(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(agentPath, []byte(`agent:
+  name: support-bot
+  version: "1.0.0"
+actions:
+  definitions:
+    notify_customer:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id]
+        properties:
+          ticket_id: {type: string}
+      destination: {type: http, url: "https://notify.internal/v1", success: {status_codes: [200]}}
+    create_refund_request:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount]
+        properties:
+          ticket_id: {type: string}
+          amount: {type: number}
+      destination: {type: http, url: "https://refunds.internal/v1", success: {status_codes: [201]}}
+policies:
+  cost_limits:
+    daily: 10
+  approvals:
+    argument_rules:
+      refund-needs-approval: {actions: [create_refund_request], argument: amount, type: decimal, operator: gt, value: "50.00", effect: require_approval, approver_groups: [support-leads]}
+`), 0o600))
+	input := filepath.Join(dir, "in.json")
+	validate := func(actionName, doc string) (actionsValidateResult, string, error) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(input, []byte(doc), 0o600))
+		out, err := runActions(t, "validate", "--policy", agentPath, "--action", actionName, "--input", input, "--json")
+		var res actionsValidateResult
+		require.NoError(t, json.Unmarshal([]byte(out[:strings.LastIndex(out, "}")+1]), &res), out)
+		return res, out, err
+	}
+
+	// Baseline: both actions are ALLOW by name, and valid arguments evaluate.
+	res, _, err := validate("notify_customer", `{"ticket_id":"T-1"}`)
+	require.NoError(t, err)
+	assert.Equal(t, "ALLOW", res.Verdict)
+	assert.Empty(t, res.ReasonCode)
+	res, _, err = validate("create_refund_request", `{"ticket_id":"T-1","amount":75.00}`)
+	require.NoError(t, err)
+	assert.Equal(t, "REQUIRE_APPROVAL", res.Verdict)
+	assert.Equal(t, action.ReasonArgumentRuleApproval, res.ReasonCode)
+	assert.Equal(t, "refund-needs-approval", res.MatchedRuleID)
+	assert.Equal(t, action.PolicySourceUseCase, res.MatchedRuleSource, "the layer is a field, not something to parse from the id")
+	assert.Equal(t, []string{"support-leads"}, res.ApproverGroups)
+
+	for name, c := range map[string][2]string{
+		"missing required argument":          {"notify_customer", `{}`},
+		"wrong type":                         {"notify_customer", `{"ticket_id":7}`},
+		"undeclared argument":                {"notify_customer", `{"ticket_id":"T-1","admin":true}`},
+		"malformed JSON":                     {"notify_customer", `{"ticket_id":`},
+		"not an object":                      {"notify_customer", `["T-1"]`},
+		"empty document":                     {"notify_customer", ``},
+		"rule argument missing":              {"create_refund_request", `{"ticket_id":"T-1"}`},
+		"rule argument of the wrong type":    {"create_refund_request", `{"ticket_id":"T-1","amount":"seventy-five"}`},
+		"rule argument null":                 {"create_refund_request", `{"ticket_id":"T-1","amount":null}`},
+		"malformed JSON on the ruled action": {"create_refund_request", `{"amount":75.00,`},
+	} {
+		res, out, err := validate(c[0], c[1])
+		require.Error(t, err, "%s: a non-zero exit", name)
+		assert.False(t, res.Valid, name)
+		assert.NotEmpty(t, res.Error, name)
+		assert.Equal(t, "REFUSED", res.Verdict, name)
+		assert.Equal(t, "arguments_invalid", res.ReasonCode, name)
+		assert.Contains(t, res.Reason, "before any policy decision", name)
+		assert.Empty(t, res.MatchedRuleID, name)
+		assert.Empty(t, res.ArgumentsDigest, name)
+		assert.NotContains(t, out, `"verdict": "ALLOW"`, name)
+		assert.NotContains(t, out, "REQUIRE_APPROVAL", name)
+	}
+
+	// The schema accepts it (a JSON number), the decimal rule cannot
+	// establish it: denied, with the rule's inspection code.
+	res, _, err = validate("create_refund_request", `{"ticket_id":"T-1","amount":7.5e1}`)
+	require.NoError(t, err, "valid against the schema")
+	assert.True(t, res.Valid)
+	assert.Equal(t, "DENY", res.Verdict)
+	assert.Equal(t, action.ReasonArgumentNotEstablished, res.ReasonCode)
+
+	// Text output says the same.
+	require.NoError(t, os.WriteFile(input, []byte(`{}`), 0o600))
+	out, err := runActions(t, "validate", "--policy", agentPath, "--action", "notify_customer", "--input", input)
+	require.Error(t, err)
+	assert.Contains(t, out, "Arguments:          INVALID")
+	assert.Contains(t, out, "Verdict:            REFUSED")
+	assert.NotContains(t, out, "ALLOW")
+}

@@ -17,13 +17,14 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ASSETS = ROOT / "docs/assets/console"
 MANIFEST = "baseline.json"
 ASSETS = (
+    "action-evidence.webp", "action-policy.webp", "approval-detail.webp", "approvals.webp",
     "configuration.webp", "costs.webp", "evidence-verification.webp",
     "overview-attention.webp", "overview-mobile.webp", "session-investigation.webp",
     "showcase.webp", "system-diagnostics.webp", "tamper-detection.webp",
     "use-case-summary.webp",
 )
 PREFIXES = (
-    "internal/console/", "internal/fleet/", "internal/fleetview/",
+    "internal/console/", "internal/action/", "internal/fleet/", "internal/fleetview/",
     "internal/runtimestatus/", "internal/effective/", "internal/evidence/",
     "internal/session/", "internal/costs/", "internal/pricing/",
     "internal/config/", "internal/policy/", "tests/browser/seed/",

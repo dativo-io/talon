@@ -6,10 +6,32 @@
 # wrote to, cannot reach any privileged route through the console, and a
 # console restart leaves the data plane serving. Needs Docker; no provider
 # key. Run by `make test-console-compose-smoke` and the CI Docker job.
+#
+# Image under test (#533 release acceptance):
+#   (default)                       build both Talon services from this checkout
+#                                   (docker-compose.yml alone)
+#   TALON_IMAGE=<ref>               run that image instead, never built here
+#                                   (adds docker-compose.published.yml, which
+#                                   removes the build sections, so a failed
+#                                   pull can never turn into a source build):
+#                                   the release image built from
+#                                   Dockerfile.goreleaser in PR CI, or the
+#                                   published ghcr.io/dativo-io/talon:<version>
+#                                   in release verification and install smoke
+#   TALON_PULL_POLICY=always|never  default `always` with TALON_IMAGE (pull the
+#                                   published image anonymously); `never` for a
+#                                   locally built tag
+#   TALON_EXPECT_VERSION=<x.y.z>    fail unless the running image reports
+#                                   "Talon <x.y.z>"
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE=(docker compose -f "$REPO_ROOT/examples/docker-compose/docker-compose.yml" --project-name talon-console-smoke)
+STACK="$REPO_ROOT/examples/docker-compose"
+COMPOSE=(docker compose -f "$STACK/docker-compose.yml")
+if [ -n "${TALON_IMAGE:-}" ]; then
+  COMPOSE+=(-f "$STACK/docker-compose.published.yml")
+fi
+COMPOSE+=(--project-name talon-console-smoke)
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/console-compose-smoke.XXXXXX")"
 UI="http://127.0.0.1:8787"
 DP="http://127.0.0.1:8080"
@@ -59,9 +81,50 @@ status_of() { # status_of <method> <url> [curl args...]
   curl -sS -o "$WORK/body" -w '%{http_code}' -X "$method" "$url" "$@"
 }
 
-"${COMPOSE[@]}" up -d --build
+if [ -n "${TALON_IMAGE:-}" ]; then
+  export TALON_IMAGE
+  export TALON_PULL_POLICY="${TALON_PULL_POLICY:-always}"
+  echo "image under test: $TALON_IMAGE (pull_policy=$TALON_PULL_POLICY)"
+  # No fallback to a source build: an image that cannot be resolved stops the
+  # stack, and nothing is built under its name. (The base file alone would
+  # build here: Compose ignores a pull failure when a build section exists.)
+  repo="${TALON_IMAGE%@*}"
+  case "${repo##*/}" in *:*) repo="${repo%:*}" ;; esac
+  missing="$repo:talon-smoke-no-such-tag-$$"
+  if TALON_IMAGE="$missing" "${COMPOSE[@]}" up -d --no-deps talon >"$WORK/missing.log" 2>&1; then
+    echo "FAIL: an unresolvable image must stop the stack"; failures=$((failures + 1))
+    TALON_IMAGE="$missing" "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  else
+    echo "PASS: an unresolvable image stops the stack"
+  fi
+  check "nothing was built in place of the unresolvable image" bash -c "! docker image inspect '$missing' >/dev/null 2>&1"
+  check "the published path declares no Talon build" bash -c "! TALON_IMAGE='$TALON_IMAGE' TALON_PULL_POLICY='$TALON_PULL_POLICY' docker compose -f '$STACK/docker-compose.yml' -f '$STACK/docker-compose.published.yml' config --format json | jq -e '.services.talon.build or .services[\"talon-ui\"].build' >/dev/null"
+  # Only the mock provider is built; the Talon services run the given image.
+  "${COMPOSE[@]}" build mock-openai
+  "${COMPOSE[@]}" up -d
+else
+  echo "image under test: built from this checkout"
+  "${COMPOSE[@]}" up -d --build
+fi
 wait_http "$DP/health" 120
 wait_http "$UI/healthz" 60
+
+running_version="$("${COMPOSE[@]}" exec -T talon talon version | sed -n 1p)"
+echo "running: $running_version"
+if [ -n "${TALON_IMAGE:-}" ]; then
+  # Data plane and console run the same resolved image, and it is the one named.
+  want_id="$(docker image inspect --format '{{.Id}}' "$TALON_IMAGE")"
+  dp_id="$(docker inspect --format '{{.Image}}' "$("${COMPOSE[@]}" ps -q talon)")"
+  ui_id="$(docker inspect --format '{{.Image}}' "$("${COMPOSE[@]}" ps -q talon-ui)")"
+  check "the data plane runs the named image ($want_id)" [ "$dp_id" = "$want_id" ]
+  check "the console runs the same image as the data plane" [ "$ui_id" = "$dp_id" ]
+  echo "image digest(s): $(docker image inspect --format '{{join .RepoDigests ", "}}' "$TALON_IMAGE")"
+fi
+if [ -n "${TALON_EXPECT_VERSION:-}" ]; then
+  check "the data plane runs the expected release ($running_version)" [ "$running_version" = "Talon $TALON_EXPECT_VERSION" ]
+  ui_version="$("${COMPOSE[@]}" exec -T talon-ui talon version | sed -n 1p)"
+  check "the console runs the expected release ($ui_version)" [ "$ui_version" = "Talon $TALON_EXPECT_VERSION" ]
+fi
 
 # Port scope: console AND data plane are published on the host loopback only.
 # The data plane of this no-key stack is development-open; console pairing
@@ -95,6 +158,24 @@ check "overview reports today's request count for tenant demo" grep -Eq '"reques
 # The console reads the very session the data plane just wrote (shared store, read-only connection).
 check "session written by the data plane is readable through the console" [ "$(status_of GET "$UI/console/v1/sessions/compose-smoke?tenant=demo" -b "$WORK/jar")" = "200" ]
 check "session summary counts the governed request" grep -Eq '"requests":1' "$WORK/body"
+# The pages read from these endpoints; each answers the paired browser.
+for page in "overview?tenant=demo" "use-cases?tenant=demo" "use-cases/demo-agent?tenant=demo" "use-cases/demo-agent/effective-policy?tenant=demo" "approvals?tenant=demo" "sessions?tenant=demo" "costs?tenant=demo" "configuration" "system" "tenants"; do
+  check "paired GET /console/v1/$page is 200" [ "$(status_of GET "$UI/console/v1/$page" -b "$WORK/jar")" = "200" ]
+done
+# Signed evidence: the console verifies the record the data plane signed, and
+# says the same as `talon audit show --json` inside the data-plane container.
+status_of GET "$UI/console/v1/sessions/compose-smoke/timeline?tenant=demo" -b "$WORK/jar" >/dev/null
+evidence_id="$(jq -r '.timeline.records[0].id // empty' "$WORK/body")"
+check "the session timeline names its evidence record ($evidence_id)" [ -n "$evidence_id" ]
+check "evidence record readable through the console" [ "$(status_of GET "$UI/console/v1/evidence/$evidence_id?tenant=demo" -b "$WORK/jar")" = "200" ]
+console_verdict="$(jq -r '.detail.verification.state // empty' "$WORK/body")"
+cli_verdict="$("${COMPOSE[@]}" exec -T talon talon audit show "$evidence_id" --json | jq -r '.verification.state // empty')"
+check "console verifies the signature ($console_verdict)" [ "$console_verdict" = "valid" ]
+check "console and CLI verify the record the same way (console $console_verdict, CLI $cli_verdict)" [ "$console_verdict" = "$cli_verdict" ]
+# Legacy dashboards were removed (#534): neither process serves them.
+for legacy in /dashboard /gateway/dashboard /v1/dashboard/tenants-summary; do
+  check "no legacy dashboard on the data plane ($legacy 404)" [ "$(status_of GET "$DP$legacy")" = "404" ]
+done
 check "write verb on the read API is 405" [ "$(status_of POST "$UI/console/v1/overview" -b "$WORK/jar" -H 'Content-Type: application/json' -d '{}')" = "405" ]
 # The demo data plane runs without TALON_ADMIN_KEY, so the admin route's
 # answer depends on that configuration, not on the console. The claim here is

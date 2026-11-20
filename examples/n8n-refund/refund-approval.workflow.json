@@ -1,0 +1,742 @@
+{
+  "name": "Talon-governed refund (create_refund_request)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "talon-refund",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Refund request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "talon-refund",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "refund-webhook-caller",
+          "name": "Refund webhook caller"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "talon-url",
+              "name": "talon_url",
+              "type": "string",
+              "value": "http://127.0.0.1:8080"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "valid",
+              "name": "valid",
+              "type": "boolean",
+              "value": "={{ typeof $json.body === 'object' && $json.body !== null && typeof $json.body.ticket_id === 'string' && /^[A-Z]{1,10}-[0-9]{1,12}$/.test($json.body.ticket_id) && typeof $json.body.amount === 'string' && /^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$/.test($json.body.amount) && typeof $json.body.currency === 'string' && /^[A-Z]{3}$/.test($json.body.currency) && ($json.body.request_id === undefined || (typeof $json.body.request_id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test($json.body.request_id))) }}"
+            },
+            {
+              "id": "opid",
+              "name": "operation_id",
+              "type": "string",
+              "value": "={{ 'refund-' + (typeof ($json.body || {}).ticket_id === 'string' ? $json.body.ticket_id : 'invalid') + (typeof ($json.body || {}).request_id === 'string' ? '-' + $json.body.request_id : '') }}"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "name": "Validate request",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "outputKey": "valid",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ String($json.valid) }}",
+                    "rightValue": "true",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "other"
+        }
+      },
+      "name": "Request valid",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.talon_url }}/v1/action-operations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 35000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ operation_id: $json.operation_id, action: \"create_refund_request\", arguments: { ticket_id: $json.body.ticket_id, amount: $json.body.amount, currency: $json.body.currency } }) }}"
+      },
+      "name": "Talon: establish operation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        820,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "talon-refund-bot-key",
+          "name": "Talon refund-bot key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "outputKey": "allow",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency) && (($json.body.operation.verdict === 'ALLOW' && ($json.statusCode === 200 || $json.statusCode === 201)) || ($json.body.operation.verdict === 'REQUIRE_APPROVAL' && ($json.statusCode === 200 || $json.statusCode === 202)) || ($json.body.operation.verdict === 'DENY' && $json.statusCode === 403 && $json.body.operation.operation_status === 'denied')) ? String($json.body.operation.verdict) : 'NONE' }}",
+                    "rightValue": "ALLOW",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "approval",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency) && (($json.body.operation.verdict === 'ALLOW' && ($json.statusCode === 200 || $json.statusCode === 201)) || ($json.body.operation.verdict === 'REQUIRE_APPROVAL' && ($json.statusCode === 200 || $json.statusCode === 202)) || ($json.body.operation.verdict === 'DENY' && $json.statusCode === 403 && $json.body.operation.operation_status === 'denied')) ? String($json.body.operation.verdict) : 'NONE' }}",
+                    "rightValue": "REQUIRE_APPROVAL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "deny",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency) && (($json.body.operation.verdict === 'ALLOW' && ($json.statusCode === 200 || $json.statusCode === 201)) || ($json.body.operation.verdict === 'REQUIRE_APPROVAL' && ($json.statusCode === 200 || $json.statusCode === 202)) || ($json.body.operation.verdict === 'DENY' && $json.statusCode === 403 && $json.body.operation.operation_status === 'denied')) ? String($json.body.operation.verdict) : 'NONE' }}",
+                    "rightValue": "DENY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "other"
+        }
+      },
+      "name": "Talon verdict",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1040,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "seconds"
+      },
+      "name": "Wait for reviewer",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1260,
+        420
+      ],
+      "webhookId": "talon-refund-wait"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').first().json.talon_url }}/v1/action-operations/{{ encodeURIComponent($('Validate request').first().json.operation_id) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 35000
+        }
+      },
+      "name": "Talon: read operation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1480,
+        420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "talon-refund-bot-key",
+          "name": "Talon refund-bot key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "outputKey": "authorized",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ !($json.statusCode === 200 && $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency)) ? 'NONE' : ($json.body.operation.operation_status !== 'awaiting_approval' ? String($json.body.operation.operation_status) : (($json.body.operation.approval && new Date($json.body.operation.approval.expires_at) > new Date()) ? 'awaiting_approval' : 'expired')) }}",
+                    "rightValue": "authorized",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "pending",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ !($json.statusCode === 200 && $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency)) ? 'NONE' : ($json.body.operation.operation_status !== 'awaiting_approval' ? String($json.body.operation.operation_status) : (($json.body.operation.approval && new Date($json.body.operation.approval.expires_at) > new Date()) ? 'awaiting_approval' : 'expired')) }}",
+                    "rightValue": "awaiting_approval",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "other"
+        }
+      },
+      "name": "Approval state",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1700,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.talon_url }}/v1/action-operations/{{ encodeURIComponent($('Validate request').first().json.operation_id) }}/attempts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 35000
+        }
+      },
+      "name": "Talon: claim (Talon dispatches)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "talon-refund-bot-key",
+          "name": "Talon refund-bot key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "outputKey": "succeeded",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ ($json.statusCode === 200 && $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency)) ? String($json.body.operation.operation_status) : ($json.statusCode === 409 && $json.body && $json.body.error && ($json.body.error.operation && $json.body.error.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.error.operation.action === 'create_refund_request' && $json.body.error.operation.review && $json.body.error.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.error.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.error.operation.review.currency === $('Validate request').first().json.body.currency) && (($json.body.error.code === 'operation_already_succeeded' && $json.body.error.operation.operation_status === 'succeeded') || ($json.body.error.code === 'operation_outcome_unknown' && $json.body.error.operation.operation_status === 'unknown')) ? String($json.body.error.operation.operation_status) : 'NONE') }}",
+                    "rightValue": "succeeded",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "unknown",
+              "renameOutput": true,
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ ($json.statusCode === 200 && $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency)) ? String($json.body.operation.operation_status) : ($json.statusCode === 409 && $json.body && $json.body.error && ($json.body.error.operation && $json.body.error.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.error.operation.action === 'create_refund_request' && $json.body.error.operation.review && $json.body.error.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.error.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.error.operation.review.currency === $('Validate request').first().json.body.currency) && (($json.body.error.code === 'operation_already_succeeded' && $json.body.error.operation.operation_status === 'succeeded') || ($json.body.error.code === 'operation_outcome_unknown' && $json.body.error.operation.operation_status === 'unknown')) ? String($json.body.error.operation.operation_status) : 'NONE') }}",
+                    "rightValue": "unknown",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "other"
+        }
+      },
+      "name": "Outcome",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: \"refunded\", operation_id: $('Validate request').first().json.operation_id, verify: \"talon audit verify --operation \" + $('Validate request').first().json.operation_id }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "name": "Respond: refunded",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2360,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: \"unknown\", operation_id: $('Validate request').first().json.operation_id, note: \"Talon dispatched the refund and could not observe the outcome. It may or may not have happened. Do not retry; reconcile with the refund system.\" }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "name": "Respond: outcome unknown",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2360,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: \"not_completed\", operation_id: $('Validate request').first().json.operation_id, talon_status: $json.statusCode, talon_code: (($json.body || {}).error || {}).code || null, note: \"Talon did not report a completed refund. Read the operation before assuming that nothing was dispatched.\" }) }}",
+        "options": {
+          "responseCode": 409
+        }
+      },
+      "name": "Respond: claim not completed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2360,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: \"denied\", operation_id: $('Validate request').first().json.operation_id }) }}",
+        "options": {
+          "responseCode": 403
+        }
+      },
+      "name": "Respond: denied",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1260,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: \"not_approved\", operation_id: $('Validate request').first().json.operation_id, status: $json.body && $json.body.operation ? $json.body.operation.operation_status : \"unknown\" }) }}",
+        "options": {
+          "responseCode": 409
+        }
+      },
+      "name": "Respond: not approved",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1920,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: \"not_authorized\", operation_id: $('Validate request').first().json.operation_id, talon_status: $json.statusCode, talon_code: (($json.body || {}).error || {}).code || null, note: \"Talon returned no verdict (conflict, schema or authentication error). Nothing was dispatched by this run.\" }) }}",
+        "options": {
+          "responseCode": 409
+        }
+      },
+      "name": "Respond: not authorized by Talon",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1260,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: \"invalid_request\", note: \"ticket_id must look like ABC-123, amount must be a decimal string with at most two fractional digits, currency a three-letter code, and optional request_id must use 1-64 letters, digits, underscores or dashes. Nothing was sent to Talon.\" }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "name": "Respond: invalid request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        820,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Refund request": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Validate request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate request": {
+      "main": [
+        [
+          {
+            "node": "Request valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request valid": {
+      "main": [
+        [
+          {
+            "node": "Talon: establish operation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: invalid request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Talon: establish operation": {
+      "main": [
+        [
+          {
+            "node": "Talon verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Talon verdict": {
+      "main": [
+        [
+          {
+            "node": "Talon: claim (Talon dispatches)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for reviewer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: denied",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: not authorized by Talon",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for reviewer": {
+      "main": [
+        [
+          {
+            "node": "Talon: read operation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Talon: read operation": {
+      "main": [
+        [
+          {
+            "node": "Approval state",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approval state": {
+      "main": [
+        [
+          {
+            "node": "Talon: claim (Talon dispatches)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for reviewer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: not approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Talon: claim (Talon dispatches)": {
+      "main": [
+        [
+          {
+            "node": "Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome": {
+      "main": [
+        [
+          {
+            "node": "Respond: refunded",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: outcome unknown",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: claim not completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 3600
+  },
+  "pinData": {},
+  "meta": {
+    "talon": {
+      "contract": "Action Gateway /v1/action-operations (#458, #205)",
+      "action": "create_refund_request",
+      "generated_by": "examples/n8n-refund/generate-workflow.py"
+    }
+  }
+}

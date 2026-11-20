@@ -12,6 +12,7 @@ import { humanize, integer, money, relative, utc, utcShort } from "../lib/format
 import { scoped, useScope } from "../lib/scope";
 import { rowSpend } from "../lib/costs";
 import { FindingsList, ReadinessPanel } from "../components/Readiness";
+import { ApprovalsCard } from "../components/Approvals";
 
 export function Overview() {
   const { tenant } = useScope();
@@ -46,6 +47,7 @@ function OverviewBody({ o, tenant }: { o: OverviewDTO; tenant: string }) {
         title="What needs attention"
         empty={`Nothing needs attention: readiness found no problem and canonical fleet health flags no AI use case in ${scopeLabel}.`}
       />
+      <ApprovalsCard a={o.approvals} tenant={tenant} />
       <section aria-labelledby="usage-title" className="stack">
         <div className="section-head">
           <h2 id="usage-title">AI use cases and usage</h2>

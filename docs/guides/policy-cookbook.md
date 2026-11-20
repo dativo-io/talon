@@ -118,7 +118,7 @@ policies:
 
 ## Cap daily spend at €10
 
-**Goal:** Hard cap on daily spend.
+**Goal:** Stop admitting requests once daily spend reaches a cap (decided before dispatch on a pre-request estimate; a request whose real cost exceeds its estimate can overshoot, so this is not an invoice ceiling — [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
 
 **Where:** `agent.talon.yaml` — one snippet governs both native runs and gateway traffic for this agent.
 
@@ -434,7 +434,7 @@ agent:
 
 policies:
   session_limits:
-    max_cost: 10.00        # SOFT cap per coding session (#198); reservation is #144
+    max_cost: 10.00        # admission cap per coding session, reserved atomically (#144); estimate-based, not an invoice ceiling
   data_classification:
     input_scan: true       # scan-only: evidence recorded, org floor decides the action
     redact_pii: false      # redaction mangles code

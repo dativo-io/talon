@@ -10,6 +10,8 @@ These are **real screenshots** of Talon's packaged, read-only Operations Console
 - `costs.webp`: example with incompatible currencies and unavailable measurements.
 - `configuration.webp`: organization policy, shared proxy and per-agent declarations.
 - `overview-mobile.webp`: responsive layout.
+- `approvals.webp`, `approval-detail.webp`: the Approvals page and one approval of the `refund-bot` use case: a refund that waits for a decision (argument names only, the rule that required approval, the CLI commands) and one whose lifetime elapsed while it was pending. The requests are established and decided by the production action service; the single hand-written change is the elapsed lifetime of that one approval.
+- `action-policy.webp`, `action-evidence.webp`: the Action Gateway block of the `refund-bot` use case (one company argument rule, one use-case argument rule) and the signed record of a refund that needed a reviewer. The fixture produces this lifecycle with the production action service (establish, reviewer decision, claim, dispatch to a loopback refund service that counts its calls); the records are not written by hand. The reviewer principal is the fixture's own, not an operator's credential.
 
 The images are **illustrative**; CLI audit verification and downstream counters remain the proof for a real integration. An offline gateway in the synthetic fixture does not indicate Talon is currently offline in a deployment.
 
@@ -22,7 +24,7 @@ The fixture is deterministic in its business scenarios, not pixel-exact: real cl
 ### Refresh the published images
 
 1. Use the artifact from the PR's capture run, or manually dispatch **Console screenshots** on the branch containing the changes. Manual dispatch generates candidates without failing on a stale baseline.
-2. Review the raw images and collage, including error states; copy the contents of `curated/` (the ten WebPs and `baseline.json`) into `docs/assets/console/`.
+2. Review the raw images and collage, including error states; copy the contents of `curated/` (the fourteen WebPs and `baseline.json`) into `docs/assets/console/`.
 3. Commit those files together with the matching render-input revision. The next relevant CI run verifies the committed baseline. No workflow writes commits, opens PRs or deploys images automatically.
 
 For a local refresh on Linux with Go, Node, Chromium, Python 3, DejaVu fonts and Pillow installed (stage render-input changes first):

@@ -15,7 +15,8 @@ OUT.mkdir(parents=True, exist_ok=True)
 # Meaningful, full-width above-the-fold crops; preserve original UI pixels.
 SHOTS = {
     'overview-attention': ('light-13-overview-case-g.png', 0, 800),
-    'use-case-summary': ('light-03-use-case.png', 0, 925),
+    # Through the end of the Summary card, so the next step is in the image.
+    'use-case-summary': ('light-03-use-case.png', 0, 1080),
     'session-investigation': ('light-18-session-proof.png', 0, 1120),
     'evidence-verification': ('light-16-evidence-export-denied.png', 0, 1180),
     'costs': ('light-17-costs-all-tenants.png', 0, 750),
@@ -23,6 +24,13 @@ SHOTS = {
     'system-diagnostics': ('light-14-system-case-g.png', 0, 1100),
     'tamper-detection': ('light-07-evidence-tampered.png', 0, 960),
     'overview-mobile': ('light-12-overview-mobile.png', 0, 1400),
+    # Action Gateway (#205): refund-bot's composed argument rules, and the
+    # signed record of a refund that needed a reviewer.
+    'action-policy': ('light-19-action-policy.png', 0, 100000),
+    'action-evidence': ('light-20-action-evidence.png', 0, 1800),
+    # Approvals (#565): what the operator discovers in the read-only console.
+    'approvals': ('light-22-approvals.png', 0, 620),
+    'approval-detail': ('light-23-approval-detail.png', 0, 1500),
 }
 for name, (filename, y0, y1) in SHOTS.items():
     original = Image.open(SRC / filename).convert('RGB')
