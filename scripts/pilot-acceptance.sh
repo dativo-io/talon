@@ -111,7 +111,11 @@ journey() {
 run "customer journey (registration, company policy, SDK traffic, allow/approval/deny with counted dispatch, reviewer boundaries, console, evidence, restart, cold backup, restore with the hold, resume, second use case, key replacement)" journey
 [ -n "$sdk_dir" ] || missing "application client check with the OpenAI Node SDK (node and npm are needed)"
 run "exact action governance and argument rules" e2e '^TestE2E_ActionGateway'
-run "use-case registration, including concurrent registrations" e2e '^TestE2E_AgentsAdd'
+# #567's onboarding acceptance with the same binary (TALON_E2E_BINARY): the
+# documented secure startup, two applications through the pinned SDK, key
+# replacement, disable, revocation, concurrent registrations. It fails,
+# never skips, when a prerequisite is missing.
+run "use-case registration and onboarding (register, connect, verify; key replacement; concurrent registrations)" bash scripts/onboarding-acceptance.sh
 run "backup, restore and the recovery hold" e2e '^TestE2E_BackupRestore_SingleNode$|^TestE2E_Restore_'
 run "no-key quickstart script over this binary" e2e '^TestE2E_QuickstartScript_LocalBinary$'
 
