@@ -836,7 +836,7 @@ func TestAgentsAdd_PublicationIsTrackedApartFromTempFileCleanup(t *testing.T) {
 		dir := filepath.Join(agentsDir, "refund-bot")
 		require.Len(t, tempFiles(dir), 1, "the temporary file is still there")
 		// The leftover is explicit: in the output and in the signed record.
-		require.Contains(t, out.String(), "leftover")
+		require.Contains(t, out.String(), "Leftover")
 		require.Contains(t, out.String(), tempFiles(dir)[0])
 		recs := registrationRecords(t, cfg, "acme", "refund-bot")
 		require.Len(t, recs[registration.TypeRegistered], 1)

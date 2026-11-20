@@ -14,8 +14,6 @@ import (
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/effective"
-	"github.com/dativo-io/talon/internal/evidence"
-	"github.com/dativo-io/talon/internal/runtimestatus"
 )
 
 var (
@@ -33,25 +31,7 @@ func init() {
 // It reads the files, the installation's runtime records and the evidence
 // store read-only; it never contacts a server.
 func runAgentShowEffective(ctx context.Context, cmd *cobra.Command, cfg *config.Config, name string) error {
-	in := effective.Inputs{
-		AgentsDir: cfg.AgentsDir, DefaultPolicy: cfg.DefaultPolicy,
-		GatewayConfig: offlineGatewayConfigPath(), ProxyConfig: strings.TrimSpace(agentsShowProxyConfig),
-		Name: name, Tenant: agentsQueueTenant, Now: time.Now().UTC(),
-		// Vault METADATA only (read-only, no key): when the use case's
-		// credential was last written.
-		SecretsDB: cfg.SecretsDBPath(),
-	}
-	if _, err := os.Stat(cfg.EvidenceDBPath()); err == nil {
-		store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
-		if err != nil {
-			return fmt.Errorf("opening evidence store read-only: %w", err)
-		}
-		defer store.Close()
-		in.Evidence = store
-	}
-	view := runtimestatus.NewReader().Assess(cfg.DataDir, runtimestatus.Fingerprint(cfg.SigningKey), nil, in.Now)
-	in.Runtime, in.RuntimeReadable = &view, view.Err == ""
-	r, err := effective.Build(ctx, in)
+	r, err := buildUseCaseReport(ctx, cfg, name, agentsQueueTenant, agentsShowProxyConfig)
 	if err != nil {
 		return err
 	}

@@ -47,6 +47,10 @@ type Verification struct {
 	Reading Reading `json:"reading"`
 	// NotEstablished lists what these observations do not prove.
 	NotEstablished []string `json:"not_established"`
+	// Next is the one thing to do next, or that nothing needs doing: a
+	// fixed mapping from the facts above (next.go), the same for the CLI
+	// and the console.
+	Next NextStep `json:"next"`
 }
 
 // Reading is a one-line description with a stable code.
@@ -375,6 +379,17 @@ func buildVerification(ctx context.Context, in verificationInputs) *Verification
 	}
 	v.Reading = readingOf(v, in.loaded)
 	v.NotEstablished = notEstablished(v)
+	var endpoints []string
+	for i := range in.providers {
+		if in.providers[i].Enabled {
+			endpoints = append(endpoints, "/v1/proxy/"+in.providers[i].Name+"/v1")
+		}
+	}
+	tenant := in.tenant
+	if tenant == "" {
+		tenant = "default"
+	}
+	v.Next = nextStepOf(v, in.loaded, runtimeFactsOf(in.runtime, in.runtimeReadable), in.name, tenant, endpoints)
 	return v
 }
 

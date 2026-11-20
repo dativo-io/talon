@@ -141,77 +141,146 @@ func registrationReport(ctx context.Context, cfg *config.Config, plan *agentsAdd
 	return effective.Build(ctx, in)
 }
 
-// printAgentsAddResult prints, in this order: what was registered, the
-// company policy the use case runs under (from the canonical projection),
-// what is and is not active, how to connect the application, how to verify
-// its first request, what this command did not verify — and only then, in a
-// block of its own, the secret. Everything above the secret block is safe
-// to copy into a ticket or a chat.
+// printAgentsAddResult answers, briefly and in this order: what was
+// registered, which company controls apply, whether a running Talon serves
+// it yet, where to point the application, how to verify the first request,
+// and last, in a block of its own, the key. Everything above the key block
+// is safe to copy into a ticket. The full policy with its provenance, and
+// every fact behind these lines, is `talon agents show <name> --effective`;
+// this output states nothing that report does not hold.
 func printAgentsAddResult(ctx context.Context, out io.Writer, cfg *config.Config, plan *agentsAddPlan, res *registrationResult) {
+	row := func(k, v string) { fmt.Fprintf(out, "  %-9s %s\n", k, v) }
 	if plan.AgentsDirMissing {
 		fmt.Fprintf(out, "Created agents_dir %s (it did not exist).\n", filepath.Dir(plan.Dir))
 	}
-	fmt.Fprintf(out, "Registered AI use case %q\n", plan.Name)
-	row := func(k, v string) { fmt.Fprintf(out, "  %-12s %s\n", k+":", v) }
-	row("tenant", plan.Tenant)
+	fmt.Fprintf(out, "Registered %s (tenant %s)\n", plan.Name, plan.Tenant)
 	if plan.Owner != "" {
-		row("owner", plan.Owner)
+		row("Owner", plan.Owner)
 	} else {
-		row("owner", "not given (--owner; set metadata.owner in the file)")
+		row("Owner", "not given (--owner)")
 	}
-	row("config", plan.Path)
-	row("key", fmt.Sprintf("generated, vault secret %q; one active key per use case; the value is shown once, at the end", plan.SecretName))
-	row("evidence", fmt.Sprintf("%s (signed completion record; intent %s). Verify: talon audit verify %s", res.EvidenceID, res.IntentID, res.EvidenceID))
+	if plan.Purpose != "" {
+		row("Purpose", plan.Purpose)
+	}
+	row("File", plan.Path)
+	row("Record", fmt.Sprintf("%s (signed; check it with: talon audit verify %s)", res.EvidenceID, res.EvidenceID))
 	for _, msg := range res.Recovered {
-		row("recovered", msg)
+		row("Recovered", msg)
 	}
 	for _, msg := range res.Residual {
-		row("leftover", msg+" (also in the completion record)")
+		row("Leftover", msg+" (also in the signed record)")
 	}
 
 	report, rerr := registrationReport(ctx, cfg, plan)
-	fmt.Fprintf(out, "\nCompany policy this use case runs under\n")
-	if plan.NoOrganizationPolicy {
-		fmt.Fprintf(out, "  WARNING: registered WITHOUT a company policy (--no-company-policy): this use case has NO budget cap and no company constraints until you add a gateway.organization_policy or set policies.cost_limits in its file.\n")
-	}
-	if rerr != nil {
-		fmt.Fprintf(out, "  could not be compiled for display (%v); run: talon agents show %s --effective\n", rerr, plan.Name)
-	} else {
-		fmt.Fprintf(out, "  Compiled from the current files by the resolver the gateway enforces with. Each rule names the layer that won and its precedence:\n  a company default is replaced by this use case's own file only where the precedence says so; company ceilings, floors and\n  forbidden lists always bind and cannot be lifted from that file.\n")
-		renderEffectiveRules(out, report, "  ")
+	fmt.Fprintln(out)
+	printInheritedPolicy(out, plan, report, rerr)
+
+	fmt.Fprintf(out, "\nRuntime\n  %s\n", registrationRuntimeLine(cfg, report, rerr))
+	if warn := companyPolicyNotLoaded(cfg, report); warn != "" {
+		fmt.Fprintf(out, "  %s\n", warn)
 	}
 
-	fmt.Fprintf(out, "\nActivation (configuration is not activation)\n")
-	fmt.Fprintf(out, "  company policy: %s\n", plan.CompanyPolicy)
-	if rerr == nil {
-		fmt.Fprintf(out, "  this use case:  %s — %s\n", report.Loaded.State, report.Loaded.Reason)
-	}
-	fmt.Fprintf(out, "  %s\n", fleetActivation(cfg))
+	fmt.Fprintf(out, "\nConnect your application\n")
+	printConnectionRecipe(ctx, out, report)
 
-	fmt.Fprintf(out, "\nConnect the application\n")
-	printConnectionRecipe(out, report)
+	fmt.Fprintf(out, "\nVerify\n  Send one request from the application, then:\n    talon agents show %s\n", plan.Name)
 
-	fmt.Fprintf(out, `
-Verify the first request
-  talon agents show %[1]s --effective   # section 2: loaded by a running process; section 5: authenticated traffic observed, and under which policy
-  talon audit verify <evidence-id>      # the signature of the record section 5 names
-  talon agents show %[1]s               # health, spend and requests
-
-Not verified by this command
-  - that a running Talon process has loaded this use case (see Activation above)
-  - that the application is configured with the endpoint and the key
-  - that any request of the application reaches Talon: only requests sent to a Talon endpoint are governed and recorded
-`, plan.Name)
-
-	fmt.Fprintf(out, "\n==================== SECRET — shown once, do not copy with the text above ====================\n")
-	fmt.Fprintf(out, "Talon key of %q (store it in the application's secret manager; never in source, YAML, a shell argument or a ticket):\n  %s\n", plan.Name, res.Key)
-	fmt.Fprintf(out, "Lost it? It cannot be shown again: replace it (docs/guides/add-talon-to-existing-app.md, \"Replace or revoke a key\").\n")
+	fmt.Fprintf(out, "\nApplication key — SECRET — shown once\n")
+	fmt.Fprintf(out, "  %s\n", res.Key)
+	fmt.Fprintf(out, "  Store it in the application's secret manager, never in source, YAML, a ticket or a shell argument.\n  It cannot be shown again; a lost key is replaced (docs/guides/operate-ai-use-cases.md).\n")
 }
 
-// printConnectionRecipe states the endpoint only as far as the gateway
-// configuration proves it: one line per provider the gateway config
-// enables, or the reason none can be named. <talon-url> is never guessed.
-func printConnectionRecipe(out io.Writer, r *effective.Report) {
+// companyPolicyNotLoaded returns a warning when a gateway of this
+// installation is running with ANOTHER gateway config than the one on disk:
+// the company policy shown above is then not the one in force until
+// `talon serve` restarts (it reads the gateway config at start). "" when no
+// gateway runs or the running one loaded the current file.
+func companyPolicyNotLoaded(cfg *config.Config, report *effective.Report) string {
+	if report == nil || report.CurrentFiles.GatewayConfig == nil || report.CurrentFiles.GatewayConfig.Digest == "" {
+		return ""
+	}
+	view, readable := installationRuntime(cfg, time.Now().UTC())
+	proof := runtimestatus.ProveGatewayConfig(view, readable, report.CurrentFiles.GatewayConfig.Digest)
+	if proof.State != runtimestatus.LoadedDiffersFromFile {
+		return ""
+	}
+	return "WARNING: the running Talon gateway has not loaded the current gateway config (" + proof.Reason + "). The company policy above takes effect when `talon serve` restarts."
+}
+
+// registrationRuntimeLine says whether a running Talon serves the new use
+// case yet, from the processes' own records. A file that was written is not
+// a use case that is served.
+func registrationRuntimeLine(cfg *config.Config, report *effective.Report, rerr error) string {
+	if rerr != nil || report == nil || report.Verification == nil {
+		return "Not confirmed: " + fleetActivation(cfg)
+	}
+	if report.Loaded.State == runtimestatus.LoadedMatchesFile {
+		return "Active: the running Talon process has loaded this use case."
+	}
+	switch next := report.Verification.Next; next.Code {
+	case effective.NextStartRuntime:
+		return "Not active: no Talon process of this installation is running. `talon serve` loads this use case when it starts."
+	case effective.NextWaitReload:
+		return fmt.Sprintf("Not active yet: the running Talon process loads it at its next re-scan of agents_dir (agents_reload_interval, default %s). No restart is needed.", config.DefaultAgentsReloadInterval)
+	default:
+		return "Not active. " + next.Text
+	}
+}
+
+// printInheritedPolicy states the company controls the new use case runs
+// under, from the canonical projection, in two groups: the company's
+// defaults and what always binds. The layer that wins each rule and its
+// precedence are in the full report.
+func printInheritedPolicy(out io.Writer, plan *agentsAddPlan, report *effective.Report, rerr error) {
+	if plan.NoOrganizationPolicy {
+		fmt.Fprintf(out, "Company policy: NONE (--no-company-policy)\n")
+		fmt.Fprintf(out, "  WARNING: this use case has no budget cap and no company constraints until you add gateway.organization_policy\n  to the gateway config or set policies.cost_limits in its file.\n")
+		return
+	}
+	fmt.Fprintf(out, "Company policy: inherited (nothing is copied into the use case's file)\n")
+	if rerr != nil {
+		fmt.Fprintf(out, "  It could not be compiled for display (%v). See: talon agents show %s --effective\n", rerr, plan.Name)
+		return
+	}
+	var defaults, always, own []string
+	for i := range report.Effective.Rules {
+		rule := &report.Effective.Rules[i]
+		if strings.TrimSpace(rule.Effective) == "" {
+			continue
+		}
+		item := rule.Rule + " " + rule.Effective
+		switch {
+		case strings.HasPrefix(rule.Winner, "organization.defaults"):
+			defaults = append(defaults, item)
+		case strings.HasPrefix(rule.Winner, "organization.constraints"), rule.Winner == "union", strings.HasPrefix(rule.Winner, "provider"):
+			always = append(always, item)
+		case strings.HasPrefix(rule.Winner, "use_case"):
+			own = append(own, item)
+		}
+	}
+	line := func(label string, items []string) {
+		if len(items) > 0 {
+			fmt.Fprintf(out, "  %-16s %s\n", label, strings.Join(items, " · "))
+		}
+	}
+	line("defaults", defaults)
+	line("always enforced", always)
+	line("own file", own)
+	if len(defaults)+len(always)+len(own) == 0 {
+		fmt.Fprintf(out, "  The company policy sets no budget, PII or tool rule.\n")
+	}
+	fmt.Fprintf(out, "  The use case's own file can only tighten these. Why each rule applies: talon agents show %s --effective\n", plan.Name)
+}
+
+// defaultTalonURL is where `talon serve` listens when started as the guide
+// documents it, and where `talon agents` looks for a server by default.
+const defaultTalonURL = "http://localhost:8080"
+
+// printConnectionRecipe states the endpoint only as far as it is
+// established: the gateway path per provider the configuration enables, and
+// the server's address only when a Talon server answers there now.
+// <talon-url> is never guessed.
+func printConnectionRecipe(ctx context.Context, out io.Writer, r *effective.Report) {
 	var providers []string
 	if r != nil {
 		for _, p := range r.Effective.Providers {
@@ -220,21 +289,20 @@ func printConnectionRecipe(out io.Writer, r *effective.Report) {
 			}
 		}
 	}
-	fmt.Fprintf(out, "  The application presents its Talon key, never the provider's key (Talon holds that in its vault).\n")
 	if len(providers) == 0 {
-		fmt.Fprintf(out, "  LLM gateway: no enabled provider is configured in the gateway config this command read, so no model endpoint can be named.\n")
-		fmt.Fprintf(out, "               Add gateway.providers (docs/guides/add-talon-to-existing-app.md) and start 'talon serve --gateway'; the endpoint is then\n")
-		fmt.Fprintf(out, "               <talon-url>/v1/proxy/<provider>/v1\n")
-	} else {
-		fmt.Fprintf(out, "  LLM gateway (needs a running 'talon serve --gateway'; <talon-url> is where it listens, http://localhost:8080 by default):\n")
-		for _, p := range providers {
-			fmt.Fprintf(out, "    base URL  <talon-url>/v1/proxy/%s/v1\n", p)
-		}
-		fmt.Fprintf(out, "    header    Authorization: Bearer <the Talon key>\n")
-		fmt.Fprintf(out, "    OpenAI SDK (Node):   new OpenAI({ baseURL: process.env.TALON_URL + \"/v1/proxy/%s/v1\", apiKey: process.env.TALON_USE_CASE_KEY })\n", providers[0])
-		fmt.Fprintf(out, "    OpenAI SDK (Python): OpenAI(base_url=os.environ[\"TALON_URL\"] + \"/v1/proxy/%s/v1\", api_key=os.environ[\"TALON_USE_CASE_KEY\"])\n", providers[0])
+		fmt.Fprintf(out, "  No model provider is enabled in the gateway config this command read, so no endpoint can be named.\n")
+		fmt.Fprintf(out, "  Add gateway.providers (docs/guides/add-talon-to-existing-app.md); the endpoint is then <talon-url>/v1/proxy/<provider>/v1\n")
+		return
 	}
-	fmt.Fprintf(out, "  Other supported paths (coding agents, MCP proxy, HTTP Action Gateway, n8n, OpenShell): docs/guides/choosing-integration-path.md\n")
+	base, note := "<talon-url>", fmt.Sprintf("<talon-url>: where `talon serve` listens; none answers at %s now", defaultTalonURL)
+	if isTalonServer(ctx, defaultTalonURL) {
+		base, note = defaultTalonURL, "a Talon server answers there now"
+	}
+	for _, p := range providers {
+		fmt.Fprintf(out, "  Base URL  %s/v1/proxy/%s/v1   (%s)\n", base, p, note)
+	}
+	fmt.Fprintf(out, "  API key   the application key below (never the provider's key)\n")
+	fmt.Fprintf(out, "  Set these two in the application's OpenAI-compatible SDK. Other ways to connect: docs/guides/choosing-integration-path.md\n")
 }
 
 // renderEffectiveRules prints the effective rules with their winning layer

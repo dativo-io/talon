@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -16,7 +19,11 @@ import (
 
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/effective"
+	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/fleet"
+	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/runtimestatus"
 )
 
 func writeQueueAgent(t *testing.T, dir, name string, enabled bool) {
@@ -107,7 +114,8 @@ policies:
 
 	// The show rendering carries the record; a row without one stays clean.
 	var buf bytes.Buffer
-	renderAgentShow(&buf, byName["support"], "")
+	support := byName["support"]
+	renderUseCase(&buf, &support, nil, nil, time.Now().UTC())
 	out := buf.String()
 	assert.Contains(t, out, "Use case (declared in config):")
 	assert.Contains(t, out, "Purpose:     Answer tier-1 customer questions")
@@ -117,7 +125,8 @@ policies:
 	assert.Contains(t, out, "Reference:   AIGOV-101")
 
 	buf.Reset()
-	renderAgentShow(&buf, byName["plain"], "")
+	plain := byName["plain"]
+	renderUseCase(&buf, &plain, nil, nil, time.Now().UTC())
 	assert.NotContains(t, buf.String(), "Use case", "absent record renders nothing")
 }
 
@@ -350,20 +359,174 @@ func TestResolveFleet_ForcedOfflineWithEmptyURL(t *testing.T) {
 	require.Len(t, rows, 1)
 }
 
-func TestRenderAgentsTable_BannerAndIssues(t *testing.T) {
-	var buf bytes.Buffer
+// The default listing is what an operator scans. It keeps four facts apart
+// and never lets one stand for another (#567 review): the file (STATE), what
+// a running process has loaded (RUNTIME), observed traffic (LAST REQUEST) and
+// attention. A use case nobody has connected is not shown as "healthy".
+func TestAgentsOverview_KeepsConfiguredRuntimeAndTrafficApart(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	rows := []fleet.AgentRow{
-		{Name: "support", State: fleet.StateEnabled, Health: fleet.HealthHealthy, Why: "—", Currency: "EUR"},
+		{Name: "new-app", TenantID: "default", State: fleet.StateEnabled, Health: fleet.HealthHealthy, Why: "—", Currency: "USD", MonthlyCap: 500, PolicyDigest: "d-new"},
+		{Name: "support", TenantID: "default", State: fleet.StateEnabled, Health: fleet.HealthHealthy, Why: "—", Currency: "USD", MonthlyCap: 500, SpendMonth: 12.4, PolicyDigest: "d-support", LastRun: now.Add(-2 * time.Minute)},
+		{Name: "refunds", TenantID: "default", State: fleet.StateEnabled, Health: fleet.HealthBlocked, Why: "daily budget exhausted ($0.0035 / $0.0032)", Currency: "USD", PolicyDigest: "d-old", LastRun: now.Add(-3 * time.Hour)},
+		{Name: "paused", TenantID: "default", State: fleet.StateStopped, Health: fleet.HealthStopped, Why: "disabled by operator", Currency: "USD", PolicyDigest: "d-paused"},
 	}
 	issues := []agentcatalog.FleetIssue{{Path: "agents/bad/agent.talon.yaml", Reason: "schema invalid"}}
-	renderAgentsTable(&buf, rows, issues, offlineFleetLabel)
+	running := runtimestatus.View{Processes: []runtimestatus.Process{{
+		Record: runtimestatus.Record{
+			InstanceID: "serve1", Roles: []string{runtimestatus.RoleGateway}, StartedAt: now.Add(-time.Hour), WrittenAt: now,
+			Catalog: &runtimestatus.Catalog{ActivatedAt: now.Add(-time.Hour), Agents: []runtimestatus.Agent{
+				{Name: "support", TenantID: "default", Enabled: true, PolicyDigest: "d-support"},
+				{Name: "refunds", TenantID: "default", Enabled: true, PolicyDigest: "d-newer"},
+				{Name: "paused", TenantID: "default", Enabled: false, PolicyDigest: "d-paused"},
+			}},
+		},
+		Assessed: runtimestatus.Running, Current: true,
+	}}}
+
+	var buf bytes.Buffer
+	renderAgentsOverview(&buf, rows, issues, "", &running, true, now)
 	out := buf.String()
-	assert.Contains(t, out, offlineFleetLabel)
-	assert.Contains(t, out, "AGENT")
-	assert.Contains(t, out, "HEALTH")
-	assert.Contains(t, out, "support")
-	assert.Contains(t, out, "fleet issues (1)")
-	assert.Contains(t, out, "agents/bad/agent.talon.yaml")
+	line := func(name string) string {
+		for _, l := range strings.Split(out, "\n") {
+			if strings.HasPrefix(l, name+" ") {
+				return l
+			}
+		}
+		t.Fatalf("no line for %s in:\n%s", name, out)
+		return ""
+	}
+	for _, h := range []string{"USE CASE", "STATE", "RUNTIME", "LAST REQUEST", "COST THIS MONTH", "ATTENTION"} {
+		assert.Contains(t, out, h)
+	}
+	// Registered, valid, never loaded, never seen: it says exactly that.
+	assert.Regexp(t, `^new-app\s+enabled\s+not loaded\s+none observed\s+\$0\.00 / \$500\.00\s+—$`, line("new-app"))
+	assert.Regexp(t, `^support\s+enabled\s+loaded\s+2m ago\s+\$12\.40 / \$500\.00\s+—$`, line("support"))
+	assert.Regexp(t, `^refunds\s+enabled\s+older version\s+3h ago\s+.*blocked: daily budget exhausted`, line("refunds"))
+	assert.Regexp(t, `^paused\s+stopped\s+loaded\s+none observed\s+.*stopped: disabled by operator$`, line("paused"))
+	assert.NotContains(t, out, "healthy", "the listing never says 'healthy': absence of a signal is not a working application")
+	assert.Contains(t, out, "Fleet issues (1)")
+	assert.Contains(t, out, "agents/bad/agent.talon.yaml: schema invalid")
+	assert.Contains(t, out, "talon agents show <name>")
+	// Everything before the free-text ATTENTION column fits a terminal.
+	assert.LessOrEqual(t, strings.Index(line("new-app"), "—"), 90, "the fixed columns are too wide:\n%s", out)
+
+	// No process runs: nothing is "loaded", whatever the files say.
+	buf.Reset()
+	renderAgentsOverview(&buf, rows[:2], nil, localViewNote(offlineFleetLabel, "http://localhost:8080", &runtimestatus.View{}, true), &runtimestatus.View{}, true, now)
+	out = buf.String()
+	assert.Contains(t, out, "Local view: no Talon process of this installation is running")
+	assert.Regexp(t, `(?m)^support\s+enabled\s+not running\s+2m ago`, out)
+	// Records unreadable: unknown, never a guess.
+	buf.Reset()
+	renderAgentsOverview(&buf, rows[:1], nil, "", &runtimestatus.View{}, false, now)
+	assert.Regexp(t, `(?m)^new-app\s+enabled\s+unknown\s+none observed`, buf.String())
+	// A process of this installation runs, but not where the command looked.
+	note := localViewNote(offlineFleetLabel, "http://localhost:8080", &running, true)
+	assert.Contains(t, note, "A Talon process of this installation is running elsewhere")
+	assert.NotContains(t, note, "no running gateway found")
+	// An empty fleet says what to do.
+	buf.Reset()
+	renderAgentsOverview(&buf, nil, nil, "", &runtimestatus.View{}, true, now)
+	assert.Contains(t, buf.String(), "talon agents add <name> --owner <team>")
+}
+
+// The single view answers "what is happening with this application, and do
+// I need to do anything": identity, the four facts kept apart, the newest
+// request, one next step. The headline is the next step's code, and
+// "Working" needs both verified traffic and a process that serves it now.
+func TestUseCaseView_SaysWhatIsHappeningAndWhatToDoNext(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	row := fleet.AgentRow{
+		Name: "customer-support", TenantID: "default", State: fleet.StateEnabled, Health: fleet.HealthHealthy, Why: "—", Currency: "USD",
+		MonthlyCap: 500, DailyCap: 50, SpendMonth: 1.25, SpendDay: 0.5, Requests: 7, Denied: 3, LastRun: now.Add(-90 * time.Second),
+		ConfigPath: "agents/customer-support/agent.talon.yaml",
+		UseCase:    &fleet.UseCase{Purpose: "AI customer support assistant", OwnerTechnical: "support-engineering"},
+	}
+	rules := []gateway.RuleProvenance{
+		{Rule: "daily_cost", Effective: "50", Winner: "organization.defaults"},
+		{Rule: "pii_action", Effective: "block", Winner: "organization.defaults"},
+		{Rule: "forbidden_tools", Effective: "delete_*", Winner: "union"},
+		{Rule: "tool_policy_action", Effective: "filter", Winner: "built_in_default"},
+		{Rule: "allowed_models", Effective: "", Winner: "none: no layer restricts models"},
+	}
+	ts := now.Add(-90 * time.Second)
+	report := func(next effective.NextStep, loaded string, policy string) *effective.Report {
+		return &effective.Report{
+			UseCase: "customer-support", TenantID: "default",
+			Loaded:    runtimestatus.Loaded{State: loaded, Reason: "the running process reports the policy digest of the current file"},
+			Effective: effective.Effective{BaselinePresent: true, Rules: rules},
+			LastDecision: &effective.LastDecision{
+				EvidenceID: "gw_1", Timestamp: ts, InvocationType: "gateway", SessionID: "sess_1", Verification: "valid",
+				Outcome: evidence.Outcome{Decision: "denied", Dispatch: "not_dispatched"}, PrimaryCode: "POLICY_DENIED_PII_INPUT", PrimaryReason: "Request blocked because input PII was detected.",
+			},
+			Verification: &effective.Verification{
+				Configured: "enabled", Next: next,
+				Traffic: []effective.TrafficObservation{{Boundary: effective.BoundaryLLMGateway, State: effective.TrafficObserved, IdentityProven: true, Policy: policy, Timestamp: &ts}},
+			},
+		}
+	}
+	render := func(r *effective.Report) string {
+		var buf bytes.Buffer
+		renderUseCase(&buf, &row, r, nil, now)
+		return buf.String()
+	}
+
+	out := render(report(effective.NextStep{Code: effective.NextNone, Text: "Nothing to do: a running Talon process serves this use case."}, runtimestatus.LoadedMatchesFile, effective.PolicyMatchesCurrent))
+	for _, want := range []string{
+		"customer-support — AI customer support assistant",
+		"tenant default · owner support-engineering · agents/customer-support/agent.talon.yaml",
+		"Status      Working",
+		"Configured  enabled",
+		"Runtime     loaded by the running Talon process",
+		"Traffic     last request 1m ago · 7 in the last hour (3 denied)",
+		"Policy      daily_cost 50 · pii_action block · forbidden_tools delete_*",
+		"the newest authenticated request was evaluated under this policy",
+		"Health      no budget, denial or failure signal",
+		"LLM gateway · denied by Talon, not dispatched",
+		"POLICY_DENIED_PII_INPUT: Request blocked because input PII was detected.",
+		"evidence gw_1 (signature valid) · session sess_1",
+		"Next\n  Nothing to do",
+		"Full report: talon agents show customer-support --effective",
+	} {
+		assert.Contains(t, out, want)
+	}
+	assert.NotContains(t, out, "healthy")
+	assert.NotContains(t, out, "tool_policy_action", "a built-in default is not a company control worth the first screen")
+	assert.LessOrEqual(t, strings.Count(out, "\n"), 24, "the default view stays one screen:\n%s", out)
+
+	headlines := map[string]string{
+		effective.NextNone: "Working", effective.NextEnable: "Disabled", effective.NextStartRuntime: "Not active", effective.NextFixReload: "Not active",
+		effective.NextWaitReload: "Not active", effective.NextCheckRuntime: "Runtime not confirmed", effective.NextSendRequest: "Waiting for its first request",
+		effective.NextRestartRuntime: "Needs attention", effective.NextUseCurrentKey: "Needs attention", effective.NextVerifyEvidence: "Needs attention",
+		effective.NextCheckEvidence: "Needs attention", effective.NextSendNewRequest: "Needs attention", effective.NextCheckPolicy: "Needs attention",
+		effective.NextStoreKey: "Needs attention", effective.NextUseAuthenticatedBy: "Needs attention",
+	}
+	for code, want := range headlines {
+		assert.Equal(t, want, statusHeadline(effective.NextStep{Code: code}), code)
+	}
+
+	// The next step's commands are printed as commands; a policy of another
+	// revision and a process that is not running are said as such.
+	out = render(report(effective.NextStep{Code: effective.NextStartRuntime, Text: "No Talon process of this installation is running."}, runtimestatus.LoadedUnknown, effective.PolicyDiffers))
+	assert.Contains(t, out, "Status      Not active")
+	assert.Contains(t, out, "Runtime     not running: no Talon process of this installation is running")
+	assert.Contains(t, out, "evaluated under ANOTHER policy")
+	out = render(report(effective.NextStep{Code: effective.NextEnable, Text: "This use case is disabled in its file.", Commands: []string{"talon agents enable customer-support"}}, runtimestatus.LoadedMatchesFile, effective.PolicyMatchesCurrent))
+	assert.Contains(t, out, "Next\n  This use case is disabled in its file.\n    talon agents enable customer-support\n")
+
+	// Attention from the fleet row (budget, denials) is shown as it is.
+	blocked := row
+	blocked.Health, blocked.Why = fleet.HealthBlocked, "daily budget exhausted ($50.00 / $50.00)"
+	var buf bytes.Buffer
+	renderUseCase(&buf, &blocked, report(effective.NextStep{Code: effective.NextNone, Text: "Nothing to do."}, runtimestatus.LoadedMatchesFile, effective.PolicyMatchesCurrent), nil, now)
+	assert.Contains(t, buf.String(), "Health      blocked: daily budget exhausted ($50.00 / $50.00)")
+
+	// When the report cannot be built the view says so and guesses nothing.
+	buf.Reset()
+	renderUseCase(&buf, &row, nil, errors.New("opening evidence store read-only: permission denied"), now)
+	assert.Contains(t, buf.String(), "Status      Not determined: the full report could not be built (opening evidence store read-only: permission denied)")
+	assert.NotContains(t, buf.String(), "Working")
 }
 
 func TestRunAgentShow_UnknownName(t *testing.T) {

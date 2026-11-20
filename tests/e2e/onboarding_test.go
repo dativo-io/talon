@@ -282,6 +282,49 @@ func (o *onboarding) noSecretInClearText(secrets ...string) {
 	}
 }
 
+// view runs a default (human) operator view and returns what it printed.
+func (o *onboarding) view(args ...string) string {
+	o.t.Helper()
+	out, stderr, code := o.talon(args...)
+	if code != 0 {
+		o.t.Fatalf("talon %s: %d\n%s\n%s", strings.Join(args, " "), code, out, stderr)
+	}
+	if strings.Contains(out, " INF ") || strings.Contains(stderr, " INF ") {
+		o.t.Fatalf("talon %s prints informational log lines into an operator view:\n%s\n%s", strings.Join(args, " "), out, stderr)
+	}
+	return out
+}
+
+// wantView asserts what a default operator view says, and that it never
+// says "healthy": the absence of a failure signal is not a working
+// application, and the views keep the two apart (#567 review).
+func (o *onboarding) wantView(why string, args []string, wants ...string) string {
+	o.t.Helper()
+	out := o.view(args...)
+	for _, want := range wants {
+		if !strings.Contains(out, want) {
+			o.t.Fatalf("%s: `talon %s` misses %q:\n%s", why, strings.Join(args, " "), want, out)
+		}
+	}
+	if strings.Contains(out, "healthy") {
+		o.t.Fatalf("%s: `talon %s` says 'healthy':\n%s", why, strings.Join(args, " "), out)
+	}
+	return out
+}
+
+// listLine returns the line of the fleet listing for one use case, with its
+// columns separated by single spaces.
+func listLine(t *testing.T, listing, name string) string {
+	t.Helper()
+	for _, l := range strings.Split(listing, "\n") {
+		if strings.HasPrefix(l, name+" ") {
+			return strings.Join(strings.Fields(l), " ")
+		}
+	}
+	t.Fatalf("no line for %s in:\n%s", name, listing)
+	return ""
+}
+
 // wantReading asserts the one-line verification reading and what the newest
 // LLM gateway record establishes about the credential stored now (#567
 // review: historical traffic, traffic of the current registration and proof
@@ -368,13 +411,29 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	// 3. Register the first existing application. Nothing runs yet.
 	key1, out := o.register("customer-support", "--owner", "support-engineering", "--description", "AI customer support assistant")
 	for _, want := range []string{
-		`Registered AI use case "customer-support"`, "owner:       support-engineering", "from organization.defaults",
-		"NOT ACTIVE — no Talon process of this installation is running", "<talon-url>/v1/proxy/openai/v1",
-		"talon agents show customer-support --effective", "Not verified by this command",
+		"Registered customer-support (tenant default)", "Owner     support-engineering", "Purpose   AI customer support assistant",
+		"Company policy: inherited", "daily_cost 50", "pii_action block", "always enforced", "forbidden_tools delete_*",
+		"Not active: no Talon process of this installation is running", "<talon-url>/v1/proxy/openai/v1",
+		"Send one request from the application, then:", "talon agents show customer-support",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("registration output misses %q:\n%s", want, out)
 		}
+	}
+	// The registration answers five questions on one screen; the policy's
+	// provenance is one command away.
+	if n := strings.Count(out, "\n"); n > 30 || strings.Contains(out, "precedence:") {
+		t.Fatalf("the registration output is %d lines (want at most 30) or prints policy provenance:\n%s", n, out)
+	}
+	// Registered is not active and not connected: both operator views say
+	// exactly what is known, and what to do next.
+	o.wantView("registered, nothing running", []string{"agents", "show", "customer-support"},
+		"customer-support — AI customer support assistant", "owner support-engineering",
+		"Status      Not active", "Configured  enabled", "Runtime     not running", "Traffic     no request observed",
+		"Policy      daily_cost 50 · monthly_cost 500 · pii_action block · forbidden_tools delete_*",
+		"No Talon process of this installation is running", "talon agents show customer-support --effective")
+	if got := listLine(t, o.wantView("registered, nothing running", []string{"agents"}, "USE CASE", "RUNTIME", "LAST REQUEST", "ATTENTION"), "customer-support"); !strings.HasPrefix(got, "customer-support enabled not running none observed ") {
+		t.Fatalf("the listing for a registered use case nothing serves: %q", got)
 	}
 	agentFile, _ := os.ReadFile(filepath.Join(o.dir, "agents", "customer-support", "agent.talon.yaml"))
 	if strings.Contains(string(agentFile), "pii_action") || strings.Contains(string(agentFile), key1) {
@@ -401,6 +460,12 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 		t.Fatalf("loaded but never connected: %s; last decision %v", r.Verification.Reading.Text, r.LastDecision)
 	}
 	o.wantCalls(0, "before any application request")
+	o.wantView("loaded, no request yet", []string{"agents", "show", "customer-support"},
+		"Status      Waiting for its first request", "Runtime     loaded by the running Talon process", "Traffic     no request observed",
+		"Point the application at <talon-url>/v1/proxy/openai/v1 with its Talon key", "answered 401 and leaves no record")
+	if got := listLine(t, o.view("agents"), "customer-support"); !strings.HasPrefix(got, "customer-support enabled loaded none observed ") {
+		t.Fatalf("the listing for a loaded use case without traffic: %q", got)
+	}
 
 	// The application, with the real SDK: a permitted request is answered
 	// through Talon by the provider; a request the company policy blocks
@@ -466,8 +531,11 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	// policy, nothing copied and nothing of the company or of the first
 	// application changed. The first one keeps serving meanwhile.
 	key2, out2 := o.register("hr-copilot", "--owner", "people-ops", "--description", "HR policy assistant")
-	if key2 == key1 || !strings.Contains(out2, "NOT YET ACTIVE — a Talon process is running") {
+	if key2 == key1 || !strings.Contains(out2, "Not active yet: the running Talon process loads it at its next re-scan of agents_dir") || !strings.Contains(out2, "No restart is needed") {
 		t.Fatalf("second registration while serving:\n%s", out2)
+	}
+	if !strings.Contains(out2, "Company policy: inherited") || !strings.Contains(out2, "daily_cost 50") {
+		t.Fatalf("the second application inherits the same company policy, stated the same way:\n%s", out2)
 	}
 	if res := o.sdk(key1, "Summarise ticket T-31 in five words."); !res.OK {
 		t.Fatalf("the first application during the second registration: %+v", res)
@@ -496,6 +564,54 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	companyAfter, _ := os.ReadFile(o.cfgPath)
 	if !bytes.Equal(companyBefore, companyAfter) {
 		t.Fatal("registering applications changed the company configuration")
+	}
+
+	// Operating both: the listing is what an operator scans, the single
+	// view says what happened and that nothing needs doing. The newest
+	// request of the second application was denied by the company policy:
+	// that is traffic and a policy evaluation, shown as what it is.
+	listing := o.wantView("two applications with traffic", []string{"agents"}, "USE CASE", "STATE", "RUNTIME", "LAST REQUEST", "COST THIS MONTH", "ATTENTION")
+	for _, name := range []string{"customer-support", "hr-copilot"} {
+		if got := listLine(t, listing, name); !regexp.MustCompile(`^` + name + ` enabled loaded \d+[sm] ago `).MatchString(got) {
+			t.Fatalf("the listing for %s after its requests: %q", name, got)
+		}
+	}
+	o.wantView("the second application after an allowed and a denied request", []string{"agents", "show", "hr-copilot"},
+		"hr-copilot — HR policy assistant", "owner people-ops", "Status      Working", "Runtime     loaded by the running Talon process",
+		"in the last hour (1 denied)", "the newest authenticated request was evaluated under this policy",
+		"LLM gateway · denied by Talon, not dispatched", "POLICY_DENIED_PII_INPUT", "(signature valid)", "Nothing to do")
+
+	// The machine contracts did not change with the views: the listing's
+	// JSON is the fleet rows, the single view's JSON is one such row, and
+	// the full report is still `--effective`.
+	var fleetJSON struct {
+		Offline bool                         `json:"offline"`
+		Agents  []map[string]json.RawMessage `json:"agents"`
+	}
+	rawFleet, _, _ := o.talon("agents", "--json")
+	if err := json.Unmarshal([]byte(rawFleet), &fleetJSON); err != nil || len(fleetJSON.Agents) != 2 {
+		t.Fatalf("talon agents --json: %v\n%s", err, rawFleet)
+	}
+	var rowJSON map[string]json.RawMessage
+	rawRow, _, _ := o.talon("agents", "show", "hr-copilot", "--json")
+	if err := json.Unmarshal([]byte(rawRow), &rowJSON); err != nil {
+		t.Fatalf("talon agents show --json: %v\n%s", err, rawRow)
+	}
+	for _, field := range []string{"name", "tenant_id", "state", "health", "why", "spend_month", "monthly_cap", "requests", "denied", "last_run", "config_path", "policy_digest", "use_case"} {
+		if _, ok := rowJSON[field]; !ok {
+			t.Fatalf("talon agents show --json lost the field %q:\n%s", field, rawRow)
+		}
+		if _, ok := fleetJSON.Agents[0][field]; !ok && field != "use_case" && field != "last_run" {
+			t.Fatalf("talon agents --json rows lost the field %q:\n%s", field, rawFleet)
+		}
+	}
+	for _, added := range []string{"verification", "next", "loaded"} {
+		if _, ok := rowJSON[added]; ok {
+			t.Fatalf("talon agents show --json grew the field %q: the row contract is the fleet row; the report is --effective --json", added)
+		}
+	}
+	if full := o.view("agents", "show", "hr-copilot", "--effective"); !strings.Contains(full, "5. Connection and verification") || !strings.Contains(full, "precedence:") {
+		t.Fatalf("the full report must stay available and detailed:\n%s", full)
 	}
 
 	// A policy change to the first application: its earlier request is now
@@ -588,6 +704,16 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	// records, agent files, company configuration) and in nothing the
 	// console's read API returns.
 	o.noSecretInClearText(key1, key2, onboardingProviderKey)
+
+	// The server stops. The traffic that verified is still on record, and
+	// nothing serves the applications now: the views say the second, not
+	// "working" on the strength of the first.
+	o.stop()
+	o.wantView("verified earlier, server stopped", []string{"agents", "show", "hr-copilot"},
+		"Status      Not active", "Runtime     not running", "verified, but that was earlier", "no Talon process of this installation is running")
+	if got := listLine(t, o.view("agents"), "hr-copilot"); !strings.HasPrefix(got, "hr-copilot enabled not running ") {
+		t.Fatalf("the listing after the server stopped: %q", got)
+	}
 	for _, path := range []string{
 		"/console/v1/overview", "/console/v1/use-cases", "/console/v1/use-cases/customer-support", "/console/v1/use-cases/hr-copilot",
 		"/console/v1/use-cases/customer-support/effective-policy", "/console/v1/use-cases/hr-copilot/effective-policy",
@@ -692,6 +818,9 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 	// Replacing the credential does not imply that it is used: every record
 	// so far was made with the previous one.
 	o.wantReading("customer-support", "after the replacement, before any new request", effective.ReadingTrafficHistorical, effective.CredentialPrevious)
+	// The default view says it in one line and names the step.
+	o.wantView("key replaced, server not restarted", []string{"agents", "show", "customer-support"},
+		"Status      Needs attention", "The key was replaced, and the running Talon process still holds the earlier one. Restart `talon serve`")
 	// A secret-only change is not a configuration change: the running
 	// process keeps the key it loaded until it is restarted.
 	time.Sleep(2500 * time.Millisecond) // more than two reload intervals
@@ -817,6 +946,11 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 	o.wantCalls(before, "the in-flight request was counted when it reached the provider, before the disable")
 	if r := o.report("customer-support"); r.Verification.Configured != "disabled" || r.Verification.Reading.Code != effective.ReadingDisabled {
 		t.Fatalf("the report must say the use case is configured as disabled: %+v", r.Verification.Reading)
+	}
+	o.wantView("disabled and active", []string{"agents", "show", "customer-support"},
+		"Status      Disabled", "Configured  disabled (agent.enabled: false)", "talon agents enable customer-support")
+	if got := listLine(t, o.view("agents"), "customer-support"); !strings.HasPrefix(got, "customer-support stopped ") || !strings.Contains(got, "stopped: disabled by operator") {
+		t.Fatalf("the listing for a disabled use case: %q", got)
 	}
 	if st := o.chat(other); st != 200 {
 		t.Fatalf("the other application keeps working while one is disabled: HTTP %d", st)

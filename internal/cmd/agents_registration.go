@@ -98,14 +98,21 @@ agent:
   # The Talon key this use case presents (vault secret NAME, never the value).
   key:
     secret_name: {{ printf "%q" .SecretName }}
+{{- if or .Purpose .Owner }}
+  # What this use case is for and who operates it. Shown by 'talon agents'
+  # and the Operations Console; attribution for people, not authentication.
+  use_case:
+{{- if .Purpose }}
+    purpose: {{ printf "%q" .Purpose }}
+{{- end }}
+{{- if .Owner }}
+    owners:
+      technical: {{ printf "%q" .Owner }}
+{{- end }}
+{{- end }}
 
 policies:
   cost_limits: {}   # inherit organization_policy.defaults daily_cost / monthly_cost
-{{- if .Owner }}
-
-metadata:
-  owner: {{ printf "%q" .Owner }}
-{{- end }}
 `
 
 // registrationMarkerPrefix starts the comment line of a generated agent file
@@ -126,8 +133,12 @@ func newRegistrationMarker() (string, error) {
 
 type agentsAddPlan struct {
 	Name, Tenant, Description, Owner, SecretName string
-	Dir, Path                                    string
-	Content                                      []byte
+	// Purpose is the description the operator gave ("" when none was given;
+	// Description then holds a generated default that is not written as the
+	// use case's purpose).
+	Purpose   string
+	Dir, Path string
+	Content   []byte
 	// Marker is the registration marker written into Content ("" in a plan
 	// that only inspects: a dry run, or the plan made before the lock).
 	Marker string
@@ -229,7 +240,7 @@ func planRegistration(ctx context.Context, cfg *config.Config, req registrationR
 		desc = "AI use case " + name
 	}
 	plan := &agentsAddPlan{
-		Name: name, Tenant: tenant, Description: desc, Owner: strings.TrimSpace(req.Owner), SecretName: name + "-talon-key",
+		Name: name, Tenant: tenant, Description: desc, Purpose: strings.TrimSpace(req.Description), Owner: strings.TrimSpace(req.Owner), SecretName: name + "-talon-key",
 		Dir: filepath.Join(cfg.AgentsDir, name), Marker: req.Marker,
 	}
 	plan.Path = filepath.Join(plan.Dir, agentcatalog.AgentConfigFilename)
@@ -247,7 +258,7 @@ func planRegistration(ctx context.Context, cfg *config.Config, req registrationR
 	}
 	plan.CompanyPolicy, plan.NoOrganizationPolicy = cp.String(), cp.State != companyPolicyConfigured
 	if cp.State != companyPolicyConfigured && !req.AllowNoCompanyPolicy {
-		return nil, fmt.Errorf("%s. A use case registered now would inherit no company policy (no chosen budget cap, PII rule, forbidden actions or approval rules). Add a gateway.organization_policy block (starter: examples/pilot/talon.config.yaml) or point TALON_GATEWAY_CONFIG at the file that has one; to register without a company policy on purpose, pass --no-company-policy", cp.Configured)
+		return nil, fmt.Errorf("%s.\nA use case registered now would run without the company's budget, PII and tool rules, so nothing was written.\n  Fix:  add a gateway.organization_policy block to the gateway config (starter: examples/pilot/talon.config.yaml), then run the command again.\n  Or:   register without a company policy on purpose with --no-company-policy", cp.Configured)
 	}
 	var b strings.Builder
 	if err := template.Must(template.New("agent").Parse(agentsAddTemplate)).Execute(&b, plan); err != nil {

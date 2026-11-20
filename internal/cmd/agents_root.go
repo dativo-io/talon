@@ -35,6 +35,10 @@ var (
 	agentsQueueJSON   bool
 )
 
+// offlineFleetLabel marks rows that were projected from the local files and
+// stores because no Talon server answered (the `offline` field of --json).
+// The human views word it from what the installation's own runtime records
+// say (localViewNote): "no server answered here" is not "nothing runs".
 const offlineFleetLabel = "OFFLINE — CONFIG VIEW (no running gateway found; runtime state may differ)"
 
 func init() {
@@ -54,7 +58,7 @@ func bindAgentsQueueFlags(cmd *cobra.Command) {
 
 var agentsShowCmd = &cobra.Command{
 	Use:   "show <name>",
-	Short: "Show one agent's operational summary (state, health, cost vs caps, signals)",
+	Short: "Show one AI use case: what is happening with it and what to do next (--effective: the full report)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runAgentShow,
 }
@@ -69,6 +73,7 @@ type fleetResponse struct {
 }
 
 func runAgentsList(cmd *cobra.Command, _ []string) error {
+	quietOperatorLogs(cmd)
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 	cfg, err := config.Load()
@@ -84,11 +89,14 @@ func runAgentsList(cmd *cobra.Command, _ []string) error {
 			"offline": label != "", "agents": rows, "fleet_issues": issues,
 		})
 	}
-	renderAgentsTable(cmd.OutOrStdout(), rows, issues, label)
+	now := time.Now().UTC()
+	view, readable := installationRuntime(cfg, now)
+	renderAgentsOverview(cmd.OutOrStdout(), rows, issues, localViewNote(label, agentsQueueURL, &view, readable), &view, readable, now)
 	return nil
 }
 
 func runAgentShow(cmd *cobra.Command, args []string) error {
+	quietOperatorLogs(cmd)
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 	name := args[0]
@@ -99,7 +107,7 @@ func runAgentShow(cmd *cobra.Command, args []string) error {
 	if agentsShowEffective {
 		return runAgentShowEffective(ctx, cmd, cfg, name)
 	}
-	rows, _, label, err := resolveFleet(ctx, cmd, cfg, agentsQueueTenant)
+	rows, _, _, err := resolveFleet(ctx, cmd, cfg, agentsQueueTenant)
 	if err != nil {
 		return err
 	}
@@ -108,7 +116,11 @@ func runAgentShow(cmd *cobra.Command, args []string) error {
 			if agentsQueueJSON {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(rows[i])
 			}
-			renderAgentShow(cmd.OutOrStdout(), rows[i], label)
+			// The human view adds what the fleet row does not hold: whether a
+			// running process loaded the use case, the newest request and
+			// the next step, from the report `--effective` prints in full.
+			report, rerr := buildUseCaseReport(ctx, cfg, name, agentsQueueTenant, agentsShowProxyConfig)
+			renderUseCase(cmd.OutOrStdout(), &rows[i], report, rerr, time.Now().UTC())
 			return nil
 		}
 	}
@@ -262,99 +274,6 @@ func agentRowNames(rows []fleet.AgentRow) []string {
 		names[i] = rows[i].Name
 	}
 	return names
-}
-
-func renderAgentsTable(w io.Writer, rows []fleet.AgentRow, issues []agentcatalog.FleetIssue, label string) {
-	if label != "" {
-		fmt.Fprintln(w, label)
-		fmt.Fprintln(w)
-	}
-	fmt.Fprintf(w, "%-22s %-9s %-16s %-24s %s\n", "AGENT", "STATE", "HEALTH", "COST", "WHY")
-	fmt.Fprintf(w, "%-22s %-9s %-16s %-24s %s\n", "-----", "-----", "------", "----", "---")
-	for i := range rows {
-		r := &rows[i]
-		fmt.Fprintf(w, "%-22s %-9s %-16s %-24s %s\n", r.Name, r.State, r.Health, r.CostString(), r.Why)
-	}
-	if len(rows) == 0 {
-		fmt.Fprintln(w, "(no agents discovered)")
-	}
-	if len(issues) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "fleet issues (%d) — fix or remove by path; never-valid files are not agents:\n", len(issues))
-		for _, iss := range issues {
-			fmt.Fprintf(w, "  %s: %s\n", iss.Path, iss.Reason)
-		}
-	}
-}
-
-func renderAgentShow(w io.Writer, r fleet.AgentRow, label string) {
-	if label != "" {
-		fmt.Fprintln(w, label)
-		fmt.Fprintln(w)
-	}
-	fmt.Fprintf(w, "Agent:  %s  (tenant %s)\n", r.Name, r.TenantID)
-	fmt.Fprintf(w, "State:  %s\n", r.State)
-	fmt.Fprintf(w, "Health: %s\n", r.Health)
-	fmt.Fprintf(w, "Why:    %s\n", r.Why)
-	for _, c := range r.Causes {
-		fmt.Fprintf(w, "  - %s: %s\n", c.Kind, c.Detail)
-	}
-	fmt.Fprintln(w)
-	renderAgentUseCase(w, r.UseCase)
-	fmt.Fprintf(w, "Cost (month-to-date): %s\n", monthCostLine(r))
-	fmt.Fprintf(w, "Cost (today):         %s\n", dayCostLine(r))
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Signals (rolling windows):")
-	fmt.Fprintf(w, "  requests (1h):         %d (%d denied)\n", r.Requests, r.Denied)
-	fmt.Fprintf(w, "  fallbacks (1h):        %d\n", r.Fallbacks)
-	fmt.Fprintf(w, "  failed sessions (24h): %d\n", r.FailedSessions)
-	if !r.LastRun.IsZero() {
-		fmt.Fprintf(w, "Last run: %s\n", r.LastRun.UTC().Format(time.RFC3339))
-	}
-	fmt.Fprintf(w, "Config:   %s\n", r.ConfigPath)
-	if r.PolicyDigest != "" {
-		fmt.Fprintf(w, "Digest:   %s\n", r.PolicyDigest)
-	}
-	if r.ConfigError != "" {
-		fmt.Fprintf(w, "Config rejected: %s (last-known-good is serving)\n", r.ConfigError)
-	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Detail: `talon costs --agent`, `talon session`, `talon agents score` (layered effective policy + recent sessions/denials/fallbacks: #305).")
-}
-
-// renderAgentUseCase prints the operating record declared in the agent's
-// config (#382). Purely declared metadata — no health/budget/policy
-// computation happens here; owners are attribution for the reader, never
-// authentication of the named people.
-func renderAgentUseCase(w io.Writer, uc *fleet.UseCase) {
-	if uc == nil {
-		return
-	}
-	fmt.Fprintln(w, "Use case (declared in config):")
-	if uc.Purpose != "" {
-		fmt.Fprintf(w, "  Purpose:     %s\n", uc.Purpose)
-	}
-	if uc.Department != "" {
-		fmt.Fprintf(w, "  Department:  %s\n", uc.Department)
-	}
-	if uc.Criticality != "" {
-		fmt.Fprintf(w, "  Criticality: %s\n", uc.Criticality)
-	}
-	owners := [][2]string{
-		{"business", uc.OwnerBusiness},
-		{"technical", uc.OwnerTechnical},
-		{"budget", uc.OwnerBudget},
-		{"risk", uc.OwnerRisk},
-	}
-	for _, o := range owners {
-		if o[1] != "" {
-			fmt.Fprintf(w, "  Owner (%s): %s\n", o[0], o[1])
-		}
-	}
-	for _, ref := range uc.References {
-		fmt.Fprintf(w, "  Reference:   %s\n", ref)
-	}
-	fmt.Fprintln(w)
 }
 
 // notComparable is the cost text when the row says the period's spend is

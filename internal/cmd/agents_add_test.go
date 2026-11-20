@@ -170,22 +170,32 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, key1, stored, "the printed key is the stored key")
 
-	// The output, in order: identity and owner, configuration location,
-	// credential, inherited policy from the canonical projection,
-	// activation, how to connect, how to verify, what is not verified —
-	// and the secret last, in a block of its own.
+	// The output answers, in this order and briefly: what was registered,
+	// which company controls apply (defaults apart from what always binds),
+	// whether a running Talon serves it, where to point the application, how
+	// to verify, and the key last, in a block of its own.
 	order := []string{
-		`Registered AI use case "customer-support"`, "tenant:      acme", "owner:       support-engineering",
-		"config:      " + filepath.Join(agentsDir, "customer-support", "agent.talon.yaml"),
-		`key:         generated, vault secret "customer-support-talon-key"`, "evidence:", "signed completion record",
-		"Company policy this use case runs under", "daily_cost", "25", "from organization.defaults", "pii_action", "block", "the use case can only tighten it",
-		"forbidden_tools", "delete_customer", "no layer can remove a tool another forbids",
-		"Activation (configuration is not activation)", "NOT PROVEN ACTIVE", "NOT ACTIVE — no Talon process of this installation is running",
-		"Connect the application", "<talon-url>/v1/proxy/openai/v1", "Authorization: Bearer <the Talon key>", "TALON_USE_CASE_KEY", "docs/guides/choosing-integration-path.md",
-		"Verify the first request", "talon agents show customer-support --effective", "talon audit verify",
-		"Not verified by this command", "only requests sent to a Talon endpoint are governed",
+		"Registered customer-support (tenant acme)", "Owner     support-engineering", "Purpose   AI customer support assistant",
+		"File      " + filepath.Join(agentsDir, "customer-support", "agent.talon.yaml"),
+		"Record    al_", "talon audit verify al_",
+		"Company policy: inherited", "defaults", "daily_cost 25", "pii_action block",
+		"always enforced", "forbidden_tools delete_customer",
+		"can only tighten these", "talon agents show customer-support --effective",
+		"Runtime", "Not active: no Talon process of this installation is running",
+		"Connect your application", "<talon-url>/v1/proxy/openai/v1", "none answers at http://localhost:8080 now", "never the provider's key", "docs/guides/choosing-integration-path.md",
+		"Verify", "Send one request from the application, then:", "talon agents show customer-support",
 		"SECRET — shown once", key1,
 	}
+	// It is a short answer, not a report: the policy's provenance and the
+	// other boundaries are one command away, not on this screen.
+	require.LessOrEqual(t, strings.Count(text, "\n"), 30, "the registration output grew:\n%s", text)
+	for _, detail := range []string{"precedence:", "from organization.defaults", "Not verified by this command", "Authorization: Bearer"} {
+		require.NotContains(t, text, detail, "detail that belongs to --effective or the guide")
+	}
+	// Nothing is claimed that is not established: no server answered, so no
+	// address is printed and nothing is called active.
+	require.NotContains(t, text, "http://localhost:8080/v1/proxy")
+	require.NotContains(t, text, "Active:")
 	at := 0
 	for _, want := range order {
 		i := strings.Index(text[at:], want)
@@ -203,8 +213,12 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(content), `tenant_id: "acme"`)
 	require.Contains(t, string(content), `secret_name: "customer-support-talon-key"`)
-	require.Contains(t, string(content), `owner: "support-engineering"`)
+	// Owner and purpose are the use case's declared operating record, the
+	// one `talon agents` and the console already show.
+	require.Contains(t, string(content), "  use_case:\n    purpose: \"AI customer support assistant\"\n    owners:\n      technical: \"support-engineering\"\n")
+	require.NotContains(t, string(content), "metadata:")
 	require.Contains(t, string(content), `description: "AI customer support assistant"`)
+	require.Regexp(t, `(?m)^# registration: [0-9a-f]{32}$`, string(content))
 	require.Contains(t, string(content), "cost_limits: {}", "no budget of its own: the company defaults apply")
 	require.NotContains(t, string(content), key1, "the key never lands in the file")
 	require.NotContains(t, string(content), "pii_action", "company policy is inherited, not copied into the use case's file")
@@ -252,7 +266,10 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 	key2 := printedKeyRe.FindString(out.String())
 	require.NotEmpty(t, key2)
 	require.NotEqual(t, key1, key2)
-	require.Contains(t, out.String(), "from organization.defaults")
+	// The second use case runs under the same company policy, stated the
+	// same way; nothing was copied.
+	require.Contains(t, out.String(), "Company policy: inherited (nothing is copied into the use case's file)")
+	require.Contains(t, out.String(), "daily_cost 25")
 	stored, _ = vaultValue(t, cfg, "customer-support-talon-key")
 	require.Equal(t, key1, stored, "the first use case's key is untouched")
 
@@ -882,11 +899,13 @@ func TestAgentsAdd_CompanyPolicyIsRequiredAndReported(t *testing.T) {
 	t.Setenv("TALON_GATEWAY_CONFIG", gw)
 	var out bytes.Buffer
 	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
-	require.Contains(t, out.String(), "company policy: configured in "+gw+" — pii_action block, daily cost 25.00")
-	require.Contains(t, out.String(), "1 forbidden tool/action pattern(s)")
+	require.Contains(t, out.String(), "Company policy: inherited")
+	require.Contains(t, out.String(), "daily_cost 25")
+	require.Contains(t, out.String(), "pii_action block")
+	require.Contains(t, out.String(), "always enforced")
 	// Configured is not active: nothing runs here, and the output says so.
-	require.Contains(t, out.String(), "Runtime: NOT PROVEN ACTIVE")
-	require.NotContains(t, out.String(), "Runtime: ACTIVE")
+	require.Contains(t, out.String(), "Not active: no Talon process of this installation is running")
+	require.NotContains(t, out.String(), "Active:")
 	require.NotContains(t, out.String(), "WARNING")
 
 	// A gateway config that exists but declares no organization policy is
@@ -902,13 +921,14 @@ func TestAgentsAdd_CompanyPolicyIsRequiredAndReported(t *testing.T) {
 	agentsAddNoCompanyPolicy = true
 	out.Reset()
 	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "hr-copilot"))
-	require.Contains(t, out.String(), "WARNING: registered WITHOUT a company policy")
+	require.Contains(t, out.String(), "Company policy: NONE (--no-company-policy)")
+	require.Contains(t, out.String(), "WARNING: this use case has no budget cap and no company constraints")
 
 	// No gateway config at all: the endpoint is not claimed.
 	t.Setenv("TALON_GATEWAY_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
 	out.Reset()
 	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "ops-bot"))
-	require.Contains(t, out.String(), "no enabled provider is configured in the gateway config this command read, so no model endpoint can be named")
+	require.Contains(t, out.String(), "No model provider is enabled in the gateway config this command read, so no endpoint can be named")
 	require.NotContains(t, out.String(), "/v1/proxy/openai/v1")
 }
 
