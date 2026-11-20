@@ -22,7 +22,8 @@ import (
 //     reaches Talon;
 //   - every HTTP call goes to Talon's Action Gateway — never the refund service;
 //   - the keys are referenced n8n credentials, never inline;
-//   - the operation id is derived from the ticket, so a retry resumes it;
+//   - the operation id is ticket-based, with an optional stable request_id
+//     for distinct actions on the same ticket; a retry reuses both;
 //   - the claim is reachable only from ALLOW and from an authorized approval;
 //   - Talon being unreachable stops the workflow (no continue-on-fail).
 // These are static checks. The live behaviour is scripts/n8n-refund-live.sh.
@@ -66,7 +67,13 @@ func TestN8nRefundWorkflow_SafetyProperties(t *testing.T) {
 		t.Fatal("the workflow must not carry a key: use the referenced n8n Header Auth credential")
 	}
 	if !strings.Contains(raw, `'refund-' + (typeof ($json.body || {}).ticket_id === 'string' ? $json.body.ticket_id : 'invalid')`) {
-		t.Error("the operation id must be derived from the ticket so a retry resumes the same operation")
+		t.Error("the operation id must be derived from the ticket so an unchanged retry resumes the same operation")
+	}
+	if !strings.Contains(raw, `typeof ($json.body || {}).request_id === 'string' ? '-' + $json.body.request_id : ''`) {
+		t.Error("a caller-supplied stable request_id must distinguish independent operations on one ticket")
+	}
+	if !strings.Contains(raw, `/^[A-Za-z0-9_-]{1,64}$/.test($json.body.request_id)`) {
+		t.Error("request_id must be strictly validated before it changes operation identity")
 	}
 	if strings.Contains(raw, "$env.") {
 		t.Error("the workflow must not read $env: n8n 2.x blocks it in expressions by default")
