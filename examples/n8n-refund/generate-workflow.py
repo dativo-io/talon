@@ -114,7 +114,7 @@ nodes = [
     respond("Respond: not authorized by Talon", [1260, 180], 409,
             "={{ JSON.stringify({ result: \"not_authorized\", operation_id: " + OP_ID + ", talon_status: $json.statusCode, talon_code: (($json.body || {}).error || {}).code || null, note: \"Talon returned no verdict (conflict, schema or authentication error). Nothing was dispatched by this run.\" }) }}"),
     respond("Respond: invalid request", [820, 520], 400,
-            "={{ JSON.stringify({ result: \"invalid_request\", note: \"ticket_id must look like ABC-123, amount must be a decimal string with at most two fractional digits, currency a three-letter code. Nothing was sent to Talon.\" }) }}"),
+            "={{ JSON.stringify({ result: \"invalid_request\", note: \"ticket_id must look like ABC-123, amount must be a decimal string with at most two fractional digits, currency a three-letter code, and optional request_id must use 1-64 letters, digits, underscores or dashes. Nothing was sent to Talon.\" }) }}"),
 ]
 
 def conn(*targets):
