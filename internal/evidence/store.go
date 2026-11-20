@@ -630,6 +630,18 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	// this index each question is one ordered range read ending at LIMIT,
 	// whatever the size of the store or of the use case's history.
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_tenant_agent_type_ts ON evidence(tenant_id, agent_id, invocation_type, timestamp)")
+	// "Which registrations have no terminal record" (#472 review) starts from
+	// the registration intents alone: a partial index over exactly those
+	// rows, so the question costs the number of registrations ever made, not
+	// the size of the store, and no bound on "the newest N intents" can hide
+	// an old unresolved one.
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_registration_intent ON evidence(agent_id, timestamp) WHERE invocation_type = 'agent_registration_intent'")
+	// "The newest Action Gateway record of one lifecycle EVENT of one use
+	// case" (#472 review): the event is inside the signed JSON, so it is
+	// indexed as an expression over the action lifecycle rows only. The
+	// lookup is then one ordered range read per event, and later reviewer or
+	// system events cannot push an application's request out of a window.
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_action_event ON evidence(tenant_id, agent_id, json_extract(evidence_json, '$.action_lifecycle.event'), timestamp) WHERE invocation_type = 'action_lifecycle'")
 	// Covering index for the session read model (#535): observed-session
 	// discovery groups by (tenant, session, agent) and timeline pages walk
 	// (session, tenant, agent, timestamp); both resolve from this index
@@ -1063,6 +1075,57 @@ func (s *Store) NewestByType(ctx context.Context, tenantID, agentID, invocationT
 	return s.queryEvidenceJSON(ctx, "invocation type",
 		`SELECT evidence_json FROM evidence WHERE tenant_id = ? AND agent_id = ? AND invocation_type = ? ORDER BY timestamp DESC, id DESC LIMIT ?`,
 		tenantID, agentID, invocationType, limit)
+}
+
+// NewestActionEvent returns the newest Action Gateway lifecycle record of one
+// use case in one tenant whose lifecycle event is event, or nil. It selects
+// the event directly (idx_evidence_action_event), so the answer does not
+// depend on how many other lifecycle records were written since: "none" means
+// that no such record exists. Signatures are not verified here (Detail does).
+func (s *Store) NewestActionEvent(ctx context.Context, tenantID, agentID, event string) (*Evidence, error) {
+	recs, err := s.queryEvidenceJSON(ctx, "action lifecycle event",
+		`SELECT evidence_json FROM evidence
+		 WHERE invocation_type = 'action_lifecycle' AND tenant_id = ? AND agent_id = ?
+		   AND json_extract(evidence_json, '$.action_lifecycle.event') = ?
+		 ORDER BY timestamp DESC, id DESC LIMIT 1`, tenantID, agentID, event)
+	if err != nil || len(recs) == 0 {
+		return nil, err
+	}
+	return recs[0], nil
+}
+
+// UnresolvedRegistrationIntents returns the registration intents of agentID
+// ("" = every use case, every tenant) that have no terminal record (neither
+// completed nor rolled back) with the same correlation id, tenant and use
+// case; newest first, at most limit. complete is false when more exist than
+// limit: the caller then knows the list is partial and must not conclude
+// "no unresolved registration" from it.
+//
+// The statement starts from the intents (idx_evidence_registration_intent)
+// and searches each intent's terminal records by index: an old unresolved
+// intent is found however many registrations followed it, at a cost that
+// grows with the number of registrations, not with the size of the store. Signatures are not
+// verified here; a caller that acts on a record verifies it first.
+func (s *Store) UnresolvedRegistrationIntents(ctx context.Context, agentID string, limit int) (intents []*Evidence, complete bool, err error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	recs, err := s.queryEvidenceJSON(ctx, "unresolved registration intents",
+		`SELECT e.evidence_json FROM evidence e
+		 WHERE e.invocation_type = 'agent_registration_intent' AND (? = '' OR e.agent_id = ?)
+		   AND NOT EXISTS (
+		     SELECT 1 FROM evidence t
+		     WHERE t.correlation_id = e.correlation_id
+		       AND t.invocation_type IN ('agent_registered', 'agent_registration_rolled_back')
+		       AND t.tenant_id = e.tenant_id AND t.agent_id = e.agent_id)
+		 ORDER BY e.timestamp DESC, e.id DESC LIMIT ?`, agentID, agentID, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(recs) > limit {
+		return recs[:limit], false, nil
+	}
+	return recs, true, nil
 }
 
 // RuntimeRefPage is one page of records attributed to an external-runtime
