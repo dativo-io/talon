@@ -413,18 +413,24 @@ func TestAgentsOverview_KeepsConfiguredRuntimeAndTrafficApart(t *testing.T) {
 
 	// No process runs: nothing is "loaded", whatever the files say.
 	buf.Reset()
-	renderAgentsOverview(&buf, rows[:2], nil, localViewNote(offlineFleetLabel, "http://localhost:8080", &runtimestatus.View{}, true), &runtimestatus.View{}, true, now)
+	renderAgentsOverview(&buf, rows[:2], nil, localViewNote(&runtimestatus.View{}, true), &runtimestatus.View{}, true, now)
 	out = buf.String()
-	assert.Contains(t, out, "Local view: no Talon process of this installation is running")
+	assert.Contains(t, out, "This machine's installation: no Talon process of it is running.")
 	assert.Regexp(t, `(?m)^support\s+enabled\s+not running\s+2m ago`, out)
 	// Records unreadable: unknown, never a guess.
 	buf.Reset()
 	renderAgentsOverview(&buf, rows[:1], nil, "", &runtimestatus.View{}, false, now)
 	assert.Regexp(t, `(?m)^new-app\s+enabled\s+unknown\s+none observed`, buf.String())
-	// A process of this installation runs, but not where the command looked.
-	note := localViewNote(offlineFleetLabel, "http://localhost:8080", &running, true)
-	assert.Contains(t, note, "A Talon process of this installation is running elsewhere")
-	assert.NotContains(t, note, "no running gateway found")
+	// A process of this installation runs: the listing is its installation's
+	// own view and needs no note. Unreadable records are said.
+	assert.Empty(t, localViewNote(&running, true))
+	assert.Contains(t, localViewNote(&runtimestatus.View{}, false), "its runtime records could not be read")
+	// A server's rows are headed as a server's, and RUNTIME is not filled
+	// from this machine's records.
+	buf.Reset()
+	renderAgentsOverview(&buf, rows[:2], nil, serverViewNote("https://talon.example.com"), nil, false, now)
+	assert.Contains(t, buf.String(), "Server view: these rows are the fleet facts the Talon server at https://talon.example.com reports")
+	assert.Regexp(t, `(?m)^support\s+enabled\s+not read\s+2m ago`, buf.String())
 	// An empty fleet says what to do.
 	buf.Reset()
 	renderAgentsOverview(&buf, nil, nil, "", &runtimestatus.View{}, true, now)
@@ -635,47 +641,83 @@ func TestUseCaseView_ABlockingHealthConditionTakesPrecedence(t *testing.T) {
 	assert.Equal(t, fleet.HealthBlocked, blocked.Health)
 }
 
-// #567 final review. `talon agents show --url <server>` reads the fleet row
-// from that server. This machine's configuration, evidence and runtime
-// records describe THIS installation. The two are shown as one view only
-// when the server is established to be a process of this installation; a
-// row of another installation is shown as what it is, with the statement
-// that no verification was performed, and nothing local next to it.
-func TestAgentShow_NeverMixesAServersRowWithThisMachinesEvidence(t *testing.T) {
+// #567 review. `talon agents show` puts a fleet row next to operational
+// facts (which process loaded the use case, its policy, its newest request)
+// that it reads from THIS machine's files, evidence store and runtime
+// records. A server's row describes the server's installation, and no
+// existing read contract says whether that is this machine's: a fleet
+// generation is a digest of configuration content, so two installations
+// with the same configuration serve the same generation. The sources are
+// therefore never combined:
+//
+//   - with --url <server>, the server's facts are shown alone, with the
+//     statement that no verification was performed;
+//   - without it, the view is this machine's installation, and no server is
+//     asked.
+//
+// The case below is the one a generation comparison gets wrong: two
+// installations on one host, identical configuration, separate evidence
+// stores and separate runtime records.
+func TestAgentShow_TwoInstallationsWithTheSameConfigurationAreNeverMixed(t *testing.T) {
 	ctx := context.Background()
-	agentsDir := filepath.Join(t.TempDir(), "agents")
-	writeQueueAgent(t, agentsDir, "support", true) // local policy: daily cost 10
-	cfg := offlineTestConfig(t, agentsDir)
-
-	// The other installation: another policy (caps), another state of the
-	// world (blocked, its own path), another fleet generation.
-	remote := fleetResponse{
-		Generation: "generation-of-the-other-installation",
-		Agents: []fleet.AgentRow{{
-			Name: "support", TenantID: "default", State: fleet.StateEnabled, Health: fleet.HealthBlocked, Why: "monthly budget exhausted ($9999.00 / $9999.00)",
-			Currency: "USD", DailyCap: 777, MonthlyCap: 9999, SpendMonth: 9999, SpendDay: 1, Requests: 42, Denied: 40, LastRun: time.Now().UTC().Add(-time.Minute),
-			ConfigPath: "/srv/other-installation/agents/support/agent.talon.yaml",
-		}},
+	installation := func() *config.Config {
+		agentsDir := filepath.Join(t.TempDir(), "agents")
+		writeQueueAgent(t, agentsDir, "support", true) // the same file in both
+		return offlineTestConfig(t, agentsDir)
 	}
+	a, b := installation(), installation()
+	rawA, err := os.ReadFile(filepath.Join(a.AgentsDir, "support", "agent.talon.yaml"))
+	require.NoError(t, err)
+	rawB, err := os.ReadFile(filepath.Join(b.AgentsDir, "support", "agent.talon.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, rawA, rawB, "identical configuration")
+	require.NotEqual(t, a.DataDir, b.DataDir, "separate stores")
+
+	// Installation B has its own evidence: one request that cost $3.25.
+	// Installation A has none.
+	storeB, err := evidence.NewStore(b.EvidenceDBPath(), b.SigningKey)
+	require.NoError(t, err)
+	_, err = evidence.NewGenerator(storeB).Generate(ctx, evidence.GenerateParams{
+		CorrelationID: "corr_b_1", TenantID: "default", AgentID: "support", InvocationType: "gateway",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"}, ModelUsed: "gpt-4o-mini", Cost: 3.25,
+	})
+	require.NoError(t, err)
+	require.NoError(t, storeB.Close())
+	rowsB, _, err := offlineFleet(ctx, b, "")
+	require.NoError(t, err)
+	require.Len(t, rowsB, 1)
+	require.InDelta(t, 3.25, rowsB[0].SpendMonth, 0.0001, "B's row carries B's evidence")
+	rowsA, _, err := offlineFleet(ctx, a, "")
+	require.NoError(t, err)
+	require.Zero(t, rowsA[0].SpendMonth, "A's row carries A's evidence")
+	require.Equal(t, rowsA[0].PolicyDigest, rowsB[0].PolicyDigest, "the same configuration: the same digests, the same fleet generation")
+
+	// B's server, on this host. It serves the SAME fleet generation that A's
+	// own running process reports: the configurations are identical.
+	const generation = "generation-of-the-shared-configuration"
+	var fleetQueries, anyQueries int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anyQueries++
 		if r.URL.Path == "/health" {
 			w.Header().Set("X-Talon-Service", "talon")
 			return
 		}
-		_ = json.NewEncoder(w).Encode(remote)
+		fleetQueries++
+		_ = json.NewEncoder(w).Encode(fleetResponse{Generation: generation, Agents: rowsB})
 	}))
 	defer srv.Close()
 
-	// This installation runs its own process, which has loaded another
-	// fleet generation and reports it in its runtime record.
-	localGeneration := "generation-of-this-installation"
-	store, err := filepath.Abs(cfg.EvidenceDBPath())
+	// A's own process is running and has loaded that generation and the use
+	// case: A's local view would say so.
+	store, err := filepath.Abs(a.EvidenceDBPath())
 	require.NoError(t, err)
-	pub, err := runtimestatus.NewPublisher(cfg.DataDir, time.Hour, runtimestatus.Record{
-		Installation: runtimestatus.Installation{KeyFingerprint: runtimestatus.Fingerprint(cfg.SigningKey), StorePath: store},
+	pub, err := runtimestatus.NewPublisher(a.DataDir, time.Hour, runtimestatus.Record{
+		Installation: runtimestatus.Installation{KeyFingerprint: runtimestatus.Fingerprint(a.SigningKey), StorePath: store},
 		Roles:        []string{runtimestatus.RoleGateway}, StartedAt: time.Now().UTC(),
 	}, func(rec *runtimestatus.Record) {
-		rec.Catalog = &runtimestatus.Catalog{ActiveGeneration: localGeneration, ActivatedAt: time.Now().UTC(), Agents: []runtimestatus.Agent{{Name: "support", TenantID: "default", Enabled: true}}}
+		rec.Catalog = &runtimestatus.Catalog{ActiveGeneration: generation, ActivatedAt: time.Now().UTC(), Agents: []runtimestatus.Agent{
+			{Name: "support", TenantID: "default", Enabled: true, PolicyDigest: rowsA[0].PolicyDigest},
+		}}
 	})
 	require.NoError(t, err)
 	runCtx, stop := context.WithCancel(ctx)
@@ -683,68 +725,107 @@ func TestAgentShow_NeverMixesAServersRowWithThisMachinesEvidence(t *testing.T) {
 	go func() { defer close(done); _ = pub.Run(runCtx) }()
 	defer func() { stop(); <-done }()
 	require.Eventually(t, func() bool {
-		view, readable := installationRuntime(cfg, time.Now().UTC())
+		view, readable := installationRuntime(a, time.Now().UTC())
 		return readable && anyRunning(&view)
-	}, 5*time.Second, 20*time.Millisecond, "this installation's own process is on record")
+	}, 5*time.Second, 20*time.Millisecond, "installation A's own process is on record")
 
-	settle := fleetSettle
-	fleetSettle.delay = time.Millisecond
-	defer func() { fleetSettle = settle }()
-	show := func() string {
+	defer func() { agentsQueueURL, agentsQueueJSON = "http://localhost:8080", false }()
+	// command builds an `agents` command in installation A's environment.
+	// Binding the flags resets them, so the default address and --json are
+	// set afterwards: defaultURL is the address the command would detect a
+	// server at, explicitURL is --url as the caller typed it.
+	command := func(defaultURL, explicitURL string, jsonOut bool) (*cobra.Command, *bytes.Buffer) {
 		cmd := newAgentsTestCmd()
-		var out bytes.Buffer
-		cmd.SetOut(&out)
-		require.NoError(t, cmd.Flags().Set("url", srv.URL))
-		defer func() { agentsQueueURL = "http://localhost:8080" }()
-		require.NoError(t, showUseCase(ctx, cmd, cfg, "support"))
+		out := &bytes.Buffer{}
+		cmd.SetOut(out)
+		if defaultURL != "" {
+			agentsQueueURL = defaultURL
+		}
+		if explicitURL != "" {
+			require.NoError(t, cmd.Flags().Set("url", explicitURL))
+		}
+		agentsQueueJSON = jsonOut
+		return cmd, out
+	}
+	show := func(defaultURL, explicitURL string) string {
+		cmd, out := command(defaultURL, explicitURL, false)
+		require.NoError(t, showUseCase(ctx, cmd, a, "support"))
 		return out.String()
 	}
+	localOnly := []string{"Runtime ", "Policy ", "\nNext\n", "Full report:", "loaded by the running Talon process", "Working", "Waiting for its first request"}
 
-	out := show()
-	// The server's facts are shown as the server's.
+	// 1. In A's environment, `talon agents show support --url <B>`: B's
+	//    facts, alone. The matching generation changes nothing.
+	out := show("", srv.URL)
 	assert.Contains(t, out, "Verification not performed")
-	assert.Contains(t, out, srv.URL)
-	assert.Contains(t, out, "$9999.00", "the other installation's cap")
-	assert.Contains(t, out, "/srv/other-installation/agents/support/agent.talon.yaml")
-	assert.Contains(t, out, "Health      blocked: monthly budget exhausted")
-	assert.Contains(t, out, "Status      Not verified from here")
-	assert.Contains(t, out, "no running Talon process of this installation reports the fleet generation that server serves")
-	// Nothing of this machine is put next to it: not its policy (daily cost
-	// 10), not its runtime records, not its evidence, not a next step
-	// derived from them.
-	for _, local := range []string{"daily_cost 10", "Runtime ", "Policy ", "Last request", "\nNext\n", "Working", "Blocked", "Nothing to do", "Full report:", "loaded by the running Talon process"} {
-		assert.NotContains(t, out, local, "a local fact next to another installation's row:\n%s", out)
+	assert.Contains(t, out, "Status      Not verified from here (fleet facts of the server at "+srv.URL+")")
+	assert.Contains(t, out, "$3.25", "B's spend, from B's evidence")
+	assert.Contains(t, out, "Nothing establishes that it belongs to this machine's installation")
+	assert.Contains(t, out, "talon agents show support   (without --url)")
+	for _, local := range localOnly {
+		assert.NotContains(t, out, local, "a fact of installation A next to installation B's row:\n%s", out)
 	}
+	require.Equal(t, 1, fleetQueries)
 
-	// The listing does not fill RUNTIME from this machine's records either.
-	cmd := newAgentsTestCmd()
-	require.NoError(t, cmd.Flags().Set("url", srv.URL))
-	rows, issues, _, origin, err := resolveFleetOrigin(ctx, cmd, cfg, "")
-	agentsQueueURL = "http://localhost:8080"
-	require.NoError(t, err)
-	view, readable := installationRuntime(cfg, time.Now().UTC())
-	why := foreignServer(origin, &view, readable)
-	require.NotEmpty(t, why)
-	var list bytes.Buffer
-	renderAgentsOverview(&list, rows, issues, serverViewNote(origin.serverURL, why), nil, false, time.Now().UTC())
-	assert.Contains(t, list.String(), "Server view: these rows are what the Talon server at "+srv.URL+" reports")
-	assert.Regexp(t, `support\s+enabled\s+not read\s+`, list.String())
-
-	// When the server serves the generation this installation's own running
-	// process reports, it IS this installation's process: the full view.
-	remote.Generation = localGeneration
-	out = show()
+	// 2. Without --url, also when B's server answers at the default
+	//    address: installation A, from A's own files, evidence and runtime
+	//    records. B is not asked.
+	before := anyQueries
+	out = show(srv.URL, "") // B at the default address, no explicit --url
+	require.Equal(t, srv.URL, agentsQueueURL)
 	assert.NotContains(t, out, "Verification not performed")
+	assert.NotContains(t, out, "$3.25", "B's evidence in A's view:\n%s", out)
+	assert.Contains(t, out, "$0.00 / ", "A's own spend")
+	assert.Contains(t, out, "Runtime     loaded by the running Talon process", "A's own runtime record")
 	assert.Contains(t, out, "Full report: talon agents show support --effective")
+	assert.Equal(t, before, anyQueries, "the local view asked a server")
 
-	// The proof needs both: this machine, and the generation.
-	matching := runtimestatus.View{Processes: []runtimestatus.Process{{Record: runtimestatus.Record{Catalog: &runtimestatus.Catalog{ActiveGeneration: "g1"}}, Assessed: runtimestatus.Running}}}
-	assert.Empty(t, foreignServer(fleetOrigin{}, &matching, true), "the local projection is this installation")
-	assert.Empty(t, foreignServer(fleetOrigin{serverURL: "http://127.0.0.1:8080", generation: "g1"}, &matching, true))
-	assert.Empty(t, foreignServer(fleetOrigin{serverURL: "http://localhost:8080", generation: "g1"}, &matching, true))
-	assert.Contains(t, foreignServer(fleetOrigin{serverURL: "https://talon.example.com", generation: "g1"}, &matching, true), "another host", "an identical generation on another host is another installation")
-	assert.NotEmpty(t, foreignServer(fleetOrigin{serverURL: "http://127.0.0.1:8080", generation: "g2"}, &matching, true))
-	assert.NotEmpty(t, foreignServer(fleetOrigin{serverURL: "http://127.0.0.1:8080", generation: ""}, &matching, true), "no generation, no proof")
-	assert.NotEmpty(t, foreignServer(fleetOrigin{serverURL: "http://127.0.0.1:8080", generation: "g1"}, &matching, false), "unreadable runtime records prove nothing")
-	assert.Contains(t, foreignServer(fleetOrigin{serverURL: "http://127.0.0.1:8080", generation: "g1"}, &runtimestatus.View{}, true), "no Talon process of this installation is running")
+	// 3. The listing follows the same rule.
+	list := func(defaultURL, explicitURL string) string {
+		cmd, _ := command(defaultURL, explicitURL, false)
+		rows, issues, serverURL, err := humanFleet(ctx, cmd, a, "")
+		require.NoError(t, err)
+		var buf bytes.Buffer
+		if serverURL != "" {
+			renderAgentsOverview(&buf, rows, issues, serverViewNote(serverURL), nil, false, time.Now().UTC())
+			return buf.String()
+		}
+		view, readable := installationRuntime(a, time.Now().UTC())
+		renderAgentsOverview(&buf, rows, issues, localViewNote(&view, readable), &view, readable, time.Now().UTC())
+		return buf.String()
+	}
+	out = list("", srv.URL)
+	assert.Contains(t, out, "Server view: these rows are the fleet facts the Talon server at "+srv.URL+" reports")
+	assert.Regexp(t, `(?m)^support\s+enabled\s+not read\s+`, out, "B's row with A's runtime column:\n%s", out)
+	assert.Contains(t, out, "$3.25")
+	before = anyQueries
+	out = list(srv.URL, "")
+	assert.Equal(t, before, anyQueries, "the local listing asked a server")
+	assert.NotContains(t, out, "Server view")
+	assert.Regexp(t, `(?m)^support\s+enabled\s+loaded\s+`, out)
+	assert.NotContains(t, out, "$3.25")
+
+	// 4. The machine contract is unchanged: --json returns the fleet rows,
+	//    server-first, and nothing else.
+	before = fleetQueries
+	cmd, raw := command(srv.URL, "", true)
+	require.NoError(t, showUseCase(ctx, cmd, a, "support"))
+	var row fleet.AgentRow
+	require.NoError(t, json.Unmarshal(raw.Bytes(), &row))
+	assert.Equal(t, "support", row.Name)
+	assert.InDelta(t, 3.25, row.SpendMonth, 0.0001)
+	assert.Equal(t, before+1, fleetQueries, "--json asks the server at the address, as before")
+	agentsQueueJSON = false
+
+	// 5. The full report is this machine's. With a server named it would
+	//    read as that server's report: it is refused.
+	cmd, _ = command("", srv.URL, false)
+	err = refuseEffectiveFromServer(cmd)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--effective reports this machine's installation")
+	assert.Contains(t, err.Error(), srv.URL)
+	cmd = newAgentsTestCmd()
+	require.NoError(t, refuseEffectiveFromServer(cmd), "without --url it is this machine's report")
+	require.NoError(t, cmd.Flags().Set("url", ""))
+	require.NoError(t, refuseEffectiveFromServer(cmd), `--url "" asks for the local view`)
 }

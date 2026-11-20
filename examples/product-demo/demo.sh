@@ -386,7 +386,7 @@ w_close() {  # clear once; CLOSE on the provenance claim — after watching the 
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── 1. Category + fleet ──────────────────────────────────────────────────────
-present_fleet_full() { runcmd "talon agents --url '$GATEWAY'"; }
+present_fleet_full() { runcmd "talon agents"; }
 beat_fleet() {
   if [[ "$CUT" == hero ]]; then
     w_cmd "talon agents"; echo
@@ -680,7 +680,7 @@ present_policy_full() { # oldcap newcap spend
   printf '  %sPOLICY UPDATE%s   daily budget  $%s → $%s   (edited on disk, activated by safe reload)\n' "$YEL" "$R" "$(fmt "$1")" "$(fmt "$2")"
   printf '  %sRESULT%s          document-summary blocked from new work (daily budget reached)\n' "$YEL" "$R"
   echo
-  runcmd "talon agents --url '$GATEWAY'"
+  runcmd "talon agents"
   printf '  %sDAILY SPEND $%s   DAILY CAP $%s   HEALTH blocked%s\n' "$DIM" "$(fmt "$3")" "$(fmt "$2")" "$R"
   echo
   printf ' %sDescend from the fleet to one session, and from the session to one signed decision:%s\n' "$DIM" "$R"

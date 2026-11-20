@@ -61,20 +61,16 @@ func anyRunning(view *runtimestatus.View) bool {
 	return false
 }
 
-// localViewNote says, when no server answered at the URL the command asked,
-// what the reader is looking at. It does not claim that nothing is running
-// when the installation's own records say that something is.
-func localViewNote(label, url string, view *runtimestatus.View, readable bool) string {
-	if label == "" {
-		return ""
-	}
+// localViewNote heads the listing of this machine's installation when its
+// own runtime records say that nothing of it is running, or cannot be read.
+func localViewNote(view *runtimestatus.View, readable bool) string {
 	switch {
-	case readable && anyRunning(view):
-		return fmt.Sprintf("Local view: no Talon server answered at %s. A Talon process of this installation is running elsewhere (RUNTIME is from its own records); pass --url <its address> for its view.", url)
-	case readable:
-		return fmt.Sprintf("Local view: no Talon process of this installation is running (none answered at %s).", url)
+	case !readable:
+		return "This machine's installation: its runtime records could not be read, so RUNTIME is not known."
+	case !anyRunning(view):
+		return "This machine's installation: no Talon process of it is running."
 	}
-	return fmt.Sprintf("Local view: no Talon server answered at %s, and this installation's runtime records could not be read.", url)
+	return ""
 }
 
 // runtimeWord is one row's runtime state in a word. It comes from the
@@ -392,18 +388,17 @@ func renderNext(w io.Writer, blocked bool, blockedNext effective.NextStep, next 
 	}
 }
 
-// serverViewNote heads a listing whose rows another installation's server
-// reported.
-func serverViewNote(serverURL, why string) string {
-	return fmt.Sprintf("Server view: these rows are what the Talon server at %s reports. It is not established to be a process of this installation (%s), so RUNTIME is not read from this machine's records.", serverURL, why)
+// serverViewNote heads a listing whose rows a server reported.
+func serverViewNote(serverURL string) string {
+	return fmt.Sprintf("Server view: these rows are the fleet facts the Talon server at %s reports. Nothing establishes that it belongs to this machine's installation, so nothing of this machine's records is shown with them (RUNTIME is not read). For this machine's installation run the command without --url.", serverURL)
 }
 
 // renderServerUseCase is the single view of a use case whose fleet row a
-// server reported that is not established to be a process of this
-// installation. It shows the facts of that row and says that no
-// verification was performed: this machine's policy, evidence and runtime
-// records describe another installation and are not put next to it.
-func renderServerUseCase(w io.Writer, row *fleet.AgentRow, serverURL, why string, now time.Time) {
+// server reported. It shows the facts of that row and says that no
+// verification was performed: nothing in an existing read contract says
+// whether the server belongs to this machine's installation, so this
+// machine's policy, evidence and runtime records are not put next to it.
+func renderServerUseCase(w io.Writer, row *fleet.AgentRow, serverURL string, now time.Time) {
 	renderUseCaseIdentity(w, row)
 	line := func(k, v string) { fmt.Fprintf(w, "  %-11s %s\n", k, v) }
 	line("Status", "Not verified from here (fleet facts of the server at "+serverURL+")")
@@ -421,10 +416,10 @@ func renderServerUseCase(w io.Writer, row *fleet.AgentRow, serverURL, why string
 		}
 	}
 	fmt.Fprintf(w, "\nVerification not performed\n")
-	fmt.Fprintf(w, "  These are the fleet facts the Talon server at %s reports. It is not established to be a process of this installation: %s.\n", serverURL, why)
-	fmt.Fprintf(w, "  Its policy, runtime records and evidence were not read, and nothing of this machine's configuration, evidence or runtime records is shown with it.\n")
-	fmt.Fprintf(w, "  For the verified view, run this command on that installation's host or open its Operations Console.\n")
-	fmt.Fprintf(w, "  For this machine's own installation: talon agents show %s --url \"\"\n", row.Name)
+	fmt.Fprintf(w, "  These are the fleet facts the Talon server at %s reports. Nothing establishes that it belongs to this machine's installation,\n", serverURL)
+	fmt.Fprintf(w, "  so its policy, runtime records and evidence were not read, and nothing of this machine's configuration, evidence or runtime records is shown with it.\n")
+	fmt.Fprintf(w, "  For this machine's installation:  talon agents show %s   (without --url)\n", row.Name)
+	fmt.Fprintf(w, "  For that server's installation:   run the command on its host, or open its Operations Console.\n")
 }
 
 // renderUseCaseIdentity prints the name, what the use case is for, and who

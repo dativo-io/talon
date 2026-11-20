@@ -9,7 +9,7 @@ talon agents show <name>      # one use case: what is happening, and what to do 
 
 Both read the files, the running processes' own records and signed evidence. Neither writes anything. For scripts use `--json`; the human views can change their layout, the JSON rows do not.
 
-Both ask the Talon server at `--url` (default `http://localhost:8080`) for the live fleet rows when one answers. Its rows are shown together with this machine's files, evidence and runtime records only when that server is a process of this installation: it is on this machine, and a running process of this installation reports the fleet generation the server serves. For any other server the commands show the fleet facts it reports and say that no verification was performed; nothing of this machine is put next to them. `--url ""` shows this machine's own installation.
+Both show **this machine's installation**, from its own files, evidence store and runtime records. They ask no server, so run them on the host of the installation, with its configuration and keys. With `--url <server>` they show the fleet facts that server reports, alone, and say that no verification was performed: nothing in what a server reports establishes that it belongs to this machine's installation (two installations with the same configuration look alike), so a server's rows are never shown next to this machine's evidence. `talon agents show <name> --effective` is always this machine's report and refuses `--url`. The machine contract is unchanged: `--json` returns the fleet rows from the server at `--url` (default `http://localhost:8080`) when one answers, and says with `offline` when it did not.
 
 | Question | Section |
 |---|---|
