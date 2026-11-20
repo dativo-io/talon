@@ -11,12 +11,15 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 
 ---
 
-## Quick start
+## Start here
 
-**New to Talon?** Start with the 60-second demo (no API key needed):
+Two ways to start. Pick the one you mean.
 
-- [60-Second Demo](tutorials/quickstart-demo.md) — Docker Compose demo: `docker compose up`, send a curl request, see evidence immediately.
-- [QUICKSTART.md](QUICKSTART.md) — Short entry point for native Talon (requires Go).
+| | Try Talon | Connect your existing application |
+|---|---|---|
+| For | seeing real policy decisions and signed evidence in a few minutes, with no provider key and no application | putting an application you already run behind your company policy |
+| Start | [Quickstart](QUICKSTART.md) (published image), or the [60-second demo](tutorials/quickstart-demo.md) (Docker Compose from a clone) | [Connect an existing application](guides/add-talon-to-existing-app.md) |
+| Then | — | [Operate AI use cases](guides/operate-ai-use-cases.md): the task reference for day two |
 
 ## New here?
 

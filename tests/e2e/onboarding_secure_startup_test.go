@@ -45,7 +45,7 @@ func documentedSteps(t *testing.T) map[string]string {
 		}
 		steps[m[1]] = m[2]
 	}
-	for _, name := range []string{"keys", "load", "config", "provider-key", "register", "start", "check"} {
+	for _, name := range []string{"keys", "load", "config", "provider-key", "register", "register-output", "start", "check"} {
 		if strings.TrimSpace(steps[name]) == "" {
 			t.Fatalf("the guide has no block marked <!-- onboarding-acceptance: %s -->", name)
 		}
@@ -274,6 +274,18 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 	appKey := useCaseKeyRe.FindString(out[secretAt:])
 	if appKey == "" {
 		t.Fatalf("the documented registration printed no Talon key:\n%s", out)
+	}
+	// The output the guide shows is the output the command prints. What
+	// differs from run to run is compared as a placeholder: generated ids,
+	// the key, and the server address (it depends on what answers at the
+	// default port of this host).
+	variable := regexp.MustCompile(`al_[0-9a-f-]+|talon_uc_\S+|Base URL .*`)
+	normalize := func(text string) string { return variable.ReplaceAllString(text, "…") }
+	printed := normalize(out)
+	for _, line := range strings.Split(normalize(steps["register-output"]), "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.Contains(printed, line) {
+			t.Fatalf("the guide shows a registration output line the command does not print: %q\nprinted:\n%s", line, out)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(d.dir, "agents", "customer-support", "agent.talon.yaml")); err != nil {
 		t.Fatalf("the documented registration wrote no agent file: %v", err)
