@@ -15,18 +15,17 @@ permissions:
 
 jobs:
   test:
-    name: Test (Go ${{ matrix.go-version }})
+    # One Go version, the one go.mod names: every job here reads it from
+    # there (tests/go_toolchain_pins_test.go covers the places that cannot).
+    name: Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ['1.26.10']
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: go.mod
           cache: true
 
       - name: Install SQLite
@@ -50,7 +49,7 @@ jobs:
       # All test tiers: unit (internal + cmd), integration (tests/integration), e2e (tests/e2e)
       # Coverage: exclude cmd/talon (main) and internal/testutil (test helpers); threshold 65% (goal 70%)
       - name: Run unit tests
-        run: go test -race -coverprofile=coverage-${{ matrix.go-version }}.out $(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v internal/llm/testutil | grep -v 'cmd/talon')
+        run: go test -race -coverprofile=coverage.out $(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v internal/llm/testutil | grep -v 'cmd/talon')
 
       - name: Validate PII benchmark baseline artifacts
         run: |
@@ -89,11 +88,12 @@ jobs:
       - name: Run e2e tests
         run: go test -tags=e2e -timeout 8m ./tests/e2e/...
 
-      - name: The upgrade test ran (a skip is not a pass)
+      - name: The upgrade and rollback tests ran against the preceding stable release (a skip is not a pass)
         run: |
           set -euo pipefail
-          go test -tags=e2e ./tests/e2e -run TestE2E_UpgradeFromPreviousStable -count=1 -v | tee "$RUNNER_TEMP/upgrade.log"
+          go test -tags=e2e ./tests/e2e -run 'TestE2E_UpgradeFromPreviousStable|TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing' -count=1 -v | tee "$RUNNER_TEMP/upgrade.log"
           grep -q -- '--- PASS: TestE2E_UpgradeFromPreviousStable' "$RUNNER_TEMP/upgrade.log"
+          grep -q -- '--- PASS: TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing' "$RUNNER_TEMP/upgrade.log"
 
       - name: MCP governance-contract smoke (#372, offline, no keys)
         # Named PR gate for the governance extension's truth semantics:
@@ -148,7 +148,7 @@ jobs:
 
       - name: Check coverage
         run: |
-          COVERAGE=$(go tool cover -func=coverage-${{ matrix.go-version }}.out | grep total | awk '{print $3}' | sed 's/%//')
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
           if (( $(echo "$COVERAGE < 65" | bc -l) )); then
             echo "::error::Coverage ${COVERAGE}% is below 65% target"
@@ -188,14 +188,13 @@ jobs:
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-${{ matrix.go-version }}
-          path: coverage-${{ matrix.go-version }}.out
+          name: coverage
+          path: coverage.out
 
       - name: Upload to Codecov
-        if: matrix.go-version == '1.26.10'
         uses: codecov/codecov-action@v4
         with:
-          file: ./coverage-1.26.10.out
+          file: ./coverage.out
           fail_ci_if_error: false
 
   proof-gates:
@@ -209,7 +208,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.10'
+          go-version-file: go.mod
           cache: true
 
       - name: Install SQLite
@@ -229,7 +228,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.10'
+          go-version-file: go.mod
           cache: true
 
       - name: Install SQLite
@@ -263,7 +262,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.10'
+          go-version-file: go.mod
           cache: true
 
       - name: golangci-lint
@@ -312,7 +311,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.10'
+          go-version-file: go.mod
           cache: true
 
       - name: Install cross-compilation tools
@@ -379,7 +378,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.10'
+          go-version-file: go.mod
           cache: true
       - uses: actions/setup-node@v4
         with:
@@ -405,6 +404,13 @@ jobs:
       # effective action policy in Chromium.
       - name: Action Gateway evidence live (real processes, browser)
         run: bash scripts/action-evidence-live.sh
+      # Onboarding (#472): `talon agents add` for a first and a second
+      # application, the pinned OpenAI Node SDK against a real gateway with
+      # a counting upstream, verification in the CLI and the console, key
+      # replacement and revocation. Every mandatory test must PASS; a skip
+      # fails the step.
+      - name: Onboarding acceptance (real processes, OpenAI SDK)
+        run: bash scripts/onboarding-acceptance.sh
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -458,7 +464,7 @@ jobs:
           mkdir -p "$CTX"
           docker run --rm -v "$PWD:/src:ro" -v "$CTX:/out" -w /src \
             -e CGO_ENABLED=1 -e GOFLAGS=-buildvcs=false -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod \
-            golang:1.26.10-bookworm \
+            "golang:$(sed -n 's/^go //p' go.mod)-bookworm" \
             go build -trimpath -ldflags "-s -w -X github.com/dativo-io/talon/internal/cmd.Version=0.0.0-ci" -o /out/talon ./cmd/talon/
           file "$CTX/talon" | grep -q 'dynamically linked' || { echo "expected a glibc-linked binary like goreleaser's" >&2; exit 1; }
           cp Dockerfile.goreleaser "$CTX/"

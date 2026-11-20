@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/dativo-io/talon/internal/effective"
@@ -30,6 +31,12 @@ func (s *Service) EffectivePolicy(ctx context.Context, tenant, name string) (*Ef
 	in := effective.Inputs{
 		AgentsDir: src.AgentsDir, DefaultPolicy: src.DefaultPolicy, GatewayConfig: src.GatewayConfig, ProxyConfig: src.ProxyConfig,
 		Name: name, Tenant: tenant, Evidence: s.cfg.Evidence, Now: s.now(),
+	}
+	if s.cfg.DataDir != "" {
+		// The vault's METADATA only, through a read-only connection and
+		// without a decryption key: when the use case's credential was last
+		// written. The console never reads a secret's value.
+		in.SecretsDB = filepath.Join(s.cfg.DataDir, "secrets.db")
 	}
 	rt := s.runtime()
 	if rt.Availability.State == StateOK || rt.Availability.State == StateUnavailable {

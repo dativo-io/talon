@@ -18,12 +18,13 @@ talon ui serve --proxy-config proxy.talon.yaml   # also show the MCP proxy confi
 
 The browser asks for a one-time pairing code. Read it from the console's own output (`docker compose logs talon-ui`, or the terminal running `talon ui`); `talon ui pair` makes the running console print a fresh one to that same output (the `pair` command itself prints no code). Keep that output out of shared logging systems. Codes are single use and expire within ten minutes. The browser then holds a read-only session cookie; no admin, agent or vault key ever reaches it. When the session ends (expiry, logout, console restart), the page asks for a new code and returns to where you were. Details and the threat model: [console access](../reference/console-access.md).
 
-## The six pages
+## The pages
 
 | Page | Question it answers | Source |
 |---|---|---|
 | **Overview** | What needs attention across the installation and the selected tenant, and why? | operational readiness (runtime records, configuration digests, agent keys the processes report, store reads), findings, the `talon agents` fleet projection, today's counters, request-class activity buckets, recent operational events |
-| **AI Use Cases** | What AI use cases do we operate, how are they doing, how are they governed? | the same fleet rows, unchanged order; each use case's page has four sections: **Summary** (is it operating as expected?), **Sessions & Activity** (what happened when it ran?), **Policy & Runtime** (what is permitted, and which policy is active?), **Costs** (what does it cost?) |
+| **AI Use Cases** | What AI use cases do we operate, how are they doing, how are they governed? | the same fleet rows, unchanged order; each use case's page has four sections: **Summary** (is it operating as expected? including the one-line *Connection and verification* reading, loaded or not, authenticated traffic observed or not, under which policy, and the same *Next step* `talon agents show` prints), **Sessions & Activity** (what happened when it ran?), **Policy & Runtime** (what is permitted, and which policy is active?), **Costs** (what does it cost?) |
+| **Approvals** | Which Action Gateway requests wait for a person, why do they need approval, and what was decided? | the action tables of the store, read-only; the same projection as `talon approvals` without argument values ([read contract §2.8](../reference/console-read-contract.md#28-approvals-565)) |
 | **Sessions** | What happened in this session, what did Talon decide, and was anything sent? | session store rows and evidence-observed session ids, summary and timeline from `talon session show` |
 | **Costs** | How much, where, and are budgets respected? | `talon costs --json` (`costs.Build`) |
 | **Configuration** | What is configured, and what can be proven active? | the gateway, agent and MCP proxy files, summarised server-side |
@@ -95,6 +96,14 @@ A further AI use case is another agent file and key under the same `talon.config
 
 *Each use case's effective policy lists its Action Gateway actions. An action with argument rules reads "Depends on arguments", never "Allowed"; every rule names the layer that declared it. "Proven active" appears only when every running `talon serve` reports this agent file and the gateway config it read the company action policy from.*
 
+![Approvals: a refund that waits for a decision and one whose lifetime elapsed, each with its state and required group](../assets/console/approvals.webp)
+
+*The Approvals page lists Action Gateway requests that wait for a person. "Eligible per current files" means the configuration files still match what the request was established under; it reads "Can be decided now" only when a running `talon serve` is proven to have loaded those files. When the files were changed and no running process is proven to run them, a request reads "Files changed, runtime not confirmed" and stays listed: the process may still hold the configuration it was established under. A request whose lifetime elapsed stays unresolved in the store and reads "Expired, not decidable". No argument name or value is listed, and a reviewer's reason is never shown: the console states that one was recorded.*
+
+![Approval detail: who asks for what, whether it can be decided, argument names without values, the rule that required approval, and the CLI commands](../assets/console/approval-detail.webp)
+
+*One approval: the requesting AI use case, whether it can still be decided and on what that statement rests, the argument **names**, the rule and policy layer that required approval, the decision and what happened afterwards, and the signed lifecycle records. The console shows no argument value and has no decision control: an approver reads the exact values with `talon approvals show <approval-id>` and decides with `talon approvals approve|reject`.*
+
 ![Evidence detail of a refund that needed a reviewer: approval required, not dispatched, the matched use-case rule, signature valid](../assets/console/action-evidence.webp)
 
 *An action lifecycle record shows the actual verdict, the matched rule and who declared it, and the operation's status. A refund waiting for a reviewer reads "Approval required — not dispatched", not "allowed". The record names the rule, never the call's argument values.*
@@ -135,9 +144,19 @@ The **Tenant scope** selector in the header lists the tenants this installation 
 
 Installation facts are never scoped: operational readiness, the System page and the shared configuration (organization baseline, gateway and providers, MCP proxy) stay visible and are labelled *installation* or *shared*. Talon has no tenant-wide policy: each use case's effective policy is the organization baseline, its own agent file and the hard constraints, and the Configuration page links each use case to that explanation. Selecting a tenant filters what the paired operator may already read; it is not an access control. Filters and scope live in the URL, so a link to an investigation can be shared; no code, cookie or key is ever placed in a URL.
 
+## Has this application connected? (Connection and verification)
+
+After an application is registered (`talon agents add`), its page answers three separate questions, each from its own source, the same way `talon agents show <name> --effective` does:
+
+- **Loaded?** *Policy & Runtime → 2. Loaded by a running process*: a running Talon process reports this agent file in its active generation. A file on disk is not a loaded file.
+- **Connected?** *Policy & Runtime → 5. Connection and verification*: for the LLM gateway, the MCP proxy and the Action Gateway separately, the newest signed record an authenticated request of this use case produced. A registration, an enable or disable, a reload or a reviewer's decision is not traffic. "None recorded" at the LLM gateway for a use case that only uses the Action Gateway is correct, and establishing an action is shown apart from dispatching it. An MCP proxy record reads "caller's identity not established": the proxy does not record whether the use case's key was presented.
+- **Under the expected policy?** The same table: the record's signature check and whether its recorded policy digests equal what the current files compile to (*matches*, *differs*, *not proven*, *not verified*).
+
+The Summary shows the one-line reading of these facts. The console computes none of this in the browser, and none of it says that all of the application's traffic goes through Talon.
+
 ## What the console does not do
 
-It changes nothing: no configuration edits, no approvals, no budget changes, no runs. It shows only traffic and actions Talon intercepted; local shell commands, file edits and calls that bypass Talon are invisible to it. Client-asserted identities (session ids, clients) are attribution, not authentication.
+It changes nothing: no configuration edits, no approval decisions, no budget changes, no runs. It lists approvals and explains them, without the argument values: a paired browser is not a reviewer, and the tenant selection is a filter, not an access control. Values and decisions need an approver credential (`talon approvals`). It shows only traffic and actions Talon intercepted; local shell commands, file edits and calls that bypass Talon are invisible to it. Client-asserted identities (session ids, clients) are attribution, not authentication.
 
 ## Related
 

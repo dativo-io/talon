@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -324,4 +325,52 @@ func TestAgentKeys_RoundTrip(t *testing.T) {
 	require.Len(t, v.Processes, 1)
 	require.NotNil(t, v.Processes[0].AgentKeys)
 	assert.Equal(t, []string{"hr-copilot"}, v.Processes[0].AgentKeys.Unloaded)
+}
+
+// #567 final review. A reader compares what a server answers with what this
+// installation's process reports in its record (which fleet generation is
+// active). The record therefore follows an activation at once, not at the
+// next heartbeat.
+func TestPublisher_WritesACatalogChangeWithoutWaitingForTheHeartbeat(t *testing.T) {
+	dir := t.TempDir()
+	var mu sync.Mutex
+	generation := "g1"
+	base := Record{Installation: Installation{KeyFingerprint: "fp"}, Roles: []string{RoleGateway}, StartedAt: time.Now().UTC()}
+	pub, err := NewPublisher(dir, time.Hour, base, func(r *Record) {
+		mu.Lock()
+		defer mu.Unlock()
+		r.Catalog = &Catalog{ActiveGeneration: generation}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = pub.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+
+	active := func() string {
+		v := NewReader().Assess(dir, "fp", nil, time.Now().UTC())
+		for i := range v.Processes {
+			if v.Processes[i].Catalog != nil {
+				return v.Processes[i].Catalog.ActiveGeneration
+			}
+		}
+		return ""
+	}
+	waitFor := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for active() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("the record reports generation %q, want %q: with an hourly heartbeat only an on-change write can have updated it", active(), want)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitFor("g1")
+	mu.Lock()
+	generation = "g2"
+	mu.Unlock()
+	waitFor("g2")
 }

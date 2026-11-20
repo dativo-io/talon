@@ -1,0 +1,47 @@
+  # ---------------------------------------------------------------------------
+  # Append this file to the agent file that `talon agents add refund-bot` wrote:
+  #
+  #   cat examples/n8n-refund/use-case-action.append.yaml >> <agents_dir>/refund-bot/agent.talon.yaml
+  #   talon validate
+  #
+  # The first block continues the generated `policies:` section (mind the
+  # indentation). The second adds the one consequential action this AI use
+  # case may request.
+  # ---------------------------------------------------------------------------
+  approvals:
+    expires_after: 30m
+    # Use-case rule, example value: a refund above 50.00 needs a decision by
+    # a member of support-leads. The company's own rule (no refund above
+    # 500.00, talon.config.yaml) binds as well and cannot be changed here.
+    argument_rules:
+      refund-needs-approval:
+        actions: [create_refund_request]
+        argument: amount
+        type: decimal
+        operator: gt
+        value: "50.00"
+        effect: require_approval
+        approver_groups: [support-leads]
+
+# The trusted definition of the action. Talon itself calls the destination
+# when an authorized operation is claimed; n8n never calls it.
+# This is a synthetic fixture, not a payment integration.
+actions:
+  definitions:
+    create_refund_request:
+      description: Create a refund for a support ticket
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount, currency]
+        properties:
+          ticket_id: {type: string, pattern: "^[A-Z]+-[0-9]+$"}
+          amount: {type: string, pattern: "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$"}   # exact decimal as a string, at most two fractional digits
+          currency: {type: string, enum: [EUR]}                                        # the only currency this fixture accepts
+      review:
+        fields: [ticket_id, amount, currency]   # what a reviewer is shown, and what the workflow checks in Talon's answer
+      destination:
+        type: http
+        url: "https://refunds.internal/v1/refunds"   # your trusted refund adapter (https; plain http only on loopback)
+        method: POST
+        success: {status_codes: [201]}

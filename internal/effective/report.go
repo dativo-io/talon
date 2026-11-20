@@ -12,9 +12,13 @@
 //     compiles from the current files, with each selected rule's winning
 //     layer, plus the MCP proxy's own pre-dispatch decision per tool
 //     (mcp.EvaluateToolAccess);
-//  4. last decision: the newest signed evidence record of the use case, with
-//     the policy identity it recorded, compared to the current files only by
-//     recorded digests — never assumed to have run under the current file.
+//  4. last decision: the newest request-decision record of the use case at
+//     an interception boundary (never an operator event), with the policy
+//     identity it recorded, compared to the current files only by recorded
+//     digests — never assumed to have run under the current file;
+//  5. connection and verification (traffic.go): per boundary, the newest
+//     record, whether it establishes the use case's own credential, and
+//     whether its recorded policy equals what the current files compile to.
 package effective
 
 import (
@@ -32,7 +36,6 @@ import (
 	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/evidence"
-	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/fleetview"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/mcp"
@@ -59,7 +62,13 @@ type Inputs struct {
 	// caller has none (the "loaded" layer is then unknown).
 	Runtime         *runtimestatus.View
 	RuntimeReadable bool
-	Now             time.Time
+	// SecretsDB is the path of the installation's vault file. It is read
+	// for METADATA only, through a read-only connection and without a
+	// decryption key: when the use case's key was last written and how many
+	// values ever existed under its name. "" = not given (which credential
+	// observed traffic used is then reported as unknown).
+	SecretsDB string
+	Now       time.Time
 }
 
 // Report is the effective-policy report.
@@ -74,8 +83,16 @@ type Report struct {
 	// ActionBoundary is the effective ACTION policy (#425, #205): present
 	// when the use case declares actions or action approvals. Additive.
 	ActionBoundary *ActionBoundary `json:"action_boundary,omitempty"`
-	LastDecision   *LastDecision   `json:"last_decision,omitempty"`
-	Notes          []string        `json:"notes,omitempty"`
+	// LastDecision is the newest record of an authenticated request at an
+	// interception boundary. Operator and configuration events (a
+	// registration, enable/disable, a reload) are not decisions and are
+	// never selected (#472).
+	LastDecision *LastDecision `json:"last_decision,omitempty"`
+	// Verification: configured state, observed authenticated traffic per
+	// boundary and whether it was evaluated under the expected policy
+	// (#472). Additive.
+	Verification *Verification `json:"verification,omitempty"`
+	Notes        []string      `json:"notes,omitempty"`
 }
 
 // CurrentFiles are the files as they read now.
@@ -279,18 +296,11 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 	r.MCPBoundary = mcpBoundary(ctx, in.ProxyConfig, agent, &r.CurrentFiles)
 	proveMCP(in, r)
 
-	// 4. last decision
-	if in.Evidence != nil {
-		ld, err := lastDecision(ctx, in.Evidence, tenant, in.Name, digest, r.Effective.Providers)
-		switch {
-		case err != nil:
-			r.Notes = append(r.Notes, "last decision unavailable: "+err.Error())
-		case ld == nil:
-			r.Notes = append(r.Notes, "no evidence recorded for this use case yet")
-		default:
-			r.LastDecision = ld
-		}
-	}
+	r.observe(ctx, in, verificationInputs{
+		store: in.Evidence, tenant: tenant, name: in.Name, agent: agent, digest: digest,
+		providers: r.Effective.Providers, action: r.ActionBoundary, loaded: r.Loaded,
+		secretsDB: in.SecretsDB, runtime: in.Runtime, runtimeReadable: in.RuntimeReadable,
+	})
 	return r, nil
 }
 
@@ -361,11 +371,23 @@ func actionBoundary(agent *policy.Policy, baseline gateway.OrganizationPolicy, g
 		b.Basis = "the effective action policy does not compile from the current files; a process started from them refuses to start"
 		return b
 	}
+	if cerr := checkAgainstDeclaredCatalog(agent, ap); cerr != nil {
+		b.Error, b.ProvenActive = cerr.Error(), false
+		b.Proof = runtimestatus.Loaded{State: runtimestatus.BoundaryUnknown, Reason: "the action policy is refused at load from the current files, so there is nothing to compare a running process with"}
+		b.Basis = "the effective action policy is refused at load from the current files; a process started from them refuses to start"
+		return b
+	}
 	if b.ProvenActive {
 		b.Basis = "compiled by action.CompileEffectiveActionPolicy from the current files; " + proof.Reason
 	} else {
 		b.Basis = "compiled by action.CompileEffectiveActionPolicy from the current files; not proven to be what a running process enforces (" + proof.Reason + ")"
 	}
+	describeActionPolicy(b, agent, ap)
+	return b
+}
+
+// describeActionPolicy fills the boundary from the compiled policy.
+func describeActionPolicy(b *ActionBoundary, agent *policy.Policy, ap *action.ApprovalPolicy) {
 	b.PolicyDigest, b.ForbiddenTools = ap.Digest, ap.ForbiddenTools
 	if ap.ExpiresAfter > 0 {
 		b.ExpiresAfter = ap.ExpiresAfter.String()
@@ -387,7 +409,26 @@ func actionBoundary(agent *policy.Policy, baseline gateway.OrganizationPolicy, g
 	for i := range views {
 		b.ArgumentRules = append(b.ArgumentRules, ActionArgumentRule{ArgumentRuleView: views[i].ArgumentRuleView, Actions: views[i].Actions})
 	}
-	return b
+}
+
+// checkAgainstDeclaredCatalog resolves the argument rules against the
+// declared catalog exactly as `talon validate` and `talon serve` do: a rule
+// that could not be evaluated truthfully is refused at load, so it is never
+// shown as the effective policy. Definitions discovered from MCP sources are
+// not read here (no I/O); serve checks them when it builds the generation.
+func checkAgainstDeclaredCatalog(agent *policy.Policy, ap *action.ApprovalPolicy) error {
+	if agent.Actions == nil || len(agent.Actions.Definitions) == 0 {
+		return nil
+	}
+	cat, err := action.CompileCatalog(agent.Actions, nil)
+	if err != nil {
+		var undiscovered *action.SourceNotDiscoveredError
+		if errors.As(err, &undiscovered) {
+			return nil
+		}
+		return fmt.Errorf("action catalog: %w", err)
+	}
+	return ap.ValidateAgainstCatalog(cat)
 }
 
 // proveMCP proves the MCP boundary independently of the gateway: a running
@@ -420,9 +461,11 @@ func (r *Report) organization(path string) (baseline gateway.OrganizationPolicy,
 	if path == "" {
 		return gateway.OrganizationPolicy{}, nil
 	}
-	f := &File{Path: path, Digest: fileDigest(path)}
+	// One read: the digest shown and compared with the runtime's is of the
+	// bytes the organization policy below was parsed from.
+	gw, digest, err := gateway.LoadGatewayConfigWithDigest(path)
+	f := &File{Path: path, Digest: digest}
 	r.CurrentFiles.GatewayConfig = f
-	gw, err := gateway.LoadGatewayConfig(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return gateway.OrganizationPolicy{}, nil
@@ -487,52 +530,6 @@ func mcpBoundary(ctx context.Context, path string, agent *policy.Policy, files *
 		b.Tools = append(b.Tools, d)
 	}
 	return b
-}
-
-func lastDecision(ctx context.Context, store *evidence.Store, tenant, name, fileDigest string, providers []ProviderEffective) (*LastDecision, error) {
-	recs, err := store.List(ctx, tenant, name, time.Time{}, time.Time{}, 1)
-	if err != nil || len(recs) == 0 {
-		return nil, err
-	}
-	// List does not verify signatures: re-read the selected record through
-	// the verifying path before anything on it is presented as history.
-	det, err := store.Detail(ctx, recs[0].ID)
-	if err != nil {
-		return nil, err
-	}
-	ev := det.Record
-	ld := &LastDecision{
-		EvidenceID: ev.ID, Timestamp: ev.Timestamp, InvocationType: ev.InvocationType, SessionID: ev.SessionID,
-		Outcome: det.Outcome, Verification: det.Verification.State, AgentFile: "not_recorded", EffectivePolicy: "not_recorded",
-		Note: "a historical decision: the policy recorded on this signed record applied to it; the current files are compared only by recorded digests",
-	}
-	if det.Verification.State != "valid" {
-		ld.AgentFile, ld.EffectivePolicy = "unverified", "unverified"
-		ld.Note = "this record's signature does not verify: it was changed after signing, so its decision and recorded digests are not authenticated and are not compared with the current files"
-		return ld, nil
-	}
-	if p, ok := explanation.Primary(ev.Explanations); ok {
-		ld.PrimaryCode, ld.PrimaryReason = p.Code, p.Reason
-	}
-	if d := ev.PolicyDecision.PolicyDigests; d != nil {
-		ld.RecordedAgent, ld.RecordedEffective = d.Agent, d.Effective
-		if d.Agent != "" {
-			ld.AgentFile = "different"
-			if d.Agent == fileDigest {
-				ld.AgentFile = "same"
-			}
-		}
-		if d.Effective != "" {
-			ld.EffectivePolicy = "differs_from_current"
-			for _, p := range providers {
-				if p.EffectiveDigest == d.Effective {
-					ld.EffectivePolicy = "matches_current:" + p.Name
-					break
-				}
-			}
-		}
-	}
-	return ld, nil
 }
 
 func sortedKeys[V any](m map[string]V) []string {

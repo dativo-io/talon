@@ -425,3 +425,114 @@ policies:
 		}
 	}
 }
+
+// An ambiguous outcome survives a restore as ambiguous (#568 review). The
+// refund service accepted a request and lost its answer BEFORE the backup:
+// the operation is `unknown`. After the restore it is still unknown, held
+// with everything else until the operator resumes, and after the resume it
+// is still never dispatched again: an unknown outcome is never replayed, by
+// a restore or by a resume.
+func TestE2E_Restore_AnUnknownOutcomeIsNeverReplayed(t *testing.T) {
+	down := startRefundService(t)
+	dir := t.TempDir()
+	if _, stderr, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", agAgent); code != 0 {
+		t.Fatalf("talon init: %d\n%s", code, stderr)
+	}
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	raw, _ := os.ReadFile(agentPath)
+	yaml := strings.Replace(string(raw), "\npolicies:\n", `
+actions:
+  definitions:
+    create_refund_request:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount, currency]
+        properties:
+          ticket_id: {type: string}
+          amount: {type: number}
+          currency: {type: string, enum: [EUR]}
+      review:
+        fields: [ticket_id, amount, currency]
+      destination:
+        type: http
+        url: "`+down.srv.URL+`/lossy"
+        method: POST
+        success: {status_codes: [201]}
+
+policies:
+`, 1)
+	if err := os.WriteFile(agentPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", agAgent+"-talon-key", agAgentKey); code != 0 {
+		t.Fatalf("secrets set: %d\n%s", code, stderr)
+	}
+	port := freePort(t)
+	c := &agClient{t: t, base: fmt.Sprintf("http://127.0.0.1:%d", port)}
+	status := func() string {
+		_, res := c.do("GET", "/v1/action-operations/op-u", agAgentKey, "")
+		s, _ := dig(res, "operation", "operation_status").(string)
+		return s
+	}
+	claim := func() (int, string) {
+		st, res := c.do("POST", "/v1/action-operations/op-u/attempts", agAgentKey, "")
+		return st, errCode(res)
+	}
+	lossy := func(want int64, why string) {
+		t.Helper()
+		if got := down.lossyCalls.Load(); got != want {
+			t.Fatalf("%s: the refund service was called %d time(s), want %d", why, got, want)
+		}
+	}
+
+	shutdown := serveUntilTerminated(t, dir, port)
+	if st, res := c.do("POST", "/v1/action-operations", agAgentKey, `{"operation_id":"op-u","action":"create_refund_request","arguments":{"ticket_id":"T-U","amount":20,"currency":"EUR"}}`); st != 201 {
+		t.Fatalf("establish op-u: %d %v", st, res)
+	}
+	_, _ = claim() // the refund service takes the request and drops the connection
+	lossy(1, "the one dispatch before the backup")
+	if got := status(); got != "unknown" {
+		t.Fatalf("the operation should be unknown before the backup, got %q", got)
+	}
+	shutdown()
+
+	backup := filepath.Join(t.TempDir(), "cold")
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "create", "--cold", backup); code != 0 {
+		t.Fatalf("backup create --cold: %d\n%s\n%s", code, out, stderr)
+	}
+	for _, f := range []string{"evidence.db", "evidence.db-wal", "evidence.db-shm", "secrets.db", "secrets.db-wal", "secrets.db-shm"} {
+		_ = os.Remove(filepath.Join(dir, f))
+	}
+	for _, f := range []string{"evidence.db", "secrets.db"} {
+		b, err := os.ReadFile(filepath.Join(backup, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop := startActionServe(t, dir, port)
+	defer func() { stop() }()
+
+	if got := status(); got != "unknown" {
+		t.Fatalf("the restored operation should still be unknown, got %q", got)
+	}
+	if st, code := claim(); st == 200 {
+		t.Fatalf("an unknown operation was claimed during the hold: %d %s", st, code)
+	}
+	lossy(1, "restored and held")
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "resume", "--reconciled"); code != 0 {
+		t.Fatalf("backup resume: %d\n%s\n%s", code, out, stderr)
+	}
+	for i := 0; i < 3; i++ {
+		if st, code := claim(); st != 409 || code != "operation_outcome_unknown" {
+			t.Fatalf("an unknown outcome must stay unknown after the resume, never replayed: %d %s", st, code)
+		}
+	}
+	lossy(1, "after the resume: the unknown outcome was never replayed")
+	if out, stderr, code := RunTalon(t, dir, nil, "audit", "verify", "--operation", "op-u"); code != 0 || !strings.Contains(out, "Lifecycle: VALID") {
+		t.Fatalf("the lifecycle of the unknown operation must verify after the restore: %d\n%s\n%s", code, out, stderr)
+	}
+}

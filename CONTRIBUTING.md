@@ -17,7 +17,7 @@ Thanks for helping improve Talon.
 
 ## Development Setup
 
-1. Install Go 1.26.10+ (`go.mod` pins the toolchain; `GOTOOLCHAIN=auto` fetches it on an older install)
+1. Install Go 1.26.11+ (`go.mod` pins the toolchain; `GOTOOLCHAIN=auto` fetches it on an older install)
 2. Install dependencies: `go mod download`
 3. Build: `make build`
 4. Test: `make test`
@@ -97,6 +97,18 @@ side: public downloads, no token, anonymous image pulls, `install.sh` under `sh`
 scratch directory, the installed binary byte-identical to the verified one, the public
 bytes identical to the draft's.
 
+**Which compiler built the release (#572).** `go.mod` names the Go version; the release build
+(`scripts/release-build.sh`, GoReleaser in the `goreleaser-cross` image) compiles with exactly
+that toolchain even when the image carries an older one. `release-verify` does not trust that:
+it runs `scripts/release-toolchain-check.sh`, which reads the compiler out of every distributed
+executable with `go version <file>` — `talon` in the linux archive and in the released image,
+each helper in the showcase bundle, `support-agent` in the released agent image, a darwin
+archive when present — and refuses to publish on a mismatch or an unreadable file. The
+`Release build (snapshot)` workflow runs the same build without a tag and without publishing
+when `go.mod`, `.goreleaser.yml`, the release Dockerfiles or the build script change
+(`gh workflow run release-build-snapshot.yml --ref <branch>` on demand). Offline test:
+`make test-release-verify`.
+
 **Operations Console acceptance on the released artifacts (#533).** Before publication the
 release workflow also proves the console on what customers get, not on a source build:
 
@@ -106,10 +118,16 @@ release workflow also proves the console on what customers get, not on a source 
   pages, read-only boundary, signature verification, tamper detection, tenant scoping), the
   People Analytics real-process contract (#545: allowed call dispatched, forbidden export
   never reaches the HR backend, backend rejection is not a Talon denial, console = CLI =
-  browser) and the console e2e. Tests and fixtures come from the tag's checkout; Go compiles
-  the test harness only.
+  browser), the console e2e, and the conditional-action acceptance (#205,
+  `scripts/action-evidence-live.sh`: typed argument rules through the HTTP Action Gateway
+  against a counting downstream service — allowed, approval required and decided through
+  the approval API with an approver credential, denied — with the downstream call counts,
+  `talon audit verify` of each lifecycle and the records in Chromium). That step fails
+  unless the test executed, passed and used the released executable; a run that matched no
+  test or skipped is a failed gate. Tests and fixtures come from the tag's checkout; Go
+  compiles the test harness only.
 - `release-verify` runs `scripts/console-compose-smoke.sh` against
-  `ghcr.io/dativo-io/talon:<version>` (pairing from the container log, the six pages' read
+  `ghcr.io/dativo-io/talon:<version>` (pairing from the container log, the pages' read
   endpoints, console/CLI signature parity, no legacy dashboard route, loopback-only
   publication, restart independence).
 

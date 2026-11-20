@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,33 @@ func TestE2E_QuickstartScript_LocalBinary(t *testing.T) {
 	}
 	if strings.Contains(string(out), "FAIL") {
 		t.Errorf("quickstart reported a failure:\n%s", out)
+	}
+	// The next steps are documents of this repository that exist (#563):
+	// the quickstart never points at a guide the release does not ship.
+	links := regexp.MustCompile(`https://github\.com/dativo-io/talon/blob/[^/]+/(\S+)`).FindAllStringSubmatch(string(out), -1)
+	if len(links) != 2 {
+		t.Fatalf("want two next-step links, got %d:\n%s", len(links), out)
+	}
+	for _, l := range links {
+		if _, err := os.Stat(filepath.Join("..", "..", l[1])); err != nil {
+			t.Errorf("next-step link %s does not exist in this tree: %v", l[0], err)
+		}
+	}
+
+	// The advertised command fetches the script from the release tag, the
+	// same reference install-smoke.yml executes after publication; a script
+	// from main is not a version-pinned installation (#563).
+	for _, doc := range []string{script, filepath.Join("..", "..", "docs", "QUICKSTART.md")} {
+		b, err := os.ReadFile(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "https://raw.githubusercontent.com/dativo-io/talon/vX.Y.Z/scripts/quickstart.sh | TALON_VERSION=X.Y.Z bash") {
+			t.Errorf("%s does not advertise the release-tag-pinned quickstart command", doc)
+		}
+		if strings.Contains(string(b), "talon/main/scripts/quickstart.sh") {
+			t.Errorf("%s advertises the quickstart script from main", doc)
+		}
 	}
 
 	// Without a version or image the script refuses instead of assuming latest.

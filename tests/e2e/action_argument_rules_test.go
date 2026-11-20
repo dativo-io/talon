@@ -4,7 +4,9 @@ package e2e
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -250,6 +252,14 @@ policies:
 		calls(a[0])
 	}
 
+	// The read-only Operations Console of this installation (its own
+	// process, paired from its log): where the operator discovers requests.
+	ui := startConsoleUI(t, dir, freePort(t), "--gateway-config", filepath.Join(dir, "talon.config.yaml"))
+	console := newConsoleClient(t, ui.base)
+	if st, body := console.pair(ui.waitCodes(t, 1)[0]); st != 200 {
+		t.Fatalf("pairing the console: %d %s", st, body)
+	}
+
 	// REQUIRE_APPROVAL: zero dispatch until an authorized reviewer decides;
 	// the decision itself dispatches nothing; changed arguments conflict;
 	// a replay does not dispatch again.
@@ -267,14 +277,52 @@ policies:
 			t.Fatalf("claim %s before approval: %d %v", a[0], st, res)
 		}
 		calls(a[0] + " before a decision")
-		if a[0] == "op-refund-75" {
-			// The local reviewer path (#433): the approver reads exactly
-			// what they approve and decides through the CLI.
+		reason := ""
+		switch a[0] {
+		case "op-refund-75":
+			// The operator journey (#565), steps 3-6: the platform operator
+			// finds the request in the read-only console and reads why it
+			// needs approval (no argument value there), then reads the exact
+			// arguments and decides through the CLI with the explicitly
+			// provisioned approver credential.
+			operatorDiscovers(t, console, approvalID, a[1], "support-leads", []string{"75.00", `"T-2"`}, []string{"amount", "currency", "ticket_id"})
+			calls(a[0] + ": console reads")
+			reason = "customer verified"
 			reviewRefundViaCLI(t, dir, c.base, leadKey, approvalID, down.srv.URL)
-		} else if approve(approvalID) != 200 {
-			t.Fatalf("approve %s", a[0])
+		case "op-deploy-prod":
+			// The same journey for an unrelated action: a production
+			// deployment required by a use-case string rule.
+			operatorDiscovers(t, console, approvalID, a[1], "support-leads", []string{`"api"`, `"service":"api"`}, []string{"environment", "service"})
+			calls(a[0] + ": console reads")
+			reason = "release ticket REL-12"
+			reviewViaCLI(t, dir, c.base, leadKey, approvalID, "approve", reason, []string{
+				"CAN BE DECIDED NOW, expires",
+				"Requested by   AI use case support-bot (tenant default)",
+				"deploy_service",
+				`environment      "production"`, `service          "api"`,
+				`rule prod-deploy-needs-approval of the use case policy required approval by support-leads. The rule: use_case argument rule prod-deploy-needs-approval: a call of deploy_service where environment eq "production" (string) requires approval by support-leads`,
+				"Still current  policy unchanged, action definition unchanged",
+				"Decision       none yet",
+				"talon approvals approve " + approvalID + ` --reason "..."`,
+				"dispatches nothing",
+			})
+		default:
+			if approve(approvalID) != 200 {
+				t.Fatalf("approve %s", a[0])
+			}
 		}
 		calls(a[0] + ": the approval itself")
+		if reason != "" {
+			// Step 7: the console reflects the decision; still nothing dispatched.
+			// The console says who decided and that a reason was recorded;
+			// the reason's text stays with approvers (the CLI shows it below).
+			d := consoleApproval(t, console, approvalID)
+			if dig(d, "approval", "status") != "approved" || dig(d, "approval", "decision", "reason_recorded") != true || dig(d, "approval", "decision", "reason") != nil || dig(d, "approval", "operation", "attempt_count") != float64(0) || dig(d, "commands", "approve") != nil && dig(d, "commands", "approve") != "" {
+				t.Fatalf("%s: the console does not reflect the decision: %v", a[0], d)
+			}
+			consoleNeverReturnsTheReason(t, console, approvalID, reason)
+			calls(a[0] + ": console after the decision")
+		}
 		if st, res = establish(a[0], a[1], a[3]); st != 409 || errCode(res) != "operation_conflict" {
 			t.Fatalf("%s: changed arguments must not reuse the approval: %d %v", a[0], st, res)
 		}
@@ -283,10 +331,70 @@ policies:
 		}
 		want++
 		calls(a[0] + " approved")
+		if reason != "" {
+			// Step 8: only the application's authorized claim dispatched,
+			// once; the console shows the outcome.
+			d := consoleApproval(t, console, approvalID)
+			if dig(d, "approval", "operation", "status") != "succeeded" || dig(d, "approval", "operation", "attempt_count") != float64(1) {
+				t.Fatalf("%s: the console does not show the execution outcome: %v", a[0], d)
+			}
+			show, _, _ := RunTalon(t, dir, map[string]string{"TALON_APPROVER_KEY": leadKey}, "approvals", "show", approvalID, "--url="+c.base)
+			for _, w := range []string{"APPROVED", "approved by apr_", `Reason: "` + reason + `"`, "operation succeeded; 1 dispatch attempt(s)", "destination answered HTTP 201"} {
+				if !strings.Contains(show, w) {
+					t.Fatalf("approvals show after the claim misses %q:\n%s", w, show)
+				}
+			}
+			if strings.Contains(show, "talon approvals approve") {
+				t.Fatalf("a decided approval must not offer a decision command:\n%s", show)
+			}
+		}
 		if st, _ = claim(a[0]); st != 409 {
 			t.Fatalf("replay of %s must be refused: %d", a[0], st)
 		}
 		calls(a[0] + " replay")
+	}
+	// History: the decided approvals are listed, and the default listing
+	// is empty again.
+	{
+		out, _, code := RunTalon(t, dir, map[string]string{"TALON_APPROVER_KEY": leadKey}, "approvals", "list", "--decided", "--url="+c.base)
+		if code != 0 || strings.Count(out, "approved") < 3 {
+			t.Fatalf("approvals list --decided: %d\n%s", code, out)
+		}
+		var hist struct {
+			Items []map[string]any `json:"items"`
+		}
+		consoleGet(t, console, "/console/v1/approvals?state=decided", &hist)
+		if len(hist.Items) != 3 {
+			t.Fatalf("console history: %v", hist.Items)
+		}
+		var ov map[string]any
+		consoleGet(t, console, "/console/v1/overview", &ov)
+		if dig(ov, "approvals", "total", "unresolved") != float64(0) {
+			t.Fatalf("no approval is unresolved any more: %v", dig(ov, "approvals"))
+		}
+		calls("history reads")
+	}
+
+	// A rejection through the CLI closes the operation: nothing is ever
+	// dispatched for it, and a later claim is refused.
+	{
+		st, res := establish("op-delete-rejected", "delete_records", `{"table":"customers","count":5,"dry_run":false}`)
+		approvalID, _ := dig(res, "operation", "approval", "id").(string)
+		if st != 202 || approvalID == "" {
+			t.Fatalf("op-delete-rejected: %d %v", st, res)
+		}
+		reviewViaCLI(t, dir, c.base, leadKey, approvalID, "reject", "wrong table", []string{
+			"delete_records", "dry_run          false", "count            5",
+			"rule real-delete-needs-approval of the use case policy required approval by support-leads",
+		})
+		if d := consoleApproval(t, console, approvalID); dig(d, "approval", "status") != "rejected" || dig(d, "approval", "decision", "reason_recorded") != true || dig(d, "approval", "decision", "reason") != nil {
+			t.Fatalf("the console does not reflect the rejection: %v", d)
+		}
+		consoleNeverReturnsTheReason(t, console, approvalID, "wrong table")
+		if st, res = claim("op-delete-rejected"); st == 200 {
+			t.Fatalf("a rejected operation was claimed: %v", res)
+		}
+		calls("rejected through the CLI")
 	}
 
 	// DENY: a condition with effect deny holds.
@@ -374,24 +482,50 @@ func reviewRefundViaCLI(t *testing.T, dir, base, leadKey, approvalID, downstream
 		t.Fatalf("the credential must not leave over plain http: code=%d %s", code, stderr)
 	}
 	out, stderr, code := RunTalon(t, dir, reviewerEnv, "approvals", "list", url)
-	if code != 0 || !strings.Contains(out, approvalID) || !strings.Contains(out, "amount=75.00") || !strings.Contains(out, "op op-refund-75") {
+	if code != 0 || !strings.Contains(out, approvalID) || !strings.Contains(out, "can be decided") || !strings.Contains(out, "create_refund_request") {
 		t.Fatalf("approvals list: code=%d\n%s\n%s", code, out, stderr)
+	}
+	if strings.Contains(out, "75.00") || strings.Contains(out, "T-2") {
+		t.Fatalf("the listing is compact: no argument value\n%s", out)
+	}
+	if js, _, code := RunTalon(t, dir, reviewerEnv, "approvals", "list", "--json", url); code != 0 || !strings.Contains(js, `"approval_id":"`+approvalID+`"`) || !strings.Contains(js, `"class":"actionable"`) {
+		t.Fatalf("approvals list --json: %d\n%s", code, js)
 	}
 	out, stderr, code = RunTalon(t, dir, reviewerEnv, "approvals", "show", approvalID, url)
 	for _, want := range []string{
-		"Action:            create_refund_request",
-		"Requested by:      AI use case support-bot (tenant default)",
-		"Target:            POST " + downstreamURL + "/refunds",
-		"Verdict:           REQUIRE_APPROVAL (rule company:refund-needs-approval, company policy)",
-		"Why:               company argument rule company:refund-needs-approval: a call of create_refund_request where amount gt 50 (decimal) requires approval by support-leads",
+		"CAN BE DECIDED NOW, expires",
+		"an eligible reviewer can approve or reject this now",
+		"Requested by   AI use case support-bot (tenant default)",
+		"create_refund_request",
 		"amount           75.00", `currency         "EUR"`, `ticket_id        "T-2"`,
+		"Destination    POST " + downstreamURL + "/refunds  (bound when the operation was established)",
+		"rule company:refund-needs-approval of the company policy required approval by support-leads. The rule: company argument rule company:refund-needs-approval: a call of create_refund_request where amount gt 50 (decimal) requires approval by support-leads",
+		"Still current  policy unchanged, action definition unchanged",
+		"Decision       none yet",
+		"nothing was dispatched",
+		"talon approvals approve " + approvalID + ` --reason "..."`,
+		"talon approvals reject " + approvalID + ` --reason "..."`,
+		"After approval An approval authorizes this exact operation and dispatches nothing.",
+		"talon approvals show " + approvalID + " --technical",
 	} {
 		if code != 0 || !strings.Contains(out, want) {
 			t.Fatalf("approvals show missing %q: code=%d\n%s\n%s", want, code, out, stderr)
 		}
 	}
-	if strings.Contains(out, "WARNING") {
-		t.Fatalf("a current policy must not warn:\n%s", out)
+	if strings.Contains(out, "Arguments digest") || strings.Contains(out, "Policy digest") {
+		t.Fatalf("digests belong to --technical:\n%s", out)
+	}
+	tech, _, code := RunTalon(t, dir, reviewerEnv, "approvals", "show", approvalID, "--technical", url)
+	for _, want := range []string{"Technical details", "Arguments digest", "Policy digest", "Definition digest", "op-refund-75 (ref op_", "runtime (policy unchanged, action definition unchanged)", "talon audit verify --operation op-refund-75"} {
+		if code != 0 || !strings.Contains(tech, want) {
+			t.Fatalf("approvals show --technical missing %q: code=%d\n%s", want, code, tech)
+		}
+	}
+	if js, _, code := RunTalon(t, dir, reviewerEnv, "approvals", "show", approvalID, "--json", url); code != 0 || !strings.Contains(js, `"name":"amount","value":75.00`) || !strings.Contains(js, `"disclosure":"reviewer"`) {
+		t.Fatalf("approvals show --json: %d\n%s", code, js)
+	}
+	if strings.Contains(out, "CHANGED") || strings.Contains(out, "CANNOT BE DECIDED") {
+		t.Fatalf("an unchanged configuration must not be reported as changed:\n%s", out)
 	}
 	if _, stderr, code := RunTalon(t, dir, reviewerEnv, "approvals", "approve", approvalID, url); code == 0 || !strings.Contains(stderr, "--reason is required") {
 		t.Fatalf("a decision needs a reason: code=%d %s", code, stderr)
@@ -400,7 +534,32 @@ func reviewRefundViaCLI(t *testing.T, dir, base, leadKey, approvalID, downstream
 	if code != 0 || !strings.Contains(out, "approved by apr_") || !strings.Contains(out, "is now authorized; nothing was dispatched") {
 		t.Fatalf("approvals approve: code=%d\n%s\n%s", code, out, stderr)
 	}
-	if out, _, _ = RunTalon(t, dir, reviewerEnv, "approvals", "list", url); !strings.Contains(out, "No pending approvals") {
+	if out, _, _ = RunTalon(t, dir, reviewerEnv, "approvals", "list", url); strings.Contains(out, approvalID) {
+		t.Fatalf("a decided approval leaves the list:\n%s", out)
+	}
+}
+
+// reviewViaCLI is the reviewer path for any action: list, show (every
+// expected line present), then the decision with a reason.
+func reviewViaCLI(t *testing.T, dir, base, leadKey, approvalID, decision, reason string, show []string) {
+	t.Helper()
+	env := map[string]string{"TALON_APPROVER_KEY": leadKey}
+	url := "--url=" + base
+	out, stderr, code := RunTalon(t, dir, env, "approvals", "list", url)
+	if code != 0 || !strings.Contains(out, approvalID) || !strings.Contains(out, "can be decided") {
+		t.Fatalf("approvals list: code=%d\n%s\n%s", code, out, stderr)
+	}
+	out, stderr, code = RunTalon(t, dir, env, "approvals", "show", approvalID, url)
+	for _, want := range show {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Fatalf("approvals show missing %q: code=%d\n%s\n%s", want, code, out, stderr)
+		}
+	}
+	out, stderr, code = RunTalon(t, dir, env, "approvals", decision, approvalID, "--reason", reason, url)
+	if code != 0 || !strings.Contains(out, "nothing was dispatched by this decision") {
+		t.Fatalf("approvals %s: code=%d\n%s\n%s", decision, code, out, stderr)
+	}
+	if out, _, _ = RunTalon(t, dir, env, "approvals", "list", url); strings.Contains(out, approvalID) {
 		t.Fatalf("a decided approval leaves the list:\n%s", out)
 	}
 }
@@ -439,4 +598,113 @@ func runActionEvidenceBrowser(t *testing.T, dir string) {
 		},
 		"approved_operation": "op-refund-75",
 	})
+}
+
+// consoleApproval reads one approval through the paired console.
+func consoleApproval(t *testing.T, cc *consoleClient, approvalID string) map[string]any {
+	t.Helper()
+	var d map[string]any
+	consoleGet(t, cc, "/console/v1/approvals/"+approvalID, &d)
+	return d
+}
+
+// consoleNeverReturnsTheReason reads the approval and every signed
+// lifecycle record it links to through the console's API, as a paired
+// browser does, and fails when a response carries the reviewer's free-text
+// reason. The decision record must name the withheld field instead.
+func consoleNeverReturnsTheReason(t *testing.T, cc *consoleClient, approvalID, reason string) {
+	t.Helper()
+	status, body, _ := cc.do(http.MethodGet, "/console/v1/approvals/"+approvalID, "", nil)
+	if status != http.StatusOK || strings.Contains(body, reason) {
+		t.Fatalf("the console's approval detail returns the reviewer's reason (HTTP %d): %s", status, body)
+	}
+	var d map[string]any
+	mustJSON(t, body, &d)
+	records, _ := dig(d, "lifecycle", "records").([]any)
+	if len(records) == 0 {
+		t.Fatalf("no lifecycle record is linked from the approval: %s", body)
+	}
+	withheld := 0
+	for _, r := range records {
+		id, _ := r.(map[string]any)["id"].(string)
+		status, body, _ = cc.do(http.MethodGet, "/console/v1/evidence/"+id, "", nil)
+		if status != http.StatusOK || strings.Contains(body, reason) {
+			t.Fatalf("the console's evidence view of %s returns the reviewer's reason (HTTP %d): %s", id, status, body)
+		}
+		var ed map[string]any
+		mustJSON(t, body, &ed)
+		if dig(ed, "detail", "verification", "state") != "valid" {
+			t.Fatalf("%s must verify: %s", id, body)
+		}
+		if w, _ := dig(ed, "detail", "withheld").([]any); len(w) > 0 {
+			withheld++
+			first, _ := w[0].(map[string]any)
+			if first["field"] != "action_lifecycle.decision_reason" || first["read_with"] != "talon approvals show "+approvalID {
+				t.Fatalf("%s: the withheld field is not named with where to read it: %s", id, body)
+			}
+		}
+	}
+	if withheld != 1 {
+		t.Fatalf("exactly the decision record names a withheld field; got %d of %d records", withheld, len(records))
+	}
+}
+
+// operatorDiscovers is the console half of the operator journey: the
+// request is counted and listed, its detail says who asks for what and why
+// approval is required, names the arguments and carries NO argument value
+// anywhere, and points at the CLI for the values and the decision.
+func operatorDiscovers(t *testing.T, cc *consoleClient, approvalID, actionName, group string, values, names []string) {
+	t.Helper()
+	var ov map[string]any
+	consoleGet(t, cc, "/console/v1/overview", &ov)
+	if n, _ := dig(ov, "approvals", "total", "unresolved").(float64); n < 1 {
+		t.Fatalf("the overview does not count the unresolved approval: %v", dig(ov, "approvals"))
+	}
+	status, list, _ := cc.do(http.MethodGet, "/console/v1/approvals", "", nil)
+	if status != 200 || !strings.Contains(list, `"approval_id":"`+approvalID+`"`) {
+		t.Fatalf("the console listing does not show %s: %d %s", approvalID, status, list)
+	}
+	status, raw, _ := cc.do(http.MethodGet, "/console/v1/approvals/"+approvalID, "", nil)
+	if status != 200 {
+		t.Fatalf("console approval detail: %d %s", status, raw)
+	}
+	for _, v := range values {
+		if strings.Contains(raw, v) || strings.Contains(list, v) {
+			t.Fatalf("the console exposes the argument value %s:\n%s", v, raw)
+		}
+	}
+	if strings.Contains(raw, `"value"`) || strings.Contains(raw, "arguments_digest") {
+		t.Fatalf("the console detail carries a value or a digest of values:\n%s", raw)
+	}
+	var d map[string]any
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	args, _ := dig(d, "approval", "arguments").([]any)
+	for _, a := range args {
+		m, _ := a.(map[string]any)
+		n, _ := m["name"].(string)
+		got = append(got, n)
+	}
+	if strings.Join(got, ",") != strings.Join(names, ",") {
+		t.Fatalf("argument names: %v, want %v", got, names)
+	}
+	rule, _ := dig(d, "approval", "current", "rule").(string)
+	class := dig(d, "approval", "eligibility", "class")
+	switch {
+	case dig(d, "approval", "action") != actionName, dig(d, "approval", "use_case") != agAgent, dig(d, "approval", "disclosure") != "operational",
+		dig(d, "approval", "status") != "pending", dig(d, "approval", "eligibility", "state") != "eligible",
+		class != "actionable" && class != "potentially_actionable",
+		!strings.Contains(rule, "requires approval by "+group),
+		dig(d, "commands", "show") != "talon approvals show "+approvalID,
+		dig(d, "commands", "approve") != "talon approvals approve "+approvalID+` --reason "..."`:
+		t.Fatalf("console approval detail: %v", d)
+	}
+	// The console is read-only: it has no decision route.
+	for _, path := range []string{"/console/v1/approvals/" + approvalID + "/decisions", "/v1/approvals/" + approvalID + "/decisions"} {
+		if st, body, _ := cc.do(http.MethodPost, path, `{"decision":"approve","reason":"from the browser"}`, map[string]string{"Content-Type": "application/json"}); st < 400 {
+			t.Fatalf("POST %s on the console: %d %s", path, st, body)
+		}
+	}
 }

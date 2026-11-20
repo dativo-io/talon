@@ -17,6 +17,11 @@ on:
       - 'scripts/n8n-refund-live.sh'
       - 'internal/action/**'
       - 'internal/server/handlers_actions.go'
+      # the commands the reference is set up and operated with
+      - 'internal/cmd/agents_add.go'
+      - 'internal/cmd/agents_registration.go'
+      - 'internal/cmd/agents_view.go'
+      - 'internal/cmd/approvals.go'
       - '.github/workflows/n8n-refund-live.yml'
   push:
     branches: [main]
@@ -24,6 +29,11 @@ on:
       - 'examples/n8n-refund/**'
       - 'scripts/n8n-refund-live.sh'
       - 'internal/action/**'
+      - 'internal/server/handlers_actions.go'
+      - 'internal/cmd/agents_add.go'
+      - 'internal/cmd/agents_registration.go'
+      - 'internal/cmd/agents_view.go'
+      - 'internal/cmd/approvals.go'
       - '.github/workflows/n8n-refund-live.yml'
   workflow_dispatch:
 

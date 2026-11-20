@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -37,6 +38,7 @@ type acmeHTTPHarness struct {
 	support  atomic.Pointer[action.Service]
 	billing  atomic.Pointer[action.Service]
 	reviewer acme.Reviewers
+	reader   *countingApprovalReader
 }
 
 func (h *acmeHTTPHarness) policyFor(uc acme.UseCase) *action.ApprovalPolicy {
@@ -70,6 +72,7 @@ func newACMEHTTPHarness(t *testing.T) *acmeHTTPHarness {
 	h.store = store
 	h.repo, err = action.NewRepository(context.Background(), store.DB())
 	require.NoError(t, err)
+	h.reader = &countingApprovalReader{Reader: h.repo.Reader()}
 	approvers, err := approver.NewStore(filepath.Join(dir, "approvers.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = approvers.Close() })
@@ -110,7 +113,12 @@ func newACMEHTTPHarness(t *testing.T) *acmeHTTPHarness {
 			acme.BillingKey: {AgentID: acme.BillingAgent, TenantID: acme.Tenant},
 		})),
 		WithActionGateway(resolver, owners, approvers),
-		WithApprovalLister(h.repo.PendingApprovals),
+		WithApprovalReader(h.reader, func(tenant, agent string) action.CurrentConfig {
+			if svc := byAgent(agent); svc != nil && tenant == acme.Tenant {
+				return svc.CurrentConfig()
+			}
+			return action.CurrentConfig{Basis: action.CurrentRuntime, NotServed: true}
+		}),
 	)
 	h.handler = srv.Routes()
 	return h
@@ -162,14 +170,23 @@ func (h *acmeHTTPHarness) counts() (ops, approvals, attempts, lifecycle int) {
 	return
 }
 
-func acmeDig(m map[string]any, path ...string) any {
+func acmeDig(m map[string]any, path ...any) any {
 	var cur any = m
 	for _, p := range path {
-		mm, ok := cur.(map[string]any)
-		if !ok {
-			return nil
+		switch k := p.(type) {
+		case string:
+			mm, ok := cur.(map[string]any)
+			if !ok {
+				return nil
+			}
+			cur = mm[k]
+		case int:
+			arr, ok := cur.([]any)
+			if !ok || k >= len(arr) {
+				return nil
+			}
+			cur = arr[k]
 		}
-		cur = mm[p]
 	}
 	return cur
 }
@@ -359,4 +376,37 @@ func TestACME_A2_H07_StaleAuthorization_OverHTTP(t *testing.T) {
 	require.Equal(t, http.StatusConflict, st)
 	require.Equal(t, action.CodeApprovalBindingStale, acmeErrCode(res))
 	require.Equal(t, int64(0), h.down.Calls.Load(), "stale authorization dispatched")
+}
+
+// countingApprovalReader is the production reader with two test controls:
+// how often a full record (the one carrying review values) was read, and
+// an injected storage failure.
+type countingApprovalReader struct {
+	*action.Reader
+	recordReads atomic.Int64
+	fail        atomic.Bool
+}
+
+var errInjectedStore = errors.New("injected storage failure")
+
+func (r *countingApprovalReader) ApprovalScope(ctx context.Context, id string) (tenant string, groups []string, found bool, err error) {
+	if r.fail.Load() {
+		return "", nil, false, errInjectedStore
+	}
+	return r.Reader.ApprovalScope(ctx, id)
+}
+
+func (r *countingApprovalReader) ApprovalRecord(ctx context.Context, id string) (*action.ApprovalRecord, error) {
+	r.recordReads.Add(1)
+	if r.fail.Load() {
+		return nil, errInjectedStore
+	}
+	return r.Reader.ApprovalRecord(ctx, id)
+}
+
+func (r *countingApprovalReader) ListApprovals(ctx context.Context, q action.ApprovalListQuery) (*action.ApprovalPage, error) {
+	if r.fail.Load() {
+		return nil, errInjectedStore
+	}
+	return r.Reader.ListApprovals(ctx, q)
 }

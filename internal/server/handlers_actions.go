@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
@@ -70,14 +72,22 @@ type ApproverResolver interface {
 	IsActive(ctx context.Context, principalID, credentialID string) (bool, error)
 }
 
-// PendingApprovalLister lists the pending approvals of one tenant that one
-// of the given groups may decide (oldest first, bounded), and whether more
-// eligible ones exist beyond the bound.
-type PendingApprovalLister func(ctx context.Context, tenantScope string, groups []string, limit int) ([]action.PendingApproval, bool, error)
+// ApprovalReader is the read side of the reviewer API: SELECTs only
+// (action.Reader). An approval is authorized from ApprovalScope BEFORE its
+// record, which carries the review values, is read.
+type ApprovalReader interface {
+	ApprovalScope(ctx context.Context, approvalID string) (tenant string, groups []string, found bool, err error)
+	ApprovalRecord(ctx context.Context, approvalID string) (*action.ApprovalRecord, error)
+	ListApprovals(ctx context.Context, q action.ApprovalListQuery) (*action.ApprovalPage, error)
+}
 
-// WithApprovalLister enables GET /v1/reviews.
-func WithApprovalLister(l PendingApprovalLister) Option {
-	return func(s *Server) { s.pendingApprovals = l }
+// CurrentActionConfig returns the catalog and policy THIS process decides
+// with for one use case (action.CurrentRuntime), or NotServed.
+type CurrentActionConfig func(tenant, useCase string) action.CurrentConfig
+
+// WithApprovalReader enables GET /v1/reviews and GET /v1/reviews/{id}.
+func WithApprovalReader(r ApprovalReader, current CurrentActionConfig) Option {
+	return func(s *Server) { s.approvalReader, s.currentActionConfig = r, current }
 }
 
 // WithActionGateway mounts the Action Gateway routes.
@@ -378,12 +388,16 @@ func sharesGroup(principalGroups, approvalGroups []string) bool {
 	return false
 }
 
-// handleReviewGet returns what a reviewer reads before deciding one
-// approval (#433). An approval outside the reviewer's tenant, or one none
-// of the reviewer's groups may decide, is "not found": approval ids stay
-// opaque and review fields are shown only to someone who could decide.
+// handleReviewGet returns what a reviewer reads about one approval (#433):
+// pending, decided or closed, including one whose use case or action
+// definition no longer exists. Authorization comes first: the approval's
+// tenant and approver groups are read on their own, and the record (which
+// carries the exact review values) is read and projected only for a
+// reviewer of that tenant who holds one of those groups. Anything else is
+// "not found": approval ids stay opaque. A storage failure is 503, never
+// "not found".
 func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
-	if s.approvers == nil || s.approvalOwners == nil {
+	if s.approvers == nil || s.approvalReader == nil || s.currentActionConfig == nil {
 		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approvals are not configured", nil)
 		return
 	}
@@ -392,27 +406,45 @@ func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	approvalID := chi.URLParam(r, "approval_id")
-	svc, ok := s.approvalOwners(r.Context(), principal.TenantScope, approvalID)
-	if !ok {
-		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approval not found", nil)
-		return
-	}
-	view, err := svc.Review(r.Context(), approvalID)
+	tenant, groups, found, err := s.approvalReader.ApprovalScope(r.Context(), approvalID)
 	if err != nil {
-		writeDomainError(w, err)
+		writeActionError(w, http.StatusServiceUnavailable, action.CodeStoreUnavailable, "reading the approval", nil)
 		return
 	}
-	if view.Operation == nil || view.Operation.Approval == nil || !sharesGroup(principal.Groups, view.Operation.Approval.Groups) {
+	if !found || tenant != principal.TenantScope || !sharesGroup(principal.Groups, groups) {
 		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approval not found", nil)
 		return
 	}
-	writeActionJSON(w, http.StatusOK, view)
+	rec, err := s.approvalReader.ApprovalRecord(r.Context(), approvalID)
+	if err != nil {
+		writeActionError(w, http.StatusServiceUnavailable, action.CodeStoreUnavailable, "reading the approval", nil)
+		return
+	}
+	// Re-checked on the record that is projected: scope and record are two
+	// reads, and only the record's own facts authorize its disclosure.
+	if rec == nil || rec.Operation.TenantID != principal.TenantScope || !sharesGroup(principal.Groups, rec.Approval.Groups) {
+		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approval not found", nil)
+		return
+	}
+	cfg := s.currentActionConfig(rec.Operation.TenantID, rec.Operation.AgentID)
+	writeActionJSON(w, http.StatusOK, action.BuildApprovalView(rec, cfg, action.DiscloseReviewer, time.Now().UTC()))
 }
 
-// handleReviewList lists the pending approvals the reviewer may decide:
-// the reviewer's tenant, at least one shared approver group, oldest first.
+// handleReviewList lists approvals of the reviewer's tenant that name one
+// of the reviewer's groups, as compact rows without argument names or
+// values (GET /v1/reviews/{id} shows one approval in full).
+//
+//	?state=attention   (default) unresolved and decidable now, oldest first
+//	?state=unresolved  every approval still pending in the store, with why
+//	                   it can or cannot be decided
+//	?state=decided     approved, rejected, expired and invalidated, newest
+//	                   first
+//	?limit=1..100&after=<next>
+//
+// The answer is complete across pages: "next" is empty exactly when the
+// selection is exhausted. A storage failure is 503, never an empty list.
 func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
-	if s.approvers == nil || s.approvalOwners == nil || s.pendingApprovals == nil {
+	if s.approvers == nil || s.approvalReader == nil || s.currentActionConfig == nil {
 		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approvals are not configured", nil)
 		return
 	}
@@ -420,28 +452,34 @@ func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	pending, more, err := s.pendingApprovals(r.Context(), principal.TenantScope, principal.Groups, action.MaxPendingList)
-	if err != nil {
-		writeActionError(w, http.StatusServiceUnavailable, action.CodeStoreUnavailable, "reading pending approvals", nil)
+	q := action.ApprovalListQuery{
+		Tenant: principal.TenantScope, Groups: append([]string{}, principal.Groups...),
+		Selection: r.URL.Query().Get("state"), After: r.URL.Query().Get("after"),
+		Config: s.currentActionConfig,
+	}
+	if q.Selection == "" {
+		q.Selection = action.SelectAttention
+	}
+	if !action.ValidSelection(q.Selection) {
+		writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, "state must be attention (default), unresolved or decided", nil)
 		return
 	}
-	reviews := make([]*action.ReviewerView, 0, len(pending))
-	for i := range pending {
-		p := &pending[i]
-		if !sharesGroup(principal.Groups, p.Groups) {
-			continue
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > action.MaxApprovalList {
+			writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, fmt.Sprintf("limit must be 1..%d", action.MaxApprovalList), nil)
+			return
 		}
-		svc, ok := s.approvalOwners(r.Context(), principal.TenantScope, p.ID)
-		if !ok {
-			continue // the owning use case no longer declares a catalog
-		}
-		view, err := svc.Review(r.Context(), p.ID)
-		if err != nil {
-			continue
-		}
-		reviews = append(reviews, view)
+		q.Limit = n
 	}
-	// more is the completeness contract: false means every pending approval
-	// this reviewer may decide is in the answer.
-	writeActionJSON(w, http.StatusOK, map[string]any{"tenant": principal.TenantScope, "reviews": reviews, "more": more})
+	page, err := s.approvalReader.ListApprovals(r.Context(), q)
+	switch {
+	case errors.Is(err, action.ErrInvalidListQuery):
+		writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, "the after cursor is not one this listing returned", nil)
+		return
+	case err != nil:
+		writeActionError(w, http.StatusServiceUnavailable, action.CodeStoreUnavailable, "reading approvals", nil)
+		return
+	}
+	writeActionJSON(w, http.StatusOK, map[string]any{"tenant": principal.TenantScope, "state": q.Selection, "approvals": page.Items, "next": page.Next})
 }

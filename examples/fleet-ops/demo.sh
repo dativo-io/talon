@@ -68,7 +68,7 @@ policies:
 YAML
 run "(cd '$WORK' && '$TALON' validate --dir agents)"
 
-say "The attention queue: STATE / HEALTH / COST / WHY (offline config view — no gateway running)"
+say "The fleet at a glance: STATE / RUNTIME / LAST REQUEST / COST / ATTENTION (local view — no gateway running)"
 run "(cd '$WORK' && '$TALON' agents)"
 
 say "Stop one agent — host-local, config-backed, signed evidence"
@@ -83,4 +83,4 @@ run "(cd '$WORK' && '$TALON' agents show customer-support)"
 say "Done"
 note_done() { printf '   %s\n' "$*"; }
 note_done "A running 'talon serve' applies the disable within its reload interval (default 30s), no restart."
-note_done "Against a live server, 'talon agents' shows RUNTIME state; with none, it labels itself OFFLINE."
+note_done "'talon agents' shows this machine's installation: its files, its evidence and the processes' own records (RUNTIME). It asks no server."

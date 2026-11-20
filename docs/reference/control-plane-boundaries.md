@@ -138,7 +138,7 @@ State axes stay separate:
 - An approval authorizes the exact immutable subject digest, never an action name or a later payload. A reviewer approves or rejects and performs zero dispatch; the operation becomes `authorized` and waits for a runtime claim.
 - Before any effect: revalidate the current trusted definition and policy, claim exactly one attempt (concurrent claims yield one winner, `attempt_already_in_progress` for the rest), write a durable arm marker, dispatch once, complete.
 - `succeeded` and `unknown` are terminal; `failed` before the request left Talon may be claimed again under the same approval. `unknown` blocks automatic retry until an authorized reconciliation, which does not exist yet ([#146](https://github.com/dativo-io/talon/issues/146)).
-- Crash recovery: an armed attempt is recovered as `unknown`, an unarmed one as `failed`. Talon claims at most one effect per operation, not universal exactly-once execution.
+- Crash recovery: an armed attempt is recovered as `unknown`, an unarmed one as `failed`. Talon claims at most one dispatch per operation within its durable state, not an exactly-once effect in the destination system.
 
 ## 5. Approval kernel and reviewer boundary
 

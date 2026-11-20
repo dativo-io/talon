@@ -281,6 +281,42 @@ func assessOne(rec *Record, age time.Duration) (state, reason string) {
 	return Offline, fmt.Sprintf("no heartbeat for %s: the process is not running or cannot write its status", round(age))
 }
 
+// Retention is how long a record that is no longer written is kept. A
+// reader cannot say which processes were running at a moment further back
+// than this: their records may be gone.
+const Retention = pruneAge
+
+// CanHaveServedAt reports whether, as far as its own record says, the
+// process can have been serving at t. It had started by then, and:
+//   - a recorded stop ends it;
+//   - a process that still reports (running, or stale: late but not yet
+//     taken for gone) has no end;
+//   - a process that stopped reporting without recording a stop (killed, or
+//     unable to write its status) is taken to have been gone once it had
+//     been silent for as long as the assessment waits before calling a
+//     process offline. Before that it may have served without reporting.
+func (p *Process) CanHaveServedAt(t time.Time) bool {
+	if p.StartedAt.After(t) {
+		return false
+	}
+	if p.StoppedAt != nil {
+		return !p.StoppedAt.Before(t)
+	}
+	if p.Assessed == Running || p.Assessed == Stale {
+		return true
+	}
+	beat := time.Duration(p.IntervalSeconds) * time.Second
+	if beat <= 0 {
+		beat = DefaultInterval
+	}
+	return !p.WrittenAt.Add(offlineBeats * beat).Before(t)
+}
+
+// Serves reports whether the process has the role ("" = any role).
+func (p *Process) Serves(role string) bool {
+	return role == "" || hasRole(p.Roles, role)
+}
+
 // stateRank orders assessed states by how much they say about a role now.
 func stateRank(state string) int {
 	switch state {

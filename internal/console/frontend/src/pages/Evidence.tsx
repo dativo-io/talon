@@ -21,6 +21,8 @@ export function EvidencePage() {
   const res = useApi<EvidenceDetail>(api(`/evidence/${encodeURIComponent(id)}`), { tenant });
   const det = res.data?.detail;
   const r = det?.record;
+  const withheld = det?.withheld ?? [];
+  const reasonWithheld = withheld.find((w) => w.field === "action_lifecycle.decision_reason");
   const crumbs = [scopeCrumb(tenant)];
   if (r) {
     crumbs.push({ label: r.agent_id, to: scoped(`/use-cases/${encodeURIComponent(r.agent_id)}`, r.tenant_id) });
@@ -119,8 +121,16 @@ export function EvidencePage() {
                   )}
                 </dd>
                 <dt>Operation status</dt><dd>{humanize(r.action_lifecycle.operation_status)}</dd>
-                {r.action_lifecycle.approval_status ? (<><dt>Approval</dt><dd>{humanize(r.action_lifecycle.approval_status)}{r.action_lifecycle.approver_groups?.length ? ` · groups ${r.action_lifecycle.approver_groups.join(", ")}` : ""}</dd></>) : null}
+                {r.action_lifecycle.approval_status ? (<><dt>Approval</dt><dd>{humanize(r.action_lifecycle.approval_status)}{r.action_lifecycle.approver_groups?.length ? ` · groups ${r.action_lifecycle.approver_groups.join(", ")}` : ""}{r.action_lifecycle.approval_id && !tampered ? <> · <Link to={scoped(`/approvals/${encodeURIComponent(r.action_lifecycle.approval_id)}`, r.tenant_id)}>open the approval</Link></> : null}</dd></>) : null}
                 {r.action_lifecycle.reviewer_principal ? (<><dt>Reviewer</dt><dd>{r.action_lifecycle.reviewer_principal}{r.action_lifecycle.reviewer_group ? ` (${r.action_lifecycle.reviewer_group})` : ""}</dd></>) : null}
+                {reasonWithheld ? (
+                  <>
+                    <dt>Decision reason</dt>
+                    <dd data-testid="evidence-reason-withheld">
+                      Recorded, not shown in the console.{reasonWithheld.read_with ? <> An approver of the required group reads it with <code>{reasonWithheld.read_with}</code>.</> : null}
+                    </dd>
+                  </>
+                ) : null}
                 <dt>Approval policy digest</dt><dd><CopyableIdentifier value={r.action_lifecycle.policy_digest} label="approval policy digest" /></dd>
               </dl>
               <p className="small muted">
@@ -154,8 +164,21 @@ export function EvidencePage() {
             )}
           </DetailSection>
 
-          <DetailSection title="Stored record" id="ev-raw" actions={<CopyRaw value={JSON.stringify(r, null, 2)} />}>
-            <p className="small muted">The signed record as stored, with the redaction it was written with. Prompts and responses are not part of it.</p>
+          <DetailSection title={withheld.length > 0 ? "Stored record (one field withheld)" : "Stored record"} id="ev-raw" actions={<CopyRaw value={JSON.stringify(r, null, 2)} />}>
+            {withheld.length > 0 ? (
+              <div className="notice info" role="status" data-testid="evidence-withheld">
+                <div>
+                  <strong>This is not the complete signed record.</strong> The signature above was verified by Talon over the complete stored record. The console does not return:
+                  <ul className="small">
+                    {withheld.map((w) => (
+                      <li key={w.field}><code>{w.field}</code> — {w.why}.{w.read_with ? <> Read it with <code>{w.read_with}</code>.</> : null}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ) : (
+              <p className="small muted">The signed record as stored, with the redaction it was written with. Prompts and responses are not part of it.</p>
+            )}
             <pre className="json">{JSON.stringify(r, null, 2)}</pre>
           </DetailSection>
         </div>

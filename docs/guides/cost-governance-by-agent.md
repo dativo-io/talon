@@ -77,10 +77,16 @@ For a demo, temporarily lower the agent's `cost_limits.daily` (for example `0.01
 ## 2. Start Talon gateway
 
 ```bash
-talon serve --gateway --gateway-config=path/to/talon.config.yaml
+talon serve --host 127.0.0.1 --gateway --gateway-config=path/to/talon.config.yaml
 ```
 
-Ensure provider keys are in vault (for example `talon secrets set openai-api-key "sk-..."`).
+Start it with `TALON_ADMIN_KEY` set, as in [connect an existing application](add-talon-to-existing-app.md#1-prepare-talon-once): without the admin key the administrative endpoints accept every request, and without `--host` the server listens on every network interface.
+
+Ensure provider keys are in the vault. Give the value on stdin so it never appears in the process list or the shell history:
+
+```bash
+printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
+```
 
 ---
 

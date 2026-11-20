@@ -1,7 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { CostReport, Costs as CostsDTO, EvidenceIndex, UseCaseDetail as DetailDTO } from "../api/types";
+import type { CostReport, Costs as CostsDTO, EffectivePolicyDTO, EvidenceIndex, UseCaseDetail as DetailDTO } from "../api/types";
 import { PageHead } from "../components/Layout";
 import {
   AvailabilityNotice,
@@ -25,6 +25,7 @@ import { breakdownRows, budgetUsage, fieldValue, warningsFor, type Breakdown } f
 import { goDuration, humanize, integer, money, relative, utc, utcShort } from "../lib/format";
 import { outcomeStory } from "../lib/outcome";
 import { scoped, useScope } from "../lib/scope";
+import { ApprovalsCard } from "../components/Approvals";
 
 // The AI use case page answers four questions, one section each (#533 PR 2):
 // Summary (is it operating as expected?), Sessions & Activity (what happened
@@ -137,6 +138,7 @@ function SummarySection({ d, tenant }: { d: DetailDTO; tenant: string }) {
                   <MonthlyCapShare report={report} />
                 </> : <span className="muted">unavailable</span>}
               </dd>
+              <ConnectionReading name={row.name} tenant={row.tenant_id} />
             </dl>
             <p className="small muted">Readiness is installation-wide: the runtimes serve every use case. Per-boundary proof that this use case's policy is active is under Policy &amp; Runtime.</p>
           </div>
@@ -180,6 +182,7 @@ function ActivityAndSessions({ d, tenant, range, onRange }: { d: DetailDTO; tena
         </div>
       ) : null}
       <ActivitySection tenant={tenant} agent={row.name} range={range} onRange={onRange} />
+      <ApprovalsCard a={d.approvals} tenant={tenant} />
       <RecentDecisions d={d} />
       <section className="card" aria-labelledby="uc-sessions">
         <div className="card-head">
@@ -428,4 +431,34 @@ function MonthlyCapShare({ report }: { report: CostReport }) {
   if (b === undefined) return null;
   if (b === null) return <span className="small muted"> · share of the monthly cap not computed (spend not comparable with the cap)</span>;
   return <span className="small muted"> · {Math.round(b.percent)}% of the monthly cap</span>;
+}
+
+
+// ConnectionReading is one row of the Summary's facts: the one-line reading
+// of effective.Verification (has a running process loaded this use case,
+// has an authenticated request been observed, and under which policy). The
+// text is computed in Go; the detail is in Policy & Runtime.
+function ConnectionReading({ name, tenant }: { name: string; tenant: string }) {
+  const res = useApi<EffectivePolicyDTO>(api(`/use-cases/${encodeURIComponent(name)}/effective-policy`), { tenant });
+  const v = res.data?.report?.verification;
+  return (
+    <>
+      <dt>Connection and verification</dt>
+      <dd data-testid="connection-reading">
+        {res.error ? <span className="muted">unavailable: {res.error.message}</span> : null}
+        {!res.data && res.loading ? <span className="muted">loading…</span> : null}
+        {res.data && !v ? <span className="muted">not available</span> : null}
+        {v ? <span className="small" data-code={v.reading.code}>{v.reading.text} <a href="#uc-effective">Details</a></span> : null}
+      </dd>
+      {v?.next ? (
+        <>
+          <dt>Next step</dt>
+          <dd className="small" data-testid="connection-next" data-code={v.next.code}>
+            {v.next.text}
+            {v.next.commands?.map((c) => <div key={c}><code>{c}</code></div>)}
+          </dd>
+        </>
+      ) : null}
+    </>
+  );
 }

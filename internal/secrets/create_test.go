@@ -88,3 +88,67 @@ func TestDeleteOwned_RemovesOnlyTheCreatorsVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, removed)
 }
+
+// An ownership token can be issued BEFORE the secret exists, written down,
+// and used later (by another process) to prove that a stored version is the
+// one that was created under it (#567 review: recovery of an unfinished
+// registration removes only what its signed intent proves it created). The
+// token is the version's nonce: it is not secret and says nothing about the
+// value.
+func TestOwnership_IssuedBeforeCreationAndProvableLater(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secrets.db")
+	s, err := NewSecretStore(path, "0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+
+	own, err := s.NewOwnership("refund-bot-talon-key")
+	require.NoError(t, err)
+	token := own.Token()
+	require.NotEmpty(t, token)
+	require.Equal(t, "refund-bot-talon-key", own.Name())
+	owned, err := s.Owns(ctx, own)
+	require.NoError(t, err)
+	require.False(t, owned, "nothing is stored yet")
+
+	const value = "talon_uc_0123456789abcdef0123456789abcdef0123456789abcdef"
+	require.NoError(t, s.CreateOwned(ctx, own, []byte(value), ACL{}))
+	require.NotContains(t, token, value)
+	require.ErrorIs(t, s.CreateOwned(ctx, own, []byte("other"), ACL{}), ErrSecretExists, "never overwrites")
+	require.NoError(t, s.Close())
+
+	// Another process rebuilds the token from what was written down.
+	s, err = NewSecretStore(path, "0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	defer s.Close()
+	again, err := s.OwnershipFromToken("refund-bot-talon-key", token)
+	require.NoError(t, err)
+	owned, err = s.Owns(ctx, again)
+	require.NoError(t, err)
+	require.True(t, owned)
+	got, err := s.Get(ctx, "refund-bot-talon-key", "any", "any")
+	require.NoError(t, err)
+	require.Equal(t, value, string(got.Value), "the version stored under the token decrypts")
+
+	// A token of another version, a malformed token and another name prove nothing.
+	other, err := s.NewOwnership("refund-bot-talon-key")
+	require.NoError(t, err)
+	owned, err = s.Owns(ctx, other)
+	require.NoError(t, err)
+	require.False(t, owned)
+	for _, bad := range []string{"", "not-base64!", "c2hvcnQ="} {
+		_, err = s.OwnershipFromToken("refund-bot-talon-key", bad)
+		require.Error(t, err, bad)
+	}
+	_, err = s.OwnershipFromToken("", token)
+	require.Error(t, err)
+
+	// Once someone replaces the value, the old token owns nothing, and
+	// DeleteOwned leaves the replacement alone.
+	require.NoError(t, s.Set(ctx, "refund-bot-talon-key", []byte("replaced"), ACL{}))
+	owned, err = s.Owns(ctx, again)
+	require.NoError(t, err)
+	require.False(t, owned)
+	removed, err := s.DeleteOwned(ctx, again)
+	require.NoError(t, err)
+	require.False(t, removed)
+}

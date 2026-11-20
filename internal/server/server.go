@@ -30,26 +30,27 @@ const defaultTimeout = 60 * time.Second
 
 // Server holds all dependencies for the HTTP API and MCP endpoints.
 type Server struct {
-	router           *chi.Mux
-	runner           *agent.Runner
-	evidenceStore    *evidence.Store
-	mcpServer        http.Handler // native MCP at POST /mcp
-	mcpProxy         http.Handler // optional MCP proxy at POST /mcp/proxy
-	gateway          http.Handler // optional LLM API gateway at /v1/proxy/*
-	actionServices   ActionServiceResolver
-	approvalOwners   ApprovalOwnerResolver
-	pendingApprovals PendingApprovalLister
-	approvers        ApproverResolver
-	tenantManager    *tenant.Manager
-	webhookHandler   *trigger.WebhookHandler
-	planReviewStore  *agent.PlanReviewStore
-	memoryStore      *memory.Store
-	sessionStore     *session.Store
-	policyEngine     *policy.Engine
-	secretsStore     *secrets.SecretStore
-	policy           *policy.Policy
-	metricsCollector *metrics.Collector
-	adminKey         string
+	router              *chi.Mux
+	runner              *agent.Runner
+	evidenceStore       *evidence.Store
+	mcpServer           http.Handler // native MCP at POST /mcp
+	mcpProxy            http.Handler // optional MCP proxy at POST /mcp/proxy
+	gateway             http.Handler // optional LLM API gateway at /v1/proxy/*
+	actionServices      ActionServiceResolver
+	approvalOwners      ApprovalOwnerResolver
+	approvalReader      ApprovalReader
+	currentActionConfig CurrentActionConfig
+	approvers           ApproverResolver
+	tenantManager       *tenant.Manager
+	webhookHandler      *trigger.WebhookHandler
+	planReviewStore     *agent.PlanReviewStore
+	memoryStore         *memory.Store
+	sessionStore        *session.Store
+	policyEngine        *policy.Engine
+	secretsStore        *secrets.SecretStore
+	policy              *policy.Policy
+	metricsCollector    *metrics.Collector
+	adminKey            string
 	// agentKeys resolves presented agent keys against the CURRENT identity
 	// snapshot (#289) — serve injects a registry-holder-backed resolver so a
 	// reload propagates to server auth; static maps serve tests and the

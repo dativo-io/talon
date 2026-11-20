@@ -55,13 +55,13 @@
               "id": "valid",
               "name": "valid",
               "type": "boolean",
-              "value": "={{ typeof $json.body === 'object' && $json.body !== null && typeof $json.body.ticket_id === 'string' && /^[A-Z]{1,10}-[0-9]{1,12}$/.test($json.body.ticket_id) && typeof $json.body.amount === 'string' && /^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$/.test($json.body.amount) && typeof $json.body.currency === 'string' && /^[A-Z]{3}$/.test($json.body.currency) }}"
+              "value": "={{ typeof $json.body === 'object' && $json.body !== null && typeof $json.body.ticket_id === 'string' && /^[A-Z]{1,10}-[0-9]{1,12}$/.test($json.body.ticket_id) && typeof $json.body.amount === 'string' && /^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$/.test($json.body.amount) && typeof $json.body.currency === 'string' && /^[A-Z]{3}$/.test($json.body.currency) && ($json.body.request_id === undefined || (typeof $json.body.request_id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test($json.body.request_id))) }}"
             },
             {
               "id": "opid",
               "name": "operation_id",
               "type": "string",
-              "value": "={{ 'refund-' + (typeof ($json.body || {}).ticket_id === 'string' ? $json.body.ticket_id : 'invalid') }}"
+              "value": "={{ 'refund-' + (typeof ($json.body || {}).ticket_id === 'string' ? $json.body.ticket_id : 'invalid') + (typeof ($json.body || {}).request_id === 'string' ? '-' + $json.body.request_id : '') }}"
             }
           ]
         },
@@ -166,7 +166,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body && $json.body.operation ? String($json.body.operation.verdict) : 'NONE' }}",
+                    "leftValue": "={{ $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency) && (($json.body.operation.verdict === 'ALLOW' && ($json.statusCode === 200 || $json.statusCode === 201)) || ($json.body.operation.verdict === 'REQUIRE_APPROVAL' && ($json.statusCode === 200 || $json.statusCode === 202)) || ($json.body.operation.verdict === 'DENY' && $json.statusCode === 403 && $json.body.operation.operation_status === 'denied')) ? String($json.body.operation.verdict) : 'NONE' }}",
                     "rightValue": "ALLOW",
                     "operator": {
                       "type": "string",
@@ -188,7 +188,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body && $json.body.operation ? String($json.body.operation.verdict) : 'NONE' }}",
+                    "leftValue": "={{ $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency) && (($json.body.operation.verdict === 'ALLOW' && ($json.statusCode === 200 || $json.statusCode === 201)) || ($json.body.operation.verdict === 'REQUIRE_APPROVAL' && ($json.statusCode === 200 || $json.statusCode === 202)) || ($json.body.operation.verdict === 'DENY' && $json.statusCode === 403 && $json.body.operation.operation_status === 'denied')) ? String($json.body.operation.verdict) : 'NONE' }}",
                     "rightValue": "REQUIRE_APPROVAL",
                     "operator": {
                       "type": "string",
@@ -210,7 +210,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body && $json.body.operation ? String($json.body.operation.verdict) : 'NONE' }}",
+                    "leftValue": "={{ $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency) && (($json.body.operation.verdict === 'ALLOW' && ($json.statusCode === 200 || $json.statusCode === 201)) || ($json.body.operation.verdict === 'REQUIRE_APPROVAL' && ($json.statusCode === 200 || $json.statusCode === 202)) || ($json.body.operation.verdict === 'DENY' && $json.statusCode === 403 && $json.body.operation.operation_status === 'denied')) ? String($json.body.operation.verdict) : 'NONE' }}",
                     "rightValue": "DENY",
                     "operator": {
                       "type": "string",
@@ -295,7 +295,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ !($json.body && $json.body.operation) ? 'NONE' : ($json.body.operation.operation_status !== 'awaiting_approval' ? String($json.body.operation.operation_status) : (($json.body.operation.approval && new Date($json.body.operation.approval.expires_at) > new Date()) ? 'awaiting_approval' : 'expired')) }}",
+                    "leftValue": "={{ !($json.statusCode === 200 && $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency)) ? 'NONE' : ($json.body.operation.operation_status !== 'awaiting_approval' ? String($json.body.operation.operation_status) : (($json.body.operation.approval && new Date($json.body.operation.approval.expires_at) > new Date()) ? 'awaiting_approval' : 'expired')) }}",
                     "rightValue": "authorized",
                     "operator": {
                       "type": "string",
@@ -317,7 +317,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ !($json.body && $json.body.operation) ? 'NONE' : ($json.body.operation.operation_status !== 'awaiting_approval' ? String($json.body.operation.operation_status) : (($json.body.operation.approval && new Date($json.body.operation.approval.expires_at) > new Date()) ? 'awaiting_approval' : 'expired')) }}",
+                    "leftValue": "={{ !($json.statusCode === 200 && $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency)) ? 'NONE' : ($json.body.operation.operation_status !== 'awaiting_approval' ? String($json.body.operation.operation_status) : (($json.body.operation.approval && new Date($json.body.operation.approval.expires_at) > new Date()) ? 'awaiting_approval' : 'expired')) }}",
                     "rightValue": "awaiting_approval",
                     "operator": {
                       "type": "string",
@@ -388,7 +388,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body && $json.body.operation ? String($json.body.operation.operation_status) : ($json.body && $json.body.error && $json.body.error.operation ? String($json.body.error.operation.operation_status) : 'NONE') }}",
+                    "leftValue": "={{ ($json.statusCode === 200 && $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency)) ? String($json.body.operation.operation_status) : ($json.statusCode === 409 && $json.body && $json.body.error && ($json.body.error.operation && $json.body.error.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.error.operation.action === 'create_refund_request' && $json.body.error.operation.review && $json.body.error.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.error.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.error.operation.review.currency === $('Validate request').first().json.body.currency) && (($json.body.error.code === 'operation_already_succeeded' && $json.body.error.operation.operation_status === 'succeeded') || ($json.body.error.code === 'operation_outcome_unknown' && $json.body.error.operation.operation_status === 'unknown')) ? String($json.body.error.operation.operation_status) : 'NONE') }}",
                     "rightValue": "succeeded",
                     "operator": {
                       "type": "string",
@@ -410,7 +410,7 @@
                 "combinator": "and",
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body && $json.body.operation ? String($json.body.operation.operation_status) : ($json.body && $json.body.error && $json.body.error.operation ? String($json.body.error.operation.operation_status) : 'NONE') }}",
+                    "leftValue": "={{ ($json.statusCode === 200 && $json.body && ($json.body.operation && $json.body.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.operation.action === 'create_refund_request' && $json.body.operation.review && $json.body.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.operation.review.currency === $('Validate request').first().json.body.currency)) ? String($json.body.operation.operation_status) : ($json.statusCode === 409 && $json.body && $json.body.error && ($json.body.error.operation && $json.body.error.operation.operation_id === $('Validate request').first().json.operation_id && $json.body.error.operation.action === 'create_refund_request' && $json.body.error.operation.review && $json.body.error.operation.review.ticket_id === $('Validate request').first().json.body.ticket_id && $json.body.error.operation.review.amount === $('Validate request').first().json.body.amount && $json.body.error.operation.review.currency === $('Validate request').first().json.body.currency) && (($json.body.error.code === 'operation_already_succeeded' && $json.body.error.operation.operation_status === 'succeeded') || ($json.body.error.code === 'operation_outcome_unknown' && $json.body.error.operation.operation_status === 'unknown')) ? String($json.body.error.operation.operation_status) : 'NONE') }}",
                     "rightValue": "unknown",
                     "operator": {
                       "type": "string",
@@ -534,7 +534,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ result: \"invalid_request\", note: \"ticket_id must look like ABC-123, amount must be a decimal string with at most two fractional digits, currency a three-letter code. Nothing was sent to Talon.\" }) }}",
+        "responseBody": "={{ JSON.stringify({ result: \"invalid_request\", note: \"ticket_id must look like ABC-123, amount must be a decimal string with at most two fractional digits, currency a three-letter code, and optional request_id must use 1-64 letters, digits, underscores or dashes. Nothing was sent to Talon.\" }) }}",
         "options": {
           "responseCode": 400
         }

@@ -14,12 +14,14 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/registration"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/sovereignty"
 	"github.com/dativo-io/talon/internal/trigger"
@@ -104,6 +106,8 @@ func checkConfig() []CheckResult {
 	results = append(results, checkLLMKeys(cfg))
 	results = append(results, checkCryptoKeys(cfg)...)
 	results = append(results, checkEvidenceDB(cfg))
+	results = append(results, checkRegistrations(cfg))
+	results = append(results, checkRecoveryHold(cfg))
 	results = append(results, checkCache(cfg))
 	results = append(results, checkSovereignty(cfg, nil))
 	results = append(results, checkAirGap(cfg, nil))
@@ -447,6 +451,113 @@ func checkEvidenceDB(cfg *config.Config) CheckResult {
 		Name: "evidence_db", Category: "config", Status: "pass",
 		Message: cfg.EvidenceDBPath(),
 	}
+}
+
+// checkRegistrations reports use-case registrations (`talon agents add`,
+// #472) whose signed intent has no completion or rollback record: the
+// process died in between. Such a registration may have left a generated
+// key (never shown to anyone) and an agent file a running server loads.
+// CheckRegistrations is the agent_registrations check on its own: what is
+// known about registrations whose signed intent has no terminal record.
+func CheckRegistrations(cfg *config.Config) CheckResult { return checkRegistrations(cfg) }
+
+func checkRegistrations(cfg *config.Config) CheckResult {
+	const name = "agent_registrations"
+	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if err != nil {
+		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("registration records could not be read: %v", err)}
+	}
+	defer store.Close()
+	lookup, err := registration.FindUnresolved(context.Background(), store, "")
+	if err != nil {
+		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("registration records could not be read: %v", err)}
+	}
+	return registrationsResult(name, lookup, registration.Probe(cfg.DataDir))
+}
+
+// checkRecoveryHold reports whether this installation runs on a restored
+// backup that has not been resumed (#465). It says what the hold covers:
+// the dispatch of governed actions through the Action Gateway. It does not
+// hold LLM gateway or MCP proxy traffic, and the message says so.
+func checkRecoveryHold(cfg *config.Config) CheckResult {
+	const name = "recovery_hold"
+	res := CheckResult{Name: name, Category: "config", Status: "pass"}
+	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if err != nil {
+		res.Status, res.Message = "warn", fmt.Sprintf("the recovery state could not be read: %v", err)
+		return res
+	}
+	defer store.Close()
+	ctx := context.Background()
+	holds, err := action.ActiveRecoveryHolds(ctx, store.DB())
+	if err != nil {
+		res.Status, res.Message = "warn", fmt.Sprintf("the recovery state could not be read: %v", err)
+		return res
+	}
+	var held int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_held_operations`).Scan(&held); err != nil {
+		held = 0 // a store that never held an operation has no such table
+	}
+	if len(holds) > 0 {
+		h := holds[0]
+		res.Status = "fail"
+		res.Message = fmt.Sprintf("RECOVERY HOLD: this installation runs on backup %s, taken %s, and has not been resumed. No governed action is dispatched: every Action Gateway claim is refused (recovery_hold). The hold does not cover LLM gateway requests or MCP proxy tool calls; those are served.", h.BackupID, h.BackupCreatedAt.UTC().Format(time.RFC3339))
+		res.Fix = "Reconcile with the downstream systems, then: talon backup resume (lists what was open), talon backup resume --reconciled [--hold-operation <operation_id>]..."
+		return res
+	}
+	res.Message = "No recovery hold."
+	if held > 0 {
+		res.Message = fmt.Sprintf("No recovery hold. %d operation id(s) are held for good since an earlier resume: they are never dispatched.", held)
+	}
+	return res
+}
+
+// registrationsResult words what is known about registrations whose intent
+// has no terminal record. An intent alone does not say why: the
+// registration lock tells a registration that is running NOW (in progress)
+// from one whose process is gone (interrupted); where the lock cannot be
+// probed, the work is reported as unresolved and nothing more is claimed.
+// A lookup that could not list every unresolved intent says so and never
+// reads as "none".
+func registrationsResult(name string, lookup registration.Lookup, lock string) CheckResult {
+	res := CheckResult{Name: name, Category: "config", Status: "pass"}
+	partial := ""
+	if !lookup.Complete {
+		partial = fmt.Sprintf(" The store holds more unresolved registrations than one lookup reads: the %d newest are listed, older ones are not.", len(lookup.Unresolved))
+		res.Status = "warn"
+	}
+	if len(lookup.Unresolved) == 0 {
+		res.Message = "No unresolved use-case registration." + partial
+		return res
+	}
+	var parts []string
+	for i := range lookup.Unresolved {
+		in := &lookup.Unresolved[i]
+		p := fmt.Sprintf("%s (tenant %s, intent %s of %s", in.Name, in.Tenant, in.IntentID, in.At.UTC().Format(time.RFC3339))
+		if !in.Verified {
+			p += "; the intent record does NOT verify"
+		}
+		parts = append(parts, p+")")
+	}
+	list := strings.Join(parts, "; ")
+	switch lock {
+	case registration.LockHeld:
+		// A registration is running now. Its intent has no terminal record
+		// YET; that is not a fault. (With several unresolved intents, the
+		// older ones belong to earlier processes: the running registration
+		// resolves those of its own name.)
+		res.Message = "A use-case registration is IN PROGRESS (the registration lock is held). Intent(s) without a terminal record yet: " + list + "." + partial
+		res.Fix = "Nothing to do while it runs. Run 'talon doctor' again when 'talon agents add' has finished"
+	case registration.LockFree:
+		res.Status = "warn"
+		res.Message = "INTERRUPTED use-case registration(s): no registration is running (the registration lock is free) and these have no completion or rollback record: " + list + "." + partial
+		res.Fix = "Run 'talon agents add <name>' for the name: under the registration lock it removes ONLY what the signed intent proves that registration created, records it as rolled back and then registers; anything else under the name is left untouched and named. Do not delete files or secrets by hand because of this message"
+	default:
+		res.Status = "warn"
+		res.Message = "UNRESOLVED use-case registration(s) (whether one is still running cannot be established here: the registration lock could not be probed): " + list + "." + partial
+		res.Fix = "Make sure no 'talon agents add' is running, then run 'talon agents add <name>': it decides under the registration lock"
+	}
+	return res
 }
 
 // checkCache validates cache config when present. Pass when disabled; when enabled, validate config and writable path.

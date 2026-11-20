@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/dativo-io/talon/internal/action"
 )
 
 // Local reviewer path (#433): an authenticated approver lists the pending
@@ -31,6 +33,14 @@ var (
 	approvalsURL    string
 	approvalsJSON   bool
 	approvalsReason string
+	// approvalsAll lists every unresolved approval, also the ones that can
+	// no longer be decided; approvalsDecided lists history.
+	approvalsAll     bool
+	approvalsDecided bool
+	approvalsAfter   string
+	approvalsLimit   int
+	// approvalsTechnical adds identifiers, digests and timestamps to show.
+	approvalsTechnical bool
 	// approvalsAllowPlaintext permits plain http to a non-loopback host.
 	approvalsAllowPlaintext bool
 )
@@ -49,15 +59,28 @@ the approved operation afterwards.`,
 
 var approvalsListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List pending approvals you may decide (oldest first)",
+	Short: "List the approvals that need a decision (oldest first); --all adds the ones that can no longer be decided, --decided shows history",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		var out struct {
-			Tenant  string           `json:"tenant"`
-			Reviews []reviewResponse `json:"reviews"`
-			More    bool             `json:"more"`
+		if approvalsAll && approvalsDecided {
+			return fmt.Errorf("--all and --decided are separate listings; pass one of them")
 		}
-		raw, err := approvalsRequest(cmd.Context(), http.MethodGet, "/v1/reviews", nil, &out)
+		state := action.SelectAttention
+		switch {
+		case approvalsAll:
+			state = action.SelectUnresolved
+		case approvalsDecided:
+			state = action.SelectDecided
+		}
+		q := url.Values{"state": {state}}
+		if approvalsAfter != "" {
+			q.Set("after", approvalsAfter)
+		}
+		if approvalsLimit > 0 {
+			q.Set("limit", fmt.Sprint(approvalsLimit))
+		}
+		var out approvalsListResponse
+		raw, err := approvalsRequest(cmd.Context(), http.MethodGet, "/v1/reviews?"+q.Encode(), nil, &out)
 		if err != nil {
 			return err
 		}
@@ -65,32 +88,132 @@ var approvalsListCmd = &cobra.Command{
 			_, err = cmd.OutOrStdout().Write(append(raw, '\n'))
 			return err
 		}
-		w := cmd.OutOrStdout()
-		if len(out.Reviews) == 0 {
-			fmt.Fprintf(w, "No pending approvals you may decide in tenant %s.\n", out.Tenant)
-			return nil
-		}
-		fmt.Fprintf(w, "Pending approvals in tenant %s (oldest first):\n\n", out.Tenant)
-		for i := range out.Reviews {
-			r := &out.Reviews[i]
-			fmt.Fprintf(w, "  %s  %s  %s  op %s  expires %s  %s\n", r.Operation.Approval.ID, r.UseCase, r.Operation.Action, r.Operation.OperationID,
-				r.Operation.Approval.ExpiresAt.UTC().Format(time.RFC3339), compactReview(r.Operation.Review))
-		}
-		if out.More {
-			fmt.Fprintf(w, "\nMORE pending approvals exist beyond these %d (the oldest are shown first). Decide these, then list again.\n", len(out.Reviews))
-		}
-		fmt.Fprintf(w, "\nShow one with: talon approvals show <approval-id>\n")
+		printApprovalList(cmd.OutOrStdout(), &out, time.Now().UTC(), approvalsAfter != "")
 		return nil
 	},
 }
 
+type approvalsListResponse struct {
+	Tenant    string                   `json:"tenant"`
+	State     string                   `json:"state"`
+	Approvals []action.ApprovalSummary `json:"approvals"`
+	Next      string                   `json:"next"`
+}
+
+// printApprovalList is the compact listing: one line per approval, no
+// argument name or value (talon approvals show prints those).
+//
+// The server ends a page at its scan bound, so a page can be empty while
+// the selection continues ("next" is set). Only a first page without rows
+// and without a cursor says that the selection is empty; an empty page with
+// a cursor says that nothing was found yet, and an empty page reached with
+// --after says that the listing ended (#565 review). continued is true when
+// this page was requested with --after.
+func printApprovalList(w io.Writer, out *approvalsListResponse, now time.Time, continued bool) {
+	what := map[string]string{
+		action.SelectAttention:  "Approvals of your groups that need a decision",
+		action.SelectUnresolved: "Unresolved approvals of your groups (including ones that can no longer be decided)",
+		action.SelectDecided:    "Decided and closed approvals of your groups (newest first)",
+	}[out.State]
+	if empty := emptyPageText(out, continued); empty != "" {
+		fmt.Fprintf(w, "%s in tenant %s: %s\n", what, out.Tenant, empty)
+	} else {
+		fmt.Fprintf(w, "%s in tenant %s:\n\n", what, out.Tenant)
+		tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+		if out.State == action.SelectDecided {
+			fmt.Fprintln(tw, "APPROVAL\tACTION\tUSE CASE\tOUTCOME\tDECIDED\tBY")
+		} else {
+			fmt.Fprintln(tw, "APPROVAL\tACTION\tUSE CASE\tSTATE\tEXPIRES\tGROUPS")
+		}
+		for i := range out.Approvals {
+			a := &out.Approvals[i]
+			if out.State == action.SelectDecided {
+				decided := "-"
+				if a.DecidedAt != nil {
+					decided = a.DecidedAt.UTC().Format("2006-01-02 15:04Z")
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", a.ApprovalID, a.Action, a.UseCase, a.Status, decided, orDash(a.DecidedBy))
+				continue
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", a.ApprovalID, a.Action, a.UseCase, listState(a.Eligibility), expiresIn(a.ExpiresAt, now), strings.Join(a.ApproverGroups, ","))
+		}
+		_ = tw.Flush()
+	}
+	fmt.Fprintln(w)
+	switch {
+	case out.Next != "" && len(out.Approvals) == 0:
+		fmt.Fprintf(w, "Continue: talon approvals list%s --after %s\n", listFlag(out.State), out.Next)
+	case out.Next != "":
+		fmt.Fprintf(w, "More exist. Next page: talon approvals list%s --after %s\n", listFlag(out.State), out.Next)
+	}
+	printListHints(w, out)
+}
+
+// emptyPageText words a page without rows; "" when the page has rows.
+func emptyPageText(out *approvalsListResponse, continued bool) string {
+	switch {
+	case len(out.Approvals) > 0:
+		return ""
+	case out.Next != "":
+		return "none among the requests read for this page. The listing is NOT exhausted."
+	case continued:
+		return "no further approvals. This is the end of the listing."
+	}
+	return "none."
+}
+
+func printListHints(w io.Writer, out *approvalsListResponse) {
+	switch out.State {
+	case action.SelectAttention:
+		fmt.Fprintln(w, "Expired or stale requests: talon approvals list --all    History: talon approvals list --decided")
+	case action.SelectUnresolved:
+		fmt.Fprintln(w, "Only \"can be decided\" rows accept a decision. History: talon approvals list --decided")
+	}
+	if len(out.Approvals) > 0 {
+		fmt.Fprintln(w, "Exact arguments and the reason approval is required: talon approvals show <approval>")
+	}
+}
+
+func listFlag(state string) string {
+	switch state {
+	case action.SelectUnresolved:
+		return " --all"
+	case action.SelectDecided:
+		return " --decided"
+	}
+	return ""
+}
+
+func listState(e action.Eligibility) string {
+	if e.Decidable() {
+		return "can be decided"
+	}
+	return strings.ReplaceAll(e.State, "_", " ")
+}
+
+// expiresIn is a coarse remaining lifetime, or "expired".
+func expiresIn(at, now time.Time) string {
+	d := at.Sub(now)
+	switch {
+	case d <= 0:
+		return "expired"
+	case d < time.Minute:
+		return "in <1m"
+	case d < time.Hour:
+		return fmt.Sprintf("in %dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("in %dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("in %dd", int(d.Hours()/24))
+}
+
 var approvalsShowCmd = &cobra.Command{
 	Use:   "show <approval-id>",
-	Short: "Show exactly what an approval would authorize",
+	Short: "Show exactly what an approval authorizes, why it is required and what happened to it",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		var r reviewResponse
-		raw, err := approvalsRequest(cmd.Context(), http.MethodGet, "/v1/reviews/"+args[0], nil, &r)
+		var v action.ApprovalView
+		raw, err := approvalsRequest(cmd.Context(), http.MethodGet, "/v1/reviews/"+url.PathEscape(args[0]), nil, &v)
 		if err != nil {
 			return err
 		}
@@ -98,7 +221,7 @@ var approvalsShowCmd = &cobra.Command{
 			_, err = cmd.OutOrStdout().Write(append(raw, '\n'))
 			return err
 		}
-		printReview(cmd.OutOrStdout(), &r)
+		printReview(cmd.OutOrStdout(), &v, time.Now().UTC(), approvalsTechnical)
 		return nil
 	},
 }
@@ -109,6 +232,12 @@ func decideCmd(verb string, approve bool) *cobra.Command {
 		Short: strings.ToUpper(verb[:1]) + verb[1:] + " a pending approval (dispatches nothing)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The CLI asks for a reason for BOTH decisions: it is recorded in
+			// the signed approval evidence, and an approval without a stated
+			// reason is not something an operator should produce by default.
+			// The decision API keeps its published v1.16.1 validation (a
+			// reason is required for a rejection only, at most 1024
+			// characters) so existing API clients keep working.
 			if strings.TrimSpace(approvalsReason) == "" {
 				return fmt.Errorf("--reason is required: it is recorded in the signed approval evidence")
 			}
@@ -118,10 +247,18 @@ func decideCmd(verb string, approve bool) *cobra.Command {
 			}
 			body, _ := json.Marshal(map[string]string{"decision": decision, "reason": approvalsReason})
 			var out struct {
-				Operation reviewOperation `json:"operation"`
-				Approval  reviewApproval  `json:"approval"`
+				Operation struct {
+					OperationID string `json:"operation_id"`
+					Status      string `json:"operation_status"`
+				} `json:"operation"`
+				Approval struct {
+					ID           string `json:"id"`
+					Status       string `json:"status"`
+					DecidedBy    string `json:"decided_by"`
+					DecidedGroup string `json:"decided_group"`
+				} `json:"approval"`
 			}
-			raw, err := approvalsRequest(cmd.Context(), http.MethodPost, "/v1/approvals/"+args[0]+"/decisions", body, &out)
+			raw, err := approvalsRequest(cmd.Context(), http.MethodPost, "/v1/approvals/"+url.PathEscape(args[0])+"/decisions", body, &out)
 			if err != nil {
 				return err
 			}
@@ -136,78 +273,144 @@ func decideCmd(verb string, approve bool) *cobra.Command {
 	}
 }
 
-type reviewApproval struct {
-	ID           string    `json:"id"`
-	Status       string    `json:"status"`
-	RuleID       string    `json:"rule_id"`
-	Groups       []string  `json:"approver_groups"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	DecidedBy    string    `json:"decided_by"`
-	DecidedGroup string    `json:"decided_group"`
+// printReview answers, in this order, what an operator who has never seen
+// the request needs: what is asked, by whom, can it still be decided, with
+// which exact arguments, where it would go, why approval is required,
+// whether the configuration it was established under is still the current
+// one, what was decided and what happened afterwards, and how to decide.
+// Identifiers, digests and timestamps are printed with --technical. Facts
+// bound at establish are never mixed with today's configuration.
+func printReview(w io.Writer, v *action.ApprovalView, now time.Time, technical bool) {
+	title := v.Action
+	if v.ActionDescription != "" {
+		title = v.ActionDescription + "  (" + v.Action + ")"
+	}
+	fmt.Fprintf(w, "%s\n\n", title)
+	row := func(label, text string) { fmt.Fprintf(w, "%-14s %s\n", label, text) }
+	row("Requested by", fmt.Sprintf("AI use case %s (tenant %s)", v.UseCase, v.Tenant))
+	row("Status", reviewStatus(v, now))
+	fmt.Fprintf(w, "%-14s %s\n", "", v.Eligibility.Explanation)
+	if len(v.Arguments) == 0 {
+		row("Arguments", "none declared for review")
+	}
+	for i, a := range v.Arguments {
+		label := ""
+		if i == 0 {
+			label = "Arguments"
+		}
+		row(label, fmt.Sprintf("%-16s %s", a.Name, string(a.Value)))
+	}
+	row("Destination", v.Bound.Destination+"  (bound when the operation was established)")
+	row("Why", reviewWhy(v))
+	row("Still current", reviewCurrent(v))
+	row("Decision", reviewDecision(v))
+	row("Outcome", reviewOutcome(v))
+	if v.Eligibility.Decidable() {
+		row("Approve", fmt.Sprintf("talon approvals approve %s --reason \"...\"", v.ApprovalID))
+		row("Reject", fmt.Sprintf("talon approvals reject %s --reason \"...\"", v.ApprovalID))
+	}
+	row("After approval", v.AfterApproval)
+	if !technical {
+		row("Technical", fmt.Sprintf("talon approvals show %s --technical   (identifiers, digests, timestamps)", v.ApprovalID))
+		return
+	}
+	fmt.Fprintf(w, "\nTechnical details\n")
+	trow := func(label, text string) { fmt.Fprintf(w, "  %-20s %s\n", label, text) }
+	trow("Approval", v.ApprovalID)
+	trow("Approver groups", strings.Join(v.ApproverGroups, ","))
+	trow("Operation", fmt.Sprintf("%s (ref %s), status %s, verdict %s", v.Operation.OperationID, v.Operation.OperationRef, v.Operation.Status, v.Operation.Verdict))
+	trow("Established", v.Bound.EstablishedAt.UTC().Format(time.RFC3339))
+	trow("Expires", v.ExpiresAt.UTC().Format(time.RFC3339))
+	trow("Rule", fmt.Sprintf("%s (%s policy)", v.Bound.RuleID, v.Bound.RuleSource))
+	trow("Arguments digest", v.Bound.ArgumentsDigest)
+	trow("Policy digest", v.Bound.PolicyDigest)
+	trow("Definition digest", v.Bound.DefinitionDigest)
+	trow("Compared with", fmt.Sprintf("%s (policy %s, action definition %s)", v.Current.Basis, v.Eligibility.Policy, v.Eligibility.Definition))
+	if at := v.Operation.LatestAttempt; at != nil {
+		trow("Latest attempt", fmt.Sprintf("#%d %s, request written %t, response observed %t, HTTP %d, %s", at.Ordinal, at.Status, at.RequestWritten, at.ResponseObserved, at.HTTPStatus, at.ResultProvenance))
+	}
+	trow("Lifecycle evidence", "talon audit verify --operation "+v.Operation.OperationID)
 }
 
-type reviewOperation struct {
-	OperationID       string                     `json:"operation_id"`
-	Action            string                     `json:"action"`
-	Status            string                     `json:"operation_status"`
-	Verdict           string                     `json:"verdict"`
-	MatchedRuleID     string                     `json:"matched_rule_id"`
-	MatchedRuleSource string                     `json:"matched_rule_source"`
-	Digest            string                     `json:"digest"`
-	Review            map[string]json.RawMessage `json:"review"`
-	Approval          *reviewApproval            `json:"approval"`
+func reviewStatus(v *action.ApprovalView, now time.Time) string {
+	switch {
+	case v.Eligibility.Decidable():
+		return fmt.Sprintf("CAN BE DECIDED NOW, expires %s (%s)", v.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC"), expiresIn(v.ExpiresAt, now))
+	case v.Unresolved:
+		return "CANNOT BE DECIDED (" + strings.ReplaceAll(v.Eligibility.State, "_", " ") + "); still unresolved in the store"
+	}
+	return strings.ToUpper(v.Status)
 }
 
-type reviewResponse struct {
-	Operation         reviewOperation `json:"operation"`
-	UseCase           string          `json:"use_case"`
-	Tenant            string          `json:"tenant"`
-	Target            string          `json:"target"`
-	Rule              string          `json:"rule"`
-	PolicyCurrent     bool            `json:"policy_current"`
-	DefinitionCurrent bool            `json:"definition_current"`
+func reviewWhy(v *action.ApprovalView) string {
+	layer := v.Bound.RuleSource
+	if layer == "" {
+		layer = "unknown"
+	}
+	bound := fmt.Sprintf("rule %s of the %s policy required approval by %s", v.Bound.RuleID, strings.ReplaceAll(layer, "_", " "), strings.Join(v.ApproverGroups, " or "))
+	switch {
+	case v.Eligibility.Policy == action.BindingUnchanged && v.Current.RulePresent:
+		return bound + ". The rule: " + v.Current.Rule
+	case v.Current.RulePresent:
+		return bound + ". The rule as it reads TODAY (not necessarily as it read then): " + v.Current.Rule
+	}
+	return bound + ". Its text at that time is not recorded"
 }
 
-func compactReview(review map[string]json.RawMessage) string {
-	keys := make([]string, 0, len(review))
-	for k := range review {
-		keys = append(keys, k)
+func reviewCurrent(v *action.ApprovalView) string {
+	word := map[string]string{action.BindingUnchanged: "unchanged", action.BindingChanged: "CHANGED since establish", action.BindingUnknown: "unknown"}
+	out := fmt.Sprintf("policy %s, action definition %s", word[v.Eligibility.Policy], word[v.Eligibility.Definition])
+	if v.Eligibility.Definition == action.BindingChanged && v.Current.Destination != "" {
+		out += "; destination today: " + v.Current.Destination
 	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, k+"="+string(review[k]))
+	if v.Current.Note != "" {
+		out += " (" + v.Current.Note + ")"
 	}
-	return strings.Join(parts, " ")
+	return out
 }
 
-func printReview(w io.Writer, r *reviewResponse) {
-	op := &r.Operation
-	fmt.Fprintf(w, "Action:            %s\n", op.Action)
-	fmt.Fprintf(w, "Requested by:      AI use case %s (tenant %s)\n", r.UseCase, r.Tenant)
-	fmt.Fprintf(w, "Operation:         %s (%s)\n", op.OperationID, op.Status)
-	fmt.Fprintf(w, "Target:            %s\n", r.Target)
-	fmt.Fprintf(w, "Verdict:           %s (rule %s, %s policy)\n", op.Verdict, op.MatchedRuleID, op.MatchedRuleSource)
-	fmt.Fprintf(w, "Why:               %s\n", r.Rule)
-	fmt.Fprintf(w, "Arguments you approve (exact values; the digest binds them):\n")
-	keys := make([]string, 0, len(op.Review))
-	for k := range op.Review {
-		keys = append(keys, k)
+func reviewDecision(v *action.ApprovalView) string {
+	d := v.Decision
+	if d == nil {
+		return "none yet"
 	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(w, "  %-16s %s\n", k, string(op.Review[k]))
+	when := ""
+	if d.DecidedAt != nil {
+		when = " at " + d.DecidedAt.UTC().Format("2006-01-02 15:04 UTC")
 	}
-	fmt.Fprintf(w, "Digest:            %s\n", op.Digest)
-	if a := op.Approval; a != nil {
-		fmt.Fprintf(w, "Approval:          %s, %s, groups %s, expires %s\n", a.ID, a.Status, strings.Join(a.Groups, ","), a.ExpiresAt.UTC().Format(time.RFC3339))
+	who := d.DecidedBy
+	if d.DecidedGroup != "" {
+		who += " (group " + d.DecidedGroup + ")"
 	}
-	if !r.PolicyCurrent {
-		fmt.Fprintf(w, "WARNING: the approval-relevant policy changed since this operation was established; an approval now cannot be used (approval_binding_stale). The caller must create a new operation.\n")
+	out := fmt.Sprintf("%s by %s%s", d.Status, orDash(who), when)
+	if d.Reason != "" {
+		out += fmt.Sprintf(". Reason: %q", d.Reason)
 	}
-	if !r.DefinitionCurrent {
-		fmt.Fprintf(w, "WARNING: the trusted action definition changed since this operation was established; it cannot be dispatched.\n")
+	return out
+}
+
+// reviewOutcome says what happened to the operation. It claims a
+// downstream effect only from recorded dispatch facts.
+func reviewOutcome(v *action.ApprovalView) string {
+	op := v.Operation
+	out := "operation " + op.Status
+	switch {
+	case op.AttemptCount == 0:
+		out += "; nothing was dispatched"
+	case op.LatestAttempt != nil:
+		at := op.LatestAttempt
+		out += fmt.Sprintf("; %d dispatch attempt(s), latest %s", op.AttemptCount, at.Status)
+		if at.HTTPStatus != 0 {
+			out += fmt.Sprintf(", destination answered HTTP %d", at.HTTPStatus)
+		}
+		if at.ResultProvenance != "" {
+			out += " (" + at.ResultProvenance + ")"
+		}
 	}
+	if op.OutcomeCode != "" {
+		out += ", outcome " + op.OutcomeCode
+	}
+	return out
 }
 
 // approvalsRequest calls the reviewer API with the approver credential from
@@ -221,7 +424,8 @@ func approvalsRequest(ctx context.Context, method, path string, body []byte, out
 	if !strings.HasPrefix(key, "talon_appr_") {
 		return nil, fmt.Errorf("%s does not hold an approver credential (talon_appr_...); admin and agent keys carry no approval authority", approverKeyEnv)
 	}
-	if err := refusePlaintextRemote(approvalsURL); err != nil {
+	base, err := approvalsBaseURL(approvalsURL, approvalsAllowPlaintext)
+	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -230,7 +434,7 @@ func approvalsRequest(ctx context.Context, method, path string, body []byte, out
 	if body != nil {
 		rd = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(approvalsURL, "/")+path, rd)
+	req, err := http.NewRequestWithContext(ctx, method, approvalsEndpoint(base, path), rd)
 	if err != nil {
 		return nil, err
 	}
@@ -238,26 +442,20 @@ func approvalsRequest(ctx context.Context, method, path string, body []byte, out
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := approvalsHTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("reaching the Talon server at %s: %w", approvalsURL, err)
+		return nil, fmt.Errorf("reaching the Talon server at %s: %w", base.String(), err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode <= 399 {
+		return nil, fmt.Errorf("the server at %s answered with a redirect (HTTP %d); the approver credential is sent only to the URL you gave, so the redirect was not followed. Pass the final URL with --url", base.String(), resp.StatusCode)
+	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		var e struct {
-			Error struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(raw, &e) == nil && e.Error.Code != "" {
-			return nil, fmt.Errorf("%s (HTTP %d): %s", e.Error.Code, resp.StatusCode, e.Error.Message)
-		}
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, path)
+		return nil, approvalsServerError(resp.StatusCode, path, raw)
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return nil, fmt.Errorf("decoding the server answer: %w", err)
@@ -265,23 +463,97 @@ func approvalsRequest(ctx context.Context, method, path string, body []byte, out
 	return raw, nil
 }
 
-// refusePlaintextRemote keeps the approver credential off the network in
-// clear text: plain http is accepted for loopback only, unless the operator
-// states that the path is protected (a private link or a TLS-terminating
-// proxy on the same host) with --allow-plaintext.
-func refusePlaintextRemote(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return fmt.Errorf("--url %q is not a valid URL", raw)
+// approvalsServerError renders a non-2xx answer with the server's code and
+// message when it sent them.
+func approvalsServerError(status int, path string, raw []byte) error {
+	var e struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	if u.Scheme == "https" || approvalsAllowPlaintext {
-		return nil
+	if json.Unmarshal(raw, &e) == nil && e.Error.Code != "" {
+		return fmt.Errorf("%s (HTTP %d): %s", e.Error.Code, status, e.Error.Message)
+	}
+	return fmt.Errorf("HTTP %d from %s", status, path)
+}
+
+// approvalsHTTPClient never follows a redirect (#565 review). The request
+// carries the approver credential; a redirect could name another host, or
+// the same host over plain http, and the credential must reach only the
+// URL the operator gave (which approvalsBaseURL has already validated).
+var approvalsHTTPClient = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// approvalsBaseURL validates --url completely before any request is built.
+// The approver credential is sent to this URL, so nothing about it is left
+// to interpretation (#565 review):
+//
+//   - http or https only, with a host; --allow-plaintext admits plain http
+//     to a remote host and nothing else (never another scheme);
+//   - no user or password in the URL: the credential comes from the
+//     environment, and a URL with a password ends up in shell history;
+//   - no query and no fragment: the request path is appended to the base, so
+//     either would move the request to another resource;
+//   - no whitespace or control character anywhere.
+//
+// A path prefix is kept (a reverse proxy can serve Talon below one). The
+// error never repeats the URL when it carries credentials.
+func approvalsBaseURL(raw string, allowPlaintext bool) (*url.URL, error) {
+	u, err := parseBaseURL(raw)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "https" || allowPlaintext {
+		return u, nil
 	}
 	host := u.Hostname()
 	if ip := net.ParseIP(host); host == "localhost" || (ip != nil && ip.IsLoopback()) {
-		return nil
+		return u, nil
 	}
-	return fmt.Errorf("refusing to send the approver credential over plain http to %s: use an https URL, or pass --allow-plaintext when the network path is protected", u.Host)
+	return nil, fmt.Errorf("refusing to send the approver credential over plain http to %s: use an https URL, or pass --allow-plaintext when the network path is protected", u.Host)
+}
+
+// parseBaseURL checks the shape of --url: everything but the plain-http rule.
+func parseBaseURL(raw string) (*url.URL, error) {
+	if raw == "" {
+		return nil, fmt.Errorf("--url is empty: pass the base URL of the running Talon server (for example https://talon.example.com)")
+	}
+	if strings.IndexFunc(raw, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
+		return nil, fmt.Errorf("--url must not contain whitespace or control characters")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("--url is not a valid URL (expected http(s)://host[:port][/prefix])")
+	}
+	if u.User != nil {
+		return nil, fmt.Errorf("--url must not embed a user or password: the approver credential is read from %s only", approverKeyEnv)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("--url %q must start with http:// or https://", raw)
+	}
+	if u.Opaque != "" || u.Hostname() == "" {
+		return nil, fmt.Errorf("--url %q names no host (expected http(s)://host[:port][/prefix])", raw)
+	}
+	if carriesQueryOrFragment(raw, u) {
+		return nil, fmt.Errorf("--url %q must not carry a query or a fragment: the request path is appended to it", raw)
+	}
+	return u, nil
+}
+
+func carriesQueryOrFragment(raw string, u *url.URL) bool {
+	return u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || strings.HasSuffix(raw, "#")
+}
+
+// approvalsEndpoint appends a request path ("/v1/reviews?state=...") to the
+// validated base URL, keeping the base's path prefix.
+func approvalsEndpoint(base *url.URL, path string) string {
+	p, query, _ := strings.Cut(path, "?")
+	u := *base
+	u.Path, u.RawPath = strings.TrimRight(base.Path, "/")+p, ""
+	u.RawQuery = query
+	return u.String()
 }
 
 func init() {
@@ -293,6 +565,11 @@ func init() {
 	for _, c := range []*cobra.Command{approve, reject} {
 		c.Flags().StringVar(&approvalsReason, "reason", "", "why (recorded in the signed approval evidence; required)")
 	}
+	approvalsListCmd.Flags().BoolVar(&approvalsAll, "all", false, "also list pending approvals that can no longer be decided (expired, or bound to a changed policy or action definition)")
+	approvalsListCmd.Flags().BoolVar(&approvalsDecided, "decided", false, "list decided and closed approvals (approved, rejected, expired, invalidated), newest first")
+	approvalsListCmd.Flags().StringVar(&approvalsAfter, "after", "", "continue after the cursor a previous listing printed")
+	approvalsListCmd.Flags().IntVar(&approvalsLimit, "limit", 0, "rows per page (1..100; default 100)")
+	approvalsShowCmd.Flags().BoolVar(&approvalsTechnical, "technical", false, "also print identifiers, digests and timestamps")
 	approvalsCmd.AddCommand(approvalsListCmd, approvalsShowCmd, approve, reject)
 	rootCmd.AddCommand(approvalsCmd)
 }

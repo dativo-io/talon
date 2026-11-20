@@ -4,34 +4,32 @@ This page points you to the right doc for what you want to do. For the full docu
 
 ---
 
+**Trying Talon and connecting an application are two different paths.** The command below is *Try Talon*: real policy decisions and signed evidence from the published image, with no provider key and no application of yours. To put an existing application under your company policy (a registered use case with its own key, verified activation and traffic), follow [connect an existing application](guides/add-talon-to-existing-app.md).
+
 ## One command, no clone, no provider key
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/quickstart.sh | TALON_VERSION=X.Y.Z bash
+curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/vX.Y.Z/scripts/quickstart.sh | TALON_VERSION=X.Y.Z bash
 ```
 
-Needs Docker and `curl`. Replace `X.Y.Z` with a published release; the script never assumes `latest`. It pulls `ghcr.io/dativo-io/talon:X.Y.Z` anonymously, starts it on `127.0.0.1:18080` with a small company policy, and sends three requests: one carrying an IBAN and an email address (blocked: `pii_policy_violation`), one for a model the policy does not allow (denied: `model_not_allowed`) and one with an unknown key (refused: `401`). No model provider exists in this setup, so both decisions are Talon's own, made before any provider call. It then verifies the signature of both evidence records with `talon audit verify`, prints the image digest it ran and the elapsed time, and removes its container and volume (`TALON_QUICKSTART_KEEP=1` keeps them). `TALON_IMAGE` takes a digest pin instead of a version.
+Needs Docker and `curl`. Replace `X.Y.Z` in both places with one published release (v1.17.0 or later); the script never assumes `latest`. The script is fetched from that release's tag, not from `main`, so the script and the image are the pair the release verification ran after publication. It pulls `ghcr.io/dativo-io/talon:X.Y.Z` anonymously, starts it on `127.0.0.1:18080` with a small company policy, and sends three requests: one carrying an IBAN and an email address (blocked: `pii_policy_violation`), one for a model the policy does not allow (denied: `model_not_allowed`) and one with an unknown key (refused: `401`). No model provider exists in this setup, so both decisions are Talon's own, made before any provider call. It then verifies the signature of both evidence records with `talon audit verify`, prints the image digest it ran and the elapsed time, and removes its container and volume (`TALON_QUICKSTART_KEEP=1` keeps them). `TALON_IMAGE` takes a digest pin instead of a version.
 
-What it does not show: a model answer, a redaction, the console, or a business action. For those, continue with the paths below or the [production pilot runbook](guides/production-pilot.md).
+What it does not show: a model answer, a redaction, the console, or a business action. For those, continue with the paths below: the [Operations Console from the published image](../examples/docker-compose/README.md) shows the same kind of decisions in the browser, and [add Talon to your existing app](guides/add-talon-to-existing-app.md) puts your own application behind it. The script prints both links for the version it ran.
 
 ---
 
-## Which path is yours?
+## After trying it
 
-**1.** I have an existing app that calls OpenAI or Anthropic.  
-→ [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
+**Connect your existing application.** One guide: prepare Talon once, register the application with one command, change two settings in it, and see that it works. Every further application is that one command again.
 
-**1a.** I want the fastest OpenAI-compatible local drop-in (no gateway YAML).  
-→ [OpenAI proxy quickstart](tutorials/proxy-quickstart.md)
+→ [Connect an existing application](guides/add-talon-to-existing-app.md), then [operate AI use cases](guides/operate-ai-use-cases.md) for day two.
 
-**2.** I'm building something new and want controls from day one.  
-→ [Your first governed agent](tutorials/first-governed-agent.md)
+Other things to look at, none of which you need first:
 
-**3.** I want to understand how it works before touching anything (no API key).  
-→ [60-second demo (no API key)](tutorials/quickstart-demo.md)
-
-**4.** I need to review what an auditor handoff looks like.  
-→ [Sample auditor pack](../examples/auditor-pack/README.md)
+- [OpenAI proxy quickstart](tutorials/proxy-quickstart.md): the drop-in shape on your own machine, one local identity, no company policy.
+- [Your first governed agent](tutorials/first-governed-agent.md): building a new agent on Talon's own runtime.
+- [60-second demo](tutorials/quickstart-demo.md): the Docker Compose stack from a clone, no API key.
+- [Sample auditor pack](../examples/auditor-pack/README.md): what an auditor handoff looks like.
 
 ---
 
@@ -72,9 +70,13 @@ talon run --dry-run "Your query here"
 export OPENAI_API_KEY=sk-proj-...
 talon run "Your query here"
 
-# Server (API + optional gateway/proxy)
-export TALON_ADMIN_KEY="replace-with-strong-admin-key"
-talon serve --port 8080
+# Server (API + optional gateway/proxy). Without TALON_ADMIN_KEY the
+# administrative endpoints accept every request (development mode), and
+# without --host the server listens on every interface: set both. For a real
+# installation generate the keys into a 0600 file instead of exporting them
+# in the shell (docs/guides/add-talon-to-existing-app.md, "1. Prepare Talon").
+export TALON_ADMIN_KEY="$(openssl rand -hex 32)"
+talon serve --host 127.0.0.1 --port 8080
 
 # Verify a RUNNING server: which agents is it actually serving? (#370)
 # An explicit --url is authoritative — it errors rather than silently

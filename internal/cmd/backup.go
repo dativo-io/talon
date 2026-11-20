@@ -22,6 +22,7 @@ import (
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/registration"
 	"github.com/dativo-io/talon/internal/runtimestatus"
 	"github.com/dativo-io/talon/internal/secrets"
 )
@@ -223,6 +224,107 @@ func talonProcessRunning(cfg *config.Config) bool {
 	return false
 }
 
+// backupQuiescedHook runs once a cold backup holds every writer out, before
+// anything is copied; backupConfigCapturedHook runs after the configuration
+// was captured and before the stores are. They do nothing; tests use them
+// to try to write and to change the configuration in between.
+var (
+	backupQuiescedHook       = func() {}
+	backupConfigCapturedHook = func() {}
+)
+
+// backupMode decides whether this backup is cold, and holds every writer
+// out when it is. "Cold" is a claim about ONE coherent recovery point. That
+// no Talon process reports running does not establish it: a command can
+// still write (a registration, a secret, a reviewer's decision), and a
+// process's status record is not a lock. So the claim is made only when it
+// is enforced: every writer is held out for the whole snapshot (release
+// ends that), and a configuration that changes meanwhile fails the backup.
+// Without --cold, a backup that cannot hold the writers out is labelled
+// online; with --cold it is refused.
+func backupMode(ctx context.Context, cfg *config.Config, requireCold bool) (mode string, release func(), err error) {
+	noop := func() {}
+	if talonProcessRunning(cfg) {
+		if requireCold {
+			return "", noop, errors.New("--cold: a Talon process of this installation is running, stopped without a clean shutdown less than a minute ago, or its runtime records cannot be read; stop 'talon serve' and 'talon ui serve' and run it again. No backup was taken")
+		}
+		return backupModeOnline, noop, nil
+	}
+	release, err = quiesceWriters(ctx, cfg)
+	if err != nil {
+		if requireCold {
+			return "", noop, fmt.Errorf("--cold: %w; no backup was taken", err)
+		}
+		return backupModeOnline, noop, nil
+	}
+	return backupModeCold, release, nil
+}
+
+// configUnchangedSince fails a cold backup whose configuration files are
+// not, at its end, what was captured at its start. The files cannot be
+// locked; if they changed, the stores and the captured configuration are
+// not one point in time.
+func configUnchangedSince(ctx context.Context, cfg *config.Config, dest string, m *backupManifest) error {
+	after, err := liveConfigDigest(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("--cold: re-reading the configuration files: %w; the backup in %s is incomplete (no manifest) and must not be used", err, dest)
+	}
+	if after != m.ConfigDigest {
+		return fmt.Errorf("--cold: a configuration file (the gateway config or an agent file) changed while the backup was taken, so it is not one coherent point; the backup in %s is incomplete (no manifest) and must not be used. Stop changing the configuration and run it again", dest)
+	}
+	return nil
+}
+
+// quiesceWriters holds, until release is called, what keeps every writer of
+// this installation from committing: the registration lock (`talon agents
+// add` holds it from its first write to its last record) and a write lock
+// on each durable store that exists (no other connection, of a server or of
+// a command, can commit to it; readers are not affected). It fails when one
+// of them is held by someone else: then a writer is active, and the backup
+// would not be a single point in time.
+func quiesceWriters(ctx context.Context, cfg *config.Config) (release func(), err error) {
+	var undo []func()
+	release = func() {
+		for i := len(undo) - 1; i >= 0; i-- {
+			undo[i]()
+		}
+	}
+	unlock, err := registration.Acquire(ctx, cfg.DataDir, 2*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("the registration lock of this installation could not be taken (%w): a registration is running, or this platform has no such lock", err)
+	}
+	undo = append(undo, unlock)
+	for _, name := range backupStores {
+		path := filepath.Join(cfg.DataDir, name)
+		if _, serr := os.Stat(path); errors.Is(serr, os.ErrNotExist) {
+			continue
+		}
+		db, oerr := sql.Open("sqlite3", "file:"+path+"?_busy_timeout=2000")
+		if oerr != nil {
+			release()
+			return nil, fmt.Errorf("opening %s: %w", name, oerr)
+		}
+		conn, cerr := db.Conn(ctx)
+		if cerr == nil {
+			_, cerr = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
+		}
+		if cerr != nil {
+			if conn != nil {
+				_ = conn.Close()
+			}
+			_ = db.Close()
+			release()
+			return nil, fmt.Errorf("%s is being written by another process or command (%w): stop every Talon process and wait for running talon commands to finish", name, cerr)
+		}
+		undo = append(undo, func() {
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+			_ = conn.Close()
+			_ = db.Close()
+		})
+	}
+	return release, nil
+}
+
 // configSources lists the configuration files of this installation as
 // (name under config/, absolute path): the gateway config that carries the
 // company policy and every agent file.
@@ -302,12 +404,13 @@ func createBackup(ctx context.Context, cfg *config.Config, dest string, requireC
 	if _, err := os.Stat(cfg.EvidenceDBPath()); err != nil {
 		return nil, fmt.Errorf("no evidence store at %s: nothing to back up (%w)", cfg.EvidenceDBPath(), err)
 	}
-	mode := backupModeCold
-	if talonProcessRunning(cfg) {
-		if requireCold {
-			return nil, errors.New("--cold: a Talon process of this installation is running, stopped without a clean shutdown less than a minute ago, or its runtime records cannot be read; stop 'talon serve' and 'talon ui serve' and retry")
-		}
-		mode = backupModeOnline
+	mode, release, err := backupMode(ctx, cfg, requireCold)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if mode == backupModeCold {
+		backupQuiescedHook()
 	}
 	if err := os.MkdirAll(dest, 0o700); err != nil {
 		return nil, err
@@ -321,8 +424,14 @@ func createBackup(ctx context.Context, cfg *config.Config, dest string, requireC
 	if err := captureConfig(ctx, cfg, dest, m); err != nil {
 		return nil, err
 	}
+	backupConfigCapturedHook()
 	if err := snapshotStores(ctx, cfg, dest, m); err != nil {
 		return nil, err
+	}
+	if mode == backupModeCold {
+		if err := configUnchangedSince(ctx, cfg, dest, m); err != nil {
+			return nil, err
+		}
 	}
 	raw, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -748,7 +857,8 @@ func resumeAfterRestore(ctx context.Context, out io.Writer, cfg *config.Config) 
 	}
 	if len(holds) == 0 {
 		fmt.Fprintln(out, "No recovery hold: this installation is not running on a restored backup (or was already resumed).")
-		return nil
+		fmt.Fprintln(out, "Nothing was changed and no evidence was written.")
+		return notHeld()
 	}
 	hold := holds[0]
 	fmt.Fprintf(out, "RECOVERY HOLD: this installation runs on backup %s, taken %s.\n", hold.BackupID, hold.BackupCreatedAt.UTC().Format(time.RFC3339))
@@ -783,18 +893,24 @@ func resumeAfterRestore(ctx context.Context, out io.Writer, cfg *config.Config) 
 	if drift && !backupResumeAcceptDrift {
 		return errors.New("the configuration differs from the backup's: review it, then pass --accept-config-change to resume with the current configuration")
 	}
-	// The held operation ids, the end of the hold and the signed record of
-	// the operator's decision commit in ONE transaction (the evidence
-	// store's transactional writer). If the record cannot be written, the
-	// hold stays active and dispatch stays refused.
+	return commitResume(ctx, out, evStore, len(open), drift)
+}
+
+// commitResume ends the hold. The held operation ids, the end of the hold
+// and the signed record of the operator's decision commit in ONE
+// transaction (the evidence store's transactional writer). If the record
+// cannot be written, the hold stays active and dispatch stays refused.
+func commitResume(ctx context.Context, out io.Writer, evStore *evidence.Store, openCount int, drift bool) error {
+	db := evStore.DB()
 	id := "rr_" + uuid.New().String()[:12]
 	w := evStore.NewTxWriter()
+	resumeRaceHook()
 	ended, err := action.ResumeRecovery(ctx, db, operatorID(), backupResumeHoldOps, time.Now(), func(ctx context.Context, tx *sql.Tx, ended []action.RecoveryHold) error {
 		backups := make([]string, 0, len(ended))
 		for i := range ended {
 			backups = append(backups, ended[i].BackupID+" taken "+ended[i].BackupCreatedAt.UTC().Format(time.RFC3339))
 		}
-		reasons := []string{"backups: " + strings.Join(backups, "; "), fmt.Sprintf("open operations in the backup: %d", len(open)), "held operation ids: " + strings.Join(backupResumeHoldOps, ","), fmt.Sprintf("configuration changed since the backup: %t", drift)}
+		reasons := []string{"backups: " + strings.Join(backups, "; "), fmt.Sprintf("open operations in the backup: %d", openCount), "held operation ids: " + strings.Join(backupResumeHoldOps, ","), fmt.Sprintf("configuration changed since the backup: %t", drift)}
 		return w.Store(ctx, tx, &evidence.Evidence{
 			ID: id, CorrelationID: id, Timestamp: time.Now().UTC(), TenantID: "system", AgentID: "talon-backup",
 			InvocationType: "recovery_resumed", RequestSourceID: operatorID(),
@@ -803,11 +919,49 @@ func resumeAfterRestore(ctx context.Context, out io.Writer, cfg *config.Config) 
 	})
 	if err != nil {
 		w.Discard()
-		return fmt.Errorf("not resumed, the recovery hold is still active and nothing is dispatched: %w", err)
+		// Say what the state IS, not what it is assumed to be: another
+		// command may have ended the hold while this one failed.
+		state := "the recovery hold is still active and nothing is dispatched"
+		if now, rerr := action.ActiveRecoveryHolds(ctx, db); rerr != nil {
+			state = "whether a recovery hold is still active could not be read; check with: talon backup resume"
+		} else if len(now) == 0 {
+			state = "no recovery hold is active now (another command ended it); this command changed nothing and wrote no evidence"
+		}
+		return fmt.Errorf("not resumed by this command, %s: %w", state, err)
+	}
+	if len(ended) == 0 {
+		// The hold this command saw was ended by another `talon backup
+		// resume` before this command's transaction. Nothing happened here:
+		// no state change, no held id, no evidence record. The evidence id
+		// prepared above was never written and must not be named.
+		w.Discard()
+		fmt.Fprintln(out, "\nNot resumed by this command: the recovery hold was ended by another `talon backup resume` in the meantime.")
+		fmt.Fprintln(out, "This command changed nothing, held no operation id and wrote no evidence. The other command's record: talon audit list --agent talon-backup")
+		return notHeld()
 	}
 	w.Committed(ctx)
+	// The record committed in the transaction that ended the hold. Name it
+	// only after reading it back with a valid signature.
+	rec, err := evStore.Get(ctx, id)
+	if err != nil || rec == nil || !evStore.VerifyRecord(rec) {
+		return fmt.Errorf("the recovery hold was ended, but its evidence record %s could not be read back and verified (%v): check the evidence store before relying on it", id, err)
+	}
 	fmt.Fprintf(out, "\nResumed: %d hold(s) ended, %d operation id(s) held for good. Evidence: %s (signed, recovery_resumed).\n", len(ended), len(backupResumeHoldOps), id)
 	return nil
+}
+
+// resumeRaceHook runs between a resume's reading of the active hold and its
+// transaction. It does nothing; tests use it to let another resume win.
+var resumeRaceHook = func() {}
+
+// notHeld is the error of a resume that did not happen although the
+// operator named operation ids to hold: those ids are NOT held, and saying
+// nothing would let the operator believe they are.
+func notHeld() error {
+	if len(backupResumeHoldOps) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the operation ids named with --hold-operation were NOT held by this command (no recovery hold was ended by it): %s", strings.Join(backupResumeHoldOps, ", "))
 }
 
 func init() {

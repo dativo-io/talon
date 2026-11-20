@@ -2,16 +2,22 @@ package doctor
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/registration"
 	"github.com/dativo-io/talon/internal/secrets"
 )
 
@@ -614,4 +620,136 @@ func TestCheckConfigKeys(t *testing.T) {
 		r := checkConfigKeys(p)
 		assert.Equal(t, "warn", r.Status)
 	})
+}
+
+// An intent record without a completion or rollback record is an
+// interrupted `talon agents add`: doctor names it and says what to do; a
+// terminal record clears the finding.
+func TestRun_ReportsInterruptedRegistrations(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SIGNING_KEY", "doctor-test-signing-key-000000001")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	find := func() CheckResult {
+		for _, c := range Run(ctx, Options{}).Checks {
+			if c.Name == "agent_registrations" {
+				return c
+			}
+		}
+		t.Fatal("no agent_registrations check")
+		return CheckResult{}
+	}
+	require.Equal(t, "pass", find().Status)
+
+	store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	require.NoError(t, err)
+	put := func(id, typ string) {
+		require.NoError(t, store.Store(ctx, &evidence.Evidence{
+			ID: id, CorrelationID: "al_corr", TenantID: "default", AgentID: "refund-bot", Timestamp: time.Now().UTC(), InvocationType: typ,
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: typ},
+		}))
+	}
+	put("al_intent", registration.TypeIntent)
+
+	// No registration is running (the lock is free): the intent without a
+	// terminal record is an INTERRUPTED registration. The advice never
+	// tells the operator to delete something.
+	c := find()
+	require.Equal(t, "warn", c.Status)
+	require.Contains(t, c.Message, "INTERRUPTED")
+	require.Contains(t, c.Message, "refund-bot (tenant default, intent al_intent")
+	require.Contains(t, c.Fix, "talon agents add <name>")
+	require.Contains(t, c.Fix, "removes ONLY what the signed intent proves")
+	require.NotContains(t, c.Fix, "rm ")
+
+	// A registration is running now (it holds the registration lock): the
+	// same intent is work IN PROGRESS, not a fault and not an interruption
+	// (#567 review).
+	release, err := registration.Acquire(ctx, cfg.DataDir, time.Second)
+	require.NoError(t, err)
+	c = find()
+	require.Equal(t, "pass", c.Status, "an active registration is not a problem to fix")
+	require.Contains(t, c.Message, "IN PROGRESS")
+	require.Contains(t, c.Message, "al_intent")
+	require.NotContains(t, c.Message, "INTERRUPTED")
+	require.Contains(t, c.Fix, "Nothing to do while it runs")
+	release()
+	require.Contains(t, find().Message, "INTERRUPTED", "once the registration is gone without a terminal record, it is interrupted")
+
+	put("al_rollback", registration.TypeRolledBack)
+	require.NoError(t, store.Close())
+	require.Equal(t, "pass", find().Status)
+}
+
+// What is said for each thing that can be established about unresolved
+// registrations: in progress, interrupted, unresolved when the lock cannot
+// be probed, a partial list, and an intent that does not verify.
+func TestRegistrationsResult_StatesAreKeptApart(t *testing.T) {
+	at := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	one := registration.Lookup{Complete: true, Unresolved: []registration.Unresolved{{Name: "refund-bot", Tenant: "acme", IntentID: "al_1", At: at, Verified: true}}}
+
+	c := registrationsResult("agent_registrations", registration.Lookup{Complete: true}, registration.LockFree)
+	require.Equal(t, "pass", c.Status)
+	require.Equal(t, "No unresolved use-case registration.", c.Message)
+
+	c = registrationsResult("agent_registrations", one, registration.LockUnknown)
+	require.Equal(t, "warn", c.Status)
+	require.Contains(t, c.Message, "UNRESOLVED")
+	require.Contains(t, c.Message, "cannot be established")
+	require.NotContains(t, c.Message, "INTERRUPTED")
+	require.NotContains(t, c.Message, "IN PROGRESS")
+
+	// A lookup that could not list everything never reads as "none".
+	c = registrationsResult("agent_registrations", registration.Lookup{Complete: false}, registration.LockFree)
+	require.Equal(t, "warn", c.Status)
+	require.Contains(t, c.Message, "more unresolved registrations than one lookup reads")
+	partial := one
+	partial.Complete = false
+	c = registrationsResult("agent_registrations", partial, registration.LockFree)
+	require.Contains(t, c.Message, "INTERRUPTED")
+	require.Contains(t, c.Message, "older ones are not")
+
+	unverified := registration.Lookup{Complete: true, Unresolved: []registration.Unresolved{{Name: "refund-bot", Tenant: "acme", IntentID: "al_1", At: at}}}
+	c = registrationsResult("agent_registrations", unverified, registration.LockFree)
+	require.Contains(t, c.Message, "the intent record does NOT verify")
+}
+
+// #568 review. A restored installation that has not been resumed is visible
+// in `talon doctor`, with what the hold covers and what it does not.
+func TestCheckRecoveryHold(t *testing.T) {
+	ctx := context.Background()
+	cfg := &config.Config{DataDir: t.TempDir(), SigningKey: "0123456789abcdef0123456789abcdef0123456789abcdef"}
+	store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if got := checkRecoveryHold(cfg); got.Status != "pass" || got.Message != "No recovery hold." {
+		t.Fatalf("a live installation: %+v", got)
+	}
+	if err := action.StampRecoveryHold(ctx, store.DB(), "bk_1", time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC), "cfg"); err != nil {
+		t.Fatal(err)
+	}
+	got := checkRecoveryHold(cfg)
+	if got.Status != "fail" {
+		t.Fatalf("an installation on a restored backup must fail the check: %+v", got)
+	}
+	for _, want := range []string{"RECOVERY HOLD", "bk_1", "2026-11-20T10:00:00Z", "every Action Gateway claim is refused", "does not cover LLM gateway requests or MCP proxy tool calls"} {
+		if !strings.Contains(got.Message, want) {
+			t.Errorf("the message lacks %q: %s", want, got.Message)
+		}
+	}
+	if !strings.Contains(got.Fix, "talon backup resume --reconciled") {
+		t.Errorf("the fix must name the resume command: %s", got.Fix)
+	}
+	if _, err := action.ResumeRecovery(ctx, store.DB(), "operator", []string{"op-1"}, time.Now(), func(context.Context, *sql.Tx, []action.RecoveryHold) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	got = checkRecoveryHold(cfg)
+	if got.Status != "pass" || !strings.Contains(got.Message, "1 operation id(s) are held for good") {
+		t.Fatalf("after the resume: %+v", got)
+	}
 }

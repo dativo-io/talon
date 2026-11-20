@@ -12,7 +12,9 @@ Group=talon
 # /var/lib/talon: ProtectHome=yes hides the talon user's home, so neither the
 # default data directory (~/.talon) nor ~/.talon/talon.config.yaml is usable.
 WorkingDirectory=/etc/talon
-ExecStart=/usr/local/bin/talon serve --port 8080 --gateway
+# Loopback only: Talon terminates no TLS. Serve other machines through a
+# TLS-terminating proxy; change the listener only with a reviewed drop-in.
+ExecStart=/usr/local/bin/talon serve --host 127.0.0.1 --port 8080 --gateway
 Restart=on-failure
 RestartSec=5
 

@@ -16,6 +16,7 @@ import (
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/registration"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 )
@@ -264,6 +265,7 @@ func TestBackup_ResumeAfterRestore(t *testing.T) {
 	out.Reset()
 	err = resumeAfterRestore(ctx, &out, cfg)
 	require.ErrorContains(t, err, "the recovery hold is still active")
+	require.ErrorContains(t, err, "not resumed by this command")
 	require.NotContains(t, out.String(), "Resumed:")
 	held, err := action.ActiveRecoveryHolds(ctx, inject)
 	require.NoError(t, err)
@@ -290,4 +292,192 @@ func TestBackup_ResumeAfterRestore(t *testing.T) {
 	holds, err := action.ActiveRecoveryHolds(ctx, store.DB())
 	require.NoError(t, err)
 	require.Empty(t, holds)
+}
+
+// #568 review. A resume reports a signed record only when it wrote one. Two
+// operators resume at the same time: the second one's transaction finds no
+// active hold. It must not print an evidence id (the id it prepared was
+// never stored), must not say that it resumed, and must say that the
+// operation ids it was asked to hold are NOT held. A later repeat is the
+// same: nothing changes, nothing is recorded.
+func TestBackup_ResumeReportsEvidenceOnlyWhenItWroteIt(t *testing.T) {
+	ctx := context.Background()
+	cfg := backupInstallation(t)
+	dest := filepath.Join(t.TempDir(), "b")
+	_, err := createBackup(ctx, cfg, dest, false)
+	require.NoError(t, err)
+	reset := func() {
+		backupResumeReconciled, backupResumeHoldOps, backupResumeAcceptDrift = false, nil, false
+		resumeRaceHook = func() {}
+	}
+	reset()
+	t.Cleanup(reset)
+	b, err := os.ReadFile(filepath.Join(dest, "evidence.db"))
+	require.NoError(t, err)
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_ = os.Remove(cfg.EvidenceDBPath() + suffix)
+	}
+	require.NoError(t, os.WriteFile(cfg.EvidenceDBPath(), b, 0o600))
+
+	evidenceOfResumes := func() []evidence.Evidence {
+		store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+		require.NoError(t, err)
+		defer store.Close()
+		rows, err := store.List(ctx, "system", "talon-backup", time.Time{}, time.Time{}, 10)
+		require.NoError(t, err)
+		for i := range rows {
+			require.True(t, store.VerifyRecord(&rows[i]))
+		}
+		return rows
+	}
+	heldIDs := func() []string {
+		db, err := sql.Open("sqlite3", cfg.EvidenceDBPath())
+		require.NoError(t, err)
+		defer db.Close()
+		rows, err := db.QueryContext(ctx, `SELECT operation_id FROM recovery_held_operations ORDER BY operation_id`)
+		require.NoError(t, err)
+		defer rows.Close()
+		var ids []string
+		for rows.Next() {
+			var id string
+			require.NoError(t, rows.Scan(&id))
+			ids = append(ids, id)
+		}
+		require.NoError(t, rows.Err())
+		return ids
+	}
+
+	// Operator B's command has read the active hold. Before its transaction,
+	// operator A resumes (holding op-a) and commits.
+	var winner bytes.Buffer
+	resumeRaceHook = func() {
+		resumeRaceHook = func() {}
+		mine := backupResumeHoldOps
+		backupResumeHoldOps = []string{"op-a"}
+		require.NoError(t, resumeAfterRestore(ctx, &winner, cfg))
+		backupResumeHoldOps = mine
+	}
+	backupResumeReconciled, backupResumeHoldOps = true, []string{"op-b"}
+	var out bytes.Buffer
+	err = resumeAfterRestore(ctx, &out, cfg)
+	require.Contains(t, winner.String(), "Resumed: 1 hold(s) ended, 1 operation id(s) held for good. Evidence: rr_")
+
+	require.Error(t, err, "the ids B asked to hold are not held: that is not a success")
+	require.ErrorContains(t, err, "were NOT held by this command")
+	require.ErrorContains(t, err, "op-b")
+	require.Contains(t, out.String(), "Not resumed by this command")
+	require.Contains(t, out.String(), "wrote no evidence")
+	require.NotContains(t, out.String(), "Resumed:")
+	require.NotContains(t, out.String(), "Evidence: rr_", "an evidence id that was never stored:\n%s", out.String())
+	records := evidenceOfResumes()
+	require.Len(t, records, 1, "exactly one signed record: the winner's")
+	require.Contains(t, winner.String(), records[0].ID, "the id the winner printed is the id that is stored")
+	require.Equal(t, []string{"op-a"}, heldIDs(), "only the winner's id is held")
+
+	// A repeat, with and without ids to hold: nothing changes, nothing is recorded.
+	out.Reset()
+	err = resumeAfterRestore(ctx, &out, cfg)
+	require.ErrorContains(t, err, "were NOT held by this command")
+	require.Contains(t, out.String(), "No recovery hold")
+	require.Contains(t, out.String(), "no evidence was written")
+	require.NotContains(t, out.String(), "rr_")
+	backupResumeHoldOps = nil
+	out.Reset()
+	require.NoError(t, resumeAfterRestore(ctx, &out, cfg))
+	require.Contains(t, out.String(), "No recovery hold")
+	require.NotContains(t, out.String(), "rr_")
+	require.Len(t, evidenceOfResumes(), 1)
+	require.Equal(t, []string{"op-a"}, heldIDs())
+}
+
+// #568 review. "Cold" is one coherent recovery point. That no Talon process
+// reports running does not establish it: a command can still write. A cold
+// backup therefore holds every writer out for the whole snapshot (the
+// registration lock, a write lock on every store) and fails when the
+// configuration changes meanwhile; it refuses to start while a writer is
+// active.
+func TestBackup_ColdHoldsEveryWriterOut(t *testing.T) {
+	ctx := context.Background()
+	cfg := backupInstallation(t)
+	t.Cleanup(func() { backupQuiescedHook = func() {} })
+	writer := func(name string) *sql.DB {
+		db, err := sql.Open("sqlite3", "file:"+filepath.Join(cfg.DataDir, name)+"?_busy_timeout=200")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		return db
+	}
+
+	// A command is writing to the evidence store: no cold backup.
+	busy := writer("evidence.db")
+	conn, err := busy.Conn(ctx)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
+	require.NoError(t, err)
+	dest := filepath.Join(t.TempDir(), "while-writing")
+	_, err = createBackup(ctx, cfg, dest, true)
+	require.ErrorContains(t, err, "--cold")
+	require.ErrorContains(t, err, "evidence.db is being written")
+	require.ErrorContains(t, err, "no backup was taken")
+	_, statErr := os.Stat(filepath.Join(dest, "manifest.json"))
+	require.True(t, os.IsNotExist(statErr))
+	_, err = conn.ExecContext(ctx, "ROLLBACK")
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	// A registration is running (it holds the installation's lock): no cold backup.
+	unlock, err := registration.Acquire(ctx, cfg.DataDir, time.Second)
+	require.NoError(t, err)
+	_, err = createBackup(ctx, cfg, filepath.Join(t.TempDir(), "while-registering"), true)
+	require.ErrorContains(t, err, "the registration lock of this installation could not be taken")
+	unlock()
+
+	// While a cold backup runs, nobody can commit to a store or register.
+	var tried int
+	backupQuiescedHook = func() {
+		for _, name := range backupStores {
+			if _, err := os.Stat(filepath.Join(cfg.DataDir, name)); err != nil {
+				continue
+			}
+			_, werr := writer(name).ExecContext(ctx, "CREATE TABLE IF NOT EXISTS written_during_backup (x)")
+			require.Error(t, werr, "a write to %s committed during a cold backup", name)
+			require.Contains(t, werr.Error(), "locked")
+			tried++
+		}
+		_, lerr := registration.Acquire(ctx, cfg.DataDir, 100*time.Millisecond)
+		require.ErrorIs(t, lerr, registration.ErrLockBusy, "a registration could start during a cold backup")
+	}
+	good := filepath.Join(t.TempDir(), "cold")
+	m, err := createBackup(ctx, cfg, good, true)
+	require.NoError(t, err)
+	require.Equal(t, backupModeCold, m.Mode)
+	require.GreaterOrEqual(t, tried, 1)
+	_, err = verifyBackup(ctx, cfg, good)
+	require.NoError(t, err)
+	// The locks are released: the installation writes again.
+	_, err = writer("evidence.db").ExecContext(ctx, "CREATE TABLE IF NOT EXISTS written_after_backup (x)")
+	require.NoError(t, err)
+	unlock, err = registration.Acquire(ctx, cfg.DataDir, time.Second)
+	require.NoError(t, err)
+	unlock()
+
+	// A configuration file changes after it was captured and before the
+	// backup finished: not one point in time. The backup fails, says why,
+	// and leaves no manifest: `talon backup verify` cannot accept it.
+	backupQuiescedHook = func() {}
+	backupConfigCapturedHook = func() {
+		require.NoError(t, os.WriteFile(os.Getenv("TALON_GATEWAY_CONFIG"), []byte("gateway:\n  enabled: true\n  # edited during the backup\n"), 0o600))
+	}
+	t.Cleanup(func() { backupConfigCapturedHook = func() {} })
+	changed := filepath.Join(t.TempDir(), "config-changed")
+	_, err = createBackup(ctx, cfg, changed, true)
+	require.ErrorContains(t, err, "changed while the backup was taken")
+	require.ErrorContains(t, err, "must not be used")
+	_, statErr = os.Stat(filepath.Join(changed, "manifest.json"))
+	require.True(t, os.IsNotExist(statErr), "an incoherent backup has no manifest")
+	_, err = verifyBackup(ctx, cfg, changed)
+	require.Error(t, err, "and does not verify")
+	backupConfigCapturedHook = func() {}
+	// The locks of the failed backup were released too.
+	_, err = createBackup(ctx, cfg, filepath.Join(t.TempDir(), "cold-again"), true)
+	require.NoError(t, err)
 }
