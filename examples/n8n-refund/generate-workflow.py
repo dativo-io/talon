@@ -128,8 +128,18 @@ nodes = [
          BASE + "/v1/action-operations/" + OP_PATH + "/attempts"),
     # After the claim was sent, anything but a recorded success is NOT proof
     # that no refund happened: unknown and unexpected answers say so.
+    # The claim's answer is read the same way: only Talon's own answers for
+    # this exact operation count. 200 is a claim that ran now. 409 with
+    # operation_already_succeeded / operation_outcome_unknown is Talon's
+    # record of an earlier claim (a legitimate replay). A success or unknown
+    # status in any other answer (another HTTP status, another code, another
+    # operation) is not an outcome.
     switch("Outcome", [2140, 300],
-           "={{ $json.body && " + is_requested(OP) + " ? String(" + OP + ".operation_status) : ($json.body && $json.body.error && " + is_requested(ERR_OP) + " ? String(" + ERR_OP + ".operation_status) : 'NONE') }}",
+           "={{ ($json.statusCode === 200 && $json.body && " + is_requested(OP) + ") ? String(" + OP + ".operation_status)"
+           " : ($json.statusCode === 409 && $json.body && $json.body.error && " + is_requested(ERR_OP) + " && "
+           "(($json.body.error.code === 'operation_already_succeeded' && " + ERR_OP + ".operation_status === 'succeeded')"
+           " || ($json.body.error.code === 'operation_outcome_unknown' && " + ERR_OP + ".operation_status === 'unknown'))"
+           " ? String(" + ERR_OP + ".operation_status) : 'NONE') }}",
            [("succeeded", "succeeded"), ("unknown", "unknown")]),
     respond("Respond: refunded", [2360, 200], 200,
             "={{ JSON.stringify({ result: \"refunded\", operation_id: " + OP_ID + ", verify: \"talon audit verify --operation \" + " + OP_ID + " }) }}"),

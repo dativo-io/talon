@@ -111,7 +111,10 @@ func checkN8nAnswersAreValidated(t *testing.T, wf *n8nWorkflow) {
 		{"Talon verdict", "$json.body.operation.verdict === 'REQUIRE_APPROVAL' && ($json.statusCode === 200 || $json.statusCode === 202)"},
 		{"Talon verdict", "$json.body.operation.verdict === 'DENY' && $json.statusCode === 403 && $json.body.operation.operation_status === 'denied'"},
 		{"Approval state", "$json.statusCode === 200"},
-		{"Outcome", ""},
+		{"Outcome", "$json.statusCode === 200 && $json.body"},
+		{"Outcome", "$json.statusCode === 409 && $json.body && $json.body.error"},
+		{"Outcome", "$json.body.error.code === 'operation_already_succeeded' && $json.body.error.operation.operation_status === 'succeeded'"},
+		{"Outcome", "$json.body.error.code === 'operation_outcome_unknown' && $json.body.error.operation.operation_status === 'unknown'"},
 	} {
 		expr := n8nSwitchExpression(t, wf, tc.node)
 		for _, want := range []string{

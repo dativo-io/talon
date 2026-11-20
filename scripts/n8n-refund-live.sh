@@ -124,6 +124,8 @@ refunds() { curl -fsS "http://127.0.0.1:${REFUND_PORT}/count" | python3 -c 'impo
 #   tamper-arguments  ... carries other arguments than were requested
 #   tamper-status     ... is delivered with a conflict status
 #   tamper-body       ... is not JSON
+#   tamper-claim      the answer to a claim is delivered with a server-error
+#                     status although its body says "succeeded"
 cat >"$WORK/link.py" <<'PY'
 import json, sys, threading, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -149,7 +151,10 @@ class H(BaseHTTPRequestHandler):
         if mode == "cut-claim" and self.command == "POST" and self.path.endswith("/attempts"):
             with lock: state["cut"] += 1   # Talon has answered; the caller never hears it
             self.close_connection = True; self.connection.close(); return
-        if mode.startswith("tamper-") and self.command == "POST" and self.path == "/v1/action-operations":
+        if mode == "tamper-claim" and self.command == "POST" and self.path.endswith("/attempts"):
+            with lock: state["tampered"] += 1
+            code = 500
+        if mode.startswith("tamper-") and mode != "tamper-claim" and self.command == "POST" and self.path == "/v1/action-operations":
             with lock: state["tampered"] += 1
             if mode == "tamper-status": code = 409
             elif mode == "tamper-body": body = b'{"operation": {"verdict": "ALLOW"'
@@ -410,6 +415,19 @@ check "Talon's record of the operation is authoritative" "$(operation refund-T-3
 link mode/ok >/dev/null
 check "the same request again reports the recorded refund" "$(call "$(refund T-34 34.00)")" "200 refunded"
 
+echo; echo "== a contradictory answer to the claim is not a refund"
+# Talon claims and dispatches; its answer arrives with a server-error status
+# although the body says "succeeded". The workflow must not report a refund
+# from it. The same request again is a legitimate replay: Talon answers from
+# its record (409 operation_already_succeeded) and that IS reported.
+before_contradiction="$(refunds)"
+link mode/tamper-claim >/dev/null
+check "a 'succeeded' body under a server-error status is not reported as refunded" "$(call "$(refund T-35 35.00)")" "409 not_completed"
+link mode/ok >/dev/null
+check "Talon had dispatched that refund once" "$(refunds)" "$((before_contradiction + 1))"
+check "the same request again is a legitimate replay and reports the recorded refund" "$(call "$(refund T-35 35.00)")" "200 refunded"
+check "contradictory claim answer: no second dispatch" "$(refunds)" "$((before_contradiction + 1))"
+
 echo; echo "== Talon unavailable before the operation exists"
 before_outage="$(refunds)"
 kill "$talon_pid"; wait "$talon_pid" 2>/dev/null || true
@@ -423,10 +441,61 @@ check "every call the refund service received carried Talon's idempotency key" "
 s = json.load(sys.stdin); keys = s["keys"]
 print("yes" if len(keys) == s["calls"] and all(keys) else "no")')" "yes"
 check "the workflow export names no refund service" "$(grep -c "127.0.0.1:${REFUND_PORT}\|refunds.internal" "$WORK/workflow.json" || true)" "0"
-for op in refund-T-30 refund-T-50 refund-T-75 refund-T-5001 refund-T-500 refund-T-501 refund-T-900 refund-T-76 refund-T-77 refund-T-31 refund-T-32 refund-T-34 refund-T-30-second; do
-  out="$(talon audit verify --operation "$op" 2>&1 || true)"
-  check "lifecycle of $op verifies" "$(echo "$out" | grep -c 'INVALID' || true)" "0"
+# Strict: the verifier must exit 0 AND print "Lifecycle: VALID". The absence
+# of the word INVALID proves nothing (a missing or incomplete lifecycle does
+# not print it either).
+lifecycle() { # lifecycle <operation id> [data dir] → "valid", or what the verifier said instead
+  local out
+  if ! out="$(cd "$WORK" && TALON_DATA_DIR="${2:-$TALON_DATA_DIR}" "$TALON_BIN" audit verify --operation "$1" 2>&1)"; then echo "not valid (the verifier failed)"; return 0; fi
+  case "$(printf '%s\n' "$out" | sed -n 's/^Lifecycle: //p')" in
+    VALID) echo valid ;;
+    "") echo "not valid (no lifecycle verdict)" ;;
+    *) echo "not valid ($(printf '%s\n' "$out" | sed -n 's/^Lifecycle: //p'))" ;;
+  esac
+}
+# Every operation that reached an end: allowed, approved, denied, rejected,
+# unknown, and the two whose claim answer was lost or altered on the way.
+for op in refund-T-30 refund-T-50 refund-T-75 refund-T-5001 refund-T-500 refund-T-501 refund-T-900 refund-T-76 refund-T-31 refund-T-32 refund-T-34 refund-T-35 refund-T-30-second; do
+  check "lifecycle of $op: the verifier exits 0 and prints Lifecycle: VALID" "$(lifecycle "$op")" "valid"
 done
+# The approval that expired undecided was never claimed, and Talon records
+# an expiry when the operation is next claimed. Its lifecycle is therefore
+# open, and the verifier says so: it must not read VALID, and it shows that
+# nothing was attempted.
+check "the expired, never claimed operation has an open lifecycle, not a VALID one" "$(lifecycle refund-T-77)" "not valid (INCOMPLETE)"
+check "the expired operation was never attempted" "$(operation refund-T-77 operation_status) $(operation refund-T-77 attempt_count)" "awaiting_approval 0"
+# The assertion can fail: missing, altered and incomplete evidence do not
+# pass it. Copies of the evidence store are altered, with Talon stopped.
+kill "$talon_pid"; wait "$talon_pid" 2>/dev/null || true
+check "an operation without evidence does not pass" "$(lifecycle refund-NONE-0 | cut -c1-9)" "not valid"
+alter_evidence() { # alter_evidence <copy dir> <operation id> alter|drop → rows touched
+  cp -R "$TALON_DATA_DIR" "$1"
+  python3 - "$1" "$2" "$3" <<'PY'
+import glob, sqlite3, sys
+touched = 0
+for path in glob.glob(sys.argv[1] + "/*.db"):
+    db = sqlite3.connect(path)
+    try:
+        like = '%"' + sys.argv[2] + '"%'
+        if sys.argv[3] == "alter":
+            touched += db.execute("UPDATE evidence SET evidence_json = replace(evidence_json, 'create_refund_request', 'create_refund_requesX') WHERE evidence_json LIKE ?", (like,)).rowcount
+        else:
+            row = db.execute("SELECT rowid FROM evidence WHERE evidence_json LIKE ? ORDER BY rowid LIMIT 1", (like,)).fetchone()
+            if row: touched += db.execute("DELETE FROM evidence WHERE rowid = ?", row).rowcount
+        db.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        db.close()
+print(touched)
+PY
+}
+check "evidence of refund-T-30 was altered in a copy of the store" "$([ "$(alter_evidence "$WORK/evidence-altered" refund-T-30 alter)" -ge 1 ] && echo yes)" "yes"
+check "altered evidence does not pass" "$(lifecycle refund-T-30 "$WORK/evidence-altered" | cut -c1-9)" "not valid"
+check "the first record of refund-T-75 was removed in a copy of the store" "$(alter_evidence "$WORK/evidence-incomplete" refund-T-75 drop)" "1"
+check "an incomplete lifecycle does not pass" "$(lifecycle refund-T-75 "$WORK/evidence-incomplete" | cut -c1-9)" "not valid"
+check "the untouched store still passes" "$(lifecycle refund-T-30)" "valid"
+start_talon
 check "talon agents show names the use case's newest Action Gateway record, from this installation's evidence" "$(view | grep -c '· Action Gateway ·' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
 echo "--- talon agents show refund-bot"; view | sed -n 1,24p
 echo "--- refund service: $(refunds) calls"

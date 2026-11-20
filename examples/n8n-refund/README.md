@@ -11,7 +11,7 @@ The refund is a fixture. The action is `create_refund_request` and the "refund s
 | If you want | Go to |
 |---|---|
 | The generic contract, an importable workflow and its proof | this directory |
-| A recognizable customer-support journey with order context and a buyer narrative | `dativo-io/talon-full-demo` |
+| A recognizable customer-support journey with order context and a buyer narrative | `dativo-io/talon-full-demo`: [issue #34](https://github.com/dativo-io/talon-full-demo/issues/34), [PR #52](https://github.com/dativo-io/talon-full-demo/pull/52) |
 | A polished template to install from the n8n community | not published yet ([handoff contract](#handoff-to-a-community-template)) |
 
 ## Who does what
@@ -25,7 +25,7 @@ The refund is a fixture. The action is `create_refund_request` and the "refund s
 | waits for approval and branches on Talon's answers | keeps the durable operation state | produces the actual business outcome |
 | reports the outcome to its caller | **calls the business adapter itself** and signs the evidence | |
 
-**n8n never calls the business adapter.** The workflow export contains no address of it. When Talon denies, or cannot be reached, nothing is dispatched: there is no fallback path.
+**n8n never calls the business adapter.** The workflow export contains no address of it, and there is no fallback path. When Talon denies, nothing is dispatched. When Talon cannot be reached **before the claim**, that run dispatches nothing. When the connection fails **during the claim**, the outcome may be unknown: Talon may have dispatched. Never retry blindly; read the operation.
 
 ## What happens
 
@@ -51,7 +51,7 @@ POST /webhook/talon-refund  {ticket_id, amount, currency, request_id?}      call
 | `200 refunded` | **Yes, once.** A repeated request for the same operation gets the same answer from Talon's record, with no second dispatch. |
 | `202 unknown` | **Unknown.** Talon dispatched and could not observe the result. It may have happened. Do not retry; reconcile with the business system. Repeating the request reports `unknown` again and dispatches nothing. |
 | `409 not_completed` | **Read the operation.** The claim was refused or failed; `talon_code` says why (for example `attempt_already_in_progress` when another run is claiming the same operation). |
-| The run fails (HTTP 500 from n8n) | **Before the claim: no.** Talon was unreachable, nothing was dispatched. **During the claim: unknown.** A connection that breaks while the claim is in flight does not show that nothing was executed. Read the operation (`GET /v1/action-operations/<operation_id>` with the use case's key) or send the same request again: Talon answers from its record. |
+| The run fails (HTTP 500 from n8n) | **Before the claim: not by this run.** Talon was unreachable, so this run dispatched nothing (an earlier run of the same operation may have). **During the claim: potentially unknown.** A connection that breaks while the claim is in flight does not show that nothing was executed. Do not retry blindly: read the operation (`GET /v1/action-operations/<operation_id>` with the use case's key), or send the same request with the same ids, which Talon answers from its record without dispatching again. |
 
 Talon dispatches an authorized operation at most once. That is not "exactly once" in the business system: if you need that, the business adapter must provide it (Talon sends an `Idempotency-Key` with every dispatch).
 
@@ -174,6 +174,7 @@ What Talon records for an operation (`operation_status`), and what the workflow 
 | `denied` | denied before any dispatch | `403 denied` |
 | `awaiting_approval` | a reviewer has not decided yet | keeps waiting until the approval's expiry |
 | `cancelled` (approval `rejected`, `expired` or `invalidated`) | not approved; nothing was dispatched | `409 not_approved` |
+| `awaiting_approval`, past the approval's expiry | not approved; nothing was dispatched. Talon records the expiry when the operation is next claimed; the workflow does not claim an operation that is not authorized, so until then the record stays open and `talon audit verify --operation` reads `Lifecycle: INCOMPLETE` | `409 not_approved` |
 | `authorized` | allowed, or approved; not yet claimed | claims it |
 | `executing` | an attempt is in progress | `409 not_completed` for a second claimant |
 | `succeeded` | Talon dispatched and observed the declared success | `200 refunded` |
@@ -204,10 +205,12 @@ For a use case whose requests are Action Gateway operations, `talon agents show`
 - rejection and expiry: zero dispatch;
 - changed arguments under an existing operation: conflict, zero dispatch; exact replay: no further dispatch;
 - two operations on one ticket with stable `request_id`s; four concurrent identical requests: one dispatch;
-- Talon unreachable before the operation exists: the run fails, zero dispatch;
+- Talon unreachable before the operation exists: the run fails and dispatches nothing;
 - the connection to Talon lost during the claim: the run fails, Talon's record says `succeeded`, the same request again reports the recorded refund, no second dispatch;
 - the refund service accepts the request and loses its answer: `unknown`, never retried;
-- every call the refund service received carried Talon's idempotency key; the workflow export names no refund service; every lifecycle verifies with `talon audit verify --operation`.
+- a `succeeded` body delivered under a server-error status is not reported as a refund; the same request again is a legitimate replay and is;
+- every call the refund service received carried Talon's idempotency key; the workflow export names no refund service;
+- for every operation that reached an end, `talon audit verify --operation` exits 0 and prints `Lifecycle: VALID`; a missing operation, altered evidence and an incomplete lifecycle do not pass. The approval that expired undecided reads `Lifecycle: INCOMPLETE` with zero attempts, as described under [operation states](#operation-states).
 
 | Level | Status |
 |---|---|
@@ -215,6 +218,7 @@ For a use case whose requests are Action Gateway operations, `talon agents show`
 | A Talon release candidate | **not run**: `v1.17.0-rc.1` predates part of what this page uses and is no proof for it |
 | A published stable Talon release | **not run**: the latest stable, v1.16.1, does not contain argument rules, `talon approvals` or `talon agents add` |
 | Other n8n releases, n8n Cloud, queue mode with several workers, a load test | **not run**. n8n 2.48.5 is the only tested release; do not assume that the workflow JSON imports unchanged elsewhere |
+| The Full Demo's n8n | **not verified.** This reference is tested on n8n **2.48.5**; `talon-full-demo` pins n8n **2.30.4**. Compatibility of this workflow with 2.30.4 is unverified |
 
 ## Reuse the pattern for another action
 
@@ -246,4 +250,4 @@ It must keep: no key in the export, no call to the business adapter from n8n, no
 - **What Talon shows:** what it decided and what it dispatched. It does not see what n8n did with an answer, or anything n8n does outside these nodes.
 - **Waiting:** the Wait node polls every 5 seconds until the approval's own expiry; the workflow's `executionTimeout` (1 h) is a second bound.
 - **Effects:** the fixture returns HTTP 201 and performs no payment. A real adapter must validate identity, eligibility and refundable balance, be idempotent, and expose a success contract that reflects the business effect.
-- **Ownership:** Talon OSS owns this contract and fixture. `talon-full-demo` owns the business journey and its presentations. The template repository will own community distribution.
+- **Ownership:** Talon OSS owns this integration contract and fixture. `talon-full-demo` owns the Shopify customer-support journey ([issue #34](https://github.com/dativo-io/talon-full-demo/issues/34), [PR #52](https://github.com/dativo-io/talon-full-demo/pull/52)). A future templates repository owns community distribution.
