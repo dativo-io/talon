@@ -42,6 +42,7 @@ const (
 	reasonKeyOwnership = "vault ownership token: "
 	reasonAgentFile    = "config: "
 	reasonFileSHA256   = "agent file sha256: "
+	reasonMarker       = "registration marker: "
 )
 
 // Commitments are the artifacts a registration states, in its signed intent,
@@ -51,6 +52,14 @@ type Commitments struct {
 	KeyOwnershipToken string
 	AgentFile         string
 	FileSHA256        string
+	// Marker is the random, non-secret value this registration wrote into
+	// the agent file it generated. The file's content is otherwise the same
+	// for every registration of the same name, owner and tenant, so its
+	// digest alone would also match a file someone else created; with the
+	// marker, the digest is this registration's alone. Empty on an intent
+	// written before markers existed: such an intent proves nothing about
+	// a file.
+	Marker string
 }
 
 // Reasons renders the commitments as entries of the intent's reasons.
@@ -58,6 +67,7 @@ func (c Commitments) Reasons() []string {
 	return []string{
 		reasonAgentFile + c.AgentFile,
 		reasonFileSHA256 + c.FileSHA256,
+		reasonMarker + c.Marker,
 		reasonSecretName + c.SecretName,
 		reasonKeyOwnership + c.KeyOwnershipToken,
 	}
@@ -71,6 +81,8 @@ func commitmentsOf(reasons []string) Commitments {
 			c.KeyOwnershipToken = strings.TrimPrefix(r, reasonKeyOwnership)
 		case strings.HasPrefix(r, reasonFileSHA256):
 			c.FileSHA256 = strings.TrimPrefix(r, reasonFileSHA256)
+		case strings.HasPrefix(r, reasonMarker):
+			c.Marker = strings.TrimPrefix(r, reasonMarker)
 		case strings.HasPrefix(r, reasonSecretName):
 			c.SecretName = strings.TrimPrefix(r, reasonSecretName)
 		case strings.HasPrefix(r, reasonAgentFile):

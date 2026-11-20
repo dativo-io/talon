@@ -13,7 +13,7 @@ import (
 )
 
 // LockSupported: this platform has the advisory lock the registration lock
-// is built on.
+// is built on (flock: Linux, macOS and the other Unix systems).
 const LockSupported = true
 
 // Acquire takes the installation's registration lock, waiting up to wait for

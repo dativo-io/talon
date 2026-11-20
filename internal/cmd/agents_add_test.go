@@ -655,8 +655,8 @@ func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 	}{
 		{stepIntentRecorded, false, false, "observed now: neither the key version nor the agent file its signed intent committed to exists"},
 		{stepKeyStored, true, false, "recovery: removed the key version (its vault ownership token equals the one in the signed intent; the key was never shown)"},
-		{stepFilePublished, true, true, "recovery: removed the agent file (its SHA-256 equals the one in the signed intent); removed the key version"},
-		{stepFleetValidated, true, true, "recovery: removed the agent file (its SHA-256 equals the one in the signed intent); removed the key version"},
+		{stepFilePublished, true, true, "recovery: removed the agent file (it carries the registration marker and has the SHA-256 the signed intent committed to); removed the key version"},
+		{stepFleetValidated, true, true, "recovery: removed the agent file (it carries the registration marker and has the SHA-256 the signed intent committed to); removed the key version"},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			dir := t.TempDir()

@@ -70,6 +70,9 @@ import (
 // registrationRequest is what the operator asked for.
 type registrationRequest struct {
 	Name, Tenant, Description, Owner string
+	// Marker is the registration marker of the run that will write the
+	// file; empty for a plan that only inspects.
+	Marker string
 	// AllowNoCompanyPolicy permits a registration when no gateway config
 	// (and so no organization policy) exists.
 	AllowNoCompanyPolicy bool
@@ -78,6 +81,10 @@ type registrationRequest struct {
 var agentNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 
 const agentsAddTemplate = `# AI use case {{ printf "%q" .Name }} — registered with 'talon agents add'.
+` + registrationMarkerPrefix + `{{ if .Marker }}{{ .Marker }}{{ else }}(assigned when the use case is registered){{ end }}
+#   (not a secret and not configuration: it identifies the registration that
+#   wrote this file, so that an interrupted registration is cleaned up only
+#   when the file is its own)
 # Every policy not set here is the company's organization policy
 # (talon.config.yaml gateway.organization_policy): budgets, PII handling,
 # models, tools, forbidden actions, approval rules and amount limits.
@@ -101,10 +108,29 @@ metadata:
 {{- end }}
 `
 
+// registrationMarkerPrefix starts the comment line of a generated agent file
+// that carries the registration marker.
+const registrationMarkerPrefix = "# registration: "
+
+// newRegistrationMarker returns a random marker for one registration. The
+// generated file is otherwise identical for every registration of the same
+// name, owner and tenant; the marker makes this registration's file, and so
+// the digest its signed intent commits to, its own.
+func newRegistrationMarker() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating a registration marker: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
 type agentsAddPlan struct {
 	Name, Tenant, Description, Owner, SecretName string
 	Dir, Path                                    string
 	Content                                      []byte
+	// Marker is the registration marker written into Content ("" in a plan
+	// that only inspects: a dry run, or the plan made before the lock).
+	Marker string
 	// AgentsDirMissing: agents_dir does not exist yet; a real registration
 	// creates it, a dry run does not.
 	AgentsDirMissing bool
@@ -204,7 +230,7 @@ func planRegistration(ctx context.Context, cfg *config.Config, req registrationR
 	}
 	plan := &agentsAddPlan{
 		Name: name, Tenant: tenant, Description: desc, Owner: strings.TrimSpace(req.Owner), SecretName: name + "-talon-key",
-		Dir: filepath.Join(cfg.AgentsDir, name),
+		Dir: filepath.Join(cfg.AgentsDir, name), Marker: req.Marker,
 	}
 	plan.Path = filepath.Join(plan.Dir, agentcatalog.AgentConfigFilename)
 	plan.AbsPath = plan.Path
@@ -346,6 +372,10 @@ func existingKeyError(plan *agentsAddPlan) error {
 // registration of the installation to finish. A variable for tests.
 var registrationLockWait = 30 * time.Second
 
+// registrationLockSupported is registration.LockSupported; a variable so a
+// test can prove on any platform that a registration is refused without it.
+var registrationLockSupported = registration.LockSupported
+
 // executeRegistration performs a registration (see the file comment for
 // order and guarantees). It takes the registration lock, plans AGAIN under
 // it (what was read before the lock may be stale), resolves earlier
@@ -358,6 +388,11 @@ func executeRegistration(ctx context.Context, cfg *config.Config, req registrati
 	}
 	defer release()
 
+	// This run's marker goes into the file it generates and into its signed
+	// intent: the file it publishes is then recognizably its own.
+	if req.Marker, err = newRegistrationMarker(); err != nil {
+		return nil, nil, err
+	}
 	plan, err := planRegistration(ctx, cfg, req, true)
 	if err != nil {
 		return nil, nil, err
@@ -389,6 +424,12 @@ func executeRegistration(ctx context.Context, cfg *config.Config, req registrati
 // lock file lives in the data directory; a first registration creates that
 // directory, as it creates the stores in it.
 func acquireRegistrationLock(ctx context.Context, cfg *config.Config) (release func(), err error) {
+	// Fail closed where the lock does not exist: without it two
+	// registrations are not serialized and a running registration cannot be
+	// told from an interrupted one. Nothing is created first.
+	if !registrationLockSupported {
+		return nil, fmt.Errorf("%w: 'talon agents add' needs it to keep two registrations of one installation apart, so it does not run here and nothing was written. Register the use case from a Linux or macOS host that has this installation's data directory (--dry-run works on this platform)", registration.ErrLockUnsupported)
+	}
 	if err := cfg.EnsureDataDir(); err != nil {
 		return nil, fmt.Errorf("creating the data directory %s: %w", cfg.DataDir, err)
 	}
@@ -498,7 +539,7 @@ func openRegistrationRun(ctx context.Context, cfg *config.Config, plan *agentsAd
 func (r *registrationRun) commitments() registration.Commitments {
 	return registration.Commitments{
 		SecretName: r.plan.SecretName, KeyOwnershipToken: r.own.Token(),
-		AgentFile: r.plan.AbsPath, FileSHA256: r.plan.FileSHA256,
+		AgentFile: r.plan.AbsPath, FileSHA256: r.plan.FileSHA256, Marker: r.plan.Marker,
 	}
 }
 

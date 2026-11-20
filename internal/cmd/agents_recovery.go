@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,9 +24,12 @@ import (
 //
 // What it removes is decided by PROOF, never by the existence of the intent:
 // the signed intent commits to the vault ownership token of the key version
-// and to the SHA-256 of the agent file that registration was about to
-// create. An artifact under the name is that registration's exactly when it
-// matches its commitment. Three outcomes:
+// and, for the agent file, to its path, its SHA-256 and the random
+// registration marker written into it. The marker matters: without it the
+// generated file is the same for every registration of the same name, owner
+// and tenant, so a digest alone would also match a file an operator created
+// by hand. An artifact under the name is that registration's exactly when
+// it matches its commitment. Three outcomes:
 //
 //   - every artifact under the name is proven to be that registration's:
 //     exactly those are removed and it is recorded as rolled back;
@@ -35,12 +40,23 @@ import (
 //     nothing (it does not verify, or carries no commitments): nothing is
 //     changed, and the error says what exists and what was compared. It
 //     never tells the operator to delete something.
+//
+// What this proof is, and is not: the bytes at the committed path equal the
+// bytes this registration generated, marker included, in a regular file
+// that is not reached through a symbolic link. A copy of the file made
+// byte for byte, marker included, cannot be told from the original by its
+// content; nothing here claims otherwise.
 
 // leftover is what exists under a name and whether an intent owns it.
 type leftover struct {
 	keyExists, keyOwned   bool
 	fileExists, fileOwned bool
 	own                   secrets.Ownership
+	// fileInfo identifies the file that was inspected (set when fileOwned),
+	// so that a removal removes that very file and nothing put in its place.
+	fileInfo os.FileInfo
+	// fileWhy says why a file that exists is not attributed to the intent.
+	fileWhy string
 }
 
 func (l leftover) owned() bool { return l.keyOwned || l.fileOwned }
@@ -68,17 +84,79 @@ func (r *registrationRun) inspect(in *registration.Unresolved) (leftover, error)
 			l.keyOwned, l.own = owned, own
 		}
 	}
-	raw, err := os.ReadFile(r.plan.Path)
-	switch {
-	case err == nil:
-		l.fileExists = true
-		sum := sha256.Sum256(raw)
-		l.fileOwned = c.FileSHA256 != "" && hex.EncodeToString(sum[:]) == c.FileSHA256 && samePath(c.AgentFile, r.plan.AbsPath)
-	case !errors.Is(err, os.ErrNotExist):
-		return l, fmt.Errorf("reading %s: %w", r.plan.Path, err)
-	}
-	return l, nil
+	var err error
+	l.fileExists, l.fileOwned, l.fileInfo, l.fileWhy, err = fileOwnedBy(r.plan, c)
+	return l, err
 }
+
+// fileOwnedBy reports whether something exists at the plan's agent file path
+// and whether it is the file the intent committed to. Every part of the
+// commitment must hold: the path, the registration marker in the file, the
+// digest of the whole file, and the artifact must be a regular file in a
+// real directory (a symbolic link at the file or at the use case's
+// directory is never followed for a deletion). why explains a "no".
+func fileOwnedBy(plan *agentsAddPlan, c registration.Commitments) (exists, owned bool, info os.FileInfo, why string, err error) {
+	info, err = os.Lstat(plan.Path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return false, false, nil, "", nil
+	case err != nil:
+		return false, false, nil, "", fmt.Errorf("reading %s: %w", plan.Path, err)
+	}
+	if why := notARegularFileInARealDir(plan, info); why != "" {
+		return true, false, nil, why, nil
+	}
+	if c.Marker == "" {
+		return true, false, nil, "that intent records no registration marker (it was written by an earlier version), so nothing ties a file to it", nil
+	}
+	if !samePath(c.AgentFile, plan.AbsPath) {
+		return true, false, nil, "that intent committed to another path (" + c.AgentFile + ")", nil
+	}
+	f, err := os.Open(plan.Path)
+	if err != nil {
+		return true, false, nil, "", fmt.Errorf("reading %s: %w", plan.Path, err)
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return true, false, nil, "", fmt.Errorf("reading %s: %w", plan.Path, err)
+	}
+	if !os.SameFile(info, opened) {
+		return true, false, nil, "it was replaced while it was being inspected", nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxAgentFileBytes+1))
+	if err != nil {
+		return true, false, nil, "", fmt.Errorf("reading %s: %w", plan.Path, err)
+	}
+	if !bytes.Contains(raw, []byte(registrationMarkerPrefix+c.Marker+"\n")) {
+		return true, false, nil, "it does not carry that registration's marker: something else created it", nil
+	}
+	sum := sha256.Sum256(raw)
+	if hex.EncodeToString(sum[:]) != c.FileSHA256 {
+		return true, false, nil, "it carries that registration's marker but its content differs from what the signed intent committed to: it was changed since", nil
+	}
+	return true, true, info, "", nil
+}
+
+// notARegularFileInARealDir says why the artifact at the plan's path is not
+// something a deletion may act on ("" when it is a regular file in a real
+// directory).
+func notARegularFileInARealDir(plan *agentsAddPlan, info os.FileInfo) string {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "it is a symbolic link, which is never followed or removed"
+	}
+	if !info.Mode().IsRegular() {
+		return "it is not a regular file"
+	}
+	if dir, err := os.Lstat(plan.Dir); err != nil || dir.Mode()&os.ModeSymlink != 0 || !dir.IsDir() {
+		return "its directory " + plan.Dir + " is a symbolic link or not a directory, so the path may lead somewhere else"
+	}
+	return ""
+}
+
+// maxAgentFileBytes bounds how much of a file recovery reads to compare it
+// with a commitment. A generated agent file is a few hundred bytes.
+const maxAgentFileBytes = 1 << 20
 
 func samePath(a, b string) bool {
 	if a == "" || b == "" {
@@ -117,16 +195,20 @@ func (r *registrationRun) resolveOne(in *registration.Unresolved) (string, error
 	if err != nil {
 		return "", fmt.Errorf("%s; inspecting what exists under the name failed (nothing was changed): %w", head, err)
 	}
-	legacy := in.Commitments.KeyOwnershipToken == "" && in.Commitments.FileSHA256 == ""
+	// Something exists that the intent says nothing comparable about (an
+	// intent of an earlier version: no ownership token, or no registration
+	// marker). Whose it is cannot be established.
+	unknown := (l.keyExists && in.Commitments.KeyOwnershipToken == "") || (l.fileExists && in.Commitments.Marker == "")
+	legacy := in.Commitments.KeyOwnershipToken == "" && in.Commitments.Marker == ""
 	switch {
 	case l.owned() && !l.foreign():
 		return r.recoverOwned(in, l)
-	case !l.owned() && (l.none() || !legacy):
+	case !l.owned() && !unknown:
 		// It left nothing: none of the artifacts its intent committed to
-		// exists. Whatever is under the name is not its own.
+		// exists. Whatever is under the name is not what it committed to.
 		note := "observed now: neither the key version nor the agent file its signed intent committed to exists"
 		if !l.none() {
-			note += " (what is under the name now was created by something else and was not touched)"
+			note += " (what is under the name now is not what that intent committed to and was not touched)"
 		}
 		if _, err := r.recordFor(in.Correlation, in.Tenant, registration.TypeRolledBack, "cause: the registration did not finish (its process is not running: the registration lock was free)", note, "recorded by the next registration of this name"); err != nil {
 			return "", fmt.Errorf("%s; recording it as rolled back failed (nothing else was written): %w", head, err)
@@ -141,11 +223,19 @@ func (r *registrationRun) resolveOne(in *registration.Unresolved) (string, error
 func (r *registrationRun) recoverOwned(in *registration.Unresolved, l leftover) (string, error) {
 	var did, left []string
 	if l.fileOwned {
-		if err := os.Remove(r.plan.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			left = append(left, fmt.Sprintf("the agent file %s could not be removed (%v)", r.plan.Path, err))
-		} else {
-			_ = os.Remove(r.plan.Dir) // only when empty: nothing else in it is touched
-			did = append(did, "removed the agent file (its SHA-256 equals the one in the signed intent)")
+		// Remove the very file that was inspected, not whatever is at the
+		// path by now.
+		now, err := os.Lstat(r.plan.Path)
+		switch {
+		case err != nil || !os.SameFile(l.fileInfo, now) || !now.ModTime().Equal(l.fileInfo.ModTime()) || now.Size() != l.fileInfo.Size():
+			left = append(left, fmt.Sprintf("the agent file %s changed after it was inspected and was not removed", r.plan.Path))
+		default:
+			if err := os.Remove(r.plan.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				left = append(left, fmt.Sprintf("the agent file %s could not be removed (%v)", r.plan.Path, err))
+			} else {
+				_ = os.Remove(r.plan.Dir) // only when empty: nothing else in it is touched
+				did = append(did, "removed the agent file (it carries the registration marker and has the SHA-256 the signed intent committed to)")
+			}
 		}
 	}
 	if l.keyOwned {
@@ -179,17 +269,19 @@ func (r *registrationRun) recoverOwned(in *registration.Unresolved, l leftover) 
 // not a reason to delete an artifact.
 func notOwnedError(plan *agentsAddPlan, head string, l leftover, legacy bool) error {
 	var facts []string
-	describe := func(exists, owned bool, what, proof string) {
+	describe := func(exists, owned bool, what, proof, why string) {
 		switch {
 		case exists && owned:
 			facts = append(facts, what+": is the one that registration created ("+proof+")")
+		case exists && why != "":
+			facts = append(facts, what+": exists and is NOT attributed to that registration: "+why)
 		case exists && legacy:
 			facts = append(facts, what+": exists; that intent records nothing to compare it with, so who created it is not established")
 		case exists:
 			facts = append(facts, what+": exists and is NOT the one that registration committed to ("+proof+" differs); something else created it")
 		}
 	}
-	describe(l.keyExists, l.keyOwned, fmt.Sprintf("vault secret %q", plan.SecretName), "the vault ownership token in the signed intent")
-	describe(l.fileExists, l.fileOwned, "agent file "+plan.Path, "the SHA-256 in the signed intent")
+	describe(l.keyExists, l.keyOwned, fmt.Sprintf("vault secret %q", plan.SecretName), "the vault ownership token in the signed intent", "")
+	describe(l.fileExists, l.fileOwned, "agent file "+plan.Path, "the registration marker, the path and the SHA-256 in the signed intent", l.fileWhy)
 	return fmt.Errorf("%s. Under the name now: %s. Because not everything under the name is proven to be that registration's, NOTHING was changed and nothing was written: 'talon agents add' removes only what a signed intent proves a registration created. Establish who uses these (talon agents show %s; talon secrets list) before changing them, or register under another name", head, strings.Join(facts, "; "), plan.Name)
 }

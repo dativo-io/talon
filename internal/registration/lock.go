@@ -28,6 +28,10 @@ const LockFileName = "registration.lock"
 // the whole wait.
 var ErrLockBusy = errors.New("another 'talon agents add' of this installation is running")
 
+// ErrLockUnsupported: this platform has no advisory lock, so a registration
+// cannot be serialized here and is refused.
+var ErrLockUnsupported = errors.New("the registration lock is not available on this platform")
+
 // Lock states as an observer finds them.
 const (
 	// LockHeld: a registration is running now.
