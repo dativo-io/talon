@@ -788,19 +788,20 @@ func gatewayConfigActivation(cfg *config.Config, digest string) string {
 	return "NOT PROVEN ACTIVE (" + l.State + ": " + l.Reason + "). The company policy is loaded when 'talon serve' starts; a change to it needs a restart"
 }
 
-// fleetActivation states what is known about whether a running process will
-// serve the newly registered use case.
+// fleetActivation states what the runtime records alone say about whether a
+// running process will serve the newly registered use case. It is the
+// registration output's fallback when the effective report is unavailable.
 func fleetActivation(cfg *config.Config) string {
 	v := runtimestatus.NewReader().Assess(cfg.DataDir, runtimestatus.Fingerprint(cfg.SigningKey), nil, time.Now())
 	if v.Err != "" {
-		return "unknown (runtime records unreadable: " + v.Err + "); check 'talon agents show <name> --effective'"
+		return "this installation's runtime records could not be read (" + v.Err + "), so whether a running Talon process serves this use case is not known."
 	}
 	for i := range v.Processes {
 		if v.Processes[i].Assessed == runtimestatus.Running {
-			return fmt.Sprintf("NOT YET ACTIVE — a Talon process is running and re-scans the fleet every agents_reload_interval (default %s). Confirm with 'talon agents show <name> --effective' (section 2 must read loaded_matches_file); if the reload rejects the fleet, the previous generation keeps serving and this use case is not active", config.DefaultAgentsReloadInterval)
+			return fmt.Sprintf("a Talon process is running and loads the use case at its next re-scan of agents_dir (agents_reload_interval, default %s); if that re-scan rejects the fleet, the previous one keeps serving and this use case is not active.", config.DefaultAgentsReloadInterval)
 		}
 	}
-	return "NOT ACTIVE — no Talon process of this installation is running. The use case is served once 'talon serve' starts"
+	return "no Talon process of this installation is running. `talon serve` loads this use case when it starts."
 }
 
 // validateAgentContent runs the strict loader and the effective action
