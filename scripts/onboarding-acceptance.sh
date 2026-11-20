@@ -9,10 +9,16 @@
 # upstream that counts what reaches it: a permitted request arrives once, a
 # request the company policy blocks and a request with an unknown key arrive
 # zero times. Also: actual key replacement (old rejected, new accepted),
-# emergency disable, revocation, and concurrent registrations.
+# emergency disable, revocation, and concurrent registrations. The secure
+# startup is the guide's own: the blocks of docs/guides/
+# add-talon-to-existing-app.md marked "onboarding-acceptance" are executed as
+# written (keys into a 0600 file, server on 127.0.0.1 with the admin key),
+# and administrative routes must refuse a request with no credential and one
+# with the application's key.
 #
-# Offline: no provider key. Prerequisites: go, node >= 18 with npm; a missing
-# one fails with exit 2, it is never skipped. TALON_ONBOARDING_SDK_DIR may
+# Offline: no provider key. Prerequisites: go, node >= 18 with npm, and the
+# tools the guide's commands use (bash, openssl, curl); a missing one fails
+# with exit 2, it is never skipped. TALON_ONBOARDING_SDK_DIR may
 # name a directory with client.mjs and the pinned SDK already installed.
 # TALON_E2E_BINARY (a release executable) is honoured by the e2e TestMain.
 set -euo pipefail
@@ -21,6 +27,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 missing=()
 command -v go >/dev/null 2>&1 || missing+=("go")
 command -v node >/dev/null 2>&1 || missing+=("node (>= 18)")
+for tool in openssl curl; do
+  command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+done
 if [ "${#missing[@]}" -gt 0 ]; then
   echo "onboarding-acceptance: missing prerequisite(s): ${missing[*]}" >&2
   exit 2
@@ -41,7 +50,7 @@ log="$(mktemp "${TMPDIR:-/tmp}/onboarding-acceptance.XXXXXX")"
 trap 'rm -f "$log"' EXIT
 TALON_ONBOARDING_SDK_DIR="$SDK_DIR" go test -count=1 -tags=e2e -timeout 8m -v -run '^TestE2E_Onboarding_' ./tests/e2e/ 2>&1 | tee "$log"
 fail=0
-for t in TestE2E_Onboarding_FirstAndSecondApplication TestE2E_Onboarding_CredentialLifecycle TestE2E_Onboarding_ConcurrentProcessesOneWinner; do
+for t in TestE2E_Onboarding_DocumentedSecureStartup TestE2E_Onboarding_FirstAndSecondApplication TestE2E_Onboarding_CredentialLifecycle TestE2E_Onboarding_ConcurrentProcessesOneWinner; do
   if ! grep -q "^--- PASS: $t " "$log"; then
     echo "FAIL onboarding-acceptance: $t did not execute and pass" >&2
     fail=1
@@ -56,4 +65,4 @@ if [ -n "${TALON_E2E_BINARY:-}" ] && ! grep -qF "e2e: binary under test is $TALO
   fail=1
 fi
 [ "$fail" -eq 0 ] || exit 1
-echo "PASS onboarding-acceptance: first and second application through the OpenAI Node SDK $SDK_VERSION, verified activation and policy, upstream call counts, credential replacement and revocation, concurrent registration"
+echo "PASS onboarding-acceptance: the guide's secure startup executed as written (0600 key file, loopback listener, admin routes refuse no credential and the application's key), first and second application through the OpenAI Node SDK $SDK_VERSION, verified activation and policy, upstream call counts, credential replacement and revocation, concurrent registration"

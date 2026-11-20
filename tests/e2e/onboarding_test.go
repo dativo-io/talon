@@ -136,7 +136,9 @@ func (o *onboarding) serve() {
 		o.port = freePort(o.t)
 		o.url = fmt.Sprintf("http://127.0.0.1:%d", o.port)
 	}
-	o.stop = startConsoleServe(o.t, o.dir, o.port, o.env())
+	// The documented start: the admin key is set (env) and the listener is
+	// this machine only.
+	o.stop = startConsoleServe(o.t, o.dir, o.port, o.env(), "--host", "127.0.0.1")
 }
 
 // register runs `talon agents add` and returns the key from the secret
@@ -278,6 +280,47 @@ func (o *onboarding) noSecretInClearText(secrets ...string) {
 	if files == 0 {
 		o.t.Fatal("the check read no file")
 	}
+}
+
+// wantReading asserts the one-line verification reading and what the newest
+// LLM gateway record establishes about the credential stored now (#567
+// review: historical traffic, traffic of the current registration and proof
+// of the current credential are three different things).
+func (o *onboarding) wantReading(name, why, code, credential string) effective.TrafficObservation {
+	o.t.Helper()
+	r := o.report(name)
+	obs := traffic(r, effective.BoundaryLLMGateway)
+	if r.Verification.Reading.Code != code || obs.Credential != credential {
+		o.t.Fatalf("%s: reading %q, credential %q (%s); want reading %q, credential %q\n%s",
+			why, r.Verification.Reading.Code, obs.Credential, obs.CredentialNote, code, credential, r.Verification.Reading.Text)
+	}
+	return obs
+}
+
+// registrationRecords counts a use case's signed registration records by
+// kind.
+func (o *onboarding) registrationRecords(name string) map[string]int {
+	o.t.Helper()
+	db, err := sql.Open("sqlite3", filepath.Join(o.dir, "evidence.db")+"?mode=ro&_busy_timeout=5000")
+	if err != nil {
+		o.t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(context.Background(), `SELECT invocation_type, COUNT(*) FROM evidence WHERE agent_id = ? AND invocation_type LIKE 'agent_regist%' GROUP BY invocation_type`, name)
+	if err != nil {
+		o.t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var kind string
+		var n int
+		if err := rows.Scan(&kind, &n); err != nil {
+			o.t.Fatal(err)
+		}
+		out[kind] = n
+	}
+	return out
 }
 
 // gatewayRecords counts the signed LLM gateway records per use case.
@@ -621,6 +664,7 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 		t.Fatalf("the issued key: HTTP %d", st)
 	}
 	o.wantCalls(1, "the issued key")
+	first := o.wantReading("customer-support", "the first request with the issued key", effective.ReadingTrafficMatches, effective.CredentialCurrent)
 
 	// `talon secrets rotate` re-encrypts the SAME value with a fresh nonce:
 	// it is not a credential replacement. After it, and a restart, the same
@@ -634,6 +678,9 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 		t.Fatalf("after 'secrets rotate' and a restart the SAME key must still work (rotate re-encrypts, it does not replace): HTTP %d", st)
 	}
 	o.wantCalls(2, "after secrets rotate")
+	// Re-encryption is not a new credential: the traffic stays attributed to
+	// the credential stored now.
+	o.wantReading("customer-support", "after 'secrets rotate' (same value, re-encrypted)", effective.ReadingTrafficMatches, effective.CredentialCurrent)
 
 	// Replacement (also the lost-key procedure): a new value through stdin,
 	// never an argument, with the ACL of the use case.
@@ -642,6 +689,9 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 	if code != 0 || strings.Contains(out, replacement) {
 		t.Fatalf("replacing the key through stdin (and never echoing it): %d\n%s", code, out)
 	}
+	// Replacing the credential does not imply that it is used: every record
+	// so far was made with the previous one.
+	o.wantReading("customer-support", "after the replacement, before any new request", effective.ReadingTrafficHistorical, effective.CredentialPrevious)
 	// A secret-only change is not a configuration change: the running
 	// process keeps the key it loaded until it is restarted.
 	time.Sleep(2500 * time.Millisecond) // more than two reload intervals
@@ -652,6 +702,11 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 		t.Fatalf("before the restart the new key is not active: HTTP %d", st)
 	}
 	o.wantCalls(3, "before the restart")
+	// That request is NEWER than the stored credential, and it still proves
+	// nothing about it: the process that served it started before the
+	// replacement and holds the previous key. A record's time alone never
+	// verifies the current credential.
+	o.wantReading("customer-support", "a request the previous runtime generation served after the replacement", effective.ReadingTrafficCredentialUnproven, effective.CredentialNotEstablished)
 	// The restart is a graceful stop (SIGTERM): a request that is in flight
 	// at the provider is not cut off. The process stops accepting new
 	// connections, waits for the answer, delivers it, and only then exits.
@@ -685,6 +740,9 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 	<-stopped
 	o.wantCalls(4, "the request that was in flight during the restart")
 	o.serve()
+	// The restart alone verifies nothing either: the newest record is still
+	// the one the previous process served.
+	o.wantReading("customer-support", "after the restart, before any request with the new key", effective.ReadingTrafficCredentialUnproven, effective.CredentialNotEstablished)
 	if st := o.chat(key); st != 401 {
 		t.Fatalf("after the restart the OLD key must be rejected: HTTP %d", st)
 	}
@@ -692,6 +750,9 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 		t.Fatalf("after the restart the NEW key must work: HTTP %d", st)
 	}
 	o.wantCalls(5, "the replaced key: one accepted request, the old key reached the provider zero times")
+	// New traffic, served by a process that started with the stored
+	// credential: verified.
+	o.wantReading("customer-support", "the first request with the replacement key", effective.ReadingTrafficMatches, effective.CredentialCurrent)
 	if st := o.chat(other); st != 200 {
 		t.Fatalf("the other application is unaffected by the replacement: HTTP %d", st)
 	}
@@ -782,12 +843,47 @@ func TestE2E_Onboarding_CredentialLifecycle(t *testing.T) {
 	if again == key || again == replacement {
 		t.Fatal("a re-registration issues a new key")
 	}
+	// A re-registration without new traffic is not verified: every record
+	// under the name was made with a credential that no longer exists. The
+	// earlier evidence stays readable and still verifies as evidence.
+	old := o.wantReading("customer-support", "a re-registration before any request with its key", effective.ReadingTrafficHistorical, effective.CredentialPrevious)
+	if old.EvidenceID == "" || old.Verification != "valid" {
+		t.Fatalf("the earlier record must stay accessible and verifiable: %+v", old)
+	}
+	for _, id := range []string{first.EvidenceID, old.EvidenceID} {
+		if out, stderr, code := o.talon("audit", "verify", id); code != 0 {
+			t.Fatalf("talon audit verify %s (a record of the previous registration): %d\n%s\n%s", id, code, out, stderr)
+		}
+	}
 	o.waitFor("the re-registered use case to be served", func() bool { return o.chat(again) == 200 })
+	// The running process picked the name up by a reload. It had started
+	// before the new credential was stored, and a reload is not proof that
+	// it read the new key (a rebuild keeps the previous one when the vault
+	// cannot be read at that moment): the request is observed, the current
+	// credential is not established, and the report says so.
+	unproven := o.wantReading("customer-support", "a request the already-running process served after the re-registration", effective.ReadingTrafficCredentialUnproven, effective.CredentialNotEstablished)
+	if unproven.EvidenceID == old.EvidenceID {
+		t.Fatal("the report must name the new request, not the previous registration's")
+	}
+	// A process that starts after the credential was stored reads it from
+	// the vault and can hold nothing else: its first request verifies.
+	o.stop()
+	o.serve()
+	o.waitLoaded("customer-support")
+	if st := o.chat(again); st != 200 {
+		t.Fatalf("the re-registration's key after a restart: HTTP %d", st)
+	}
+	now := o.wantReading("customer-support", "the first request served by a process started after the re-registration", effective.ReadingTrafficMatches, effective.CredentialCurrent)
+	if now.EvidenceID == unproven.EvidenceID || now.EvidenceID == old.EvidenceID {
+		t.Fatal("the verified record must be the request the restarted process served")
+	}
 }
 
 // Concurrent registrations of ONE name, as separate processes (#567 review):
 // exactly one succeeds; the losers change nothing; the winner's printed key
-// is the key that authenticates.
+// is the key that authenticates. The registration lock serializes them, so
+// the evidence is truthful too: one signed intent and one completion, and
+// no record that says a registration was rolled back, because none was.
 func TestE2E_Onboarding_ConcurrentProcessesOneWinner(t *testing.T) {
 	o := newOnboarding(t)
 	const n = 5
@@ -820,8 +916,16 @@ func TestE2E_Onboarding_ConcurrentProcessesOneWinner(t *testing.T) {
 	if out, stderr, code := o.talon("validate"); code != 0 {
 		t.Fatalf("talon validate after the race: %d\n%s\n%s", code, out, stderr)
 	}
-	if out, _, _ := o.talon("doctor", "--skip-upstream"); strings.Contains(out, "Interrupted use-case registration") {
-		t.Fatalf("every loser recorded its rollback; doctor must not report an interruption:\n%s", out)
+	for i := 0; i < n; i++ {
+		if codes[i] != 0 && !strings.Contains(outs[i], "already registered") {
+			t.Fatalf("a registration that lost the race must be refused because the name is registered, got:\n%s", outs[i])
+		}
+	}
+	if got := o.registrationRecords("refund-bot"); got["agent_registration_intent"] != 1 || got["agent_registered"] != 1 || len(got) != 2 {
+		t.Fatalf("the race must leave one signed intent, one completion and no rollback record, got %v", got)
+	}
+	if out, _, _ := o.talon("doctor", "--skip-upstream"); !strings.Contains(out, "No unresolved use-case registration.") {
+		t.Fatalf("after the race doctor must report no unresolved registration:\n%s", out)
 	}
 	o.serve()
 	defer func() { o.stop() }()

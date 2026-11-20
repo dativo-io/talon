@@ -74,9 +74,13 @@ talon run --dry-run "Your query here"
 export OPENAI_API_KEY=sk-proj-...
 talon run "Your query here"
 
-# Server (API + optional gateway/proxy)
-export TALON_ADMIN_KEY="replace-with-strong-admin-key"
-talon serve --port 8080
+# Server (API + optional gateway/proxy). Without TALON_ADMIN_KEY the
+# administrative endpoints accept every request (development mode), and
+# without --host the server listens on every interface: set both. For a real
+# installation generate the keys into a 0600 file instead of exporting them
+# in the shell (docs/guides/add-talon-to-existing-app.md, "Prerequisites").
+export TALON_ADMIN_KEY="$(openssl rand -hex 32)"
+talon serve --host 127.0.0.1 --port 8080
 
 # Verify a RUNNING server: which agents is it actually serving? (#370)
 # An explicit --url is authoritative — it errors rather than silently

@@ -32,6 +32,17 @@ You can use **both** MCP proxy and LLM gateway on the same server (e.g. MCP prox
 
 ---
 
+## Before you start a server for any of these
+
+The recipes linked above show the shortest command that demonstrates their path. For anything beyond an experiment on your own machine, start Talon the way [connect an existing application](add-talon-to-existing-app.md#prerequisites) does:
+
+- generate `TALON_SECRETS_KEY`, `TALON_SIGNING_KEY` and `TALON_ADMIN_KEY` into a file only you can read and load it into the server's environment. Without `TALON_ADMIN_KEY` the server is in development mode and its administrative endpoints accept every request;
+- bind the listener: `talon serve --host 127.0.0.1 …`. Without `--host` the server listens on every network interface;
+- `talon serve` does not terminate TLS. Applications on other machines reach it through a TLS-terminating proxy that forwards only the application routes;
+- give secrets to `talon secrets set <name>` on stdin, never as an argument.
+
+---
+
 ## You're done
 
 You now know which Talon path fits your situation (MCP proxy, LLM gateway, or native). Pick the doc from the table above and follow it.
