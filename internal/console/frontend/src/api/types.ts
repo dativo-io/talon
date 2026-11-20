@@ -933,17 +933,44 @@ export interface TrafficObservation {
   // which do not record how the caller was identified, for records of the
   // no-key quickstart profile, and for a record whose signature fails.
   identity_proven: boolean;
+  // Which credential the request was authenticated with, as far as the
+  // recorded times establish it: current | previous | not_established |
+  // unknown | not_applicable. Evidence does not record the credential a
+  // request presented; the note says what the attribution rests on.
+  credential?: string;
+  credential_note?: string;
+  session_id?: string;
   outcome?: Outcome;
   verification?: "valid" | "invalid";
-  // matches_current | differs_from_current | not_recorded | unverified
+  // matches_current | differs_from_current | not_recorded | unverified |
+  // bound_at_establishment (an Action Gateway record that is not the
+  // establishment: it carries the policy bound to the operation then, not
+  // one evaluated for this event)
   policy?: string;
   policy_note?: string;
   last_dispatch?: { evidence_id: string; timestamp: string; outcome: Outcome; verification: "valid" | "invalid" };
   error?: string;
 }
 
+// What is known about the credential the use case presents now: the
+// vault's own record of when a value was written under the secret name
+// (never a value), the signed registration record, and what the runtime
+// records establish about the running processes.
+export interface UseCaseCredential {
+  state: "known" | "absent" | "no_key" | "unknown";
+  secret_name?: string;
+  since?: string;
+  writes: number;
+  registration?: { evidence_id: string; at: string; verification: "valid" | "invalid" };
+  // holds_current | predates_current | not_established | not_running | unknown
+  runtime: string;
+  runtime_note: string;
+  note?: string;
+}
+
 export interface UseCaseVerification {
   configured: "enabled" | "disabled";
+  credential: UseCaseCredential | null;
   traffic: TrafficObservation[];
   // A presentation summary derived in Go; not a stored state.
   reading: { code: string; text: string };

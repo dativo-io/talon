@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { ActionArgumentRule, ActionBoundary, ActionDecision, EffectiveFile, EffectivePolicyDTO, EffectiveReport } from "../api/types";
+import type { ActionArgumentRule, ActionBoundary, ActionDecision, EffectiveFile, EffectivePolicyDTO, EffectiveReport, UseCaseCredential } from "../api/types";
 import { AvailabilityNotice, Badge, CopyableIdentifier, DecisionOutcome, ErrorState, Loading } from "./ui";
 import { ActiveBadge } from "./RuntimeStatus";
 import { humanize, utc } from "../lib/format";
@@ -121,6 +121,7 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
         {r.last_decision ? (
           <dl className="facts">
             <dt>Evidence</dt><dd><Link to={scoped(`/evidence/${encodeURIComponent(r.last_decision.evidence_id)}`, tenant)}>{r.last_decision.evidence_id}</Link> <span className="small muted">{utc(r.last_decision.timestamp)} · {r.last_decision.invocation_type}</span></dd>
+            {r.last_decision.session_id ? (<><dt>Session</dt><dd><Link to={scoped(`/sessions/${encodeURIComponent(r.last_decision.session_id)}`, tenant, { agent: r.use_case })}>{r.last_decision.session_id}</Link></dd></>) : null}
             <dt>Signature</dt><dd>{r.last_decision.verification === "valid" ? <Badge tone="ok">Signature valid</Badge> : <Badge tone="error">Signature invalid: record changed after signing</Badge>}</dd>
             <dt>Outcome</dt><dd><DecisionOutcome o={r.last_decision.outcome} />{r.last_decision.verification === "valid" ? null : <div className="small">Not authenticated: shown only to point at the record.</div>}</dd>
             {r.last_decision.primary_explanation_code ? (<><dt>Why</dt><dd><code>{r.last_decision.primary_explanation_code}</code> {r.last_decision.primary_explanation_reason}</dd></>) : null}
@@ -131,7 +132,7 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
         {r.last_decision?.note ? <p className="small muted">{r.last_decision.note}</p> : null}
       </section>
 
-      <VerificationSection v={r.verification} tenant={tenant} />
+      <VerificationSection v={r.verification} tenant={tenant} useCase={r.use_case} />
       {r.notes?.length ? <ul className="small muted">{r.notes.map((n) => <li key={n}>{n}</li>)}</ul> : null}
     </div>
   );
@@ -144,6 +145,24 @@ const POLICY: Record<string, { label: string; tone: "ok" | "warn" | "error" | "i
   differs_from_current: { label: "Policy differs from the current files", tone: "warn" },
   not_recorded: { label: "Policy not proven", tone: "info" },
   unverified: { label: "Not verified", tone: "error" },
+  bound_at_establishment: { label: "Policy bound at establishment, not evaluated for this event", tone: "info" },
+};
+
+// Labels for the Go codes; the notes next to them are Go's text.
+const CREDENTIAL: Record<string, { label: string; tone: "ok" | "warn" | "error" | "info" }> = {
+  current: { label: "Credential stored now", tone: "ok" },
+  previous: { label: "Earlier credential: history", tone: "warn" },
+  not_established: { label: "Current credential not established", tone: "warn" },
+  unknown: { label: "Credential not known", tone: "info" },
+  not_applicable: { label: "Workload identity, not the key", tone: "info" },
+};
+
+const RUNTIME_CREDENTIAL: Record<string, { label: string; tone: "ok" | "warn" | "error" | "info" }> = {
+  holds_current: { label: "Holds the credential stored now", tone: "ok" },
+  predates_current: { label: "Holds an earlier credential", tone: "warn" },
+  not_established: { label: "Not established", tone: "warn" },
+  not_running: { label: "No process running", tone: "info" },
+  unknown: { label: "Not known", tone: "info" },
 };
 
 // readingTone colours the one-line reading; the text and the code are Go's.
@@ -151,6 +170,7 @@ export function readingTone(code: string): "ok" | "warn" | "error" | "info" | "n
   if (code === "traffic_observed_policy_matches") return "ok";
   if (code === "traffic_record_unverified") return "error";
   if (code === "traffic_observed_policy_differs" || code === "evidence_unavailable") return "warn";
+  if (code === "traffic_predates_current_credential" || code === "traffic_observed_current_credential_not_established") return "warn";
   if (code === "traffic_observed_identity_not_established") return "info";
   if (code === "disabled") return "neutral";
   return "info";
@@ -160,7 +180,7 @@ export function readingTone(code: string): "ok" | "warn" | "error" | "info" | "n
 // observations, each with its source. Configured, loaded, observed traffic
 // and policy match are separate facts; none implies another, and nothing
 // here says the application is "governed".
-export function VerificationSection({ v, tenant }: { v: EffectiveReport["verification"]; tenant: string }) {
+export function VerificationSection({ v, tenant, useCase }: { v: EffectiveReport["verification"]; tenant: string; useCase: string }) {
   if (!v) return null;
   return (
     <section aria-labelledby="eff-verification" data-testid="verification">
@@ -168,6 +188,7 @@ export function VerificationSection({ v, tenant }: { v: EffectiveReport["verific
       <div className={`notice ${readingTone(v.reading.code) === "ok" ? "info" : readingTone(v.reading.code) === "error" ? "error" : readingTone(v.reading.code) === "warn" ? "warn" : "info"}`} role="status" data-testid="verification-reading" data-code={v.reading.code}>
         <div>{v.reading.text}</div>
       </div>
+      <CredentialFacts c={v.credential} tenant={tenant} />
       <div className="table-wrap">
         <table>
           <thead><tr><th>Boundary</th><th>Traffic of this use case</th><th>Record</th><th>Policy it was evaluated under</th></tr></thead>
@@ -182,6 +203,12 @@ export function VerificationSection({ v, tenant }: { v: EffectiveReport["verific
                       <span className="small" title={utc(o.timestamp)}>{utc(o.timestamp)}</span>
                       {o.outcome ? <div><DecisionOutcome o={o.outcome} compact /></div> : null}
                       {o.identity ? <div className="small muted">Identity: {o.identity}</div> : null}
+                      {o.credential ? (
+                        <div className="small" data-testid="observation-credential" data-credential={o.credential}>
+                          <Badge tone={CREDENTIAL[o.credential]?.tone ?? "info"} plain>{CREDENTIAL[o.credential]?.label ?? humanize(o.credential)}</Badge>
+                          <div className="muted">{o.credential_note}</div>
+                        </div>
+                      ) : null}
                       {o.last_dispatch ? (
                         <div className="small">Last dispatch: <Link to={scoped(`/evidence/${encodeURIComponent(o.last_dispatch.evidence_id)}`, tenant)}>{o.last_dispatch.evidence_id}</Link> <DecisionOutcome o={o.last_dispatch.outcome} compact /></div>
                       ) : null}
@@ -198,6 +225,7 @@ export function VerificationSection({ v, tenant }: { v: EffectiveReport["verific
                       <Link to={scoped(`/evidence/${encodeURIComponent(o.evidence_id)}`, tenant)}>{o.evidence_id}</Link>
                       <div>{o.verification === "valid" ? <Badge tone="ok" plain>Signature valid</Badge> : <Badge tone="error">Signature invalid</Badge>}</div>
                       {o.event ? <div className="small muted">{humanize(o.event)}</div> : null}
+                      {o.session_id ? <div className="small">Session <Link to={scoped(`/sessions/${encodeURIComponent(o.session_id)}`, tenant, { agent: useCase })}>{o.session_id}</Link></div> : null}
                     </>
                   ) : <span className="muted">—</span>}
                 </td>
@@ -215,6 +243,31 @@ export function VerificationSection({ v, tenant }: { v: EffectiveReport["verific
       </details>
       <p className="small muted">Configured: {v.configured}. Whether a running process has loaded this file is section 2; whether a request arrived and under which policy is this section. Each is established separately.</p>
     </section>
+  );
+}
+
+// CredentialFacts: what is known about the credential the use case presents
+// now. Traffic recorded with an earlier credential of the same name (an
+// earlier registration, a replaced key) is history; these facts are what
+// the per-record attribution below rests on. Every sentence is Go's.
+function CredentialFacts({ c, tenant }: { c: UseCaseCredential | null | undefined; tenant: string }) {
+  if (!c) return null;
+  return (
+    <dl className="facts" data-testid="verification-credential" data-state={c.state} data-runtime={c.runtime}>
+      <dt>Credential stored now</dt>
+      <dd>
+        {c.state === "known" ? <><code>{c.secret_name}</code> <span className="small muted">stored {utc(c.since)}</span></> : <Badge tone="info" plain>{humanize(c.state)}</Badge>}
+        {c.note ? <div className="small muted">{c.note}</div> : null}
+      </dd>
+      <dt>Registration record</dt>
+      <dd>
+        {c.registration ? (
+          <><Link to={scoped(`/evidence/${encodeURIComponent(c.registration.evidence_id)}`, tenant)}>{c.registration.evidence_id}</Link> <span className="small muted">{utc(c.registration.at)}</span> {c.registration.verification === "valid" ? <Badge tone="ok" plain>Signature valid</Badge> : <Badge tone="error">Signature invalid</Badge>}</>
+        ) : <span className="muted">None: this use case was configured by hand</span>}
+      </dd>
+      <dt>Running process</dt>
+      <dd><Badge tone={RUNTIME_CREDENTIAL[c.runtime]?.tone ?? "info"} plain>{RUNTIME_CREDENTIAL[c.runtime]?.label ?? humanize(c.runtime)}</Badge><div className="small muted">{c.runtime_note}</div></dd>
+    </dl>
   );
 }
 

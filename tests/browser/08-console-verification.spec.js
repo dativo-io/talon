@@ -30,6 +30,14 @@ test("every use case: the console's reading and observations equal the CLI's", a
     // Policy & Runtime: one row per boundary with the CLI's state.
     const section = page.getByTestId("verification");
     await expect(section.getByTestId("verification-reading")).toHaveText(v.reading.text);
+    // What is known about the credential stored now: the CLI's facts.
+    const cred = section.getByTestId("verification-credential");
+    await expect(cred).toHaveAttribute("data-state", v.credential.state);
+    await expect(cred).toHaveAttribute("data-runtime", v.credential.runtime);
+    await expect(cred).toContainText(v.credential.runtime_note);
+    if (v.credential.note) await expect(cred).toContainText(v.credential.note);
+    if (v.credential.registration) await expect(cred.getByRole("link", { name: v.credential.registration.evidence_id })).toBeVisible();
+    else await expect(cred).toContainText("configured by hand");
     for (const o of v.traffic) {
       const row = section.locator(`tr[data-boundary="${o.boundary}"]`);
       await expect(row).toHaveAttribute("data-state", o.state);
@@ -41,6 +49,17 @@ test("every use case: the console's reading and observations equal the CLI's", a
         if (o.boundary === "mcp_proxy") expect(o.identity_proven).toBe(false);
         await expect(row.getByRole("link", { name: o.evidence_id })).toBeVisible();
         await expect(row.getByText(o.verification === "valid" ? "Signature valid" : "Signature invalid")).toBeVisible();
+        // Which credential the record is attributed to, and the policy
+        // state, are the CLI's codes and sentences.
+        if (o.credential) {
+          const c = row.getByTestId("observation-credential");
+          await expect(c).toHaveAttribute("data-credential", o.credential);
+          await expect(c).toContainText(o.credential_note);
+        } else {
+          await expect(row.getByTestId("observation-credential")).toHaveCount(0);
+        }
+        if (o.policy_note) await expect(row).toContainText(o.policy_note);
+        if (o.session_id) await expect(row.getByRole("link", { name: o.session_id })).toBeVisible();
       } else if (o.state === "none") {
         await expect(row.getByText("None recorded")).toBeVisible();
       }
@@ -68,7 +87,11 @@ test("an action-only use case is not presented as an LLM application; the observ
   await expect(section.locator('tr[data-boundary="llm_gateway"]')).toHaveAttribute("data-state", "none");
   const action = section.locator('tr[data-boundary="action_gateway"]');
   await expect(action).toHaveAttribute("data-state", "observed");
-  await expect(action.getByText("Establishing or authorizing an operation is not dispatching it", { exact: false })).toBeVisible();
+  // What counts as the application's traffic at the Action Gateway is said:
+  // its own requests, never a reviewer's decision, a refused authorization
+  // or an execution record (#567 review).
+  await expect(action.getByText("Establishing or claiming an operation is not dispatching it", { exact: false })).toBeVisible();
+  await expect(action.getByText("A reviewer's decision, an expiry, a refused authorization and an execution record are not counted", { exact: false })).toBeVisible();
   await section.getByText("What these observations do not establish").click();
   await expect(section.getByText("that all of this application's requests go through Talon", { exact: false })).toBeVisible();
   await action.getByRole("link", { name: by.action_gateway.evidence_id }).click();
