@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"os"
@@ -388,4 +389,181 @@ func serveUntilTerminated(t *testing.T, dir string, port int) func() {
 		_, _ = cmd.Process.Wait()
 		_ = logFile.Close()
 	}
+}
+
+// The documented pre-upgrade backup (#568 review): the previous stable
+// release has no `talon backup`. With it stopped gracefully:
+//
+//  1. a plain copy of the data directory is the recovery point for an
+//     upgrade that fails before the new release ever starts: the previous
+//     release runs on it as before;
+//  2. the NEW binary, before it is started, takes `talon backup create
+//     --cold` of the untouched store and verifies it: the recovery point
+//     after the upgrade, with its recovery hold. Taking it changes nothing
+//     in the live store.
+//
+// Then the upgrade serves, and a restore of (2) holds dispatch until resumed.
+func TestE2E_PreUpgradeBackup_FromThePreviousStable(t *testing.T) {
+	prev := os.Getenv("TALON_PREVIOUS_STABLE_BINARY")
+	if prev == "" {
+		t.Skip("TALON_PREVIOUS_STABLE_BINARY is not set: the pre-upgrade backup from the previous stable release was NOT RUN")
+	}
+	current := binaryPath
+	defer func() { binaryPath = current }()
+	down := startRefundService(t)
+	dir := t.TempDir()
+	binaryPath = prev
+	if _, stderr, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", agAgent); code != 0 {
+		t.Fatalf("talon init (previous release): %d\n%s", code, stderr)
+	}
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	raw, _ := os.ReadFile(agentPath)
+	yaml := strings.Replace(string(raw), "\npolicies:\n", `
+actions:
+  definitions:
+    create_refund_request:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount, currency]
+        properties:
+          ticket_id: {type: string}
+          amount: {type: number}
+          currency: {type: string, enum: [EUR]}
+      destination:
+        type: http
+        url: "`+down.srv.URL+`/refunds"
+        method: POST
+        success: {status_codes: [201]}
+
+policies:
+`, 1)
+	if err := os.WriteFile(agentPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", agAgent+"-talon-key", agAgentKey); code != 0 {
+		t.Fatalf("secrets set (previous release): %d\n%s", code, stderr)
+	}
+	port := freePort(t)
+	c := &agClient{t: t, base: fmt.Sprintf("http://127.0.0.1:%d", port)}
+	establish := func(opID string) {
+		t.Helper()
+		if st, res := c.do("POST", "/v1/action-operations", agAgentKey, fmt.Sprintf(`{"operation_id":%q,"action":"create_refund_request","arguments":{"ticket_id":%q,"amount":20,"currency":"EUR"}}`, opID, opID)); st >= 300 {
+			t.Fatalf("establish %s: %d %v", opID, st, res)
+		}
+	}
+	claim := func(opID string) (int, string) {
+		st, res := c.do("POST", "/v1/action-operations/"+opID+"/attempts", agAgentKey, "")
+		return st, errCode(res)
+	}
+	calls := func(want int64, why string) {
+		t.Helper()
+		if got := down.refundCalls.Load(); got != want {
+			t.Fatalf("%s: refund calls %d, want %d", why, got, want)
+		}
+	}
+	copyStores := func(from, to string) {
+		t.Helper()
+		for _, pattern := range []string{"*.db", "*.db-wal", "*.db-shm"} {
+			old, _ := filepath.Glob(filepath.Join(to, pattern))
+			for _, f := range old {
+				_ = os.Remove(f)
+			}
+			files, _ := filepath.Glob(filepath.Join(from, pattern))
+			for _, f := range files {
+				b, err := os.ReadFile(f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(to, filepath.Base(f)), b, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	digests := func() map[string]string {
+		out := map[string]string{}
+		files, _ := filepath.Glob(filepath.Join(dir, "*.db"))
+		for _, f := range files {
+			b, _ := os.ReadFile(f)
+			out[filepath.Base(f)] = fmt.Sprintf("%x", sha256.Sum256(b))
+		}
+		return out
+	}
+
+	// The previous release serves: op-a is executed, op-b is authorized.
+	shutdown := serveUntilTerminated(t, dir, port)
+	establish("op-a")
+	if st, code := claim("op-a"); st != 200 {
+		t.Fatalf("claim op-a on the previous release: %d %s", st, code)
+	}
+	establish("op-b")
+	calls(1, "previous release")
+	shutdown()
+
+	// 1. The plain copy, taken while the previous release is stopped.
+	plain := t.TempDir()
+	copyStores(dir, plain)
+
+	// 2. The new binary's cold backup of the untouched store, before it is
+	// ever started; the live store is not changed by it.
+	binaryPath = current
+	before := digests()
+	backup := filepath.Join(t.TempDir(), "pre-upgrade")
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "create", "--cold", backup); code != 0 || !strings.Contains(out, "cold") {
+		t.Fatalf("backup create --cold of the previous release's store: %d\n%s\n%s", code, out, stderr)
+	}
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "verify", backup); code != 0 || !strings.Contains(out, "PASS backup verify") {
+		t.Fatalf("backup verify: %d\n%s\n%s", code, out, stderr)
+	}
+	if after := digests(); fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Fatalf("taking the backup changed the live store:\nbefore %v\nafter  %v", before, after)
+	}
+
+	// The upgrade fails before the new release starts: the plain copy goes
+	// back and the previous release runs on it as before.
+	failed := t.TempDir()
+	for _, f := range []string{"agent.talon.yaml", "talon.config.yaml"} {
+		if b, err := os.ReadFile(filepath.Join(dir, f)); err == nil {
+			_ = os.WriteFile(filepath.Join(failed, f), b, 0o600)
+		}
+	}
+	copyStores(plain, failed)
+	binaryPath = prev
+	shutdown = serveUntilTerminated(t, failed, port)
+	if st, code := claim("op-a"); st == 200 {
+		t.Fatalf("the plain copy lost op-a's execution: %d %s", st, code)
+	}
+	calls(1, "previous release on the plain copy")
+	shutdown()
+
+	// The upgrade succeeds: the new release serves the store.
+	binaryPath = current
+	shutdown = serveUntilTerminated(t, dir, port)
+	if st, code := claim("op-a"); st == 200 {
+		t.Fatalf("the upgrade lost op-a's execution: %d %s", st, code)
+	}
+	if st, code := claim("op-b"); st != 200 {
+		t.Fatalf("claim op-b after the upgrade: %d %s", st, code)
+	}
+	calls(2, "op-b executed after the upgrade, after the backup")
+	shutdown()
+
+	// A restore of the pre-upgrade backup is held: op-b, executed after it,
+	// is not dispatched again until the operator reconciles and holds it.
+	copyStores(backup, dir)
+	stop := startActionServe(t, dir, port)
+	defer func() { stop() }()
+	if st, code := claim("op-b"); st != 503 || code != "recovery_hold" {
+		t.Fatalf("a restored pre-upgrade backup must hold dispatch: %d %s", st, code)
+	}
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "resume", "--reconciled", "--hold-operation", "op-b"); code != 0 {
+		t.Fatalf("backup resume: %d\n%s\n%s", code, out, stderr)
+	}
+	for _, op := range []string{"op-a", "op-b"} {
+		if st, code := claim(op); st == 200 {
+			t.Fatalf("%s dispatched again after the restore: %d %s", op, st, code)
+		}
+	}
+	calls(2, "after the restore and resume")
 }

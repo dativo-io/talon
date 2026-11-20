@@ -967,7 +967,7 @@ func notHeld() error {
 func init() {
 	backupCreateCmd.Flags().BoolVar(&backupRequireCold, "cold", false, "refuse unless no Talon process of this installation is running (one coherent recovery point)")
 	backupResumeCmd.Flags().BoolVar(&backupResumeReconciled, "reconciled", false, "state that the open operations were checked in the downstream systems; ends the recovery hold")
-	backupResumeCmd.Flags().StringArrayVar(&backupResumeHoldOps, "hold-operation", nil, "operation_id to keep held for good (repeatable)")
+	backupResumeCmd.Flags().StringArrayVar(&backupResumeHoldOps, "hold-operation", nil, "operation_id to keep held for good, for every tenant and use case of this installation (repeatable)")
 	backupResumeCmd.Flags().BoolVar(&backupResumeAcceptDrift, "accept-config-change", false, "resume although the configuration files differ from those captured with the backup")
 	backupCmd.AddCommand(backupCreateCmd, backupVerifyCmd, backupResumeCmd)
 	rootCmd.AddCommand(backupCmd)
