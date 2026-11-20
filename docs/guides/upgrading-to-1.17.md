@@ -12,7 +12,7 @@ The supported backup is a **cold** one: taken with the Talon processes stopped. 
 4. **Preserve the signing key and the vault key** (`TALON_SIGNING_KEY`, `TALON_SECRETS_KEY`) the way you already keep them, in your secret manager or protected environment file. Do not copy them in clear text into the backup of the data directory. Without the same vault key the vault is undecryptable (see the security change below); without the same signing key existing evidence fails verification. Leaving both unset before and after (the derived default, as in the demo stack) is also "the same key".
 5. Upgrade, then start the processes again.
 
-**Rollback is a restore**: stop the processes, put back the data directory and configuration from this backup, and start the previous version with the same keys. v1.17 only adds an index and a `runtime/` directory, but running a v1.16 binary on stores that v1.17 has written to has **not been tested**; do not treat a binary downgrade in place as a supported rollback.
+**Rollback is a restore**: stop the processes, put back the data directory and configuration from this backup, and start the previous version with the same keys. v1.17 only adds indexes on the evidence table, a `runtime/` directory and, at the first `talon agents add`, a `registration.lock` file in the data directory, but running a v1.16 binary on stores that v1.17 has written to has **not been tested**; do not treat a binary downgrade in place as a supported rollback.
 
 ## Breaking changes and what to do
 
