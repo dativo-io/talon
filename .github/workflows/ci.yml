@@ -88,11 +88,12 @@ jobs:
       - name: Run e2e tests
         run: go test -tags=e2e -timeout 8m ./tests/e2e/...
 
-      - name: The upgrade test ran (a skip is not a pass)
+      - name: The upgrade and rollback tests ran against the preceding stable release (a skip is not a pass)
         run: |
           set -euo pipefail
-          go test -tags=e2e ./tests/e2e -run TestE2E_UpgradeFromPreviousStable -count=1 -v | tee "$RUNNER_TEMP/upgrade.log"
+          go test -tags=e2e ./tests/e2e -run 'TestE2E_UpgradeFromPreviousStable|TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing' -count=1 -v | tee "$RUNNER_TEMP/upgrade.log"
           grep -q -- '--- PASS: TestE2E_UpgradeFromPreviousStable' "$RUNNER_TEMP/upgrade.log"
+          grep -q -- '--- PASS: TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing' "$RUNNER_TEMP/upgrade.log"
 
       - name: MCP governance-contract smoke (#372, offline, no keys)
         # Named PR gate for the governance extension's truth semantics:

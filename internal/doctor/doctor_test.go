@@ -2,8 +2,10 @@ package doctor
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
@@ -711,4 +714,42 @@ func TestRegistrationsResult_StatesAreKeptApart(t *testing.T) {
 	unverified := registration.Lookup{Complete: true, Unresolved: []registration.Unresolved{{Name: "refund-bot", Tenant: "acme", IntentID: "al_1", At: at}}}
 	c = registrationsResult("agent_registrations", unverified, registration.LockFree)
 	require.Contains(t, c.Message, "the intent record does NOT verify")
+}
+
+// #568 review. A restored installation that has not been resumed is visible
+// in `talon doctor`, with what the hold covers and what it does not.
+func TestCheckRecoveryHold(t *testing.T) {
+	ctx := context.Background()
+	cfg := &config.Config{DataDir: t.TempDir(), SigningKey: "0123456789abcdef0123456789abcdef0123456789abcdef"}
+	store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if got := checkRecoveryHold(cfg); got.Status != "pass" || got.Message != "No recovery hold." {
+		t.Fatalf("a live installation: %+v", got)
+	}
+	if err := action.StampRecoveryHold(ctx, store.DB(), "bk_1", time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC), "cfg"); err != nil {
+		t.Fatal(err)
+	}
+	got := checkRecoveryHold(cfg)
+	if got.Status != "fail" {
+		t.Fatalf("an installation on a restored backup must fail the check: %+v", got)
+	}
+	for _, want := range []string{"RECOVERY HOLD", "bk_1", "2026-11-20T10:00:00Z", "every Action Gateway claim is refused", "does not cover LLM gateway requests or MCP proxy tool calls"} {
+		if !strings.Contains(got.Message, want) {
+			t.Errorf("the message lacks %q: %s", want, got.Message)
+		}
+	}
+	if !strings.Contains(got.Fix, "talon backup resume --reconciled") {
+		t.Errorf("the fix must name the resume command: %s", got.Fix)
+	}
+	if _, err := action.ResumeRecovery(ctx, store.DB(), "operator", []string{"op-1"}, time.Now(), func(context.Context, *sql.Tx, []action.RecoveryHold) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	got = checkRecoveryHold(cfg)
+	if got.Status != "pass" || !strings.Contains(got.Message, "1 operation id(s) are held for good") {
+		t.Fatalf("after the resume: %+v", got)
+	}
 }

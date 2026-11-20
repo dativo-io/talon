@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
@@ -106,6 +107,7 @@ func checkConfig() []CheckResult {
 	results = append(results, checkCryptoKeys(cfg)...)
 	results = append(results, checkEvidenceDB(cfg))
 	results = append(results, checkRegistrations(cfg))
+	results = append(results, checkRecoveryHold(cfg))
 	results = append(results, checkCache(cfg))
 	results = append(results, checkSovereignty(cfg, nil))
 	results = append(results, checkAirGap(cfg, nil))
@@ -471,6 +473,43 @@ func checkRegistrations(cfg *config.Config) CheckResult {
 		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("registration records could not be read: %v", err)}
 	}
 	return registrationsResult(name, lookup, registration.Probe(cfg.DataDir))
+}
+
+// checkRecoveryHold reports whether this installation runs on a restored
+// backup that has not been resumed (#465). It says what the hold covers:
+// the dispatch of governed actions through the Action Gateway. It does not
+// hold LLM gateway or MCP proxy traffic, and the message says so.
+func checkRecoveryHold(cfg *config.Config) CheckResult {
+	const name = "recovery_hold"
+	res := CheckResult{Name: name, Category: "config", Status: "pass"}
+	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if err != nil {
+		res.Status, res.Message = "warn", fmt.Sprintf("the recovery state could not be read: %v", err)
+		return res
+	}
+	defer store.Close()
+	ctx := context.Background()
+	holds, err := action.ActiveRecoveryHolds(ctx, store.DB())
+	if err != nil {
+		res.Status, res.Message = "warn", fmt.Sprintf("the recovery state could not be read: %v", err)
+		return res
+	}
+	var held int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_held_operations`).Scan(&held); err != nil {
+		held = 0 // a store that never held an operation has no such table
+	}
+	if len(holds) > 0 {
+		h := holds[0]
+		res.Status = "fail"
+		res.Message = fmt.Sprintf("RECOVERY HOLD: this installation runs on backup %s, taken %s, and has not been resumed. No governed action is dispatched: every Action Gateway claim is refused (recovery_hold). The hold does not cover LLM gateway requests or MCP proxy tool calls; those are served.", h.BackupID, h.BackupCreatedAt.UTC().Format(time.RFC3339))
+		res.Fix = "Reconcile with the downstream systems, then: talon backup resume (lists what was open), talon backup resume --reconciled [--hold-operation <operation_id>]..."
+		return res
+	}
+	res.Message = "No recovery hold."
+	if held > 0 {
+		res.Message = fmt.Sprintf("No recovery hold. %d operation id(s) are held for good since an earlier resume: they are never dispatched.", held)
+	}
+	return res
 }
 
 // registrationsResult words what is known about registrations whose intent
