@@ -70,7 +70,7 @@ POST /webhook/talon-refund  {ticket_id, amount, currency, request_id?}     heade
 
 5. **Protect the network.** Prefer a private webhook and private Talon endpoint, or a TLS-terminated deployment with strong ingress authentication. Use HTTPS outside localhost and trusted private links.
 
-6. **Make a human decision through the existing approval API.** The reviewer can inspect a pending operation using the agent-key read endpoint (with appropriate access controls), obtain its `approval.id`, then submit:
+6. **Make a human decision through the existing approval API.** The *application/operator* reads the pending operation using its scoped agent key (`GET /v1/action-operations/<operation_id>`), verifies the exact arguments and policy, and passes the approval id plus material review context to a separately authenticated reviewer through an existing trusted channel. **There is not yet a standalone reviewer inbox in the supported #566 prerequisites.** The reviewer does not receive or reuse the application key. After inspecting the trustworthy review context, the reviewer submits:
 
    ```bash
    curl -fsS -X POST "$TALON_URL/v1/approvals/$APPROVAL_ID/decisions" \
@@ -79,7 +79,7 @@ POST /webhook/talon-refund  {ticket_id, amount, currency, request_id?}     heade
      --data '{"decision":"approve","reason":"customer verified"}'
    ```
 
-   Approval itself never dispatches. The n8n workflow subsequently observes authorization and issues the claim. The newer `talon approvals list/show/approve` interface from #565 is **not required or asserted to be released** here.
+   Approval itself never dispatches. The n8n workflow subsequently observes authorization and issues the claim. The newer `talon approvals list/show/approve` interface from #565 is **not required or asserted to be released** here. This manual handoff is a limitation of the reference integration; never imply a reviewer can independently retrieve the operation through the agent-key read API using only their reviewer credential.
 
 **Operation identifiers:** `ticket_id` is required (`ABC-123` format). `request_id` is an optional application-issued stable identifier containing 1–64 letters, numbers, underscores or dashes. Omitting it retains the original one-refund-per-ticket behavior. Supplying it means `refund-<ticket_id>-<request_id>` identifies an independent proposed refund. The authenticated caller must persist and reuse the same identifier for transport retries. A different request id is a **new** operation, not a way to retry an UNKNOWN result. Never mint a new request id to get around a denial, existing authorization or unknown effect.
 
