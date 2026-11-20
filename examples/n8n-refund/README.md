@@ -1,6 +1,8 @@
-# n8n refund workflow governed by Talon
+# n8n Action Gateway reference — refund fixture
 
-An importable n8n workflow (`refund-approval.workflow.json`) for one consequential business action, `create_refund_request`. The roles are split:
+This is a **product-level integration reference**, not a complete customer-support application or an n8n community-template submission. The refund case is one deterministic fixture for the generic Talon Action Gateway. It contains no AI model call, Shopify connector, real payment credentials, or business eligibility logic. Use `dativo-io/talon-full-demo` for the recognizable end-to-end support journey; the planned `dativo-io/talon-n8n-templates` repository will own independently importable community listings.
+
+An importable n8n workflow (`refund-approval.workflow.json`) proving the generic authorization lifecycle for one example action, `create_refund_request`. The roles are split:
 - **n8n owns the workflow:** it receives the request, validates it, waits and responds.
 - **Talon owns the decision and the dispatch:** Talon authorizes the exact refund and calls the refund service itself.
 - **n8n never calls the refund service.** It only asks Talon to claim an operation that Talon has allowed or a reviewer has approved.
@@ -12,10 +14,13 @@ It uses stock n8n nodes only: Webhook 2, Edit Fields (Set) 3.4, HTTP Request 4.2
 ## What happens
 
 ```
-POST /webhook/talon-refund  {ticket_id, amount, currency}     header credential required
+POST /webhook/talon-refund  {ticket_id, amount, currency, request_id?}     header credential required
   → Validate request     ticket_id like ABC-123, amount a decimal STRING ("75.00"), currency a 3-letter code
        invalid           → 400 invalid_request (nothing is sent to Talon)
-  → Talon: establish     operation_id = "refund-<ticket_id>" (one refund per ticket; a retry resumes it)
+  → Talon: establish     operation_id = "refund-<ticket_id>[-<request_id>]"
+                           If request_id is omitted: one refund per ticket.
+                           If supplied: distinct requests on one ticket can coexist.
+                           Transport retries must reuse the SAME request_id.
   → Talon verdict
       ALLOW              → Talon: claim → Talon dispatches the refund
       REQUIRE_APPROVAL   → wait 5 s → read operation → authorized? → claim
@@ -35,31 +40,48 @@ POST /webhook/talon-refund  {ticket_id, amount, currency}     header credential 
 |---|---|
 | `400 invalid_request`, `403 denied`, `409 not_approved`, `409 not_authorized` | **No.** These are decided before any claim. |
 | `200 refunded` | **Yes, once.** Also returned when the same ticket is sent again: the answer comes from Talon's record, with no second dispatch. |
-| `202 unknown` | **Unknown.** Talon dispatched the refund and could not observe the outcome. Do not retry; reconcile with the refund system. A repeated request reports `unknown` again and is not dispatched again. |
+| `202 unknown` | **Unknown.** Talon dispatched the refund and could not observe the outcome. Do not retry; reconcile with the refund system. A repeated request with the same operation id reports `unknown` again and is not dispatched again. |
 | `409 not_completed` | **Read the operation.** The claim was refused or failed; `talon_code` says why (for example `attempt_already_in_progress` when another run of the same ticket is claiming, or `recovery_hold`). |
 | The run fails with an error (HTTP 500 from n8n) | **Before the claim: no.** If Talon was unreachable when the workflow tried to establish or read the operation, nothing was dispatched. **During the claim: unknown.** If the connection to Talon broke while the claim was in flight, Talon may have dispatched; read the operation (`GET /v1/action-operations/refund-<ticket>`) before assuming either. There is no fallback path to the refund service in any case. |
 
 ## Set up
 
-1. **Talon.** Register the use case, then merge the catalog and the argument rules from [`agent.talon.yaml`](agent.talon.yaml) into its file, with your refund service's URL. Add a reviewer.
+> **Release applicability.** This PR is a draft and depends on the generic action-rule contract in #564. Use a Talon build that actually includes the required Action Gateway routes and `argument_rules`. Do not treat the latest stable version as compatible without an explicit release-mode test. n8n 2.48.5 was exercised in CI (source-built Talon); published-binary acceptance remains separate.
+
+1. **Create a Talon AI use case.** In your configured `agents_dir`, create `refund-bot/agent.talon.yaml` from the supplied sample. Set its tenant, vault key reference and trusted HTTPS destination. Provision the matching agent key in Talon's secrets vault and run `talon validate` and `talon serve`. For an *isolated development fixture only*, the same provisioning route used by `scripts/n8n-refund-live.sh` is:
+
    ```bash
-   talon agents add refund-bot --tenant acme          # prints the use-case key once
-   talon approver add --name lead-1 --tenant acme --groups support-leads   # prints the reviewer credential once
+   mkdir -p "$TALON_AGENTS_DIR/refund-bot"
+   cp examples/n8n-refund/agent.talon.yaml "$TALON_AGENTS_DIR/refund-bot/agent.talon.yaml"
+   # Set the agent key in Talon's vault using the supported secrets procedure.
+   talon secrets set refund-bot-talon-key '<evaluation-only-agent-key>'
    talon validate
    ```
-2. **n8n credentials** (Credentials → New → Header Auth). The values live in n8n's encrypted credential store, never in the workflow JSON:
-   - `Talon refund-bot key`: header `Authorization`, value `Bearer <the key from talon agents add>`. This is the **use case's identity** towards Talon. It does not identify the person who asked for the refund.
-   - `Refund webhook caller`: a header name and a secret of your choice (for example `X-Refund-Caller`). Whoever calls the webhook must send it.
-3. **Import** the workflow, select the two credentials on the Webhook node and the three Talon HTTP nodes (the file carries placeholder credential ids), set `talon_url` in the **Config** node to your Talon URL, and publish it.
-4. **Network.** The webhook is authenticated, and it should still not face the public internet: put n8n behind your TLS terminator or keep the webhook on a private network. Use `https` for `talon_url` unless Talon is on the same host or a private link; the use-case key travels in that request.
-5. **Reviewer.** Approvals are decided outside n8n, by a separately authenticated person:
+
+   Keep production credentials out of shell history and process arguments; use your approved secrets procedure. The future `talon agents add` experience from #567 is **not** a prerequisite.
+
+2. **Create an independent reviewer principal** with the currently supported `talon approver add --name lead-1 --tenant acme --groups support-leads` command. Capture the printed reviewer credential securely. The agent's own key cannot authorize an approval.
+
+3. **Configure n8n credentials** (Credentials → New → Header Auth). Credentials remain in n8n's encrypted credential store, never in the workflow export:
+   - `Talon refund-bot key`: header `Authorization`, value `Bearer <agent key>`.
+   - `Refund webhook caller`: a header name and secret chosen by the operator (for example `X-Refund-Caller`). A caller must present this header.
+
+4. **Import and publish** the workflow. Select both credentials on the Webhook and Talon HTTP nodes; set the `talon_url` field in the **Config** node to the reachable Talon URL.
+
+5. **Protect the network.** Prefer a private webhook and private Talon endpoint, or a TLS-terminated deployment with strong ingress authentication. Use HTTPS outside localhost and trusted private links.
+
+6. **Make a human decision through the existing approval API.** The reviewer can inspect a pending operation using the agent-key read endpoint (with appropriate access controls), obtain its `approval.id`, then submit:
+
    ```bash
-   export TALON_APPROVER_KEY=...   # from talon approver add
-   talon approvals list
-   talon approvals show <approval-id>
-   talon approvals approve <approval-id> --reason "customer verified"
+   curl -fsS -X POST "$TALON_URL/v1/approvals/$APPROVAL_ID/decisions" \
+     -H "Authorization: Bearer $TALON_REVIEWER_KEY" \
+     -H "Content-Type: application/json" \
+     --data '{"decision":"approve","reason":"customer verified"}'
    ```
-   The workflow's own key cannot approve.
+
+   Approval itself never dispatches. The n8n workflow subsequently observes authorization and issues the claim. The newer `talon approvals list/show/approve` interface from #565 is **not required or asserted to be released** here.
+
+**Operation identifiers:** `ticket_id` is required (`ABC-123` format). `request_id` is an optional application-issued stable identifier containing 1–64 letters, numbers, underscores or dashes. Omitting it retains the original one-refund-per-ticket behavior. Supplying it means `refund-<ticket_id>-<request_id>` identifies an independent proposed refund. The authenticated caller must persist and reuse the same identifier for transport retries. A different request id is a **new** operation, not a way to retry an UNKNOWN result. Never mint a new request id to get around a denial, existing authorization or unknown effect.
 
 ## Check it
 
@@ -76,6 +98,21 @@ Count the calls on the refund service itself; n8n's execution log is not proof. 
 talon audit verify --operation refund-T-2     # Lifecycle: VALID, with the approval and the observed dispatch
 ```
 
+## Reusing this pattern for other business actions
+
+The workflow is a **reference implementation of establish → inspect verdict → wait for decision → claim → inspect result**, not a Talon-owned refund engine. To apply it to another business action:
+
+1. Define the trusted canonical action, its closed input schema, reviewer material fields, destination and authoritative success contract in Talon.
+2. Establish company constraints and use-case rules using generic `argument_rules`; keep business-domain eligibility rules in the trusted business system.
+3. Adapt the workflow generator's action name, validated argument mapping and stable business operation ID. Re-generate the JSON and validate it using the existing static and live tests. Do not copy the `amount` thresholds into n8n conditional branches.
+4. Keep all consequential dispatch through Talon's claim route. No n8n direct fallback to the destination.
+5. Map the resulting states and failures truthfully. A transport failure **during** a claim may mean the downstream effect happened; reconcile with Talon and the business system before doing anything else.
+6. Verify signed Talon evidence and independently observe the business outcome. A successful HTTP status is sufficient only if the trusted destination's declared success contract truly reflects the business effect.
+
+Talon's existing HTTP dispatcher forwards canonical JSON to a fixed destination with Talon idempotency headers; it is **not** a generic SaaS authentication, GraphQL transformation or domain validation adapter. Services such as Shopify require a separately secured and tested business-specific integration. Its credentials and business rules must not be implemented in Talon core, nor embedded in the n8n workflow if that would bypass the governed action.
+
+**Ownership:** Talon OSS owns this generic integration contract and minimal deterministic fixture. Full Demo #34 owns the complete business flow, buyer/technical presentations and independent integration proof. A future templates repository owns standalone community-ready exports; Enterprise #31 measures distribution and adoption. Neither Full Demo nor template publication is a core OSS release dependency.
+
 ## What the live run proves
 
 `N8N_BIN=<n8n 2.48.5> scripts/n8n-refund-live.sh`, each line checked against the refund service's own counter:
@@ -87,14 +124,17 @@ talon audit verify --operation refund-T-2     # Lifecycle: VALID, with the appro
 - 75.00 EUR: zero dispatch while pending; the workflow's own key cannot approve; a changed amount under the same ticket is a conflict; after the reviewer approves, one dispatch;
 - a rejected approval and an expired approval: zero dispatch;
 - four concurrent requests for one ticket: one dispatch;
+- two distinct stable `request_id` values for the same ticket: separate legitimate dispatches; retrying either value performs no extra dispatch; malformed request ids are rejected before Talon;
 - the refund service drops its answer: `unknown`, called once, never retried;
 - Talon stopped: the run fails, zero dispatch;
 - every lifecycle verifies with `talon audit verify --operation`.
 
-Not covered: n8n queue mode with several workers, n8n Cloud, a load test, and a broken connection in the middle of a claim.
+Not covered: n8n queue mode with several workers, n8n Cloud, a load test, a broken connection in the middle of a claim, and published-stable binary verification.
 
 ## Boundaries
 
 - **What Talon proves:** what it decided and what it dispatched (`talon_forwarded`). It does not see what n8n did with the response, or anything n8n does outside these HTTP nodes.
 - **Identity:** the n8n credential authenticates the use case `refund-bot`. Who asked for the refund is whatever your application put into the request; Talon does not authenticate that person.
 - **Waiting:** the Wait node polls every 5 seconds until the approval's own expiry. The workflow's `executionTimeout` (1 h) is a second bound.
+- **Effect semantics:** The sample calls a synthetic independently counted service that returns HTTP 201. It does not perform a real payment. For production, the downstream system must validate identity, eligibility, available refundable balance and idempotency, and expose a truthful success contract.
+- **Cross-repo boundary:** This fixture is deliberately not a standalone Shopify community template or a substitute for an end-to-end customer-support workflow.
