@@ -5,6 +5,7 @@ package e2e
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -534,5 +535,87 @@ policies:
 	lossy(1, "after the resume: the unknown outcome was never replayed")
 	if out, stderr, code := RunTalon(t, dir, nil, "audit", "verify", "--operation", "op-u"); code != 0 || !strings.Contains(out, "Lifecycle: VALID") {
 		t.Fatalf("the lifecycle of the unknown operation must verify after the restore: %d\n%s\n%s", code, out, stderr)
+	}
+}
+
+// The documented single-node layout lets the service user register a use
+// case (#568 review). As seen by the `talon` user: the configuration
+// directory (/etc/talon, root:talon 0750) is readable, not writable; the
+// agents directory (/etc/talon/agents, talon:talon 0750) and the data
+// directory (/var/lib/talon, talon 0700) are writable. `talon agents add`
+// runs there from /etc/talon, as the runbook's talonctl does. A root-owned
+// agents directory (the earlier layout) is not writable for that user, and
+// registration fails without registering anything.
+func TestE2E_SingleNodeLayout_TheServiceUserCanRegisterAUseCase(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission checks do not apply to root")
+	}
+	root := t.TempDir()
+	etc := filepath.Join(root, "etc", "talon")
+	agents := filepath.Join(etc, "agents")
+	data := filepath.Join(root, "var", "lib", "talon")
+	for dir, mode := range map[string]os.FileMode{etc: 0o750, agents: 0o750, data: 0o700} {
+		if err := os.MkdirAll(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := filepath.Join(etc, "talon.config.yaml")
+	if err := os.WriteFile(cfg, []byte(`agents_dir: "`+agents+`"
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "http://127.0.0.1:1"
+  organization_policy:
+    defaults:
+      pii_action: block
+    constraints:
+      forbidden_tools: ["delete_*"]
+`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	// What the talon user may do in /etc/talon: read and traverse, not write.
+	if err := os.Chmod(etc, 0o550); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(etc, 0o750); _ = os.Chmod(agents, 0o750) })
+	add := func(name string) (string, int) {
+		t.Helper()
+		cmd := exec.Command(binaryPath, "agents", "add", name, "--tenant", "acme")
+		cmd.Dir = etc
+		cmd.Env = append(os.Environ(), "TALON_DATA_DIR="+data, "TALON_SECRETS_KEY="+testSecretsKey, "TALON_SIGNING_KEY="+testSigningKey,
+			"TALON_GATEWAY_CONFIG="+cfg, "TALON_AGENTS_DIR="+agents, "TALON_ADMIN_KEY=", "TALON_APPROVER_KEY=")
+		out, err := cmd.CombinedOutput()
+		code := 0
+		if err != nil {
+			code = 1
+		}
+		return string(out), code
+	}
+	if out, code := add("support-assistant"); code != 0 || !strings.Contains(out, "Registered support-assistant") {
+		t.Fatalf("talon agents add in the documented layout: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(agents, "support-assistant", "agent.talon.yaml")); err != nil {
+		t.Fatalf("the agent file was not written: %v", err)
+	}
+	entries, _ := os.ReadDir(etc)
+	for _, e := range entries {
+		if e.Name() != "agents" && e.Name() != "talon.config.yaml" {
+			t.Fatalf("registration wrote into the configuration directory: %s", e.Name())
+		}
+	}
+
+	// The earlier layout: an agents directory the service user cannot write.
+	if err := os.Chmod(agents, 0o550); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := add("hr-copilot"); code == 0 {
+		t.Fatalf("registration into a non-writable agents directory must fail:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(agents, "hr-copilot")); err == nil {
+		t.Fatal("a failed registration left a use case directory behind")
 	}
 }

@@ -201,8 +201,14 @@ TS=$(date -u +%Y%m%dT%H%M%SZ)
 # 1. A plain copy of the stopped installation. It is the recovery point if the
 #    upgrade fails before the new release has served: the previous release runs on it.
 #    (A release before v1.17.0 has no `talon backup`; this copy works for every release.)
-sudo install -d -o root -g root -m 0700 /var/backups/talon/pre-upgrade-$TS     # root-only: the copy includes talon.env
-sudo cp -a /var/lib/talon /etc/talon /var/backups/talon/pre-upgrade-$TS/
+#    With Talon stopped, every SQLite store is complete on disk; copy each with its
+#    -wal and -shm files (cp -a of the directory does).
+sudo install -d -o root -g root -m 0700 /var/backups/talon/pre-upgrade-$TS
+sudo cp -a /var/lib/talon /var/backups/talon/pre-upgrade-$TS/
+sudo tar -C /etc --exclude=talon/talon.env -cf - talon | sudo tar -C /var/backups/talon/pre-upgrade-$TS --transform 's,^talon,etc-talon,' -xpf -
+#    The keys are NOT in the copy. The copy is useless without the same TALON_SECRETS_KEY
+#    and TALON_SIGNING_KEY: confirm they are in your secret manager (or keep a separate
+#    root-only file, never next to the copy).
 sudo install -m 0755 talon-NEW /usr/local/bin/talon            # the verified new binary
 # 2. Before the first start: a cold backup with the NEW binary, of the untouched store.
 #    It only reads the store; it is the recovery point after the upgrade, with its hold.
@@ -213,7 +219,7 @@ sudo systemctl start talon
 talonctl version
 ```
 
-**If the upgrade fails before the new release has served** (step 2 or `doctor` fails, the service does not start): stop the service, put the previous binary back, replace `/var/lib/talon` and `/etc/talon` with the plain copy (`sudo cp -a` back, owners as in [Run it](#run-it)) and start. Nothing was dispatched after the copy was taken, so there is nothing to reconcile. **Once the new release has served**, the plain copy is no longer a safe recovery point: it carries no recovery hold, and the previous release would dispatch from it actions executed since. Use the cold backup of step 2 and the procedure below.
+**If the upgrade fails before the new release has served** (step 2 or `doctor` fails, the service does not start): stop the service, put the previous binary back, put the copy back (`/var/lib/talon` from `pre-upgrade-$TS/talon`, `/etc/talon` from `pre-upgrade-$TS/etc-talon`, keeping the current `talon.env`; owners as in [Run it](#run-it)) and start. Nothing was dispatched after the copy was taken, so there is nothing to reconcile. **Once the new release has served**, the plain copy is no longer a safe recovery point: it carries no recovery hold, and the previous release would dispatch from it actions executed since. Use the cold backup of step 2 and the procedure below.
 
 `TestE2E_PreUpgradeBackup_FromThePreviousStable` runs this with the actual previous stable release: the previous release writes an executed and an authorized operation; the plain copy runs under it again with no repeated dispatch; the new binary's cold backup of its store verifies and does not change the store; after the upgrade executes the authorized operation, a restore of that backup holds it until the operator reconciles and holds it.
 
