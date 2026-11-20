@@ -4,6 +4,8 @@ This page points you to the right doc for what you want to do. For the full docu
 
 ---
 
+**Trying Talon and connecting an application are two different paths.** The command below is *Try Talon*: real policy decisions and signed evidence from the published image, with no provider key and no application of yours. To put an existing application under your company policy (a registered use case with its own key, verified activation and traffic), follow [connect an existing application](guides/add-talon-to-existing-app.md).
+
 ## One command, no clone, no provider key
 
 ```bash
@@ -16,22 +18,18 @@ What it does not show: a model answer, a redaction, the console, or a business a
 
 ---
 
-## Which path is yours?
+## After trying it
 
-**1.** I have an existing app that calls OpenAI or Anthropic.  
-→ [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
+**Connect your existing application.** One guide: prepare Talon once, register the application with one command, change two settings in it, and see that it works. Every further application is that one command again.
 
-**1a.** I want the fastest OpenAI-compatible local drop-in (no gateway YAML).  
-→ [OpenAI proxy quickstart](tutorials/proxy-quickstart.md)
+→ [Connect an existing application](guides/add-talon-to-existing-app.md), then [operate AI use cases](guides/operate-ai-use-cases.md) for day two.
 
-**2.** I'm building something new and want controls from day one.  
-→ [Your first governed agent](tutorials/first-governed-agent.md)
+Other things to look at, none of which you need first:
 
-**3.** I want to understand how it works before touching anything (no API key).  
-→ [60-second demo (no API key)](tutorials/quickstart-demo.md)
-
-**4.** I need to review what an auditor handoff looks like.  
-→ [Sample auditor pack](../examples/auditor-pack/README.md)
+- [OpenAI proxy quickstart](tutorials/proxy-quickstart.md): the drop-in shape on your own machine, one local identity, no company policy.
+- [Your first governed agent](tutorials/first-governed-agent.md): building a new agent on Talon's own runtime.
+- [60-second demo](tutorials/quickstart-demo.md): the Docker Compose stack from a clone, no API key.
+- [Sample auditor pack](../examples/auditor-pack/README.md): what an auditor handoff looks like.
 
 ---
 
@@ -72,9 +70,13 @@ talon run --dry-run "Your query here"
 export OPENAI_API_KEY=sk-proj-...
 talon run "Your query here"
 
-# Server (API + optional gateway/proxy)
-export TALON_ADMIN_KEY="replace-with-strong-admin-key"
-talon serve --port 8080
+# Server (API + optional gateway/proxy). Without TALON_ADMIN_KEY the
+# administrative endpoints accept every request (development mode), and
+# without --host the server listens on every interface: set both. For a real
+# installation generate the keys into a 0600 file instead of exporting them
+# in the shell (docs/guides/add-talon-to-existing-app.md, "1. Prepare Talon").
+export TALON_ADMIN_KEY="$(openssl rand -hex 32)"
+talon serve --host 127.0.0.1 --port 8080
 
 # Verify a RUNNING server: which agents is it actually serving? (#370)
 # An explicit --url is authoritative — it errors rather than silently

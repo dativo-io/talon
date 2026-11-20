@@ -889,6 +889,10 @@ export interface EffectiveReport {
   };
   mcp_boundary?: { proxy: string; file: string; scope: string; tools: ToolAccess[]; error?: string; proven_active: boolean; proof: BoundaryProof };
   action_boundary?: ActionBoundary;
+  // #472: configured state, observed authenticated traffic per boundary and
+  // its policy comparison. Computed in Go (effective.Verification); the
+  // console renders it and derives nothing.
+  verification?: UseCaseVerification;
   last_decision?: {
     evidence_id: string;
     timestamp: string;
@@ -911,6 +915,87 @@ export interface EffectivePolicyDTO {
   meta: Meta;
   availability: Availability;
   report?: EffectiveReport;
+}
+
+// ---- Connection and verification (#472) -----------------------------------
+
+export interface TrafficObservation {
+  boundary: "llm_gateway" | "mcp_proxy" | "action_gateway";
+  state: "observed" | "none" | "unavailable";
+  establishes: string;
+  evidence_id?: string;
+  timestamp?: string;
+  invocation_type?: string;
+  event?: string;
+  identity?: string;
+  // true when the record establishes that the use case's own credential was
+  // presented (LLM gateway, Action Gateway); false for MCP proxy records,
+  // which do not record how the caller was identified, for records of the
+  // no-key quickstart profile, and for a record whose signature fails.
+  identity_proven: boolean;
+  // Which credential the request was authenticated with, as far as the
+  // recorded times establish it: current | previous | not_established |
+  // unknown | not_applicable. Evidence does not record the credential a
+  // request presented; the note says what the attribution rests on.
+  credential?: string;
+  credential_note?: string;
+  session_id?: string;
+  outcome?: Outcome;
+  verification?: "valid" | "invalid";
+  // matches_current | differs_from_current | not_recorded | unverified |
+  // bound_at_establishment (an Action Gateway record that is not the
+  // establishment: it carries the policy bound to the operation then, not
+  // one evaluated for this event)
+  policy?: string;
+  policy_note?: string;
+  last_dispatch?: { evidence_id: string; timestamp: string; outcome: Outcome; verification: "valid" | "invalid" };
+  error?: string;
+}
+
+// What is known about the credential the use case presents now: the
+// vault's own record of when a value was written under the secret name
+// (never a value), the signed registration record, and what the runtime
+// records establish about the running processes.
+export interface UseCaseCredential {
+  // not_recorded: a key is stored, but the vault holds no record of when its
+  // value was written (the vault predates value versions).
+  state: "known" | "absent" | "no_key" | "unknown" | "not_recorded";
+  secret_name?: string;
+  since?: string;
+  // Values written under the secret name since the vault records versions.
+  generation: number;
+  // only_value | only_value_since_record | earlier_values | not_recorded.
+  // From the vault's version record, which commits with every write.
+  history: string;
+  registration?: { evidence_id: string; at: string; verification: "valid" | "invalid" };
+  // holds_current | predates_current | not_established | not_running | unknown
+  runtime: string;
+  runtime_note: string;
+  note?: string;
+}
+
+// The one thing to do next, or that nothing needs doing: a fixed mapping
+// from the report's facts, computed in Go (effective.NextStep). The console
+// prints it; it derives nothing.
+export interface UseCaseNextStep {
+  code: string;
+  text: string;
+  commands?: string[];
+}
+
+export interface UseCaseVerification {
+  configured: "enabled" | "disabled";
+  credential: UseCaseCredential | null;
+  next: UseCaseNextStep;
+  // Whether a running process that serves this use case's requests has
+  // loaded the current agent file: the loaded proof restricted to the
+  // processes with `role` ("gateway" when the requests arrive at the LLM
+  // gateway; absent when any Talon process serves them).
+  serving: { role?: string; state: string; reason: string; active_policy_digest?: string; instance_ids?: string[] };
+  traffic: TrafficObservation[];
+  // A presentation summary derived in Go; not a stored state.
+  reading: { code: string; text: string };
+  not_established: string[];
 }
 
 // ---- Approvals (#565) -----------------------------------------------------

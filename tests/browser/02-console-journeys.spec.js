@@ -54,7 +54,9 @@ test("Use case detail: identity, costs with caps, effective policy in four layer
   const tool = eff.getByRole("row").filter({ has: page.getByText("hr_employee_export", { exact: true }) });
   await expect(tool.getByText("denied at forbidden tools (hr_employee_export)")).toBeVisible();
   // The last decision is the same evidence record the CLI names.
-  await expect(eff.getByRole("link", { name: report.last_decision.evidence_id })).toBeVisible();
+  await expect(eff.getByRole("region", { name: "4. Last recorded decision" }).getByRole("link", { name: report.last_decision.evidence_id })).toBeVisible();
+  // ... and it is one of the observed records of section 5 (#472).
+  await expect(eff.getByTestId("verification").getByRole("link", { name: report.last_decision.evidence_id })).toBeVisible();
   await expect(page.getByRole("region", { name: "Costs" }).getByText("Cap source")).toHaveCount(2);
   await page.reload();
   await expect(page.getByRole("heading", { name: f.use_case, level: 1 })).toBeVisible();

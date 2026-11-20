@@ -57,11 +57,30 @@ test("Effective policy: MCP decisions proven by the running proxy, gateway polic
   await expect(eff.getByText("Compiled from current files, not proven active")).toBeVisible();
   await expect(eff.locator("p", { hasText: "LLM gateway:" }).getByText(report.effective.proof.reason)).toBeVisible();
   await expect(eff.locator("p", { hasText: "MCP proxy:" }).getByText("Proven active", { exact: true })).toBeVisible();
-  await expect(eff.getByText("Signature valid")).toBeVisible();
+  // The last decision and the per-boundary observations are separate
+  // sections; each assertion names the one it is about.
+  const last = eff.getByRole("region", { name: "4. Last recorded decision" });
+  await expect(last.getByText("Signature valid")).toBeVisible();
+  await expect(last.getByRole("link", { name: report.last_decision.evidence_id })).toBeVisible();
   await expect(eff.getByText("Yes: this file is loaded")).toBeVisible();
   const tool = eff.getByRole("row").filter({ has: page.getByText("hr_employee_export", { exact: true }) });
   await expect(tool.getByText("denied at forbidden tools (hr_employee_export)")).toBeVisible();
-  await expect(eff.getByRole("link", { name: report.last_decision.evidence_id })).toBeVisible();
+
+  // Connection and verification, as the CLI states it: this use case's
+  // traffic is at the MCP proxy only, whose records do not say how the
+  // caller was identified, so nothing here reads as an authenticated
+  // connection; the LLM gateway has no traffic.
+  const mcp = report.verification.traffic.find((o) => o.boundary === "mcp_proxy");
+  expect(mcp.state).toBe("observed");
+  expect(mcp.identity_proven).toBe(false);
+  expect(report.verification.traffic.find((o) => o.boundary === "llm_gateway").state).toBe("none");
+  const ver = eff.getByTestId("verification");
+  await expect(ver.getByTestId("verification-reading")).toHaveText(report.verification.reading.text);
+  const row = ver.locator('tr[data-boundary="mcp_proxy"]');
+  await expect(row.getByText("Observed, caller's identity not established")).toBeVisible();
+  await expect(row.getByRole("link", { name: mcp.evidence_id })).toBeVisible();
+  await expect(ver.locator('tr[data-boundary="llm_gateway"][data-state="none"]')).toBeVisible();
+  await expect(ver.getByText("Observed, authenticated")).toHaveCount(0);
 });
 
 test("System: the MCP proxy is running, the gateway is not configured", async ({ page }) => {

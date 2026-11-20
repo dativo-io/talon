@@ -23,7 +23,7 @@ The browser asks for a one-time pairing code. Read it from the console's own out
 | Page | Question it answers | Source |
 |---|---|---|
 | **Overview** | What needs attention across the installation and the selected tenant, and why? | operational readiness (runtime records, configuration digests, agent keys the processes report, store reads), findings, the `talon agents` fleet projection, today's counters, request-class activity buckets, recent operational events |
-| **AI Use Cases** | What AI use cases do we operate, how are they doing, how are they governed? | the same fleet rows, unchanged order; each use case's page has four sections: **Summary** (is it operating as expected?), **Sessions & Activity** (what happened when it ran?), **Policy & Runtime** (what is permitted, and which policy is active?), **Costs** (what does it cost?) |
+| **AI Use Cases** | What AI use cases do we operate, how are they doing, how are they governed? | the same fleet rows, unchanged order; each use case's page has four sections: **Summary** (is it operating as expected? including the one-line *Connection and verification* reading, loaded or not, authenticated traffic observed or not, under which policy, and the same *Next step* `talon agents show` prints), **Sessions & Activity** (what happened when it ran?), **Policy & Runtime** (what is permitted, and which policy is active?), **Costs** (what does it cost?) |
 | **Approvals** | Which Action Gateway requests wait for a person, why do they need approval, and what was decided? | the action tables of the store, read-only; the same projection as `talon approvals` without argument values ([read contract §2.8](../reference/console-read-contract.md#28-approvals-565)) |
 | **Sessions** | What happened in this session, what did Talon decide, and was anything sent? | session store rows and evidence-observed session ids, summary and timeline from `talon session show` |
 | **Costs** | How much, where, and are budgets respected? | `talon costs --json` (`costs.Build`) |
@@ -143,6 +143,16 @@ The search box accepts an AI use case name (prefix), an exact session id, an exa
 The **Tenant scope** selector in the header lists the tenants this installation knows: tenants of configured AI use cases (with their count) and tenants seen only in evidence or sessions (*observed only*). It scopes AI use cases, sessions, costs, activity and search (`?tenant=` in the URL), and the scope follows you through the navigation, a reload and the browser's back button. *All tenants* means all tenants on Overview, including its activity chart, and on AI Use Cases; Sessions, Costs and search use `default`. Each page states the scope it shows.
 
 Installation facts are never scoped: operational readiness, the System page and the shared configuration (organization baseline, gateway and providers, MCP proxy) stay visible and are labelled *installation* or *shared*. Talon has no tenant-wide policy: each use case's effective policy is the organization baseline, its own agent file and the hard constraints, and the Configuration page links each use case to that explanation. Selecting a tenant filters what the paired operator may already read; it is not an access control. Filters and scope live in the URL, so a link to an investigation can be shared; no code, cookie or key is ever placed in a URL.
+
+## Has this application connected? (Connection and verification)
+
+After an application is registered (`talon agents add`), its page answers three separate questions, each from its own source, the same way `talon agents show <name> --effective` does:
+
+- **Loaded?** *Policy & Runtime → 2. Loaded by a running process*: a running Talon process reports this agent file in its active generation. A file on disk is not a loaded file.
+- **Connected?** *Policy & Runtime → 5. Connection and verification*: for the LLM gateway, the MCP proxy and the Action Gateway separately, the newest signed record an authenticated request of this use case produced. A registration, an enable or disable, a reload or a reviewer's decision is not traffic. "None recorded" at the LLM gateway for a use case that only uses the Action Gateway is correct, and establishing an action is shown apart from dispatching it. An MCP proxy record reads "caller's identity not established": the proxy does not record whether the use case's key was presented.
+- **Under the expected policy?** The same table: the record's signature check and whether its recorded policy digests equal what the current files compile to (*matches*, *differs*, *not proven*, *not verified*).
+
+The Summary shows the one-line reading of these facts. The console computes none of this in the browser, and none of it says that all of the application's traffic goes through Talon.
 
 ## What the console does not do
 

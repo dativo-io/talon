@@ -29,6 +29,35 @@ type Publisher struct {
 	snapshot func(*Record)
 	now      func() time.Time
 	seq      uint64
+	// live is the catalog state of the last record written (liveKey). A
+	// change of it is written at once, not at the next heartbeat.
+	live string
+}
+
+// changeCheck is how often a running publisher looks whether the catalog
+// state changed since its last record. A reader that compares a server's
+// answer with this process's record (which fleet generation is active)
+// would otherwise disagree with a healthy process for a whole heartbeat
+// after every reload.
+const changeCheck = 250 * time.Millisecond
+
+// liveKey is the part of a record that changes when the process activates
+// or rejects a fleet generation.
+func liveKey(r *Record) string {
+	if r.Catalog == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s|%s|%t|%s", r.Catalog.ActiveGeneration, r.Catalog.ScanDigest, r.Catalog.ReloadRejected, r.Catalog.RejectedDigest)
+}
+
+// changed reports whether the catalog state differs from the last record.
+func (p *Publisher) changed() bool {
+	if p.snapshot == nil {
+		return false
+	}
+	rec := p.base
+	p.snapshot(&rec)
+	return liveKey(&rec) != p.live
 }
 
 // NewPublisher prepares a publisher for dataDir. base carries the static
@@ -79,6 +108,8 @@ func (p *Publisher) Run(ctx context.Context) error {
 	}
 	t := time.NewTicker(p.interval)
 	defer t.Stop()
+	watch := time.NewTicker(changeCheck)
+	defer watch.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -86,6 +117,10 @@ func (p *Publisher) Run(ctx context.Context) error {
 			return nil
 		case <-t.C:
 			_ = p.write(StateRunning)
+		case <-watch.C:
+			if p.changed() {
+				_ = p.write(StateRunning)
+			}
 		}
 	}
 }
@@ -96,6 +131,7 @@ func (p *Publisher) write(state string) error {
 		p.snapshot(&rec)
 	}
 	p.seq++
+	p.live = liveKey(&rec)
 	rec.Sequence = p.seq
 	rec.State = state
 	rec.WrittenAt = p.now()

@@ -43,6 +43,23 @@ func ProveLoaded(v View, readable bool, name, tenant, fileDigest string) Loaded 
 	}
 }
 
+// ProveServed is ProveLoaded restricted to the processes that serve role
+// ("" = any): a use case whose requests arrive at the LLM gateway is served
+// only by a process with the gateway role, whatever other Talon processes
+// have loaded its file.
+func ProveServed(v View, readable bool, role, name, tenant, fileDigest string) Loaded {
+	if role == "" || !readable {
+		return ProveLoaded(v, readable, name, tenant, fileDigest)
+	}
+	only := View{ReadAt: v.ReadAt}
+	for i := range v.Processes {
+		if v.Processes[i].Serves(role) {
+			only.Processes = append(only.Processes, v.Processes[i])
+		}
+	}
+	return ProveLoaded(only, readable, name, tenant, fileDigest)
+}
+
 // reported collects what the current running processes report for the use
 // case: the instances, the policy digest, whether any process reports a
 // catalog at all, and whether processes disagree on the digest.
