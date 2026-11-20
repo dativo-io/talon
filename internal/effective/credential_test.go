@@ -40,7 +40,12 @@ func newKeyed(t *testing.T) *keyed {
 	bound := strings.Replace(string(raw), "  version: \"1.0.0\"\n", "  version: \"1.0.0\"\n  key:\n    secret_name: "+keySecret+"\n", 1)
 	require.NotEqual(t, string(raw), bound)
 	require.NoError(t, os.WriteFile(file, []byte(bound), 0o600))
-	return &keyed{fixture: f, t: t, vault: filepath.Join(f.dir, "secrets.db")}
+	k := &keyed{fixture: f, t: t, vault: filepath.Join(f.dir, "secrets.db")}
+	// The vault file exists before anything in a test's timeline: a process
+	// "started" in the fixture's past started after the vault was created.
+	k.store(func(*secrets.SecretStore) {})
+	k.exec(`UPDATE vault_meta SET value = ? WHERE key = 'value_versions_since'`, time.Now().UTC().Add(-30*24*time.Hour).Format(time.RFC3339Nano))
+	return k
 }
 
 func (k *keyed) store(do func(*secrets.SecretStore)) {
@@ -192,11 +197,19 @@ func TestVerification_TrafficIsAttributedToTheCurrentCredential(t *testing.T) {
 		require.NotNil(t, c.Registration)
 		assert.Equal(t, "reg-A", c.Registration.EvidenceID)
 		assert.Equal(t, "valid", c.Registration.Verification)
+		// Without runtime records nothing says which process served the
+		// request. "The only value ever stored" is a fact about the vault
+		// file, so it is not a shortcut to "current": the credential is
+		// reported as unknown, with the reason, and the reading says so.
 		g := observation(t, r, BoundaryLLMGateway)
-		assert.Equal(t, CredentialCurrent, g.Credential, "no other credential ever existed under this name")
+		assert.Equal(t, CredentialUnknown, g.Credential)
+		assert.Contains(t, g.CredentialNote, "nothing suggests another key")
 		assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code)
-		// It stays verified whatever the runtime does later (a reload for
-		// another use case): there is only one credential it can have used.
+		assert.Contains(t, r.Verification.Reading.Text, "which credential it was authenticated with is not established")
+		// A process that started after the vault file was created can hold
+		// only this value, whenever it started relative to the write (the
+		// use case was registered while it was running; a reload for another
+		// use case): the request it served used the credential stored now.
 		later := withRuntime(k.inputs(), process("serve1", w.Add(-time.Hour), w.Add(2*time.Hour), true))
 		r, err = Build(ctx, later)
 		require.NoError(t, err)
@@ -378,6 +391,9 @@ func TestVerification_TrafficIsAttributedToTheCurrentCredential(t *testing.T) {
 		assert.Nil(t, c.Registration, "no 'talon agents add' record exists, and none is required")
 		assert.Equal(t, CredentialKnown, c.State)
 		assert.Equal(t, 1, c.Generation)
+		assert.Equal(t, CredentialUnknown, observation(t, r, BoundaryLLMGateway).Credential, "no runtime record: not reported as current")
+		r, err = Build(ctx, withRuntime(k.inputs(), process("serve1", w.Add(time.Second), w.Add(time.Second), true)))
+		require.NoError(t, err)
 		assert.Equal(t, CredentialCurrent, observation(t, r, BoundaryLLMGateway).Credential)
 		assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code)
 	})

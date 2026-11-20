@@ -201,10 +201,21 @@ func statusHeadline(next effective.NextStep) string {
 }
 
 func runtimeLine(r *effective.Report) string {
-	if r.Verification != nil && r.Verification.Next.Code == effective.NextStartRuntime {
-		return "not running: no Talon process of this installation is running"
+	// What counts is a process that serves this use case's requests
+	// (Verification.Serving), not any Talon process that read its file.
+	loaded := r.Loaded
+	if v := r.Verification; v != nil {
+		if v.Next.Code == effective.NextStartRuntime && v.Serving.Role != "" && r.Loaded.State != runtimestatus.LoadedUnknown {
+			return "not served: a Talon process is running, but none that serves the LLM gateway"
+		}
+		if v.Next.Code == effective.NextStartRuntime {
+			return "not running: no Talon process of this installation is running"
+		}
+		if v.Serving.State != "" {
+			loaded = v.Serving.Loaded
+		}
 	}
-	switch r.Loaded.State {
+	switch loaded.State {
 	case runtimestatus.LoadedMatchesFile:
 		return "loaded by the running Talon process"
 	case runtimestatus.LoadedDiffersFromFile:
@@ -212,7 +223,7 @@ func runtimeLine(r *effective.Report) string {
 	case runtimestatus.NotInActiveGeneration:
 		return "not loaded: a Talon process is running without this use case"
 	}
-	return "not confirmed: " + r.Loaded.Reason
+	return "not confirmed: " + loaded.Reason
 }
 
 // policyLine is the policy in one line: the controls that have a value, and
@@ -235,24 +246,37 @@ func policyLine(r *effective.Report) (controls, verified string) {
 		controls = "the company policy sets no budget, PII or tool rule"
 	}
 	verified = "no authenticated request to compare with yet"
-	if v := r.Verification; v != nil {
-		for i := range v.Traffic {
-			o := &v.Traffic[i]
-			if o.State != effective.TrafficObserved || !o.IdentityProven {
-				continue
-			}
-			switch o.Policy {
-			case effective.PolicyMatchesCurrent:
-				verified = "the newest authenticated request was evaluated under this policy"
-			case effective.PolicyDiffers:
-				verified = "the newest authenticated request was evaluated under ANOTHER policy"
-			default:
-				verified = "the policy of the newest authenticated request is not recorded on its record"
-			}
-			break
+	if o := newestAuthenticated(r.Verification); o != nil {
+		switch o.Policy {
+		case effective.PolicyMatchesCurrent:
+			verified = "the newest authenticated request was evaluated under this policy"
+		case effective.PolicyDiffers:
+			verified = "the newest authenticated request was evaluated under ANOTHER policy"
+		default:
+			verified = "the policy of the newest authenticated request is not recorded on its record"
 		}
 	}
 	return controls, verified
+}
+
+// newestAuthenticated is the newest record, over all boundaries, that
+// establishes the use case's own credential: the one the reading and the
+// next step speak about.
+func newestAuthenticated(v *effective.Verification) *effective.TrafficObservation {
+	if v == nil {
+		return nil
+	}
+	var newest *effective.TrafficObservation
+	for i := range v.Traffic {
+		o := &v.Traffic[i]
+		if o.State != effective.TrafficObserved || !o.IdentityProven || o.Timestamp == nil {
+			continue
+		}
+		if newest == nil || o.Timestamp.After(*newest.Timestamp) {
+			newest = o
+		}
+	}
+	return newest
 }
 
 func outcomeWords(o *evidence.Outcome) string {

@@ -987,6 +987,11 @@ export interface UseCaseVerification {
   configured: "enabled" | "disabled";
   credential: UseCaseCredential | null;
   next: UseCaseNextStep;
+  // Whether a running process that serves this use case's requests has
+  // loaded the current agent file: the loaded proof restricted to the
+  // processes with `role` ("gateway" when the requests arrive at the LLM
+  // gateway; absent when any Talon process serves them).
+  serving: { role?: string; state: string; reason: string; active_policy_digest?: string; instance_ids?: string[] };
   traffic: TrafficObservation[];
   // A presentation summary derived in Go; not a stored state.
   reading: { code: string; text: string };

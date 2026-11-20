@@ -3,6 +3,7 @@ package effective
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -20,6 +21,7 @@ func TestNextStep_IsDeterminedByTheFacts(t *testing.T) {
 	loaded := runtimestatus.Loaded{State: runtimestatus.LoadedMatchesFile}
 	notLoaded := runtimestatus.Loaded{State: runtimestatus.NotInActiveGeneration}
 	endpoints := []string{"/v1/proxy/openai/v1"}
+	at := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	v := func(code string, mod ...func(*Verification)) *Verification {
 		out := &Verification{Configured: "enabled", Reading: Reading{Code: code}}
 		for _, m := range mod {
@@ -40,6 +42,22 @@ func TestNextStep_IsDeterminedByTheFacts(t *testing.T) {
 		{"verified and served now", v(ReadingTrafficMatches), loaded, running, NextNone, []string{"Nothing to do", "a running Talon process serves this use case"}, nil},
 		{"verified earlier, nothing runs now", v(ReadingTrafficMatches), runtimestatus.Loaded{State: runtimestatus.LoadedUnknown}, stopped, NextStartRuntime, []string{"verified, but that was earlier", "no Talon process of this installation is running"}, nil},
 		{"verified earlier, the running process dropped it", v(ReadingTrafficMatches), notLoaded, rejected, NextFixReload, []string{"verified, but that was earlier", "rejected the last change to the fleet"}, []string{"talon validate"}},
+		// "Nothing to do" also needs the credential facts not to contradict it (#567 review).
+		{"verified, but the running process holds an earlier key", v(ReadingTrafficMatches, func(v *Verification) {
+			v.Credential = &Credential{State: CredentialKnown, Runtime: RuntimePredatesCurrent}
+		}), loaded, running, NextRestartRuntime, []string{"still holds the earlier one", "Restart `talon serve`"}, nil},
+		{"verified, but that the running process holds the stored key is not established", v(ReadingTrafficMatches, func(v *Verification) {
+			v.Credential = &Credential{State: CredentialKnown, Runtime: RuntimeNotEstablished}
+		}), loaded, running, NextRestartRuntime, []string{"not established that the process holds it"}, nil},
+		{"verified, but the record does not say which secret authenticated it", v(ReadingTrafficMatches, func(v *Verification) {
+			v.Credential = &Credential{State: CredentialKnown, Runtime: RuntimeHoldsCurrent}
+			v.Traffic = []TrafficObservation{{Boundary: BoundaryLLMGateway, State: TrafficObserved, IdentityProven: true, Timestamp: &at, Credential: CredentialUnknown, CredentialNote: "recorded under another version of the agent file"}}
+		}), loaded, running, NextSendNewRequest, []string{"does not establish which key it used", "another version of the agent file"}, []string{"talon agents show app --effective"}},
+		{"verified; the vault holds no history of the key: said, not guessed", v(ReadingTrafficMatches, func(v *Verification) {
+			v.Credential = &Credential{State: CredentialUnversioned, Runtime: RuntimeCredentialUnknown}
+			v.Traffic = []TrafficObservation{{Boundary: BoundaryLLMGateway, State: TrafficObserved, IdentityProven: true, Timestamp: &at, Credential: CredentialUnknown, CredentialNote: "the vault holds no record of when its value was written"}}
+		}), loaded, running, NextNone, []string{"Nothing to do", "Not established here: which key that request used", "no record of when its value was written"}, nil},
+		{"a Talon process runs, but none that serves the LLM gateway", v(ReadingTrafficMatches), runtimestatus.Loaded{State: runtimestatus.LoadedUnknown}, runtimeFacts{known: true, others: true}, NextStartRuntime, []string{"verified, but that was earlier", "none that serves the LLM gateway", "talon serve --gateway"}, nil},
 		{"disabled wins over everything", v(ReadingTrafficMatches, func(v *Verification) { v.Configured = "disabled" }), loaded, running, NextEnable, []string{"disabled in its file"}, []string{"talon agents enable app"}},
 		{"registered, nothing running", v(ReadingNotLoaded), notLoaded, stopped, NextStartRuntime, []string{"No Talon process of this installation is running"}, nil},
 		{"registered, the running process rejected the fleet", v(ReadingNotLoaded), notLoaded, rejected, NextFixReload, []string{"rejected the last change to the fleet", "typo_field"}, []string{"talon validate"}},
@@ -67,7 +85,7 @@ func TestNextStep_IsDeterminedByTheFacts(t *testing.T) {
 	seen := map[string]bool{}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := nextStepOf(tc.v, tc.loaded, tc.rt, "app", "acme", endpoints)
+			got := nextStepOf(tc.v, Serving{Loaded: tc.loaded}, tc.rt, "app", "acme", endpoints)
 			assert.Equal(t, tc.code, got.Code)
 			for _, want := range tc.contains {
 				assert.Contains(t, got.Text, want)

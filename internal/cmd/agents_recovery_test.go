@@ -910,3 +910,58 @@ func TestAgentsAdd_PublicationIsTrackedApartFromTempFileCleanup(t *testing.T) {
 		require.Contains(t, note, "NOT removed: the file at "+file+" is no longer the one this registration published")
 	})
 }
+
+// #567 review. An interrupted registration published its agent file under
+// one agents_dir; the next registration of the name runs for the same
+// installation (same data directory) with another agents_dir. Its signed
+// intent committed to a path this run does not look at. Nothing may be
+// stated, removed or recorded about it from here: not "left nothing", not
+// its key (its file may be a live use case), not a rollback record.
+func TestAgentsAdd_RecoveryRefusesAnIntentOfAnotherAgentsDir(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name      string
+		deleteKey bool
+	}{
+		{"its key is still stored", false},
+		{"its key was removed by the operator", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, agentsDir := crashEnv(t)
+			in := killedAt(t, cfg, stepFilePublished)
+			left := filepath.Join(agentsDir, "refund-bot", "agent.talon.yaml")
+			require.True(t, pathExists(left))
+			before := mustRead(t, left)
+			if tc.deleteKey {
+				s, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+				require.NoError(t, err)
+				require.NoError(t, s.Delete(ctx, "refund-bot-talon-key"))
+				require.NoError(t, s.Close())
+			}
+			_, hadKey := vaultValue(t, cfg, "refund-bot-talon-key")
+
+			other := *cfg
+			other.AgentsDir = filepath.Join(t.TempDir(), "agents-b")
+			var out bytes.Buffer
+			err := runAgentsAdd(ctx, &out, &other, "refund-bot")
+			require.Error(t, err, "a registration that cannot inspect the committed file must refuse:\n%s", out.String())
+			require.Contains(t, err.Error(), "another agents_dir")
+			require.Contains(t, err.Error(), in.Commitments.AgentFile, "the message names the path that was not inspected")
+			require.Contains(t, err.Error(), "nothing was changed")
+			require.NotContains(t, out.String(), "SECRET — shown once", "no key is issued")
+
+			require.Equal(t, before, mustRead(t, left), "the committed file is untouched")
+			_, hasKey := vaultValue(t, cfg, "refund-bot-talon-key")
+			require.Equal(t, hadKey, hasKey, "the vault is untouched: a key is neither removed nor created")
+			require.False(t, pathExists(filepath.Join(other.AgentsDir, "refund-bot", "agent.talon.yaml")), "nothing is registered under the other agents_dir")
+			require.Empty(t, registrationRecords(t, cfg, "acme", "refund-bot")[registration.TypeRolledBack], "nothing is recorded about a file that was not inspected")
+			require.Len(t, unresolved(t, cfg, "refund-bot"), 1, "the intent stays unresolved")
+
+			// With the agents_dir it used, it is resolved as before.
+			out.Reset()
+			require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"), out.String())
+			require.Contains(t, out.String(), "Recovered")
+			require.Empty(t, unresolved(t, cfg, "refund-bot"))
+		})
+	}
+}

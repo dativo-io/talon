@@ -183,13 +183,29 @@ func (r *registrationRun) resolveUnresolved() ([]string, error) {
 	return done, nil
 }
 
-func (r *registrationRun) resolveOne(in *registration.Unresolved) (string, error) {
-	head := fmt.Sprintf("an earlier registration of %q (tenant %s, signed intent %s of %s) has no completion or rollback record", in.Name, in.Tenant, in.IntentID, in.At.UTC().Format(time.RFC3339))
+// judgeable reports why an unresolved registration cannot be judged from
+// this run at all (nil when it can). Nothing is inspected or changed.
+func (r *registrationRun) judgeable(in *registration.Unresolved, head string) error {
 	if !registration.LockSupported {
-		return "", fmt.Errorf("%s. On this platform it cannot be established that it is not still running, so nothing was changed", head)
+		return fmt.Errorf("%s. On this platform it cannot be established that it is not still running, so nothing was changed", head)
 	}
 	if !in.Verified {
-		return "", fmt.Errorf("%s, and that intent record does not verify (it was changed after signing): it proves nothing and justifies no recovery. Nothing was changed. Verify the evidence store first: talon audit verify %s", head, in.IntentID)
+		return fmt.Errorf("%s, and that intent record does not verify (it was changed after signing): it proves nothing and justifies no recovery. Nothing was changed. Verify the evidence store first: talon audit verify %s", head, in.IntentID)
+	}
+	// The intent committed to an agent file at another path than this run
+	// uses (the same data directory with another agents_dir). What is at
+	// THAT path is not inspected here, so nothing may be stated or recorded
+	// about it, and its key is not removed while its file may be in use.
+	if c := in.Commitments; c.AgentFile != "" && !samePath(c.AgentFile, r.plan.AbsPath) {
+		return fmt.Errorf("%s, and its signed intent committed to another agent file (%s) than this run would write (%s): it was started with another agents_dir. What is at that path was not inspected, so nothing was changed and nothing was recorded. Run the registration with the agents_dir that one used: it is resolved there", head, c.AgentFile, r.plan.AbsPath)
+	}
+	return nil
+}
+
+func (r *registrationRun) resolveOne(in *registration.Unresolved) (string, error) {
+	head := fmt.Sprintf("an earlier registration of %q (tenant %s, signed intent %s of %s) has no completion or rollback record", in.Name, in.Tenant, in.IntentID, in.At.UTC().Format(time.RFC3339))
+	if err := r.judgeable(in, head); err != nil {
+		return "", err
 	}
 	l, err := r.inspect(in)
 	if err != nil {
