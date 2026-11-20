@@ -1,0 +1,20 @@
+# Company configuration for the n8n Action Gateway reference.
+# One per Talon installation; it applies to every AI use case in it.
+agents_dir: ./agents
+
+gateway:
+  enabled: true
+  organization_policy:
+    constraints:
+      # A company constraint always binds. A use case can add rules of its own
+      # (see use-case-action.append.yaml); it cannot lift or loosen this one.
+      # Example value, not a built-in rule: no refund above 500.00.
+      action_approvals:
+        argument_rules:
+          refund-too-large:
+            actions: [create_refund_request]
+            argument: amount
+            type: decimal
+            operator: gt
+            value: "500.00"
+            effect: deny

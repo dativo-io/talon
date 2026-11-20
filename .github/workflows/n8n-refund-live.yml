@@ -1,0 +1,82 @@
+name: n8n refund live
+
+# Live validation of examples/n8n-refund (#434): the committed workflow is
+# imported into a real n8n of ONE pinned release and run against a real
+# `talon serve` and an independently counting refund service
+# (scripts/n8n-refund-live.sh). A static JSON check is not a live test; this
+# lane is what the example's "validated on n8n <version>" statement rests on.
+#
+# The pinned release lives in scripts/n8n-refund-live.sh (PINNED_N8N) and in
+# N8N_VERSION below; bump both together and re-run this lane.
+
+on:
+  pull_request:
+    branches: [main, 'feat/**', 'fix/**']
+    paths:
+      - 'examples/n8n-refund/**'
+      - 'scripts/n8n-refund-live.sh'
+      - 'internal/action/**'
+      - 'internal/server/handlers_actions.go'
+      # the commands the reference is set up and operated with
+      - 'internal/cmd/agents_add.go'
+      - 'internal/cmd/agents_registration.go'
+      - 'internal/cmd/agents_view.go'
+      - 'internal/cmd/approvals.go'
+      - '.github/workflows/n8n-refund-live.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'examples/n8n-refund/**'
+      - 'scripts/n8n-refund-live.sh'
+      - 'internal/action/**'
+      - 'internal/server/handlers_actions.go'
+      - 'internal/cmd/agents_add.go'
+      - 'internal/cmd/agents_registration.go'
+      - 'internal/cmd/agents_view.go'
+      - 'internal/cmd/approvals.go'
+      - '.github/workflows/n8n-refund-live.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  N8N_VERSION: "2.48.5"
+
+jobs:
+  live:
+    name: Real n8n, real Talon, counting refund service
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build talon
+        run: |
+          sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+          go build -o "$RUNNER_TEMP/talon" ./cmd/talon/
+      # Install scripts are skipped (one optional dependency downloads a
+      # private prebuilt binary) and only n8n's SQLite driver is rebuilt.
+      - name: Install the pinned n8n
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/n8n" && cd "$RUNNER_TEMP/n8n"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error "n8n@${N8N_VERSION}"
+          npm rebuild sqlite3
+          [ "$(./node_modules/.bin/n8n --version | tail -n1)" = "$N8N_VERSION" ]
+      - name: Run the workflow on n8n against Talon and the refund service
+        env:
+          N8N_BIN: ${{ runner.temp }}/n8n/node_modules/.bin/n8n
+          TALON_BIN: ${{ runner.temp }}/talon
+        run: |
+          set -euo pipefail
+          bash scripts/n8n-refund-live.sh 2>&1 | tee "$RUNNER_TEMP/n8n-live.log"
+          { echo "### n8n ${N8N_VERSION} refund workflow, live"; echo '```'; grep -E '^(PASS|FAIL)' "$RUNNER_TEMP/n8n-live.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
