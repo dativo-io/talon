@@ -15,8 +15,9 @@ WEBHOOK_CRED = {"httpHeaderAuth": {"id": "refund-webhook-caller", "name": "Refun
 # The Talon base URL comes from the Config node (edit it after import): n8n
 # 2.x blocks $env in expressions by default, so the workflow does not use it.
 BASE = "={{ $('Config').first().json.talon_url }}"
-# One refund per ticket: an n8n retry resumes the same Talon operation. The
-# id is validated before any Talon call and URL-encoded in paths.
+# Default: one refund per ticket. Optional request_id permits multiple distinct
+# refunds for one ticket; the caller MUST persist/reuse it on transport retry.
+# The complete id is validated before any Talon call and URL-encoded in paths.
 OP_ID = "$('Validate request').first().json.operation_id"
 OP_PATH = "{{ encodeURIComponent(" + OP_ID + ") }}"
 
@@ -71,12 +72,12 @@ nodes = [
         "includeOtherFields": True, "options": {}},
      "name": "Config", "type": "n8n-nodes-base.set", "typeVersion": 3.4, "position": [200, 300]},
     # Only a well-formed request reaches Talon: ticket id, exact-decimal
-    # amount as a string, currency code.
+    # amount as a string, currency code, optional stable request_id.
     {"parameters": {"assignments": {"assignments": [
         {"id": "valid", "name": "valid", "type": "boolean",
-         "value": "={{ typeof $json.body === 'object' && $json.body !== null && typeof $json.body.ticket_id === 'string' && /^[A-Z]{1,10}-[0-9]{1,12}$/.test($json.body.ticket_id) && typeof $json.body.amount === 'string' && /^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$/.test($json.body.amount) && typeof $json.body.currency === 'string' && /^[A-Z]{3}$/.test($json.body.currency) }}"},
+         "value": "={{ typeof $json.body === 'object' && $json.body !== null && typeof $json.body.ticket_id === 'string' && /^[A-Z]{1,10}-[0-9]{1,12}$/.test($json.body.ticket_id) && typeof $json.body.amount === 'string' && /^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,2})?$/.test($json.body.amount) && typeof $json.body.currency === 'string' && /^[A-Z]{3}$/.test($json.body.currency) && ($json.body.request_id === undefined || (typeof $json.body.request_id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test($json.body.request_id))) }}"},
         {"id": "opid", "name": "operation_id", "type": "string",
-         "value": "={{ 'refund-' + (typeof ($json.body || {}).ticket_id === 'string' ? $json.body.ticket_id : 'invalid') }}"}]},
+         "value": "={{ 'refund-' + (typeof ($json.body || {}).ticket_id === 'string' ? $json.body.ticket_id : 'invalid') + (typeof ($json.body || {}).request_id === 'string' ? '-' + $json.body.request_id : '') }}"}]},
         "includeOtherFields": True, "options": {}},
      "name": "Validate request", "type": "n8n-nodes-base.set", "typeVersion": 3.4, "position": [400, 300]},
     switch("Request valid", [600, 300], "={{ String($json.valid) }}", [("valid", "true")]),
