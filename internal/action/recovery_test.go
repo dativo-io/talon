@@ -4,6 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -85,4 +89,74 @@ func TestRecoveryHold_BlocksClaimsUntilResumed(t *testing.T) {
 	again, err := ResumeRecovery(ctx, h.store.DB(), "operator", nil, h.now, noEvidence)
 	require.NoError(t, err)
 	require.Empty(t, again, "nothing left to resume")
+}
+
+// #568 review. Several resumes at once end the hold exactly once: one
+// transaction sees the hold, holds its operation ids and writes its
+// evidence; every other one finds nothing to end, holds nothing and does not
+// call the evidence writer. A repeat afterwards is the same.
+func TestResumeRecovery_ConcurrentAndRepeatedResumesEndTheHoldOnce(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	require.NoError(t, StampRecoveryHold(ctx, h.store.DB(), "bk_1", h.now.Add(-time.Hour), "cfg-digest"))
+
+	const operators = 8
+	var (
+		start    = make(chan struct{})
+		wg       sync.WaitGroup
+		recorded atomic.Int64
+		winners  atomic.Int64
+		errs     = make(chan error, operators)
+	)
+	for i := 0; i < operators; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			ended, err := ResumeRecovery(ctx, h.store.DB(), fmt.Sprintf("operator-%d", i), []string{fmt.Sprintf("op-held-by-%d", i)}, h.now, func(context.Context, *sql.Tx, []RecoveryHold) error {
+				recorded.Add(1)
+				return nil
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			if len(ended) > 0 {
+				winners.Add(1)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("a concurrent resume failed instead of finding nothing to end: %v", err)
+	}
+	require.Equal(t, int64(1), winners.Load(), "exactly one resume ends the hold")
+	require.Equal(t, int64(1), recorded.Load(), "exactly one evidence record is written: no resume without a hold records anything")
+
+	var held int
+	var by string
+	require.NoError(t, h.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_held_operations`).Scan(&held))
+	require.Equal(t, 1, held, "only the winner's operation id is held")
+	require.NoError(t, h.store.DB().QueryRowContext(ctx, `SELECT resumed_by FROM recovery_holds WHERE backup_id = 'bk_1'`).Scan(&by))
+	var heldID string
+	require.NoError(t, h.store.DB().QueryRowContext(ctx, `SELECT operation_id FROM recovery_held_operations`).Scan(&heldID))
+	require.Equal(t, "op-held-by-"+strings.TrimPrefix(by, "operator-"), heldID, "the held id and the recorded operator are the same resume's")
+
+	// A repeat: nothing to end, the writer is not called, nothing more is held.
+	ended, err := ResumeRecovery(ctx, h.store.DB(), "late", []string{"op-late"}, h.now, func(context.Context, *sql.Tx, []RecoveryHold) error {
+		recorded.Add(1)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Empty(t, ended)
+	require.Equal(t, int64(1), recorded.Load())
+	require.NoError(t, h.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_held_operations`).Scan(&held))
+	require.Equal(t, 1, held)
+
+	// The held id stays held for good: a claim of it is refused.
+	block, err := recoveryBlock(ctx, h.store.DB(), heldID)
+	require.NoError(t, err)
+	require.Contains(t, block, "held by the operator")
 }

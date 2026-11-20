@@ -748,7 +748,8 @@ func resumeAfterRestore(ctx context.Context, out io.Writer, cfg *config.Config) 
 	}
 	if len(holds) == 0 {
 		fmt.Fprintln(out, "No recovery hold: this installation is not running on a restored backup (or was already resumed).")
-		return nil
+		fmt.Fprintln(out, "Nothing was changed and no evidence was written.")
+		return notHeld()
 	}
 	hold := holds[0]
 	fmt.Fprintf(out, "RECOVERY HOLD: this installation runs on backup %s, taken %s.\n", hold.BackupID, hold.BackupCreatedAt.UTC().Format(time.RFC3339))
@@ -789,6 +790,7 @@ func resumeAfterRestore(ctx context.Context, out io.Writer, cfg *config.Config) 
 	// hold stays active and dispatch stays refused.
 	id := "rr_" + uuid.New().String()[:12]
 	w := evStore.NewTxWriter()
+	resumeRaceHook()
 	ended, err := action.ResumeRecovery(ctx, db, operatorID(), backupResumeHoldOps, time.Now(), func(ctx context.Context, tx *sql.Tx, ended []action.RecoveryHold) error {
 		backups := make([]string, 0, len(ended))
 		for i := range ended {
@@ -803,11 +805,49 @@ func resumeAfterRestore(ctx context.Context, out io.Writer, cfg *config.Config) 
 	})
 	if err != nil {
 		w.Discard()
-		return fmt.Errorf("not resumed, the recovery hold is still active and nothing is dispatched: %w", err)
+		// Say what the state IS, not what it is assumed to be: another
+		// command may have ended the hold while this one failed.
+		state := "the recovery hold is still active and nothing is dispatched"
+		if now, rerr := action.ActiveRecoveryHolds(ctx, db); rerr != nil {
+			state = "whether a recovery hold is still active could not be read; check with: talon backup resume"
+		} else if len(now) == 0 {
+			state = "no recovery hold is active now (another command ended it); this command changed nothing and wrote no evidence"
+		}
+		return fmt.Errorf("not resumed by this command, %s: %w", state, err)
+	}
+	if len(ended) == 0 {
+		// The hold this command saw was ended by another `talon backup
+		// resume` before this command's transaction. Nothing happened here:
+		// no state change, no held id, no evidence record. The evidence id
+		// prepared above was never written and must not be named.
+		w.Discard()
+		fmt.Fprintln(out, "\nNot resumed by this command: the recovery hold was ended by another `talon backup resume` in the meantime.")
+		fmt.Fprintln(out, "This command changed nothing, held no operation id and wrote no evidence. The other command's record: talon audit list --agent talon-backup")
+		return notHeld()
 	}
 	w.Committed(ctx)
+	// The record committed in the transaction that ended the hold. Name it
+	// only after reading it back with a valid signature.
+	rec, err := evStore.Get(ctx, id)
+	if err != nil || rec == nil || !evStore.VerifyRecord(rec) {
+		return fmt.Errorf("the recovery hold was ended, but its evidence record %s could not be read back and verified (%v): check the evidence store before relying on it", id, err)
+	}
 	fmt.Fprintf(out, "\nResumed: %d hold(s) ended, %d operation id(s) held for good. Evidence: %s (signed, recovery_resumed).\n", len(ended), len(backupResumeHoldOps), id)
 	return nil
+}
+
+// resumeRaceHook runs between a resume's reading of the active hold and its
+// transaction. It does nothing; tests use it to let another resume win.
+var resumeRaceHook = func() {}
+
+// notHeld is the error of a resume that did not happen although the
+// operator named operation ids to hold: those ids are NOT held, and saying
+// nothing would let the operator believe they are.
+func notHeld() error {
+	if len(backupResumeHoldOps) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the operation ids named with --hold-operation were NOT held by this command (no recovery hold was ended by it): %s", strings.Join(backupResumeHoldOps, ", "))
 }
 
 func init() {

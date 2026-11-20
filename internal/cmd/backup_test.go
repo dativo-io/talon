@@ -264,6 +264,7 @@ func TestBackup_ResumeAfterRestore(t *testing.T) {
 	out.Reset()
 	err = resumeAfterRestore(ctx, &out, cfg)
 	require.ErrorContains(t, err, "the recovery hold is still active")
+	require.ErrorContains(t, err, "not resumed by this command")
 	require.NotContains(t, out.String(), "Resumed:")
 	held, err := action.ActiveRecoveryHolds(ctx, inject)
 	require.NoError(t, err)
@@ -290,4 +291,100 @@ func TestBackup_ResumeAfterRestore(t *testing.T) {
 	holds, err := action.ActiveRecoveryHolds(ctx, store.DB())
 	require.NoError(t, err)
 	require.Empty(t, holds)
+}
+
+// #568 review. A resume reports a signed record only when it wrote one. Two
+// operators resume at the same time: the second one's transaction finds no
+// active hold. It must not print an evidence id (the id it prepared was
+// never stored), must not say that it resumed, and must say that the
+// operation ids it was asked to hold are NOT held. A later repeat is the
+// same: nothing changes, nothing is recorded.
+func TestBackup_ResumeReportsEvidenceOnlyWhenItWroteIt(t *testing.T) {
+	ctx := context.Background()
+	cfg := backupInstallation(t)
+	dest := filepath.Join(t.TempDir(), "b")
+	_, err := createBackup(ctx, cfg, dest, false)
+	require.NoError(t, err)
+	reset := func() {
+		backupResumeReconciled, backupResumeHoldOps, backupResumeAcceptDrift = false, nil, false
+		resumeRaceHook = func() {}
+	}
+	reset()
+	t.Cleanup(reset)
+	b, err := os.ReadFile(filepath.Join(dest, "evidence.db"))
+	require.NoError(t, err)
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_ = os.Remove(cfg.EvidenceDBPath() + suffix)
+	}
+	require.NoError(t, os.WriteFile(cfg.EvidenceDBPath(), b, 0o600))
+
+	evidenceOfResumes := func() []evidence.Evidence {
+		store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+		require.NoError(t, err)
+		defer store.Close()
+		rows, err := store.List(ctx, "system", "talon-backup", time.Time{}, time.Time{}, 10)
+		require.NoError(t, err)
+		for i := range rows {
+			require.True(t, store.VerifyRecord(&rows[i]))
+		}
+		return rows
+	}
+	heldIDs := func() []string {
+		db, err := sql.Open("sqlite3", cfg.EvidenceDBPath())
+		require.NoError(t, err)
+		defer db.Close()
+		rows, err := db.QueryContext(ctx, `SELECT operation_id FROM recovery_held_operations ORDER BY operation_id`)
+		require.NoError(t, err)
+		defer rows.Close()
+		var ids []string
+		for rows.Next() {
+			var id string
+			require.NoError(t, rows.Scan(&id))
+			ids = append(ids, id)
+		}
+		require.NoError(t, rows.Err())
+		return ids
+	}
+
+	// Operator B's command has read the active hold. Before its transaction,
+	// operator A resumes (holding op-a) and commits.
+	var winner bytes.Buffer
+	resumeRaceHook = func() {
+		resumeRaceHook = func() {}
+		mine := backupResumeHoldOps
+		backupResumeHoldOps = []string{"op-a"}
+		require.NoError(t, resumeAfterRestore(ctx, &winner, cfg))
+		backupResumeHoldOps = mine
+	}
+	backupResumeReconciled, backupResumeHoldOps = true, []string{"op-b"}
+	var out bytes.Buffer
+	err = resumeAfterRestore(ctx, &out, cfg)
+	require.Contains(t, winner.String(), "Resumed: 1 hold(s) ended, 1 operation id(s) held for good. Evidence: rr_")
+
+	require.Error(t, err, "the ids B asked to hold are not held: that is not a success")
+	require.ErrorContains(t, err, "were NOT held by this command")
+	require.ErrorContains(t, err, "op-b")
+	require.Contains(t, out.String(), "Not resumed by this command")
+	require.Contains(t, out.String(), "wrote no evidence")
+	require.NotContains(t, out.String(), "Resumed:")
+	require.NotContains(t, out.String(), "Evidence: rr_", "an evidence id that was never stored:\n%s", out.String())
+	records := evidenceOfResumes()
+	require.Len(t, records, 1, "exactly one signed record: the winner's")
+	require.Contains(t, winner.String(), records[0].ID, "the id the winner printed is the id that is stored")
+	require.Equal(t, []string{"op-a"}, heldIDs(), "only the winner's id is held")
+
+	// A repeat, with and without ids to hold: nothing changes, nothing is recorded.
+	out.Reset()
+	err = resumeAfterRestore(ctx, &out, cfg)
+	require.ErrorContains(t, err, "were NOT held by this command")
+	require.Contains(t, out.String(), "No recovery hold")
+	require.Contains(t, out.String(), "no evidence was written")
+	require.NotContains(t, out.String(), "rr_")
+	backupResumeHoldOps = nil
+	out.Reset()
+	require.NoError(t, resumeAfterRestore(ctx, &out, cfg))
+	require.Contains(t, out.String(), "No recovery hold")
+	require.NotContains(t, out.String(), "rr_")
+	require.Len(t, evidenceOfResumes(), 1)
+	require.Equal(t, []string{"op-a"}, heldIDs())
 }
