@@ -148,7 +148,7 @@ talonctl backup resume
 ```
 
 This prints the hold and every operation that was still open in the backup, with the `Idempotency-Key` Talon sends for it. For each one, look in the downstream system (your refund service, for example) for that key:
-- **It was executed after the backup:** keep it held for good with `--hold-operation <operation_id>`. It will never be dispatched again; a genuinely new action needs a new `operation_id`.
+- **It was executed after the backup:** keep it held for good with `--hold-operation <operation_id>`. It will never be dispatched again; a genuinely new action needs a new `operation_id`. A held id is held for the **whole installation**: every tenant and use case that uses that `operation_id` is refused it, because the downstream system that shows the effect may not say which use case asked for it. Holding too much is recoverable (use a new id); holding too little would repeat an effect.
 - **It was not executed:** leave it. It becomes claimable again.
 - **You cannot tell:** hold it.
 
@@ -193,13 +193,41 @@ These run against a binary built from source, with processes started by the test
 
 ## Upgrade and rollback
 
-Upgrade with the same binary path. Back up and verify first. Stop the service, replace the binary, run `talon doctor`, start the service, and check `talon version` and a recent `talon audit verify`. Read the release's upgrade notes in `CHANGELOG.md` (and the version's upgrade guide where one exists) before you start.
+Read the release's upgrade notes in `CHANGELOG.md` (and the version's upgrade guide where one exists) before you start. Upgrade with the same binary path:
+
+```bash
+sudo systemctl stop talon talon-ui 2>/dev/null                 # a graceful stop
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+# 1. A plain copy of the stopped installation. It is the recovery point if the
+#    upgrade fails before the new release has served: the previous release runs on it.
+#    (A release before v1.17.0 has no `talon backup`; this copy works for every release.)
+#    With Talon stopped, every SQLite store is complete on disk; copy each with its
+#    -wal and -shm files (cp -a of the directory does).
+sudo install -d -o root -g root -m 0700 /var/backups/talon/pre-upgrade-$TS
+sudo cp -a /var/lib/talon /var/backups/talon/pre-upgrade-$TS/
+sudo tar -C /etc --exclude=talon/talon.env -cf - talon | sudo tar -C /var/backups/talon/pre-upgrade-$TS --transform 's,^talon,etc-talon,' -xpf -
+#    The keys are NOT in the copy. The copy is useless without the same TALON_SECRETS_KEY
+#    and TALON_SIGNING_KEY: confirm they are in your secret manager (or keep a separate
+#    root-only file, never next to the copy).
+sudo install -m 0755 talon-NEW /usr/local/bin/talon            # the verified new binary
+# 2. Before the first start: a cold backup with the NEW binary, of the untouched store.
+#    It only reads the store; it is the recovery point after the upgrade, with its hold.
+talonctl backup create --cold /var/backups/talon/upgrade-$TS
+talonctl backup verify /var/backups/talon/upgrade-$TS
+talonctl doctor
+sudo systemctl start talon
+talonctl version
+```
+
+**If the upgrade fails before the new release has served** (step 2 or `doctor` fails, the service does not start): stop the service, put the previous binary back, put the copy back (`/var/lib/talon` from `pre-upgrade-$TS/talon`, `/etc/talon` from `pre-upgrade-$TS/etc-talon`, keeping the current `talon.env`; owners as in [Run it](#run-it)) and start. Nothing was dispatched after the copy was taken, so there is nothing to reconcile. **Once the new release has served**, the plain copy is no longer a safe recovery point: it carries no recovery hold, and the previous release would dispatch from it actions executed since. Use the cold backup of step 2 and the procedure below.
+
+`TestE2E_PreUpgradeBackup_FromThePreviousStable` runs this with the actual previous stable release: the previous release writes an executed and an authorized operation; the plain copy runs under it again with no repeated dispatch; the new binary's cold backup of its store verifies and does not change the store; after the upgrade executes the authorized operation, a restore of that backup holds it until the operator reconciles and holds it.
 
 The in-place upgrade from the **immediately preceding stable release** is the release gate: CI resolves that release from the published releases (`scripts/previous-stable.sh`), downloads its checksum-verified binary, and `TestE2E_UpgradeFromPreviousStable` lets it write state that the new binary takes over. v1.16.1 additionally runs as a historical compatibility check (`TestE2E_UpgradeFromHistoricalReleases`) when it is not the preceding release itself. In the test the earlier binary writes a succeeded action, a pending approval, evidence, the vault and an approver; the new binary takes the same data directory over; the old evidence verifies, the old succeeded action is refused a second claim, the old pending approval is decided with the old approver credential and dispatched once, and a backup of the upgraded stores verifies.
 
 **Rollback is restore.** Returning to an older binary after the new one has written to the stores is not supported as such. To roll back, restore a backup, and reconcile before anything is dispatched:
 
-1. `talon backup` exists from this release on. Take the first cold backup right after the upgrade; the previous release cannot take one.
+1. Use a cold backup taken by this release: the one of step 2 above, or a later one.
 2. To roll back: stop the service and restore that backup as described under [Restore](#restore). The restored store is held.
 3. Reconcile and resume **with the release that took the backup** (`talonctl backup resume`, then `--reconciled`). The older release has no such command.
 4. Only then put the older binary back and start it.

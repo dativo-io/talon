@@ -196,3 +196,46 @@ func TestRecoveryHold_TheStoreRefusesAttemptRecordsOfABinaryThatKnowsNoHold(t *t
 	require.Contains(t, err.Error(), "recovery_hold")
 	require.NoError(t, olderBinaryClaims("op-free"), "everything else is dispatched again after the resume")
 }
+
+// A held operation id is installation-wide (#568 review): operations are
+// identified by tenant, use case and operation id, but the operator holds an
+// id found in a downstream system, which may not say which tenant or use
+// case asked for it. Holding it therefore refuses that id for every tenant
+// and use case: it over-holds, never under-holds. A use case that needs to
+// act again uses a new operation id.
+func TestRecoveryHold_AHeldOperationIDIsHeldForEveryTenantAndUseCase(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	h.establish(t, "op-x", "notify_customer", `{"ticket_id":"T-1"}`)
+	h.establish(t, "op-y", "notify_customer", `{"ticket_id":"T-2"}`)
+	db := h.store.DB()
+	// The same operation id under another tenant and use case.
+	for _, stmt := range []string{
+		`CREATE TEMP TABLE other_op AS SELECT * FROM action_operations WHERE operation_id = 'op-x'`,
+		`UPDATE other_op SET ref = 'ref-globex-op-x', tenant_id = 'globex', agent_id = 'other-bot'`,
+		`INSERT INTO action_operations SELECT * FROM other_op`,
+	} {
+		_, err := db.ExecContext(ctx, stmt)
+		require.NoError(t, err, stmt)
+	}
+	attempt := func(ref string) error {
+		_, err := db.ExecContext(ctx, `INSERT INTO action_attempts (id, operation_ref, ordinal, status, idempotency_key, started_at) VALUES (?, ?, 1, 'claimed', 'k', ?)`, "att-"+ref, ref, h.now)
+		return err
+	}
+	refOf := func(tenant, opID string) string {
+		var ref string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT ref FROM action_operations WHERE tenant_id = ? AND operation_id = ?`, tenant, opID).Scan(&ref))
+		return ref
+	}
+
+	require.NoError(t, StampRecoveryHold(ctx, db, "bk_1", h.now.Add(-time.Hour), "cfg"))
+	_, err := ResumeRecovery(ctx, db, "operator", []string{"op-x"}, h.now, func(context.Context, *sql.Tx, []RecoveryHold) error { return nil })
+	require.NoError(t, err)
+
+	for _, tenant := range []string{"acme", "globex"} {
+		err := attempt(refOf(tenant, "op-x"))
+		require.Error(t, err, "op-x of tenant %s must stay held", tenant)
+		require.Contains(t, err.Error(), "recovery_hold")
+	}
+	require.NoError(t, attempt(refOf("acme", "op-y")), "an id that was not held is dispatched again")
+}
