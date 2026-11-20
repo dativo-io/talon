@@ -16,6 +16,7 @@ import (
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/registration"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 )
@@ -387,4 +388,96 @@ func TestBackup_ResumeReportsEvidenceOnlyWhenItWroteIt(t *testing.T) {
 	require.NotContains(t, out.String(), "rr_")
 	require.Len(t, evidenceOfResumes(), 1)
 	require.Equal(t, []string{"op-a"}, heldIDs())
+}
+
+// #568 review. "Cold" is one coherent recovery point. That no Talon process
+// reports running does not establish it: a command can still write. A cold
+// backup therefore holds every writer out for the whole snapshot (the
+// registration lock, a write lock on every store) and fails when the
+// configuration changes meanwhile; it refuses to start while a writer is
+// active.
+func TestBackup_ColdHoldsEveryWriterOut(t *testing.T) {
+	ctx := context.Background()
+	cfg := backupInstallation(t)
+	t.Cleanup(func() { backupQuiescedHook = func() {} })
+	writer := func(name string) *sql.DB {
+		db, err := sql.Open("sqlite3", "file:"+filepath.Join(cfg.DataDir, name)+"?_busy_timeout=200")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		return db
+	}
+
+	// A command is writing to the evidence store: no cold backup.
+	busy := writer("evidence.db")
+	conn, err := busy.Conn(ctx)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
+	require.NoError(t, err)
+	dest := filepath.Join(t.TempDir(), "while-writing")
+	_, err = createBackup(ctx, cfg, dest, true)
+	require.ErrorContains(t, err, "--cold")
+	require.ErrorContains(t, err, "evidence.db is being written")
+	require.ErrorContains(t, err, "no backup was taken")
+	_, statErr := os.Stat(filepath.Join(dest, "manifest.json"))
+	require.True(t, os.IsNotExist(statErr))
+	_, err = conn.ExecContext(ctx, "ROLLBACK")
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	// A registration is running (it holds the installation's lock): no cold backup.
+	unlock, err := registration.Acquire(ctx, cfg.DataDir, time.Second)
+	require.NoError(t, err)
+	_, err = createBackup(ctx, cfg, filepath.Join(t.TempDir(), "while-registering"), true)
+	require.ErrorContains(t, err, "the registration lock of this installation could not be taken")
+	unlock()
+
+	// While a cold backup runs, nobody can commit to a store or register.
+	var tried int
+	backupQuiescedHook = func() {
+		for _, name := range backupStores {
+			if _, err := os.Stat(filepath.Join(cfg.DataDir, name)); err != nil {
+				continue
+			}
+			_, werr := writer(name).ExecContext(ctx, "CREATE TABLE IF NOT EXISTS written_during_backup (x)")
+			require.Error(t, werr, "a write to %s committed during a cold backup", name)
+			require.Contains(t, werr.Error(), "locked")
+			tried++
+		}
+		_, lerr := registration.Acquire(ctx, cfg.DataDir, 100*time.Millisecond)
+		require.ErrorIs(t, lerr, registration.ErrLockBusy, "a registration could start during a cold backup")
+	}
+	good := filepath.Join(t.TempDir(), "cold")
+	m, err := createBackup(ctx, cfg, good, true)
+	require.NoError(t, err)
+	require.Equal(t, backupModeCold, m.Mode)
+	require.GreaterOrEqual(t, tried, 1)
+	_, err = verifyBackup(ctx, cfg, good)
+	require.NoError(t, err)
+	// The locks are released: the installation writes again.
+	_, err = writer("evidence.db").ExecContext(ctx, "CREATE TABLE IF NOT EXISTS written_after_backup (x)")
+	require.NoError(t, err)
+	unlock, err = registration.Acquire(ctx, cfg.DataDir, time.Second)
+	require.NoError(t, err)
+	unlock()
+
+	// A configuration file changes after it was captured and before the
+	// backup finished: not one point in time. The backup fails, says why,
+	// and leaves no manifest: `talon backup verify` cannot accept it.
+	backupQuiescedHook = func() {}
+	backupConfigCapturedHook = func() {
+		require.NoError(t, os.WriteFile(os.Getenv("TALON_GATEWAY_CONFIG"), []byte("gateway:\n  enabled: true\n  # edited during the backup\n"), 0o600))
+	}
+	t.Cleanup(func() { backupConfigCapturedHook = func() {} })
+	changed := filepath.Join(t.TempDir(), "config-changed")
+	_, err = createBackup(ctx, cfg, changed, true)
+	require.ErrorContains(t, err, "changed while the backup was taken")
+	require.ErrorContains(t, err, "must not be used")
+	_, statErr = os.Stat(filepath.Join(changed, "manifest.json"))
+	require.True(t, os.IsNotExist(statErr), "an incoherent backup has no manifest")
+	_, err = verifyBackup(ctx, cfg, changed)
+	require.Error(t, err, "and does not verify")
+	backupConfigCapturedHook = func() {}
+	// The locks of the failed backup were released too.
+	_, err = createBackup(ctx, cfg, filepath.Join(t.TempDir(), "cold-again"), true)
+	require.NoError(t, err)
 }
