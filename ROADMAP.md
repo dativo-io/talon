@@ -133,6 +133,22 @@ Key rules:
 
 ## Execution order
 
+**Adoption-first decision of 2026-11-18 ([#561](https://github.com/dativo-io/talon/issues/561), [#265](https://github.com/dativo-io/talon/issues/265)).** The release initiative is the **First Production Pilot**: an external company installs Talon from published artifacts, connects an existing AI use case, governs one consequential business action and keeps the installation running. It overrides the older order below where they conflict. It ships in two independent checkpoints:
+
+1. **Checkpoint A: publish the Operations Console** ([#533](https://github.com/dativo-io/talon/issues/533)). The console code is merged. What remains is release acceptance on the published image: pairing, the six pages, signature verification parity, no legacy routes, and an anonymous post-publication smoke. Pilot work never delays it.
+2. **Checkpoint B: the pilot**, one narrow slice per issue and nothing more:
+   - **Registration:** [#472](https://github.com/dativo-io/talon/issues/472) self-service use-case registration.
+   - **Business action:** [#205](https://github.com/dativo-io/talon/issues/205) typed argument rules (one condition on one argument, approval or deny) for consequential actions; [#433](https://github.com/dativo-io/talon/issues/433) local reviewer path; [#434](https://github.com/dativo-io/talon/issues/434) one n8n workflow over the canonical Action Gateway.
+   - **Operations:** [#465](https://github.com/dativo-io/talon/issues/465) single-node backup, restore and recovery.
+   - **First run:** [#463](https://github.com/dativo-io/talon/issues/463)/[#473](https://github.com/dativo-io/talon/issues/473) published-artifact first run; [#476](https://github.com/dativo-io/talon/issues/476) streaming truth.
+   - **Only where the journey or a safety invariant needs them:** [#459](https://github.com/dativo-io/talon/issues/459) static policy preview, [#464](https://github.com/dativo-io/talon/issues/464)/[#466](https://github.com/dativo-io/talon/issues/466)/[#469](https://github.com/dativo-io/talon/issues/469) distribution, doctor and compatibility breadth, [#467](https://github.com/dativo-io/talon/issues/467) beyond the tested upgrade from the preceding stable release.
+   - **Consequential-action scope of the pilot (proposed in [#561](https://github.com/dativo-io/talon/issues/561), pending maintainer confirmation):** the supported consequential-action path is the **HTTP Action Gateway**, with local approvals and the validated n8n reference workflow. The existing **MCP proxy** keeps its supported policy enforcement (allowed and forbidden tools, signed allow/deny evidence) and its console visibility; it does **not** share the exact-action lifecycle: no argument-bound approval, no claim with at-most-one dispatch, no `unknown` outcome handling, no recovery hold. Converging consequential MCP actions on the Action Gateway ([#431](https://github.com/dativo-io/talon/issues/431)) is **deferred, not dropped**: its approved definition is unchanged. [#146](https://github.com/dativo-io/talon/issues/146) (signed lifecycle) is delivered for Action Gateway operations; its MCP and native-tool parts follow #431/#430.
+3. **External activation** is tracked separately ([talon-enterprise#32](https://github.com/dativo-io/talon-enterprise/issues/32)). Releases, demos and synthetic tests are not customer adoption.
+
+The pilot's customer path is documented in the [production pilot runbook](docs/guides/production-pilot.md).
+
+Earlier technical order, kept for the items not named above:
+
 1. Make the product reachable and truthful: #359, #463, #464, #473 and #476.
 2. Make company/use-case policy visible and safe to roll out: #305, #459, #472 and #442.
 3. Lock the authorization architecture and compiler: #424, #425, #427 and #447.
@@ -140,7 +156,7 @@ Key rules:
 5. Converge the primary enforcement surface: #431 plus only the #448/#433 slices required by the first proof.
 6. Ship **#458** as the first differentiated exact-action activation gate.
 7. In parallel, complete the OSS **single-node production contract #465**.
-8. After the P0 spine is usable, add argument-aware rules, native/n8n parity, production hardening, identity and telemetry: #205, #401/#423/#383, #432/#430/#434, #466–#469, #474/#475 and #457.
+8. After the P0 spine is usable, add native/n8n parity, production hardening, identity and telemetry: #401/#423/#383, #432/#430, #466–#469, #474/#475 and #457.
 9. Require **#435** only before claiming full native+n8n+MCP parity.
 10. Run Pi or another design-partner integration only after the canonical authorization contract is stable; keep Hermes/eve demand-gated.
 

@@ -4,6 +4,7 @@
 #   scripts/release-capabilities.sh <tag>      # prints: console=true|false
 #                                              #         quickstart=true|false
 #                                              #         toolchain=true|false
+#                                              #         pilot=true|false
 #
 # The Operations Console (talon ui, the talon-ui Compose service and their
 # acceptance scripts) ships from v1.17.0, release candidates included. An
@@ -39,3 +40,6 @@ echo "quickstart=$console"
 # go.mod names (scripts/release-toolchain-check.sh) from the same version;
 # earlier releases were not built under that rule.
 echo "toolchain=$console"
+# The First Production Pilot acceptance (scripts/pilot-acceptance.sh, #561)
+# ships from the same release.
+echo "pilot=$console"

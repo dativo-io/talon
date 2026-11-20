@@ -264,3 +264,82 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/scripts/quickstart.sh" | TALON_VERSION="${TAG#v}" bash 2>&1 | tee quickstart.log
           grep -q '^PASS talon quickstart' quickstart.log
           { echo "### Quickstart against ${TAG}"; echo '```'; grep -E '^(PASS|FAIL|Image|Digest|Talon)' quickstart.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  # First Production Pilot acceptance on the PUBLISHED artifacts (#561): the
+  # archive is downloaded anonymously and checksum-verified, then the customer
+  # journey runs with it as the system under test, with the in-place upgrade
+  # from the previous stable release and the quickstart against the published
+  # image. No provider key: the model provider is a deterministic local server.
+  pilot-acceptance:
+    name: Pilot acceptance on the published binary and image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Resolve the release tag
+        id: tag
+        env:
+          TAG: ${{ inputs.tag || 'latest' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$TAG" = latest ]; then TAG="$(gh release view --json tagName -q .tagName)"; fi
+          [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = false ] || { echo "::error::$TAG is not a published release"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+      - name: Does this release carry the pilot acceptance?
+        id: cap
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-capabilities.sh "$TAG" | tee -a "$GITHUB_OUTPUT"
+          if ! grep -q '^pilot=true$' "$GITHUB_OUTPUT"; then
+            echo "### Pilot acceptance: NOT APPLICABLE — $TAG predates the pilot acceptance (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Check out the release's own tests and fixtures
+        if: steps.cap.outputs.pilot == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        if: steps.cap.outputs.pilot == 'true'
+        with:
+          go-version-file: go.mod
+      - name: Download the published archive, its preceding stable release and the historical v1.16.1 (checksum-verified)
+        if: steps.cap.outputs.pilot == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash scripts/fetch-release-binary.sh "${TAG#v}" "$RUNNER_TEMP/talon" >/dev/null
+          PREV="$(bash scripts/previous-stable.sh "$TAG")"
+          echo "preceding stable release of $TAG: $PREV"
+          echo "TALON_PREVIOUS_STABLE_BINARY=$(bash scripts/fetch-release-binary.sh "$PREV" "$RUNNER_TEMP/previous-stable/$PREV")" >> "$GITHUB_ENV"
+          if [ "$PREV" != "1.16.1" ]; then
+            echo "TALON_COMPAT_BINARIES=$(bash scripts/fetch-release-binary.sh 1.16.1 "$RUNNER_TEMP/previous-stable/1.16.1")" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.cap.outputs.pilot == 'true'
+        with:
+          node-version: '24'
+      - name: Install the pinned n8n
+        if: steps.cap.outputs.pilot == 'true'
+        run: |
+          set -euo pipefail
+          N8N_VERSION="$(sed -n 's/^PINNED_N8N="\(.*\)"$/\1/p' scripts/n8n-refund-live.sh)"
+          mkdir -p "$RUNNER_TEMP/n8n" && cd "$RUNNER_TEMP/n8n"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error "n8n@${N8N_VERSION}"
+          npm rebuild sqlite3
+          echo "N8N_BIN=$RUNNER_TEMP/n8n/node_modules/.bin/n8n" >> "$GITHUB_ENV"
+      - name: Pilot acceptance (no provider key; nothing required is skipped)
+        if: steps.cap.outputs.pilot == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          PILOT_REQUIRE_ALL: "1"
+        run: |
+          set -euo pipefail
+          TALON_IMAGE="ghcr.io/dativo-io/talon:${TAG#v}" bash scripts/pilot-acceptance.sh "$RUNNER_TEMP/talon/talon" "$TAG" 2>&1 | tee pilot-acceptance.log
+          { echo "### Pilot acceptance on the published ${TAG} artifacts"; echo '```'; sed -n '/^pilot-acceptance summary/,$p' pilot-acceptance.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

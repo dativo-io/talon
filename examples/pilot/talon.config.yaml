@@ -1,0 +1,69 @@
+# Company baseline policy starter for a Talon production pilot.
+# Copy to /etc/talon/talon.config.yaml, adjust the marked values, then
+# 'talon validate' and 'talon doctor'. Every AI use case registered with
+# 'talon agents add' inherits this file: defaults are starting values a use
+# case may replace within the constraints; constraints are hard bounds no
+# use case can lift.
+
+# One agent.talon.yaml per AI use case lives under this directory.
+agents_dir: /etc/talon/agents
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+
+  # Model providers your applications may reach through Talon. The key is a
+  # vault secret NAME: store the value with
+  #   talon secrets set openai-api-key <provider key>
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"          # ADJUST: your provider endpoint
+      allowed_models: ["gpt-4o-mini", "gpt-4o"]    # ADJUST: models the company permits
+
+  organization_policy:
+    # Starting values for every use case.
+    defaults:
+      pii_action: "block"        # block | redact | warn | allow — what to do with PII in a request
+      daily_cost: 25.00          # per use case, in the pricing table's currency; an estimate-based
+      monthly_cost: 500.00       #   admission cap checked before each call, not an invoice ceiling
+
+    # Hard bounds for every use case.
+    constraints:
+      max_daily_cost: 100.00     # no use case may raise its own daily cap above this
+      max_monthly_cost: 2000.00
+      # Actions and tools no use case may perform, whatever its own file says.
+      forbidden_tools: ["delete_customer", "export_all_*"]
+      # Business actions decided by the value of one of their arguments, for
+      # every use case that declares the action. EXAMPLE POLICY — set your
+      # own thresholds and groups: a refund above 50.00 needs approval by
+      # support-leads, above 500.00 it is denied. A rule only restricts; a
+      # use case can add rules, never lift these. The currency and precision
+      # of an amount are constraints of the action's input_schema.
+      action_approvals:
+        argument_rules:
+          refund-needs-approval:
+            actions: ["create_refund_request"]
+            argument: "amount"
+            type: "decimal"            # integer | decimal | string | boolean
+            operator: "gt"             # eq ne gt gte lt lte
+            value: "50.00"             # a decimal operand is a quoted string
+            effect: "require_approval"
+            approver_groups: ["support-leads"]
+          refund-too-large:
+            actions: ["create_refund_request"]
+            argument: "amount"
+            type: "decimal"
+            operator: "gt"
+            value: "500.00"
+            effect: "deny"
+
+  rate_limits:
+    global_requests_per_min: 300
+    per_agent_requests_per_min: 60
+
+  timeouts:
+    connect_timeout: 10s
+    request_timeout: 60s
+    stream_idle_timeout: 30s
