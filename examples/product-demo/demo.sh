@@ -322,32 +322,29 @@ w_run() {  # <wait-text> <pid>  — an inline spinner beside the running command
   fi
   wait "$pid" 2>/dev/null || true
 }
-# The REAL `talon agents` stdout, visual-safe trims only (dash-separator row
-# dropped). Default: AGENT/STATE/HEALTH. "why" mode: AGENT/HEALTH/WHY — the
-# attention-queue view (WHY is the CLI's own cause text, e.g. "daily budget
-# exhausted ($0.0035 / $0.0032)"); blocked health is amber.
+# The rows of `talon agents`, from its machine contract (`--json`): the human
+# listing may reorganize its columns, the rows may not, so the window does
+# not slice text by position. Default: USE CASE/STATE/HEALTH. "why" mode:
+# USE CASE/HEALTH/WHY — the attention-queue view (WHY is the CLI's own cause
+# text, e.g. "daily budget exhausted ($0.0035 / $0.0032)"); blocked health
+# is amber.
 w_agents() { # [why]
-  local mode="${1:-}"
+  local mode="${1:-}" rows
+  rows="$(talon agents --url "$GATEWAY" --json 2>/dev/null | jq -r '.agents[] | [.name, .state, .health, (.why // "—")] | @tsv' | head -3)"
   if [[ "$mode" == "why" ]]; then
-    # The CLI prints fixed printf widths (%-22s %-9s %-16s %-24s %s), so slice by
-    # column position — COST itself contains spaces ("$0.0035 / $0.0032").
-    talon agents --url "$GATEWAY" 2>/dev/null \
-      | awk 'NF>=3 && $1 !~ /^-+$/ {
-          a=substr($0,1,22); h=substr($0,34,16); w=substr($0,76)
-          gsub(/[[:space:]]+$/,"",a); gsub(/[[:space:]]+$/,"",h); gsub(/[[:space:]]+$/,"",w)
-          print a"\t"h"\t"w}' | head -4 \
-      | while IFS=$'\t' read -r a h why; do
-          if [[ "$a" == "AGENT" ]]; then printf '  %b%-22s %-9s %s%b\n' "${WB}${WT_MUTED}" "$a" "$h" "$why" "$WR"
-          else local hc="$WT_TEXT"; [[ "$h" == "healthy" ]] && hc="$WT_GREEN"; [[ "$h" == "blocked" ]] && hc="$WT_AMBER"
-            printf '  %s %s %b%s%b\n' "$(pcell 22 "$a" "$WT_TEXT")" "$(pcell 9 "$h" "$hc")" "$WT_MUTED" "$why" "$WR"; fi
-        done
+    printf '  %b%-22s %-9s %s%b\n' "${WB}${WT_MUTED}" "USE CASE" "HEALTH" "WHY" "$WR"
+    while IFS=$'\t' read -r a _ h why; do
+      [[ -n "$a" ]] || continue
+      local hc="$WT_TEXT"; [[ "$h" == "healthy" ]] && hc="$WT_GREEN"; [[ "$h" == "blocked" ]] && hc="$WT_AMBER"
+      printf '  %s %s %b%s%b\n' "$(pcell 22 "$a" "$WT_TEXT")" "$(pcell 9 "$h" "$hc")" "$WT_MUTED" "$why" "$WR"
+    done <<< "$rows"
   else
-    talon agents --url "$GATEWAY" 2>/dev/null | awk 'NF>=3 && $1 !~ /^-+$/ {print $1"\t"$2"\t"$3}' | head -4 \
-      | while IFS=$'\t' read -r a s h; do
-          if [[ "$a" == "AGENT" ]]; then printf '  %b%-22s %-9s %s%b\n' "${WB}${WT_MUTED}" "$a" "$s" "$h" "$WR"
-          else local hc="$WT_TEXT"; [[ "$h" == "healthy" ]] && hc="$WT_GREEN"; [[ "$h" == "blocked" ]] && hc="$WT_AMBER"
-            printf '  %s %s %s\n' "$(pcell 22 "$a" "$WT_TEXT")" "$(pcell 9 "$s" "$WT_MUTED")" "$(pcell 10 "$h" "$hc")"; fi
-        done
+    printf '  %b%-22s %-9s %s%b\n' "${WB}${WT_MUTED}" "USE CASE" "STATE" "HEALTH" "$WR"
+    while IFS=$'\t' read -r a s h _; do
+      [[ -n "$a" ]] || continue
+      local hc="$WT_TEXT"; [[ "$h" == "healthy" ]] && hc="$WT_GREEN"; [[ "$h" == "blocked" ]] && hc="$WT_AMBER"
+      printf '  %s %s %s\n' "$(pcell 22 "$a" "$WT_TEXT")" "$(pcell 9 "$s" "$WT_MUTED")" "$(pcell 10 "$h" "$hc")"
+    done <<< "$rows"
   fi
 }
 # Session-scoped audit, normalized from the REAL `talon audit list --session`

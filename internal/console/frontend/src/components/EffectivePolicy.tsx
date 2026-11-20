@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { ActionArgumentRule, ActionBoundary, ActionDecision, EffectiveFile, EffectivePolicyDTO, EffectiveReport, UseCaseCredential } from "../api/types";
+import type { ActionArgumentRule, ActionBoundary, ActionDecision, EffectiveFile, EffectivePolicyDTO, EffectiveReport, UseCaseCredential, UseCaseNextStep } from "../api/types";
 import { AvailabilityNotice, Badge, CopyableIdentifier, DecisionOutcome, ErrorState, Loading } from "./ui";
 import { ActiveBadge } from "./RuntimeStatus";
 import { humanize, utc } from "../lib/format";
@@ -188,6 +188,7 @@ export function VerificationSection({ v, tenant, useCase }: { v: EffectiveReport
       <div className={`notice ${readingTone(v.reading.code) === "ok" ? "info" : readingTone(v.reading.code) === "error" ? "error" : readingTone(v.reading.code) === "warn" ? "warn" : "info"}`} role="status" data-testid="verification-reading" data-code={v.reading.code}>
         <div>{v.reading.text}</div>
       </div>
+      <NextStep next={v.next} />
       <CredentialFacts c={v.credential} tenant={tenant} />
       <div className="table-wrap">
         <table>
@@ -243,6 +244,21 @@ export function VerificationSection({ v, tenant, useCase }: { v: EffectiveReport
       </details>
       <p className="small muted">Configured: {v.configured}. Whether a running process has loaded this file is section 2; whether a request arrived and under which policy is this section. Each is established separately.</p>
     </section>
+  );
+}
+
+// NextStep: the one thing to do next (or that nothing needs doing), as the
+// CLI's `talon agents show` prints it. The console is read-only: the
+// commands are shown to be run in a terminal, never run from here.
+export function NextStep({ next }: { next: UseCaseNextStep | undefined }) {
+  if (!next) return null;
+  return (
+    <div className="small" data-testid="verification-next" data-code={next.code}>
+      <strong>Next: </strong>{next.text}
+      {next.commands?.length ? (
+        <ul className="plain">{next.commands.map((c) => <li key={c}><code>{c}</code></li>)}</ul>
+      ) : null}
+    </div>
   );
 }
 

@@ -27,9 +27,16 @@ test("every use case: the console's reading and observations equal the CLI's", a
     const summary = page.getByTestId("connection-reading").locator("[data-code]");
     await expect(summary).toHaveAttribute("data-code", v.reading.code);
     await expect(summary).toContainText(v.reading.text);
+    // The next step is the CLI's, word for word, with its commands.
+    const summaryNext = page.getByTestId("connection-next");
+    await expect(summaryNext).toHaveAttribute("data-code", v.next.code);
+    await expect(summaryNext).toContainText(v.next.text);
+    for (const c of v.next.commands ?? []) await expect(summaryNext.getByText(c, { exact: true })).toBeVisible();
     // Policy & Runtime: one row per boundary with the CLI's state.
     const section = page.getByTestId("verification");
     await expect(section.getByTestId("verification-reading")).toHaveText(v.reading.text);
+    await expect(section.getByTestId("verification-next")).toHaveAttribute("data-code", v.next.code);
+    await expect(section.getByTestId("verification-next")).toContainText(v.next.text);
     // What is known about the credential stored now: the CLI's facts.
     const cred = section.getByTestId("verification-credential");
     await expect(cred).toHaveAttribute("data-state", v.credential.state);

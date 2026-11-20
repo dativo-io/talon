@@ -450,6 +450,15 @@ function ConnectionReading({ name, tenant }: { name: string; tenant: string }) {
         {res.data && !v ? <span className="muted">not available</span> : null}
         {v ? <span className="small" data-code={v.reading.code}>{v.reading.text} <a href="#uc-effective">Details</a></span> : null}
       </dd>
+      {v?.next ? (
+        <>
+          <dt>Next step</dt>
+          <dd className="small" data-testid="connection-next" data-code={v.next.code}>
+            {v.next.text}
+            {v.next.commands?.map((c) => <div key={c}><code>{c}</code></div>)}
+          </dd>
+        </>
+      ) : null}
     </>
   );
 }

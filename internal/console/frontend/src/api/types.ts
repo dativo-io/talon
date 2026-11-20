@@ -957,10 +957,16 @@ export interface TrafficObservation {
 // (never a value), the signed registration record, and what the runtime
 // records establish about the running processes.
 export interface UseCaseCredential {
-  state: "known" | "absent" | "no_key" | "unknown";
+  // not_recorded: a key is stored, but the vault holds no record of when its
+  // value was written (the vault predates value versions).
+  state: "known" | "absent" | "no_key" | "unknown" | "not_recorded";
   secret_name?: string;
   since?: string;
-  writes: number;
+  // Values written under the secret name since the vault records versions.
+  generation: number;
+  // only_value | only_value_since_record | earlier_values | not_recorded.
+  // From the vault's version record, which commits with every write.
+  history: string;
   registration?: { evidence_id: string; at: string; verification: "valid" | "invalid" };
   // holds_current | predates_current | not_established | not_running | unknown
   runtime: string;
@@ -968,9 +974,19 @@ export interface UseCaseCredential {
   note?: string;
 }
 
+// The one thing to do next, or that nothing needs doing: a fixed mapping
+// from the report's facts, computed in Go (effective.NextStep). The console
+// prints it; it derives nothing.
+export interface UseCaseNextStep {
+  code: string;
+  text: string;
+  commands?: string[];
+}
+
 export interface UseCaseVerification {
   configured: "enabled" | "disabled";
   credential: UseCaseCredential | null;
+  next: UseCaseNextStep;
   traffic: TrafficObservation[];
   // A presentation summary derived in Go; not a stored state.
   reading: { code: string; text: string };
