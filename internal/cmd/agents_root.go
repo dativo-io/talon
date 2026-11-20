@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/dativo-io/talon/internal/fleet"
 	"github.com/dativo-io/talon/internal/fleetview"
 	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/runtimestatus"
 	talonsession "github.com/dativo-io/talon/internal/session"
 )
 
@@ -80,7 +83,7 @@ func runAgentsList(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	rows, issues, label, err := resolveFleet(ctx, cmd, cfg, agentsQueueTenant)
+	rows, issues, label, origin, err := resolveFleetOrigin(ctx, cmd, cfg, agentsQueueTenant)
 	if err != nil {
 		return err
 	}
@@ -88,6 +91,12 @@ func runAgentsList(cmd *cobra.Command, _ []string) error {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
 			"offline": label != "", "agents": rows, "fleet_issues": issues,
 		})
+	}
+	if why := foreignServerSettled(cfg, origin); why != "" {
+		// Another installation's rows: this machine's runtime records say
+		// nothing about them, so the RUNTIME column is not filled from them.
+		renderAgentsOverview(cmd.OutOrStdout(), rows, issues, serverViewNote(origin.serverURL, why), nil, false, time.Now().UTC())
+		return nil
 	}
 	now := time.Now().UTC()
 	view, readable := installationRuntime(cfg, now)
@@ -107,7 +116,12 @@ func runAgentShow(cmd *cobra.Command, args []string) error {
 	if agentsShowEffective {
 		return runAgentShowEffective(ctx, cmd, cfg, name)
 	}
-	rows, _, _, err := resolveFleet(ctx, cmd, cfg, agentsQueueTenant)
+	return showUseCase(ctx, cmd, cfg, name)
+}
+
+// showUseCase is `talon agents show <name>` for a loaded configuration.
+func showUseCase(ctx context.Context, cmd *cobra.Command, cfg *config.Config, name string) error {
+	rows, _, _, origin, err := resolveFleetOrigin(ctx, cmd, cfg, agentsQueueTenant)
 	if err != nil {
 		return err
 	}
@@ -116,11 +130,20 @@ func runAgentShow(cmd *cobra.Command, args []string) error {
 			if agentsQueueJSON {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(rows[i])
 			}
+			now := time.Now().UTC()
+			// A row a server reported is shown with this machine's policy,
+			// evidence and runtime records only when that server is a
+			// process of this installation. Otherwise the row is shown as
+			// what it is, and nothing local is put next to it.
+			if why := foreignServerSettled(cfg, origin); why != "" {
+				renderServerUseCase(cmd.OutOrStdout(), &rows[i], origin.serverURL, why, now)
+				return nil
+			}
 			// The human view adds what the fleet row does not hold: whether a
 			// running process loaded the use case, the newest request and
 			// the next step, from the report `--effective` prints in full.
 			report, rerr := buildUseCaseReport(ctx, cfg, name, agentsQueueTenant, agentsShowProxyConfig)
-			renderUseCase(cmd.OutOrStdout(), &rows[i], report, rerr, time.Now().UTC())
+			renderUseCase(cmd.OutOrStdout(), &rows[i], report, rerr, now)
 			return nil
 		}
 	}
@@ -142,18 +165,109 @@ func runAgentShow(cmd *cobra.Command, args []string) error {
 //   - only when NO Talon server is reachable (unreachable, or a non-Talon port
 //     occupant) does the local config project offline, prominently labeled.
 func resolveFleet(ctx context.Context, cmd *cobra.Command, cfg *config.Config, tenant string) (rows []fleet.AgentRow, issues []agentcatalog.FleetIssue, label string, err error) {
+	rows, issues, label, _, err = resolveFleetOrigin(ctx, cmd, cfg, tenant)
+	return rows, issues, label, err
+}
+
+// fleetOrigin says where a command's fleet rows came from: a Talon server
+// that answered (its URL and the fleet generation it serves), or the local
+// projection (serverURL == "").
+type fleetOrigin struct {
+	serverURL  string
+	generation string
+}
+
+// foreignServer reports why the server that answered is NOT established to
+// be a process of this installation, the one whose configuration, evidence
+// and runtime records this command can read ("" when it is, or when the
+// rows are the local projection).
+//
+// A server's fleet facts and this machine's stores describe the same
+// installation only when the server is a process of it. That is established
+// from existing contracts alone: the server is on this machine, and a
+// running process of this installation reports, in its own runtime record,
+// the fleet generation the server serves (GET /v1/agents/fleet). Anything
+// else is another installation as far as this command can tell, and its
+// rows are never shown next to this machine's evidence (#567 review).
+func foreignServer(o fleetOrigin, view *runtimestatus.View, readable bool) string {
+	if o.serverURL == "" {
+		return ""
+	}
+	if !isLoopbackURL(o.serverURL) {
+		return "it is on another host"
+	}
+	if view == nil || !readable {
+		return "this installation's runtime records could not be read"
+	}
+	running := false
+	for i := range view.Processes {
+		p := &view.Processes[i]
+		if p.Assessed != runtimestatus.Running || p.Catalog == nil {
+			continue
+		}
+		running = true
+		if o.generation != "" && p.Catalog.ActiveGeneration == o.generation {
+			return ""
+		}
+	}
+	if running {
+		return "no running Talon process of this installation reports the fleet generation that server serves"
+	}
+	return "no Talon process of this installation is running, so that server belongs to another installation"
+}
+
+// fleetSettle is how long, and how often, a command waits for this
+// installation's own process to report the fleet generation a server on
+// this machine serves. A process writes its record within a fraction of a
+// second of activating a generation; a command that asks in that moment
+// would otherwise treat its own server as another installation's.
+var fleetSettle = struct {
+	delay time.Duration
+	tries int
+}{300 * time.Millisecond, 3}
+
+// foreignServerSettled is foreignServer with that bounded wait. It waits
+// only when the single obstacle can be the record being a moment behind: a
+// server on this machine and a running process of this installation.
+func foreignServerSettled(cfg *config.Config, o fleetOrigin) string {
+	view, readable := installationRuntime(cfg, time.Now().UTC())
+	why := foreignServer(o, &view, readable)
+	for i := 0; i < fleetSettle.tries && why != "" && isLoopbackURL(o.serverURL) && readable && anyRunning(&view); i++ {
+		time.Sleep(fleetSettle.delay)
+		view, readable = installationRuntime(cfg, time.Now().UTC())
+		why = foreignServer(o, &view, readable)
+	}
+	return why
+}
+
+// isLoopbackURL reports whether the URL's host is this machine.
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	if strings.EqualFold(u.Hostname(), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsLoopback()
+}
+
+// resolveFleetOrigin is resolveFleet with the origin of the rows.
+func resolveFleetOrigin(ctx context.Context, cmd *cobra.Command, cfg *config.Config, tenant string) (rows []fleet.AgentRow, issues []agentcatalog.FleetIssue, label string, origin fleetOrigin, err error) {
 	explicit := cmd.Flags().Changed("url")
 	// Explicit --url "" forces the offline config view (skip the server path
 	// entirely), matching `talon costs`.
 	if explicit && strings.TrimSpace(agentsQueueURL) == "" {
-		return offlineWithLabel(ctx, cfg, tenant)
+		rows, issues, label, err = offlineWithLabel(ctx, cfg, tenant)
+		return rows, issues, label, origin, err
 	}
 	if explicit {
 		fr, ferr := fetchServerFleet(ctx, agentsQueueURL, tenant)
 		if ferr != nil {
-			return nil, nil, "", fmt.Errorf("querying %s: %w (an explicit --url is authoritative; not falling back to a local config view — pass --url \"\" to force the offline view)", agentsQueueURL, ferr)
+			return nil, nil, "", origin, fmt.Errorf("querying %s: %w (an explicit --url is authoritative; not falling back to a local config view — pass --url \"\" to force the offline view)", agentsQueueURL, ferr)
 		}
-		return fr.Agents, fr.FleetIssues, "", nil
+		return fr.Agents, fr.FleetIssues, "", fleetOrigin{serverURL: agentsQueueURL, generation: fr.Generation}, nil
 	}
 	if isTalonServer(ctx, agentsQueueURL) {
 		fr, ferr := fetchServerFleet(ctx, agentsQueueURL, tenant)
@@ -161,12 +275,13 @@ func resolveFleet(ctx context.Context, cmd *cobra.Command, cfg *config.Config, t
 			// A Talon server IS running here but the fleet query failed: its
 			// refusal is authoritative — never present a possibly-divergent local
 			// view under a "no running gateway found" banner (the #293 defect).
-			return nil, nil, "", fmt.Errorf("a Talon server at %s rejected the fleet query: %w (set TALON_ADMIN_KEY or fix the server; not falling back to a local config view — pass --url \"\" to force it)", agentsQueueURL, ferr)
+			return nil, nil, "", origin, fmt.Errorf("a Talon server at %s rejected the fleet query: %w (set TALON_ADMIN_KEY or fix the server; not falling back to a local config view — pass --url \"\" to force it)", agentsQueueURL, ferr)
 		}
-		return fr.Agents, fr.FleetIssues, "", nil
+		return fr.Agents, fr.FleetIssues, "", fleetOrigin{serverURL: agentsQueueURL, generation: fr.Generation}, nil
 	}
 	// No Talon server reachable (unreachable or a non-Talon port occupant).
-	return offlineWithLabel(ctx, cfg, tenant)
+	rows, issues, label, err = offlineWithLabel(ctx, cfg, tenant)
+	return rows, issues, label, origin, err
 }
 
 // offlineWithLabel projects the local config and attaches the offline banner.

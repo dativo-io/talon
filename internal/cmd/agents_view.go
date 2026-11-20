@@ -81,6 +81,9 @@ func localViewNote(label, url string, view *runtimestatus.View, readable bool) s
 // processes' own records, compared by policy digest; it is not inferred
 // from the file's existence.
 func runtimeWord(view *runtimestatus.View, readable bool, r *fleet.AgentRow) string {
+	if view == nil {
+		return "not read"
+	}
 	if !readable {
 		return "unknown"
 	}
@@ -184,6 +187,39 @@ func buildUseCaseReport(ctx context.Context, cfg *config.Config, name, tenant, p
 
 // statusHeadline is the first thing the single view says. It is the next
 // step's code in two or three words; the sentence is under "Next".
+// blockedStep is the status and next action of a use case whose health is
+// BLOCKED: a persistent condition refuses all normal new work (a period cap
+// is exhausted, or the policy denies everything). It takes precedence over
+// what the verification of earlier traffic says: a use case that verified
+// yesterday and is refused every request today is not "Working", and there
+// is something to do. The fleet row's health and the report's verification
+// are unchanged; this is only what the human view leads with.
+func blockedStep(row *fleet.AgentRow) (headline string, step effective.NextStep, blocked bool) {
+	if row == nil || row.Health != fleet.HealthBlocked {
+		return "", effective.NextStep{}, false
+	}
+	why := row.Why
+	if why == "" || why == "—" {
+		why = "a persistent condition refuses all new work"
+	}
+	step = effective.NextStep{Code: "blocked", Text: "New requests of this use case are refused: " + why + "."}
+	for _, c := range row.Causes {
+		switch c.Kind {
+		case fleet.CauseBudgetExhausted:
+			step.Text += " They are served again when the period ends or the cap is raised (in the use case's file, within what the company policy allows)."
+			step.Commands = []string{"talon costs --agent " + row.Name}
+			return "Blocked", step, true
+		case fleet.CausePolicyDenyAll, fleet.CauseInvalidConfig:
+			step.Text += " The full report shows the rule and the file that sets it."
+			step.Commands = []string{"talon agents show " + row.Name + " --effective"}
+			return "Blocked", step, true
+		}
+	}
+	step.Text += " The full report shows the policy and the spend behind it."
+	step.Commands = []string{"talon agents show " + row.Name + " --effective"}
+	return "Blocked", step, true
+}
+
 func statusHeadline(next effective.NextStep) string {
 	switch next.Code {
 	case effective.NextNone:
@@ -219,7 +255,7 @@ func runtimeLine(r *effective.Report) string {
 	case runtimestatus.LoadedMatchesFile:
 		return "loaded by the running Talon process"
 	case runtimestatus.LoadedDiffersFromFile:
-		return fmt.Sprintf("the running Talon process reports ANOTHER version of this file (it refreshes its report every %s)", runtimestatus.DefaultInterval)
+		return "the running Talon process reports ANOTHER version of this file (it has not loaded the current one)"
 	case runtimestatus.NotInActiveGeneration:
 		return "not loaded: a Talon process is running without this use case"
 	}
@@ -317,7 +353,11 @@ func renderUseCase(w io.Writer, row *fleet.AgentRow, report *effective.Report, r
 	if report != nil && report.Verification != nil {
 		next = &report.Verification.Next
 	}
-	renderUseCaseFacts(w, row, report, next, reportErr, now)
+	headline, blockedNext, blocked := blockedStep(row)
+	if !blocked && next != nil {
+		headline = statusHeadline(*next)
+	}
+	renderUseCaseFacts(w, row, report, headline, reportErr, now)
 	if report != nil && report.LastDecision != nil {
 		renderLastRequest(w, report.LastDecision)
 	}
@@ -325,13 +365,66 @@ func renderUseCase(w io.Writer, row *fleet.AgentRow, report *effective.Report, r
 		fmt.Fprintln(w)
 		renderAgentUseCase(w, row.UseCase)
 	}
-	if next != nil {
-		fmt.Fprintf(w, "\nNext\n  %s\n", next.Text)
+	renderNext(w, blocked, blockedNext, next)
+	fmt.Fprintf(w, "\nFull report: talon agents show %s --effective\n", row.Name)
+}
+
+// renderNext prints the next action. A blocking health condition leads; a
+// verification step that is itself an action (start the runtime, restart
+// it, send a request) is still stated after it, and "nothing to do" is not.
+func renderNext(w io.Writer, blocked bool, blockedNext effective.NextStep, next *effective.NextStep) {
+	step := next
+	if blocked {
+		step = &blockedNext
+	}
+	if step == nil {
+		return
+	}
+	fmt.Fprintf(w, "\nNext\n  %s\n", step.Text)
+	for _, c := range step.Commands {
+		fmt.Fprintf(w, "    %s\n", c)
+	}
+	if blocked && next != nil && next.Code != effective.NextNone {
+		fmt.Fprintf(w, "  Also: %s\n", next.Text)
 		for _, c := range next.Commands {
 			fmt.Fprintf(w, "    %s\n", c)
 		}
 	}
-	fmt.Fprintf(w, "\nFull report: talon agents show %s --effective\n", row.Name)
+}
+
+// serverViewNote heads a listing whose rows another installation's server
+// reported.
+func serverViewNote(serverURL, why string) string {
+	return fmt.Sprintf("Server view: these rows are what the Talon server at %s reports. It is not established to be a process of this installation (%s), so RUNTIME is not read from this machine's records.", serverURL, why)
+}
+
+// renderServerUseCase is the single view of a use case whose fleet row a
+// server reported that is not established to be a process of this
+// installation. It shows the facts of that row and says that no
+// verification was performed: this machine's policy, evidence and runtime
+// records describe another installation and are not put next to it.
+func renderServerUseCase(w io.Writer, row *fleet.AgentRow, serverURL, why string, now time.Time) {
+	renderUseCaseIdentity(w, row)
+	line := func(k, v string) { fmt.Fprintf(w, "  %-11s %s\n", k, v) }
+	line("Status", "Not verified from here (fleet facts of the server at "+serverURL+")")
+	line("Configured", stateWord(row.State))
+	traffic := "no request observed"
+	if !row.LastRun.IsZero() {
+		traffic = fmt.Sprintf("last request %s · %d in the last hour (%d denied)", ago(now, row.LastRun), row.Requests, row.Denied)
+	}
+	line("Traffic", traffic)
+	line("Cost", monthCostLine(*row)+" this month · "+dayCostLine(*row)+" today")
+	line("Health", attentionOrHealthy(row))
+	for _, c := range row.Causes {
+		if c.Kind != "" {
+			line("", string(c.Kind)+": "+c.Detail)
+		}
+	}
+	fmt.Fprintf(w, "\nVerification not performed\n")
+	fmt.Fprintf(w, "  These are the fleet facts the Talon server at %s reports. It is not established to be a process of this installation: %s.\n", serverURL, why)
+	fmt.Fprintf(w, "  Its policy, runtime records and evidence were not read, and nothing of this machine's configuration, evidence or runtime records is shown with it.\n")
+	fmt.Fprintf(w, "  For the verified view, run this command on that installation's host or open its Operations Console.\n")
+	fmt.Fprintf(w, "  For this machine's own installation: talon agents show %s --url \"\"\n", row.Name)
 }
 
 // renderUseCaseIdentity prints the name, what the use case is for, and who
@@ -355,10 +448,10 @@ func renderUseCaseIdentity(w io.Writer, row *fleet.AgentRow) {
 // renderUseCaseFacts prints the facts side by side, each from its own
 // source: the file, the runtime records, observed traffic, the policy, the
 // spend and the health signals.
-func renderUseCaseFacts(w io.Writer, row *fleet.AgentRow, report *effective.Report, next *effective.NextStep, reportErr error, now time.Time) {
+func renderUseCaseFacts(w io.Writer, row *fleet.AgentRow, report *effective.Report, headline string, reportErr error, now time.Time) {
 	line := func(k, v string) { fmt.Fprintf(w, "  %-11s %s\n", k, v) }
-	if next != nil {
-		line("Status", statusHeadline(*next))
+	if headline != "" {
+		line("Status", headline)
 	} else {
 		line("Status", "Not determined: the full report could not be built ("+errText(reportErr)+")")
 	}

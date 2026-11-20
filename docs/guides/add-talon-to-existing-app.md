@@ -258,6 +258,7 @@ Full report: talon agents show customer-support --effective
 | **Waiting for its first request** | a running process serves it; no request has arrived | point the application at Talon and send one |
 | **Working** | a running process serves it **and** the newest request was authenticated, verifies and was evaluated under the current policy | nothing |
 | **Needs attention** | something is established that you would want to know (an older policy, a replaced key, a record that does not verify) | the `Next` line says what, with the command |
+| **Blocked** | new requests are refused: a budget cap is exhausted, or the policy denies all new work. This leads, whatever earlier traffic verified | which condition, and the command that shows it |
 | **Disabled** | the file says `enabled: false` | `talon agents enable <name>` when you want it back |
 
 The view keeps four facts apart and never lets one stand for another: the file (**Configured**), what a running process has loaded (**Runtime**), what was observed (**Traffic**) and the health signals. A request that Talon **denied** still shows that the application is connected and that the policy was evaluated; it does not show that a provider was reached.

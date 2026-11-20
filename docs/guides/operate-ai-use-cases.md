@@ -9,6 +9,8 @@ talon agents show <name>      # one use case: what is happening, and what to do 
 
 Both read the files, the running processes' own records and signed evidence. Neither writes anything. For scripts use `--json`; the human views can change their layout, the JSON rows do not.
 
+Both ask the Talon server at `--url` (default `http://localhost:8080`) for the live fleet rows when one answers. Its rows are shown together with this machine's files, evidence and runtime records only when that server is a process of this installation: it is on this machine, and a running process of this installation reports the fleet generation the server serves. For any other server the commands show the fleet facts it reports and say that no verification was performed; nothing of this machine is put next to them. `--url ""` shows this machine's own installation.
+
 | Question | Section |
 |---|---|
 | How do I connect an application? | [Connect](#how-do-i-connect-an-application) |
@@ -41,6 +43,7 @@ The first line under the name is the answer:
 | **Waiting for its first request** | a running process serves it; nothing has arrived from the application |
 | **Not active** | no running process serves it |
 | **Needs attention** | the `Next` line says what |
+| **Blocked** | new requests are refused (a budget cap is exhausted, or the policy denies all new work). It leads the status and the next step even when earlier traffic verified |
 | **Disabled** | its file says `enabled: false` |
 
 `Next` is one sentence and, where a Talon command exists for it, that command. It is derived from the facts on the screen; it starts nothing by itself.
@@ -48,7 +51,7 @@ The first line under the name is the answer:
 Four facts are shown side by side and none stands for another:
 
 - **Configured:** what the file says.
-- **Runtime:** whether a running process has loaded exactly this file, from that process's own record (refreshed every five seconds). A file on disk is not a use case that is served.
+- **Runtime:** whether a running process has loaded exactly this file, from that process's own record (written when it activates a fleet, and at least every five seconds). A file on disk is not a use case that is served.
 - **Traffic:** what was observed. No observation is shown as "no request observed", never as a healthy application.
 - **Health:** budget, denial and failure signals. The absence of a signal says nothing about whether the application is connected.
 
@@ -126,7 +129,7 @@ talon agents show <name>
 
 `disable` sets `agent.enabled: false` in the use case's file and writes a signed record. **It is not immediate.** It takes effect when the running process has loaded the change: at most one `agents_reload_interval`. Requests already in flight finish. Confirm it rather than assume it:
 
-- the view reads **Disabled**, and `Runtime` reads *loaded by the running Talon process*. While it reads *reports ANOTHER version* (`other version` in the listing), the process has not reported the changed file yet: either it still serves the enabled file, or it loaded the change in the last seconds (a process refreshes its own record every five seconds). Look again;
+- the view reads **Disabled**, and `Runtime` reads *loaded by the running Talon process*. While it reads *reports ANOTHER version* (`other version` in the listing), the process still serves the enabled file: it has not re-scanned yet, or it rejected the re-scan. Look again;
 - a request with the use case's key is refused as that use case (HTTP 403 `agent_disabled`), not as an unknown key, and the provider is not called.
 
 If another file in the fleet is invalid, the re-scan is rejected and the disable is **not** active although the file says disabled. Fix the fleet (`talon validate`) or restart `talon serve`; a start reads the files as they are.

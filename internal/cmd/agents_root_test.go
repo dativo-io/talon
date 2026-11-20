@@ -553,3 +553,198 @@ func TestRunAgentShow_UnknownName(t *testing.T) {
 	assert.NotContains(t, names, "nope", "unknown agent is not in the rows; runAgentShow reports it explicitly")
 	assert.Equal(t, []string{"support"}, agentRowNames(rows))
 }
+
+// #567 final review. A use case whose health is BLOCKED (a period cap is
+// exhausted, the policy denies everything) is refused every new request. Its
+// earlier traffic can still verify under the current policy, so the
+// verification's own next step is "nothing to do". The human view must not
+// lead with that: the blocking condition takes precedence in the status and
+// in the next action. The fleet row and the report are not changed.
+func TestUseCaseView_ABlockingHealthConditionTakesPrecedence(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	ts := now.Add(-90 * time.Second)
+	row := fleet.AgentRow{
+		Name: "customer-support", TenantID: "default", State: fleet.StateEnabled, Health: fleet.HealthHealthy, Why: "—", Currency: "USD",
+		MonthlyCap: 500, DailyCap: 50, SpendMonth: 50, SpendDay: 50, Requests: 7, Denied: 3, LastRun: ts,
+		ConfigPath: "agents/customer-support/agent.talon.yaml",
+	}
+	verified := func(next effective.NextStep) *effective.Report {
+		return &effective.Report{
+			UseCase: "customer-support", TenantID: "default",
+			Loaded:    runtimestatus.Loaded{State: runtimestatus.LoadedMatchesFile},
+			Effective: effective.Effective{BaselinePresent: true, Rules: []gateway.RuleProvenance{{Rule: "daily_cost", Effective: "50", Winner: "organization.defaults"}}},
+			Verification: &effective.Verification{
+				Configured: "enabled", Next: next,
+				Traffic: []effective.TrafficObservation{{Boundary: effective.BoundaryLLMGateway, State: effective.TrafficObserved, IdentityProven: true, Policy: effective.PolicyMatchesCurrent, Timestamp: &ts}},
+			},
+		}
+	}
+	nothing := effective.NextStep{Code: effective.NextNone, Text: "Nothing to do: a running Talon process serves this use case, and the newest request was authenticated, verifies and was evaluated under the policy the current files compile to."}
+	render := func(r fleet.AgentRow, rep *effective.Report) string {
+		var buf bytes.Buffer
+		renderUseCase(&buf, &r, rep, nil, now)
+		return buf.String()
+	}
+
+	// The healthy, verified use case reads as before.
+	out := render(row, verified(nothing))
+	assert.Contains(t, out, "Status      Working")
+	assert.Contains(t, out, "Next\n  Nothing to do")
+	assert.NotContains(t, out, "Blocked")
+
+	// Blocked by an exhausted budget, with the same verified traffic.
+	blocked := row
+	blocked.Health, blocked.Why = fleet.HealthBlocked, "daily budget exhausted ($50.00 / $50.00)"
+	blocked.Causes = []fleet.Cause{{Kind: fleet.CauseBudgetExhausted, Detail: "daily budget exhausted ($50.00 / $50.00)"}}
+	out = render(blocked, verified(nothing))
+	assert.NotContains(t, out, "Working", "a use case that is refused every request is not working:\n%s", out)
+	assert.NotContains(t, out, "Nothing to do", "there is something to do:\n%s", out)
+	assert.Contains(t, out, "Status      Blocked")
+	assert.Contains(t, out, "Health      blocked: daily budget exhausted ($50.00 / $50.00)", "the health line is unchanged")
+	assert.Contains(t, out, "the newest authenticated request was evaluated under this policy", "the policy verification is still stated as a fact")
+	assert.Contains(t, out, "Next\n  New requests of this use case are refused: daily budget exhausted ($50.00 / $50.00).")
+	assert.Contains(t, out, "    talon costs --agent customer-support\n")
+
+	// Blocked by the policy: the full report is where the rule is.
+	denyAll := row
+	denyAll.Health, denyAll.Why = fleet.HealthBlocked, "the effective policy denies all new work"
+	denyAll.Causes = []fleet.Cause{{Kind: fleet.CausePolicyDenyAll, Detail: "allowed_models is empty after the company policy"}}
+	out = render(denyAll, verified(nothing))
+	assert.NotContains(t, out, "Working")
+	assert.NotContains(t, out, "Nothing to do")
+	assert.Contains(t, out, "Status      Blocked")
+	assert.Contains(t, out, "    talon agents show customer-support --effective\n")
+
+	// A verification step that is itself an action is still stated, after
+	// the blocking condition.
+	out = render(blocked, verified(effective.NextStep{Code: effective.NextStartRuntime, Text: "No Talon process of this installation is running, so nothing serves this use case."}))
+	assert.Contains(t, out, "Status      Blocked")
+	assert.Regexp(t, `(?s)Next\n  New requests of this use case are refused.*Also: No Talon process of this installation is running`, out)
+
+	// Attention that does not block (a warning) does not change the status.
+	warned := row
+	warned.Health, warned.Why = fleet.HealthNeedsAttention, "elevated denial rate"
+	out = render(warned, verified(nothing))
+	assert.Contains(t, out, "Status      Working")
+	assert.Contains(t, out, "Health      needs-attention: elevated denial rate")
+
+	// The JSON a script reads is the fleet row and the report, untouched.
+	rep := verified(nothing)
+	_ = render(blocked, rep)
+	assert.Equal(t, effective.NextNone, rep.Verification.Next.Code, "the report's next step is not rewritten by the view")
+	assert.Equal(t, fleet.HealthBlocked, blocked.Health)
+}
+
+// #567 final review. `talon agents show --url <server>` reads the fleet row
+// from that server. This machine's configuration, evidence and runtime
+// records describe THIS installation. The two are shown as one view only
+// when the server is established to be a process of this installation; a
+// row of another installation is shown as what it is, with the statement
+// that no verification was performed, and nothing local next to it.
+func TestAgentShow_NeverMixesAServersRowWithThisMachinesEvidence(t *testing.T) {
+	ctx := context.Background()
+	agentsDir := filepath.Join(t.TempDir(), "agents")
+	writeQueueAgent(t, agentsDir, "support", true) // local policy: daily cost 10
+	cfg := offlineTestConfig(t, agentsDir)
+
+	// The other installation: another policy (caps), another state of the
+	// world (blocked, its own path), another fleet generation.
+	remote := fleetResponse{
+		Generation: "generation-of-the-other-installation",
+		Agents: []fleet.AgentRow{{
+			Name: "support", TenantID: "default", State: fleet.StateEnabled, Health: fleet.HealthBlocked, Why: "monthly budget exhausted ($9999.00 / $9999.00)",
+			Currency: "USD", DailyCap: 777, MonthlyCap: 9999, SpendMonth: 9999, SpendDay: 1, Requests: 42, Denied: 40, LastRun: time.Now().UTC().Add(-time.Minute),
+			ConfigPath: "/srv/other-installation/agents/support/agent.talon.yaml",
+		}},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.Header().Set("X-Talon-Service", "talon")
+			return
+		}
+		_ = json.NewEncoder(w).Encode(remote)
+	}))
+	defer srv.Close()
+
+	// This installation runs its own process, which has loaded another
+	// fleet generation and reports it in its runtime record.
+	localGeneration := "generation-of-this-installation"
+	store, err := filepath.Abs(cfg.EvidenceDBPath())
+	require.NoError(t, err)
+	pub, err := runtimestatus.NewPublisher(cfg.DataDir, time.Hour, runtimestatus.Record{
+		Installation: runtimestatus.Installation{KeyFingerprint: runtimestatus.Fingerprint(cfg.SigningKey), StorePath: store},
+		Roles:        []string{runtimestatus.RoleGateway}, StartedAt: time.Now().UTC(),
+	}, func(rec *runtimestatus.Record) {
+		rec.Catalog = &runtimestatus.Catalog{ActiveGeneration: localGeneration, ActivatedAt: time.Now().UTC(), Agents: []runtimestatus.Agent{{Name: "support", TenantID: "default", Enabled: true}}}
+	})
+	require.NoError(t, err)
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); _ = pub.Run(runCtx) }()
+	defer func() { stop(); <-done }()
+	require.Eventually(t, func() bool {
+		view, readable := installationRuntime(cfg, time.Now().UTC())
+		return readable && anyRunning(&view)
+	}, 5*time.Second, 20*time.Millisecond, "this installation's own process is on record")
+
+	settle := fleetSettle
+	fleetSettle.delay = time.Millisecond
+	defer func() { fleetSettle = settle }()
+	show := func() string {
+		cmd := newAgentsTestCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		require.NoError(t, cmd.Flags().Set("url", srv.URL))
+		defer func() { agentsQueueURL = "http://localhost:8080" }()
+		require.NoError(t, showUseCase(ctx, cmd, cfg, "support"))
+		return out.String()
+	}
+
+	out := show()
+	// The server's facts are shown as the server's.
+	assert.Contains(t, out, "Verification not performed")
+	assert.Contains(t, out, srv.URL)
+	assert.Contains(t, out, "$9999.00", "the other installation's cap")
+	assert.Contains(t, out, "/srv/other-installation/agents/support/agent.talon.yaml")
+	assert.Contains(t, out, "Health      blocked: monthly budget exhausted")
+	assert.Contains(t, out, "Status      Not verified from here")
+	assert.Contains(t, out, "no running Talon process of this installation reports the fleet generation that server serves")
+	// Nothing of this machine is put next to it: not its policy (daily cost
+	// 10), not its runtime records, not its evidence, not a next step
+	// derived from them.
+	for _, local := range []string{"daily_cost 10", "Runtime ", "Policy ", "Last request", "\nNext\n", "Working", "Blocked", "Nothing to do", "Full report:", "loaded by the running Talon process"} {
+		assert.NotContains(t, out, local, "a local fact next to another installation's row:\n%s", out)
+	}
+
+	// The listing does not fill RUNTIME from this machine's records either.
+	cmd := newAgentsTestCmd()
+	require.NoError(t, cmd.Flags().Set("url", srv.URL))
+	rows, issues, _, origin, err := resolveFleetOrigin(ctx, cmd, cfg, "")
+	agentsQueueURL = "http://localhost:8080"
+	require.NoError(t, err)
+	view, readable := installationRuntime(cfg, time.Now().UTC())
+	why := foreignServer(origin, &view, readable)
+	require.NotEmpty(t, why)
+	var list bytes.Buffer
+	renderAgentsOverview(&list, rows, issues, serverViewNote(origin.serverURL, why), nil, false, time.Now().UTC())
+	assert.Contains(t, list.String(), "Server view: these rows are what the Talon server at "+srv.URL+" reports")
+	assert.Regexp(t, `support\s+enabled\s+not read\s+`, list.String())
+
+	// When the server serves the generation this installation's own running
+	// process reports, it IS this installation's process: the full view.
+	remote.Generation = localGeneration
+	out = show()
+	assert.NotContains(t, out, "Verification not performed")
+	assert.Contains(t, out, "Full report: talon agents show support --effective")
+
+	// The proof needs both: this machine, and the generation.
+	matching := runtimestatus.View{Processes: []runtimestatus.Process{{Record: runtimestatus.Record{Catalog: &runtimestatus.Catalog{ActiveGeneration: "g1"}}, Assessed: runtimestatus.Running}}}
+	assert.Empty(t, foreignServer(fleetOrigin{}, &matching, true), "the local projection is this installation")
+	assert.Empty(t, foreignServer(fleetOrigin{serverURL: "http://127.0.0.1:8080", generation: "g1"}, &matching, true))
+	assert.Empty(t, foreignServer(fleetOrigin{serverURL: "http://localhost:8080", generation: "g1"}, &matching, true))
+	assert.Contains(t, foreignServer(fleetOrigin{serverURL: "https://talon.example.com", generation: "g1"}, &matching, true), "another host", "an identical generation on another host is another installation")
+	assert.NotEmpty(t, foreignServer(fleetOrigin{serverURL: "http://127.0.0.1:8080", generation: "g2"}, &matching, true))
+	assert.NotEmpty(t, foreignServer(fleetOrigin{serverURL: "http://127.0.0.1:8080", generation: ""}, &matching, true), "no generation, no proof")
+	assert.NotEmpty(t, foreignServer(fleetOrigin{serverURL: "http://127.0.0.1:8080", generation: "g1"}, &matching, false), "unreadable runtime records prove nothing")
+	assert.Contains(t, foreignServer(fleetOrigin{serverURL: "http://127.0.0.1:8080", generation: "g1"}, &runtimestatus.View{}, true), "no Talon process of this installation is running")
+}
