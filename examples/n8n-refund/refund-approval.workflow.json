@@ -534,7 +534,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ result: \"invalid_request\", note: \"ticket_id must look like ABC-123, amount must be a decimal string with at most two fractional digits, currency a three-letter code. Nothing was sent to Talon.\" }) }}",
+        "responseBody": "={{ JSON.stringify({ result: \"invalid_request\", note: \"ticket_id must look like ABC-123, amount must be a decimal string with at most two fractional digits, currency a three-letter code, and optional request_id must use 1-64 letters, digits, underscores or dashes. Nothing was sent to Talon.\" }) }}",
         "options": {
           "responseCode": 400
         }
