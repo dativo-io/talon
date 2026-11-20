@@ -25,7 +25,12 @@
 #     verification, the paired Operations Console (use case listed, evidence
 #     verified as the CLI does), backup, restore with the recovery hold,
 #     resume, a second use case under the same policy;
-#   - the action-gateway, registration, recovery and quickstart e2e suites.
+#   - the action-gateway, registration, recovery and quickstart e2e suites;
+#   - with TALON_PREVIOUS_STABLE_BINARY: the in-place upgrade from it and the
+#     rollback safety check (that release on a restored, held store
+#     dispatches nothing).
+# Results are PASS, FAIL, NOT RUN or NOT APPLICABLE. A required test that
+# skips is a FAILURE, never a pass.
 # The checkout must be the release's own tag (tests and fixtures come from
 # it). Needs go to compile the test harness, not Talon.
 set -euo pipefail
@@ -59,9 +64,27 @@ if [ -n "$EXPECT" ] && [ "$version_line" != "Talon ${EXPECT#v}" ]; then
   echo "FAIL pilot-acceptance: expected 'Talon ${EXPECT#v}', the binary reports '$version_line'" >&2
   exit 1
 fi
+# The tests and fixtures come from this checkout: it must be the commit the
+# binary was built from.
+commit_line="$("$BIN" version | sed -n 's/^Commit: *//p')"
+head_commit="$(git rev-parse HEAD 2>/dev/null || true)"
+if [ -n "$EXPECT" ]; then
+  case "$head_commit" in
+    "$commit_line"*) [ -n "$commit_line" ] || { echo "FAIL pilot-acceptance: the binary reports no commit" >&2; exit 1; } ;;
+    *) echo "FAIL pilot-acceptance: the binary was built from '$commit_line', this checkout is '$head_commit'" >&2; exit 1 ;;
+  esac
+  record "PASS binary under test: $version_line, commit $commit_line, sha256 $(sha256sum "$BIN" | cut -d' ' -f1)"
+fi
 
 export TALON_E2E_BINARY="$BIN"
-e2e() { go test -count=1 -tags=e2e -timeout 12m -run "$1" ./tests/e2e/; }
+# e2e <regex>: the tests must RUN and pass; a skipped one is a failure.
+e2e() {
+  local log; log="$(mktemp "${TMPDIR:-/tmp}/pilot-e2e.XXXXXX")"
+  go test -count=1 -tags=e2e -timeout 12m -v -run "$1" ./tests/e2e/ >"$log" 2>&1 || { grep -E '^(--- |FAIL|ok )' "$log" | tail -n 30; tail -n 40 "$log"; return 1; }
+  grep -E '^--- (PASS|SKIP)' "$log"
+  if grep -q '^--- SKIP' "$log"; then echo "a required test was skipped"; return 1; fi
+  grep -q '^--- PASS' "$log" || { echo "no test ran"; return 1; }
+}
 
 # A real application client for the journey: the official OpenAI Node SDK.
 sdk_dir=""
@@ -77,10 +100,15 @@ journey() {
   local log; log="$(mktemp "${TMPDIR:-/tmp}/pilot-journey.XXXXXX")"
   go test -count=1 -tags=e2e -timeout 12m -v -run '^TestE2E_PilotJourney$' ./tests/e2e/ >"$log" 2>&1 || { tail -n 60 "$log"; return 1; }
   grep -E '^(--- |ok )|client check|PASS (permitted|request with PII)' "$log" || true
-  if [ -n "$sdk_dir" ]; then grep -q 'PASS request with PII blocked by Talon' "$log" && record "PASS application client: OpenAI Node SDK ${OPENAI_SDK_VERSION} through Talon (permitted request answered, PII request refused with pii_policy_violation)"; fi
+  if [ -n "$sdk_dir" ]; then
+    for uc in refund-bot hr-copilot; do
+      grep -q "OpenAI Node SDK client check (${uc})" "$log" || { echo "the SDK client check did not run for ${uc}"; return 1; }
+    done
+    record "PASS application client: OpenAI Node SDK ${OPENAI_SDK_VERSION} through Talon for both use cases (permitted request answered once, PII request refused with pii_policy_violation)"
+  fi
 }
 
-run "customer journey (registration, policy, model traffic, allow/approval/deny, console, evidence, backup/restore/resume, second use case)" journey
+run "customer journey (registration, company policy, SDK traffic, allow/approval/deny with counted dispatch, reviewer boundaries, console, evidence, restart, cold backup, restore with the hold, resume, second use case, key replacement)" journey
 [ -n "$sdk_dir" ] || missing "application client check with the OpenAI Node SDK (node and npm are needed)"
 run "exact action governance and argument rules" e2e '^TestE2E_ActionGateway'
 run "use-case registration, including concurrent registrations" e2e '^TestE2E_AgentsAdd'
@@ -88,12 +116,15 @@ run "backup, restore and the recovery hold" e2e '^TestE2E_BackupRestore_SingleNo
 run "no-key quickstart script over this binary" e2e '^TestE2E_QuickstartScript_LocalBinary$'
 
 if [ -n "${TALON_PREVIOUS_STABLE_BINARY:-}" ]; then
-  run "in-place upgrade from the immediately preceding stable release ($("$TALON_PREVIOUS_STABLE_BINARY" version | sed -n 1p))" e2e '^TestE2E_UpgradeFromPreviousStable$'
+  prev_line="$("$TALON_PREVIOUS_STABLE_BINARY" version | sed -n 1p)"
+  run "in-place upgrade from the immediately preceding stable release ($prev_line)" e2e '^TestE2E_UpgradeFromPreviousStable$'
+  run "rollback safety: $prev_line on a restored, held store dispatches nothing" e2e '^TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing$'
 else
   missing "in-place upgrade from the immediately preceding stable release (TALON_PREVIOUS_STABLE_BINARY is not set)"
+  missing "rollback safety with the preceding stable release (TALON_PREVIOUS_STABLE_BINARY is not set)"
 fi
 if [ -n "${TALON_COMPAT_BINARIES:-}" ]; then
-  run "historical upgrade compatibility (not the N-1 gate)" e2e '^TestE2E_UpgradeFromHistoricalReleases$'
+  run "historical upgrade compatibility (not the N-1 gate)" go test -count=1 -tags=e2e -timeout 12m -run '^TestE2E_UpgradeFromHistoricalReleases$' ./tests/e2e/
 else
   record "NOT RUN historical upgrade compatibility (TALON_COMPAT_BINARIES is not set; optional)"
 fi
@@ -104,8 +135,14 @@ else
   missing "no-clone quickstart against the published image (TALON_IMAGE is not set)"
 fi
 
+pinned_n8n="$(sed -n 's/^PINNED_N8N="\(.*\)"$/\1/p' scripts/n8n-refund-live.sh)"
 if [ -n "${N8N_BIN:-}" ]; then
-  run "real n8n refund workflow against this binary ($("$N8N_BIN" --version 2>/dev/null | tail -n1))" env TALON_BIN="$BIN" bash scripts/n8n-refund-live.sh
+  n8n_version="$("$N8N_BIN" --version 2>/dev/null | tail -n1)"
+  if [ "$n8n_version" != "$pinned_n8n" ] && [ "${PILOT_REQUIRE_ALL:-0}" = "1" ]; then
+    record "FAIL real n8n refund workflow: n8n $n8n_version is not the pinned $pinned_n8n"; failed=1
+  else
+    run "real n8n refund workflow against this binary (n8n $n8n_version)" env TALON_BIN="$BIN" bash scripts/n8n-refund-live.sh
+  fi
 else
   missing "real n8n refund workflow against this binary (N8N_BIN is not set)"
 fi

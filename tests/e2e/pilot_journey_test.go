@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -28,11 +30,25 @@ import (
 //	→ a model request reaches the provider once; a request with PII never does
 //	→ allow / approval (CLI reviewer) / deny by the COMPANY rules, forbidden
 //	action denied, with an independent refund counter
+//	→ changed arguments, replay and concurrent claims, reviewers of another
+//	  tenant or group, the use-case key as a reviewer: zero extra dispatch
 //	→ verify every lifecycle → pair the Operations Console: it lists the use
-//	  case and verifies the action's evidence as the CLI does
-//	→ online backup + verify → restore: dispatch held until resumed, no replay
-//	→ register a second use case while serving: it inherits the same company
-//	policy (model request allowed, PII blocked, forbidden action listed).
+//	  case for its tenant only, verifies the action's evidence as the CLI
+//	  does and returns no credential
+//	→ restart: a pending approval stays pending, a succeeded refund is not
+//	  dispatched again → cold backup + verify → an operation executed after
+//	  the backup and one created after it → restore: `talon doctor` shows
+//	  the hold, nothing dispatches, the operator holds both and resumes, a
+//	  repeated resume writes nothing
+//	→ register a second use case while serving: separate key, its own SDK
+//	  traffic and evidence, the same company policy; the first keeps working;
+//	  its key is replaced and the old one refused.
+//
+// An ambiguous (unknown) outcome and the previous release on a restored
+// store are proven by the focused #568 tests
+// (TestE2E_Restore_AnUnknownOutcomeIsNeverReplayed,
+// TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing),
+// which scripts/pilot-acceptance.sh runs against the same binary.
 //
 // The binary under test is the one built from this checkout, or — with
 // TALON_E2E_BINARY — an existing released executable: that is how
@@ -95,7 +111,7 @@ func TestE2E_PilotJourney(t *testing.T) {
 	// company forbids.
 	addOut := run(nil, "agents", "add", "refund-bot", "--tenant", "acme", "--owner", "support-ops")
 	refundKey := ucKey.FindString(addOut)
-	if refundKey == "" || strings.Contains(addOut, "WARNING") || !strings.Contains(addOut, "pii_action block") || !strings.Contains(addOut, "2 forbidden tool/action pattern(s), 0 approval rule(s), 2 argument rule(s)") {
+	if refundKey == "" || strings.Contains(addOut, "WARNING") || !strings.Contains(addOut, "Company policy: inherited") || !strings.Contains(addOut, "pii_action block") || !strings.Contains(addOut, "forbidden_tools delete_customer, export_all_*") || !strings.Contains(addOut, "Not active") {
 		t.Fatalf("registration under the company policy:\n%s", addOut)
 	}
 	agentFile := filepath.Join(agentsDir, "refund-bot", "agent.talon.yaml")
@@ -164,7 +180,7 @@ policies:
 	port := freePort(t)
 	serveEnv := map[string]string{"TALON_AGENTS_DIR": agentsDir, "TALON_ADMIN_KEY": "admin-e2e-pilot-0001", "TALON_AGENTS_RELOAD_INTERVAL": "1s"}
 	serve := func() func() {
-		return startServeWithEnv(t, dir, port, serveEnv, "--gateway", "--gateway-config", gwConfig)
+		return startServeGraceful(t, dir, port, serveEnv, "--gateway", "--gateway-config", gwConfig)
 	}
 	stop := serve()
 	defer func() { stop() }()
@@ -185,7 +201,13 @@ policies:
 	// pointed at Talon with the use-case key. Run when the acceptance
 	// harness provides the SDK (TALON_PILOT_SDK_DIR); skipped otherwise,
 	// which scripts/pilot-acceptance.sh reports as NOT RUN or as a failure.
-	if sdkDir := os.Getenv("TALON_PILOT_SDK_DIR"); sdkDir != "" {
+	sdkCheck := func(useCase, key string) {
+		t.Helper()
+		sdkDir := os.Getenv("TALON_PILOT_SDK_DIR")
+		if sdkDir == "" {
+			t.Logf("NOT RUN: OpenAI SDK client check for %s (TALON_PILOT_SDK_DIR is not set)", useCase)
+			return
+		}
 		script, err := os.ReadFile(filepath.Join("..", "..", "examples", "pilot", "client-check.mjs"))
 		if err != nil {
 			t.Fatal(err)
@@ -197,17 +219,22 @@ policies:
 		before := providerCalls.Load()
 		cmd := exec.Command("node", local)
 		cmd.Dir = sdkDir
-		cmd.Env = append(os.Environ(), "TALON_URL="+c.base, "TALON_USE_CASE_KEY="+refundKey)
+		cmd.Env = append(os.Environ(), "TALON_URL="+c.base, "TALON_USE_CASE_KEY="+key)
 		out, err := cmd.CombinedOutput()
 		if err != nil || strings.Count(string(out), "PASS") != 2 {
-			t.Fatalf("the OpenAI SDK client check failed: %v\n%s", err, out)
+			t.Fatalf("the OpenAI SDK client check failed for %s: %v\n%s", useCase, err, out)
 		}
 		if got := providerCalls.Load() - before; got != 1 {
-			t.Fatalf("the SDK's permitted request must reach the provider once and its PII request never: %d provider calls", got)
+			t.Fatalf("%s: the SDK's permitted request must reach the provider once and its PII request never: %d provider calls", useCase, got)
 		}
-		t.Logf("OpenAI Node SDK client check:\n%s", out)
-	} else {
-		t.Log("NOT RUN: OpenAI SDK client check (TALON_PILOT_SDK_DIR is not set)")
+		t.Logf("OpenAI Node SDK client check (%s):\n%s", useCase, out)
+	}
+	sdkCheck("refund-bot", refundKey)
+
+	// 3c. The effective policy names the company layer for the refund rules
+	// the use case tried to relax.
+	if eff := run(nil, "agents", "show", "refund-bot", "--effective"); !strings.Contains(eff, "refund-needs-approval") || !strings.Contains(eff, "refund-too-large") {
+		t.Fatalf("the effective policy must show the company refund rules:\n%s", eff)
 	}
 
 	// 4. The business action: the COMPANY rules decide, whatever the use case declared.
@@ -254,9 +281,64 @@ policies:
 		t.Fatalf("a company-forbidden action must be denied although the use case declares it: %d %v", st, res)
 	}
 	calls(2, "denials")
+	for _, r := range reasonTexts(res) {
+		if strings.Contains(r, "900") || strings.Contains(r, "c-1") {
+			t.Fatalf("a policy reason must not carry argument values: %q", r)
+		}
+	}
+
+	// 4b. The same operation id with other arguments is refused; a replay
+	// and a burst of concurrent claims dispatch nothing more.
+	if st, res := establish("T-30", "31.00"); st != 409 || errCode(res) != "operation_conflict" {
+		t.Fatalf("changed arguments under an existing operation id: %d %v", st, res)
+	}
+	if st := claim("T-30"); st != 409 {
+		t.Fatalf("a replayed claim of a succeeded refund: %d", st)
+	}
+	if st, res := establish("T-31", "31.00"); st >= 300 || dig(res, "operation", "verdict") != "ALLOW" {
+		t.Fatalf("31 EUR: %d %v", st, res)
+	}
+	var wg sync.WaitGroup
+	gate := make(chan struct{})
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); <-gate; _ = claim("T-31") }()
+	}
+	close(gate)
+	wg.Wait()
+	calls(3, "six concurrent claims of one operation")
+
+	// 4c. Who cannot approve: a reviewer of another tenant, a reviewer of
+	// another group, the use-case key. The approval stays pending and
+	// nothing is dispatched; the right reviewer then decides it.
+	st, res = establish("T-80", "80.00")
+	if st != 202 {
+		t.Fatalf("80 EUR: %d %v", st, res)
+	}
+	pendingID, _ := dig(res, "operation", "approval", "id").(string)
+	otherTenant := regexp.MustCompile(`talon_appr_cred_[0-9a-f]+\.[A-Za-z0-9_-]+`).FindString(run(nil, "approver", "add", "--name", "lead-globex", "--tenant", "globex", "--groups", "support-leads"))
+	otherGroup := regexp.MustCompile(`talon_appr_cred_[0-9a-f]+\.[A-Za-z0-9_-]+`).FindString(run(nil, "approver", "add", "--name", "finance-1", "--tenant", "acme", "--groups", "finance"))
+	for who, key := range map[string]string{"another tenant": otherTenant, "another group": otherGroup} {
+		merged := map[string]string{"TALON_AGENTS_DIR": agentsDir, "TALON_GATEWAY_CONFIG": gwConfig, "TALON_APPROVER_KEY": key}
+		if out, stderr, code := RunTalon(t, dir, merged, "approvals", "approve", pendingID, "--reason", "x", "--url="+c.base); code == 0 {
+			t.Fatalf("a reviewer of %s approved:\n%s\n%s", who, out, stderr)
+		}
+	}
+	if st, _ := c.do("POST", "/v1/approvals/"+pendingID+"/decisions", refundKey, `{"decision":"approve","reason":"self"}`); st < 400 {
+		t.Fatalf("the use-case key must not decide an approval: %d", st)
+	}
+	if st := claim("T-80"); st != 409 {
+		t.Fatalf("T-80 must still wait for its approval: %d", st)
+	}
+	calls(3, "refused approvals")
+	run(reviewer, "approvals", "reject", pendingID, "--reason", "duplicate", "--url="+c.base)
+	if st := claim("T-80"); st < 400 {
+		t.Fatalf("a rejected refund was claimed: %d", st)
+	}
+	calls(3, "rejected refund")
 
 	// 5. Every lifecycle verifies.
-	for _, op := range []string{"T-30", "T-75", "T-900", "del-1"} {
+	for _, op := range []string{"T-30", "T-31", "T-75", "T-80", "T-900", "del-1"} {
 		if out := run(nil, "audit", "verify", "--operation", op); !strings.Contains(out, "Lifecycle: VALID") {
 			t.Fatalf("verify %s:\n%s", op, out)
 		}
@@ -276,8 +358,30 @@ policies:
 	if st, body, _ := cc.do(http.MethodGet, "/console/v1/use-cases?tenant=acme", "", nil); st != http.StatusOK || !strings.Contains(body, `"refund-bot"`) {
 		t.Fatalf("the console must list the registered use case: %d %s", st, body)
 	}
+	// The tenant selection scopes the use-case rows. It is a filter, not an
+	// access control, and installation facts (the processes and what they
+	// load) are never scoped (docs/guides/operations-console.md).
+	var other struct {
+		UseCases struct {
+			Rows []map[string]any `json:"rows"`
+		} `json:"use_cases"`
+	}
+	consoleGet(t, cc, "/console/v1/use-cases?tenant=globex", &other)
+	for _, r := range other.UseCases.Rows {
+		if fmt.Sprint(r["name"]) == "refund-bot" || fmt.Sprint(r["agent"]) == "refund-bot" {
+			t.Fatalf("acme's use case is a row of tenant globex: %v", r)
+		}
+	}
 	if st, body, _ := cc.do(http.MethodGet, "/console/v1/system", "", nil); st != http.StatusOK || !strings.Contains(body, `"running"`) {
 		t.Fatalf("the console must show the running process: %d %s", st, body)
+	}
+	for _, path := range []string{"/console/v1/use-cases?tenant=acme", "/console/v1/system", "/console/v1/use-cases/refund-bot?tenant=acme"} {
+		_, body, _ := cc.do(http.MethodGet, path, "", nil)
+		for _, secret := range []string{refundKey, leadKey, "admin-e2e-pilot-0001", "test-provider-needs-no-key", testSecretsKey, testSigningKey} {
+			if strings.Contains(body, secret) {
+				t.Fatalf("the console returned a credential on %s", path)
+			}
+		}
 	}
 	var listed any
 	talonJSON(t, dir, &listed, "audit", "list", "--json", "--tenant", "acme", "--limit", "200")
@@ -304,49 +408,125 @@ policies:
 	}
 	ui.stop()
 
-	// 6. Online backup, verified; restore; no replay.
+	// 6. A restart keeps a pending approval pending and does not dispatch a
+	// succeeded refund again.
+	if st, _ := establish("T-60", "60.00"); st != 202 {
+		t.Fatalf("60 EUR: %d", st)
+	}
+	stop()
+	stop = serve()
+	if st, res := c.do("POST", "/v1/action-operations/T-60/attempts", refundKey, ""); st != 409 || errCode(res) != "approval_pending" {
+		t.Fatalf("after a restart the approval must still be pending: %d %v", st, res)
+	}
+	if st := claim("T-30"); st != 409 {
+		t.Fatalf("after a restart a succeeded refund must not dispatch again: %d", st)
+	}
+	calls(3, "after the restart")
+
+	// 7. Cold backup (the service stopped gracefully), verified.
+	stop()
 	backup := filepath.Join(t.TempDir(), "pilot-backup")
-	run(nil, "backup", "create", backup)
+	if out := run(nil, "backup", "create", "--cold", backup); !strings.Contains(out, "cold") {
+		t.Fatalf("backup create --cold:\n%s", out)
+	}
 	if out := run(nil, "backup", "verify", backup); !strings.Contains(out, "PASS backup verify") {
 		t.Fatalf("backup verify:\n%s", out)
 	}
-	stop()
-	for _, f := range []string{"evidence.db", "evidence.db-wal", "evidence.db-shm", "secrets.db", "secrets.db-wal", "secrets.db-shm"} {
-		_ = os.Remove(filepath.Join(dir, f))
+	stop = serve()
+
+	// After the backup: T-60 is approved and executed; T-45 is created and
+	// executed. The backup knows neither effect.
+	var t60 string
+	if st, res := c.do("GET", "/v1/action-operations/T-60", refundKey, ""); st == 200 {
+		t60, _ = dig(res, "operation", "approval", "id").(string)
 	}
-	for _, f := range []string{"evidence.db", "secrets.db"} {
-		b, err := os.ReadFile(filepath.Join(backup, f))
+	run(reviewer, "approvals", "approve", t60, "--reason", "verified", "--url="+c.base)
+	if claim("T-60") != 200 {
+		t.Fatal("claim T-60 after the backup")
+	}
+	if st, _ := establish("T-45", "45.00"); st >= 300 {
+		t.Fatalf("establish T-45: %d", st)
+	}
+	if claim("T-45") != 200 {
+		t.Fatal("claim T-45 after the backup")
+	}
+	calls(5, "two refunds executed after the backup")
+
+	// 8. Restore. The restored store is held: nothing dispatches, whatever
+	// the caller replays, re-establishes or re-approves.
+	stop()
+	for _, pattern := range []string{"*.db", "*.db-wal", "*.db-shm"} {
+		old, _ := filepath.Glob(filepath.Join(dir, pattern))
+		for _, f := range old {
+			if filepath.Base(f) != "cache.db" {
+				_ = os.Remove(f)
+			}
+		}
+	}
+	dbs, _ := filepath.Glob(filepath.Join(backup, "*.db"))
+	for _, f := range dbs {
+		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, f), b, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, filepath.Base(f)), b, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	stop = serve()
-	// A restored installation holds dispatch until the operator has
-	// reconciled and resumed; nothing happened after this backup, so no
-	// operation is kept held.
-	if st, res := establish("T-40", "40.00"); st >= 300 || dig(res, "operation", "verdict") != "ALLOW" {
-		t.Fatalf("establish after restore: %d %v", st, res)
+	if out, _, code := RunTalon(t, dir, env, "doctor"); code == 0 || !strings.Contains(out, "RECOVERY HOLD") {
+		t.Fatalf("talon doctor must report the recovery hold (exit %d):\n%s", code, out)
 	}
-	if st, res := c.do("POST", "/v1/action-operations/T-40/attempts", refundKey, ""); st != 503 || errCode(res) != "recovery_hold" {
-		t.Fatalf("a restored installation must hold dispatch: %d %v", st, res)
+	if st, res := c.do("POST", "/v1/action-operations/T-60/attempts", refundKey, ""); st != 409 && st != 503 {
+		t.Fatalf("the restored pending approval of T-60: %d %v", st, res)
 	}
-	calls(2, "held after restore")
-	if out := run(nil, "backup", "resume", "--reconciled"); !strings.Contains(out, "Resumed: 1 hold(s) ended") {
-		t.Fatalf("backup resume:\n%s", out)
+	if st, res := c.do("GET", "/v1/action-operations/T-60", refundKey, ""); st == 200 {
+		t60, _ = dig(res, "operation", "approval", "id").(string)
+	}
+	run(reviewer, "approvals", "approve", t60, "--reason", "approved again", "--url="+c.base)
+	if st, _ := establish("T-45", "45.00"); st >= 300 {
+		t.Fatalf("re-establish T-45: %d", st)
+	}
+	for _, op := range []string{"T-60", "T-45"} {
+		if st, res := c.do("POST", "/v1/action-operations/"+op+"/attempts", refundKey, ""); st != 503 || errCode(res) != "recovery_hold" {
+			t.Fatalf("a restored installation must hold %s: %d %v", op, st, res)
+		}
+	}
+	calls(5, "held after the restore")
+
+	// Reconcile: both were found in the refund service; hold them for good.
+	if out, _, code := RunTalon(t, dir, env, "backup", "resume"); code == 0 || !strings.Contains(out, "T-60") || !strings.Contains(out, "Idempotency-Key") {
+		t.Fatalf("backup resume without --reconciled must list the open operations and resume nothing (exit %d):\n%s", code, out)
+	}
+	if out := run(nil, "backup", "resume", "--reconciled", "--hold-operation", "T-60", "--hold-operation", "T-45"); !strings.Contains(out, "Resumed: 1 hold(s) ended, 2 operation id(s) held for good") || !strings.Contains(out, "signed, recovery_resumed") {
+		t.Fatalf("backup resume --reconciled:\n%s", out)
+	}
+	if out := run(nil, "backup", "resume", "--reconciled"); !strings.Contains(out, "no evidence was written") || strings.Contains(out, "rr_") {
+		t.Fatalf("a repeated resume must change nothing and name no evidence:\n%s", out)
+	}
+	for _, op := range []string{"T-60", "T-45"} {
+		if st, res := c.do("POST", "/v1/action-operations/"+op+"/attempts", refundKey, ""); st != 503 || errCode(res) != "recovery_hold" {
+			t.Fatalf("a held operation must never dispatch (%s): %d %v", op, st, res)
+		}
 	}
 	if st := claim("T-75"); st != 409 {
 		t.Fatalf("a restored, succeeded refund must not dispatch again: %d", st)
 	}
+	if st, res := establish("T-40", "40.00"); st >= 300 || dig(res, "operation", "verdict") != "ALLOW" {
+		t.Fatalf("establish after resume: %d %v", st, res)
+	}
 	if claim("T-40") != 200 {
 		t.Fatal("dispatch after resume")
 	}
-	calls(3, "after resume")
+	calls(6, "after the resume: held operations never, a new one once")
 
-	// 7. A second use case, registered while serving, inherits the company policy.
+	// 9. A second application, registered while serving, without changing
+	// the company policy.
+	baseline, _ := os.ReadFile(gwConfig)
 	hrKey := ucKey.FindString(run(nil, "agents", "add", "hr-copilot", "--tenant", "acme"))
+	if hrKey == "" || hrKey == refundKey {
+		t.Fatal("the second use case must get its own key")
+	}
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		st, _ := chat(hrKey, "hello")
@@ -358,6 +538,7 @@ policies:
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+	sdkCheck("hr-copilot", hrKey)
 	before := providerCalls.Load()
 	if st, res := chat(hrKey, "Contact jan.kowalski@example.com, IBAN DE89370400440532013000"); st != 400 || errCode(res) != "pii_policy_violation" || providerCalls.Load() != before {
 		t.Fatalf("the second use case must inherit the company PII block: %d %v", st, res)
@@ -368,10 +549,98 @@ policies:
 			t.Fatalf("the second use case's effective policy must show the inherited company policy (%q missing):\n%s", want, effective)
 		}
 	}
-	if st, res := c.do("GET", "/v1/action-operations/T-30", refundKey, ""); st != 200 || dig(res, "operation", "operation_status") != "succeeded" {
+	if out := run(nil, "audit", "list", "--tenant", "acme", "--agent", "hr-copilot", "--limit", "50"); !strings.Contains(out, "hr-copilot") || strings.Contains(out, "refund-bot") {
+		t.Fatalf("the second use case's evidence must be attributed to it alone:\n%s", out)
+	}
+	if after, _ := os.ReadFile(gwConfig); string(after) != string(baseline) {
+		t.Fatal("registering the second use case changed the company configuration")
+	}
+	if st, res := chat(refundKey, "Summarise ticket T-31"); st != 200 {
 		t.Fatalf("the first use case after the second was added: %d %v", st, res)
 	}
+
+	// 10. Replace the second use case's key (documented: write the vault
+	// secret, restart): the old key is refused, the new one works, the first
+	// use case is unaffected.
+	newKey := "talon_uc_" + strings.Repeat("ab", 24)
+	run(nil, "secrets", "set", "hr-copilot-talon-key", newKey, "--tenant", "acme", "--agent", "hr-copilot")
+	stop()
+	stop = serve()
+	if st, _ := chat(hrKey, "hello"); st != 401 {
+		t.Fatalf("the replaced key must be refused: %d", st)
+	}
+	if st, res := chat(newKey, "hello"); st != 200 {
+		t.Fatalf("the new key must work: %d %v", st, res)
+	}
+	if st, _ := chat(refundKey, "hello"); st != 200 {
+		t.Fatalf("the first use case after the key replacement: %d", st)
+	}
 	run(nil, "validate")
+}
+
+// startServeGraceful starts `talon serve` like startServeWithEnv and returns
+// a function that stops it with SIGTERM, as a service manager does, so that
+// the process records its shutdown and a cold backup can follow.
+func startServeGraceful(t *testing.T, dir string, port int, env map[string]string, extraArgs ...string) func() {
+	t.Helper()
+	cmd := exec.Command(binaryPath, append([]string{"serve", "--port", fmt.Sprintf("%d", port)}, extraArgs...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "TALON_DATA_DIR="+dir, "TALON_SECRETS_KEY="+testSecretsKey, "TALON_SIGNING_KEY="+testSigningKey)
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	logFile, err := os.OpenFile(filepath.Join(dir, "serve.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start serve: %v", err)
+	}
+	stopped := false
+	stop := func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_, _ = cmd.Process.Wait()
+		_ = logFile.Close()
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return stop
+			}
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	stop()
+	logs, _ := os.ReadFile(filepath.Join(dir, "serve.log"))
+	t.Fatalf("serve not healthy; log:\n%s", logs)
+	return nil
+}
+
+// reasonTexts collects every string value under a key that names a reason.
+func reasonTexts(v any) []string {
+	var out []string
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			if s, ok := e.(string); ok && strings.Contains(strings.ToLower(k), "reason") {
+				out = append(out, s)
+			}
+			out = append(out, reasonTexts(e)...)
+		}
+	case []any:
+		for _, e := range x {
+			out = append(out, reasonTexts(e)...)
+		}
+	}
+	return out
 }
 
 // firstEvidenceID finds the id of the first row of an `audit list --json`

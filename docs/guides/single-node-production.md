@@ -22,7 +22,8 @@ Install the verified binary (`scripts/install.sh` or the release archive, checke
 ```bash
 sudo useradd --system --home-dir /var/lib/talon --shell /usr/sbin/nologin talon
 sudo install -d -o talon -g talon -m 0700 /var/lib/talon
-sudo install -d -m 0755 /etc/talon /etc/talon/agents
+sudo install -d -o root  -g talon -m 0750 /etc/talon
+sudo install -d -o talon -g talon -m 0750 /etc/talon/agents   # talon agents add (run as talon) writes here
 sudo install -m 0600 /dev/null /etc/talon/talon.env       # TALON_SECRETS_KEY=…, TALON_SIGNING_KEY=…, TALON_ADMIN_KEY=…
 sudo cp deploy/systemd/talon.service /etc/systemd/system/  # WorkingDirectory=/etc/talon, TALON_DATA_DIR=/var/lib/talon
 sudo systemctl daemon-reload && sudo systemctl enable --now talon

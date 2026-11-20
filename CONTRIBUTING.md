@@ -153,13 +153,18 @@ pulled anonymously). Locally: `scripts/published-console-acceptance.sh <talon-bi
 runs `scripts/pilot-acceptance.sh` with the draft's linux executable as the system under test:
 the customer journey (`TestE2E_PilotJourney`: company baseline policy, `talon agents add`, model
 traffic through a deterministic local provider, refund allow / approval / deny with an
-independent counter, the paired console, evidence verification, backup, restore with the
-recovery hold, a second use case), the same model requests through a real application client
-(the official OpenAI Node SDK, pinned), the action, registration and recovery suites, the
-in-place upgrade from the **immediately preceding stable release**, the real n8n refund
+independent counter, reviewers of another tenant or group refused, changed arguments, replayed
+and concurrent claims, the paired console, evidence verification, restart, cold backup, an
+operation executed and one created after the backup, restore with the recovery hold, resume, a
+second use case and the replacement of its key), the same model requests through a real
+application client (the official OpenAI Node SDK, pinned) for both use cases, the action,
+registration and recovery suites, the in-place upgrade from the **immediately preceding stable
+release** and the rollback safety check (that release on a restored, held store dispatches
+nothing), the real n8n refund
 workflow (`scripts/n8n-refund-live.sh`, pinned n8n) with the released executable as `TALON_BIN`,
 and `scripts/quickstart.sh` against the released image. The job runs in release mode
-(`PILOT_REQUIRE_ALL=1`): a missing input is a failure, never a skipped line. `release-verify`
+(`PILOT_REQUIRE_ALL=1`): a missing input, a required test that skips, an n8n other than the
+pinned one or a binary built from another commit than the checkout is a failure. `release-verify`
 waits for it. `install-smoke.yml` (`pilot-acceptance`) repeats it on the published artifacts.
 The preceding stable release is resolved from the published releases
 (`scripts/previous-stable.sh <tag>`), so there is no version to bump; v1.16.1 also runs as
