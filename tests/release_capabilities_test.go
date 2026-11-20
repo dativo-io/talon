@@ -13,17 +13,17 @@ import (
 // has no operations console, so an audit of it reports NOT APPLICABLE; from
 // v1.17.0 on (candidates included) the gates are mandatory; a tag that is
 // not a release tag is an error, never a skip. The published-image
-// quickstart (#463) follows the same rule.
+// quickstart (#463) and the pilot acceptance (#561) follow the same rule.
 func TestReleaseCapabilities_ConsoleApplicability(t *testing.T) {
 	script := filepath.Join("..", "scripts", "release-capabilities.sh")
 	for tag, want := range map[string]string{
-		"v1.15.4":      "console=false\nquickstart=false\ntoolchain=false",
-		"v1.16.1":      "console=false\nquickstart=false\ntoolchain=false",
-		"v1.16.9-rc.3": "console=false\nquickstart=false\ntoolchain=false",
-		"v1.17.0-rc.1": "console=true\nquickstart=true\ntoolchain=true",
-		"v1.17.0":      "console=true\nquickstart=true\ntoolchain=true",
-		"v1.20.3":      "console=true\nquickstart=true\ntoolchain=true",
-		"v2.0.0":       "console=true\nquickstart=true\ntoolchain=true",
+		"v1.15.4":      "console=false\nquickstart=false\ntoolchain=false\npilot=false",
+		"v1.16.1":      "console=false\nquickstart=false\ntoolchain=false\npilot=false",
+		"v1.16.9-rc.3": "console=false\nquickstart=false\ntoolchain=false\npilot=false",
+		"v1.17.0-rc.1": "console=true\nquickstart=true\ntoolchain=true\npilot=true",
+		"v1.17.0":      "console=true\nquickstart=true\ntoolchain=true\npilot=true",
+		"v1.20.3":      "console=true\nquickstart=true\ntoolchain=true\npilot=true",
+		"v2.0.0":       "console=true\nquickstart=true\ntoolchain=true\npilot=true",
 	} {
 		out, err := exec.CommandContext(t.Context(), "bash", script, tag).Output()
 		if err != nil {
@@ -132,6 +132,47 @@ func TestReleaseAcceptance_RunsConditionalActionsOnTheReleasedBinary(t *testing.
 	} {
 		if !strings.Contains(live, want) {
 			t.Errorf("action-evidence-live.sh must require actual execution on the given binary; missing %q", want)
+		}
+	}
+}
+
+// The pilot acceptance (#561) follows the applicability rule of the console
+// gates: from v1.17.0 on it is mandatory, it runs on the release's own tree
+// (pilot-acceptance.sh refuses a binary from another commit), and it is
+// never skipped because a file is missing.
+func TestReleaseWorkflows_PilotGateFollowsTheApplicabilityRule(t *testing.T) {
+	for _, rel := range []string{".github/workflows/release.yml", ".github/workflows/install-smoke.yml"} {
+		raw, err := os.ReadFile(filepath.Join("..", rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(string(raw), "\n")
+		gates := 0
+		for i, line := range lines {
+			if !strings.Contains(line, "bash scripts/pilot-acceptance.sh") {
+				continue
+			}
+			gates++
+			guarded := false
+			for j := i; j >= 0; j-- {
+				l := strings.TrimSpace(lines[j])
+				if l == "if: steps.cap.outputs.pilot == 'true'" {
+					guarded = true
+					break
+				}
+				if strings.HasPrefix(l, "- name:") {
+					break
+				}
+			}
+			if !guarded {
+				t.Errorf("%s:%d: the pilot gate is not conditioned on steps.cap.outputs.pilot", rel, i+1)
+			}
+		}
+		if gates != 1 {
+			t.Errorf("%s: expected 1 pilot gate, found %d", rel, gates)
+		}
+		if !strings.Contains(string(raw), "grep -q '^pilot=true$'") {
+			t.Errorf("%s: the pilot job must compute applicability with scripts/release-capabilities.sh", rel)
 		}
 	}
 }

@@ -336,14 +336,37 @@ jobs:
   release-pilot-acceptance:
     name: Pilot acceptance on the released binary and image
     needs: release
+    # Audit mode (workflow_dispatch) re-runs it on the published release.
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Does this release carry the pilot acceptance?
+        id: cap
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-capabilities.sh "$TAG" | tee -a "$GITHUB_OUTPUT"
+          if ! grep -q '^pilot=true$' "$GITHUB_OUTPUT"; then
+            echo "### Pilot acceptance: NOT APPLICABLE — $TAG predates the pilot acceptance (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # The tests and fixtures are the release's own: pilot-acceptance.sh
+      # refuses a binary built from another commit than the checkout. A push
+      # runs on the tag already; an audit is dispatched from a branch.
+      - name: Check out the audited release's own tests and fixtures
+        if: steps.cap.outputs.pilot == 'true' && github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
       - uses: actions/setup-go@v5
+        if: steps.cap.outputs.pilot == 'true'
         with:
           go-version-file: go.mod
       - name: Download the released talon archive from the draft and verify it
+        if: steps.cap.outputs.pilot == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -358,6 +381,7 @@ jobs:
       # from the published releases (the draft being built is not one). The
       # historical v1.16.1 run is extra compatibility, never the gate.
       - name: Fetch the preceding stable release and the historical v1.16.1 (checksum-verified)
+        if: steps.cap.outputs.pilot == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -369,11 +393,13 @@ jobs:
             echo "TALON_COMPAT_BINARIES=$(bash scripts/fetch-release-binary.sh 1.16.1 "$RUNNER_TEMP/previous-stable/1.16.1")" >> "$GITHUB_ENV"
           fi
       - uses: actions/setup-node@v4
+        if: steps.cap.outputs.pilot == 'true'
         with:
           node-version: '24'
       # The pinned n8n of scripts/n8n-refund-live.sh: the real workflow runs
       # against the RELEASED executable.
       - name: Install the pinned n8n
+        if: steps.cap.outputs.pilot == 'true'
         run: |
           set -euo pipefail
           N8N_VERSION="$(sed -n 's/^PINNED_N8N="\(.*\)"$/\1/p' scripts/n8n-refund-live.sh)"
@@ -383,6 +409,7 @@ jobs:
           echo "N8N_BIN=$RUNNER_TEMP/n8n/node_modules/.bin/n8n" >> "$GITHUB_ENV"
       # Release mode: every required input is present, or the job fails.
       - name: Pilot acceptance (no provider key; nothing required is skipped)
+        if: steps.cap.outputs.pilot == 'true'
         env:
           PILOT_REQUIRE_ALL: "1"
         run: |

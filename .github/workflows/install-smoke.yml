@@ -287,13 +287,28 @@ jobs:
           [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = false ] || { echo "::error::$TAG is not a published release"; exit 1; }
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+      - name: Does this release carry the pilot acceptance?
+        id: cap
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-capabilities.sh "$TAG" | tee -a "$GITHUB_OUTPUT"
+          if ! grep -q '^pilot=true$' "$GITHUB_OUTPUT"; then
+            echo "### Pilot acceptance: NOT APPLICABLE — $TAG predates the pilot acceptance (v1.17.0)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Check out the release's own tests and fixtures
+        if: steps.cap.outputs.pilot == 'true'
+        uses: actions/checkout@v4
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
           persist-credentials: false
       - uses: actions/setup-go@v5
+        if: steps.cap.outputs.pilot == 'true'
         with:
           go-version-file: go.mod
       - name: Download the published archive, its preceding stable release and the historical v1.16.1 (checksum-verified)
+        if: steps.cap.outputs.pilot == 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -307,9 +322,11 @@ jobs:
             echo "TALON_COMPAT_BINARIES=$(bash scripts/fetch-release-binary.sh 1.16.1 "$RUNNER_TEMP/previous-stable/1.16.1")" >> "$GITHUB_ENV"
           fi
       - uses: actions/setup-node@v4
+        if: steps.cap.outputs.pilot == 'true'
         with:
           node-version: '24'
       - name: Install the pinned n8n
+        if: steps.cap.outputs.pilot == 'true'
         run: |
           set -euo pipefail
           N8N_VERSION="$(sed -n 's/^PINNED_N8N="\(.*\)"$/\1/p' scripts/n8n-refund-live.sh)"
@@ -318,6 +335,7 @@ jobs:
           npm rebuild sqlite3
           echo "N8N_BIN=$RUNNER_TEMP/n8n/node_modules/.bin/n8n" >> "$GITHUB_ENV"
       - name: Pilot acceptance (no provider key; nothing required is skipped)
+        if: steps.cap.outputs.pilot == 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           PILOT_REQUIRE_ALL: "1"
