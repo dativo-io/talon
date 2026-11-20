@@ -28,6 +28,32 @@ sudo cp deploy/systemd/talon.service /etc/systemd/system/  # WorkingDirectory=/e
 sudo systemctl daemon-reload && sudo systemctl enable --now talon
 ```
 
+The unit starts Talon on `127.0.0.1:8080`. To serve other machines, put a TLS-terminating proxy in front of it; change the listener only with a drop-in that you have reviewed.
+
+**The keys stay in `/etc/talon/talon.env`.** The file is `0600 root:root`; systemd reads it for the service (`EnvironmentFile=`). Never put its contents on a command line: process arguments are visible to every user of the host (`ps`), and end up in shell history and logs. For operator commands, let systemd load the same file. Define this once in your shell:
+
+```bash
+# Run a talon command as the service user, with the service's environment.
+# systemd reads /etc/talon/talon.env; no key is passed as an argument or
+# exported into your shell.
+talonctl() {
+  sudo systemd-run --quiet --wait --collect --pipe \
+    --property=User=talon --property=Group=talon \
+    --property=WorkingDirectory=/etc/talon \
+    --property=EnvironmentFile=/etc/talon/talon.env \
+    --setenv=TALON_DATA_DIR=/var/lib/talon \
+    /usr/local/bin/talon "$@"
+}
+```
+
+Check the result once:
+
+```bash
+sudo stat -c '%a %U:%G %n' /etc/talon/talon.env /var/lib/talon      # 600 root:root …talon.env, 700 talon:talon /var/lib/talon
+ps -eo args= | grep -c 'TALON_.*_KEY='                               # 1: only this grep itself; no key in any process's arguments
+sudo journalctl -u talon --no-pager | grep -c 'TALON_.*_KEY='        # 0: no key in the service's log
+```
+
 `talon doctor` checks the configuration, data directory, keys and stores. Run it after every change, as the `talon` user with the same environment.
 
 **Run it with these settings:**
@@ -55,11 +81,13 @@ The company action policy (`talon.config.yaml`) is read at start. Changing it re
 A production restore point is a **cold** backup: stop Talon, snapshot, start.
 
 ```bash
-sudo systemctl stop talon talon-ui 2>/dev/null
-sudo -u talon env $(sudo cat /etc/talon/talon.env | xargs) TALON_DATA_DIR=/var/lib/talon \
-  talon backup create --cold /var/backups/talon/$(date -u +%Y%m%dT%H%M%SZ)
+sudo install -d -o talon -g talon -m 0700 /var/backups/talon
+sudo systemctl stop talon talon-ui 2>/dev/null          # a graceful stop: Talon records its shutdown
+talonctl backup create --cold /var/backups/talon/$(date -u +%Y%m%dT%H%M%SZ)
 sudo systemctl start talon
 ```
+
+Do not run other `talon` commands or edit the configuration while the backup runs.
 
 What a backup contains:
 - **The durable stores:** `evidence.db`, `secrets.db`, `memory.db`. A store that does not exist is recorded as absent, never silently omitted.
@@ -68,7 +96,11 @@ What a backup contains:
 - **Not the keys.** `TALON_SECRETS_KEY` and `TALON_SIGNING_KEY` stay in your secret manager.
 
 **Cold and online are different things:**
-- **`--cold`** refuses to run while a Talon process of this installation is running, or when that cannot be established. The result is **one coherent recovery point** across the stores and the configuration.
+- **`--cold`** produces **one coherent recovery point** across the stores and the configuration, and enforces what that needs:
+  - it refuses while a Talon process of this installation reports running, was killed less than a minute ago, or when that cannot be established;
+  - that no process reports running is not enough (a status record is not a lock, and a command can still write), so for the whole snapshot it holds the installation's registration lock and a write lock on every store: no `talon` command and no process can commit to a store or complete a registration meanwhile. If one of these is held by someone else, it refuses;
+  - the configuration files cannot be locked: they are captured first and compared again at the end. If one changed, the backup fails and writes no manifest.
+  What it does not cover: the keys (never in a backup), your downstream systems, and anything outside this installation's data directory and configuration files.
 - **Without `--cold`**, a backup can be taken while `talon serve` runs. Each store is then copied consistently (one read transaction), but the stores are copied one after another, so a change made during the backup can be in one store and not in another. Such a backup is labelled `online` and is **not a coherent recovery point**. Use it for extra copies between cold backups, not as your restore point.
 
 A backup never overwrites one: it writes into a new or empty directory only.
@@ -76,7 +108,7 @@ A backup never overwrites one: it writes into a new or empty directory only.
 Then **verify** it, with the keys you would restore with:
 
 ```bash
-talon backup verify /var/backups/talon/<backup>
+talonctl backup verify /var/backups/talon/<backup>
 ```
 
 `verify` only reads the backup. It fails, and exits non-zero, when:
@@ -93,11 +125,13 @@ It also notes when this installation's configuration files differ from those in 
 
 **What a restore is.** It returns the installation to the moment of the backup. Everything Talon did after that moment is gone from its records: operations established later do not exist, and operations that were *executed* later look unexecuted again (authorized, or awaiting an approval that had in fact been given). **Talon's restored ledger therefore cannot tell you whether an action already happened.** A restored installation must not be allowed to dispatch on that basis.
 
+**What the hold covers.** The hold stops the **dispatch of governed actions through the Action Gateway**: every claim is refused, so Talon calls no business system. It is enforced in the store itself (the store refuses the attempt record every dispatch starts with), so it binds any Talon binary that serves the restored store, including an older release. It does **not** stop model traffic through the LLM gateway or tool calls through the MCP proxy: those are not operations of the ledger, and they are served. `talon doctor` shows the hold as `recovery_hold`, with the backup it came from.
+
 **The recovery hold.** Every backup's evidence snapshot carries a hold. An installation started on restored stores refuses **every** claim of a governed action (`503 recovery_hold`, nothing dispatched) until an operator resumes it. The hold is in the snapshot itself, so it applies however the files were copied back. Model traffic, policy decisions, establishing operations and approvals keep working; only dispatch is held.
 
 ```bash
 sudo systemctl stop talon talon-ui 2>/dev/null
-talon backup verify /var/backups/talon/<backup>            # with the keys you will run with
+talonctl backup verify /var/backups/talon/<backup>         # with the keys you will run with
 sudo mv /var/lib/talon /var/lib/talon.before-restore       # keep what you are replacing
 sudo install -d -o talon -g talon -m 0700 /var/lib/talon
 sudo install -o talon -g talon -m 0600 /var/backups/talon/<backup>/*.db /var/lib/talon/
@@ -108,7 +142,8 @@ sudo systemctl start talon
 **Reconcile, then resume.**
 
 ```bash
-talon backup resume
+talonctl doctor            # recovery_hold: FAIL, with the backup this installation runs on
+talonctl backup resume
 ```
 
 This prints the hold and every operation that was still open in the backup, with the `Idempotency-Key` Talon sends for it. For each one, look in the downstream system (your refund service, for example) for that key:
@@ -119,8 +154,10 @@ This prints the hold and every operation that was still open in the backup, with
 Operations established after the backup are not listed, because Talon no longer knows them. Find those in the downstream system and in the calling application, and hold their operation ids as well if the application may retry them.
 
 ```bash
-talon backup resume --reconciled --hold-operation refund-T-1842 --hold-operation refund-T-1850
+talonctl backup resume --reconciled --hold-operation refund-T-1842 --hold-operation refund-T-1850
 ```
+
+A resume that ends no hold (it was already resumed, or another operator's resume won) says so, writes no evidence and names none; if you asked it to hold operation ids, it exits non-zero and lists them as not held.
 
 - **Configuration:** if the company policy or agent files now differ from those captured with the backup, the resume is refused until you have reviewed them and pass `--accept-config-change`. A restore must not silently change which policy is enforced.
 - **Record:** the held operation ids, the end of the hold and a signed `recovery_resumed` evidence record (backup id, number of open operations, held ids) are committed in one transaction. If the record cannot be written, nothing changes: the hold stays active and dispatch stays refused.
@@ -134,6 +171,10 @@ talon backup resume --reconciled --hold-operation refund-T-1842 --hold-operation
 The recovery path is exercised over real processes:
 - `TestE2E_Restore_DoesNotRepeatEffectsExecutedAfterTheBackup`: one operation is authorized and one awaits approval at backup time; both are executed afterwards (two downstream effects); the backup is restored. Replaying, re-establishing and re-approving produce no third effect (`recovery_hold`). `talon backup resume` lists both with the key the downstream saw; held, they never dispatch again; a new operation works.
 - `TestE2E_BackupRestore_SingleNode`: backup while serving (labelled online; `--cold` refuses), restore, hold, resume; a succeeded refund cannot be claimed again; a tampered backup and a wrong signing key fail verification.
+- `TestE2E_Restore_AnUnknownOutcomeIsNeverReplayed`: an operation whose outcome was unknown before a cold backup is still unknown after the restore and after the resume; the downstream service was called once in all.
+- `TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing`: see [Upgrade and rollback](#upgrade-and-rollback).
+
+These run against a binary built from source, with processes started by the test, not under systemd. The systemd unit, the `talonctl` wrapper and the file permissions above are the documented procedure; run the checks of this page once on your host.
 
 ## When something is unavailable
 
@@ -155,14 +196,14 @@ Upgrade with the same binary path. Back up and verify first. Stop the service, r
 
 The in-place upgrade from the **immediately preceding stable release** is the release gate: CI resolves that release from the published releases (`scripts/previous-stable.sh`), downloads its checksum-verified binary, and `TestE2E_UpgradeFromPreviousStable` lets it write state that the new binary takes over. v1.16.1 additionally runs as a historical compatibility check (`TestE2E_UpgradeFromHistoricalReleases`) when it is not the preceding release itself. In the test the earlier binary writes a succeeded action, a pending approval, evidence, the vault and an approver; the new binary takes the same data directory over; the old evidence verifies, the old succeeded action is refused a second claim, the old pending approval is decided with the old approver credential and dispatched once, and a backup of the upgraded stores verifies.
 
-**Rollback is restore.** Returning to an older binary after the new one has written to the stores is not tested. To roll back, stop the service, put the old binary back and restore the pre-upgrade backup. Everything recorded after the upgrade is then lost, and the reconciliation and resume from [Restore](#restore) apply. **A release older than this one does not know the recovery hold and will dispatch from the restored ledger as soon as it serves.** When you roll back to such a release, isolate it first and reconcile before it can dispatch:
+**Rollback is restore.** Returning to an older binary after the new one has written to the stores is not supported as such. To roll back, restore a backup, and reconcile before anything is dispatched:
 
-1. Keep the service stopped, or start it with the action destinations unreachable (for example block outbound traffic from the host to your refund service).
-2. Run the reconciliation from [Restore](#restore) by hand: in the downstream system, find every action executed after the backup was taken.
-3. For each such action still open in the restored ledger, make sure the application will not claim it again (remove or complete it in the calling application's queue).
-4. Only then let the older release serve consequential actions.
+1. `talon backup` exists from this release on. Take the first cold backup right after the upgrade; the previous release cannot take one.
+2. To roll back: stop the service and restore that backup as described under [Restore](#restore). The restored store is held.
+3. Reconcile and resume **with the release that took the backup** (`talonctl backup resume`, then `--reconciled`). The older release has no such command.
+4. Only then put the older binary back and start it.
 
-The older release cannot hold operations for you; this isolation and reconciliation is the whole safeguard.
+An older release does not know the recovery hold. Started on a restored store before step 3, it still dispatches nothing, because the store refuses the attempt record: `TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing` runs the actual previous stable release against a store restored from a cold backup, and neither the operation executed after the backup nor a new one is dispatched. That is a safeguard, not the procedure: the older release reports the refusal as a store error, and it cannot reconcile or hold operations for you. Everything recorded after the backup is lost, as with any restore.
 
 ## Limits
 
