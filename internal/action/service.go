@@ -728,7 +728,24 @@ func (s *Service) claimableOperation(ctx context.Context, tx *sql.Tx, w *evidenc
 		proj, _ := s.project(ctx, tx, op)
 		return nil, &Error{Code: code, Message: msg, State: proj}
 	}
+	if err := s.refuseIfHeld(ctx, tx, w, op); err != nil {
+		return nil, err
+	}
 	return op, nil
+}
+
+// refuseIfHeld fails closed after a point-in-time restore (#465): nothing is
+// claimed until an operator has resumed the installation, and never for an
+// operation id the operator held. The refusal is evidenced.
+func (s *Service) refuseIfHeld(ctx context.Context, tx *sql.Tx, w *evidence.TxWriter, op *Operation) error {
+	why, err := recoveryBlock(ctx, tx, op.OperationID)
+	if err != nil {
+		return &Error{Code: CodeStoreUnavailable, Message: "reading recovery state", Err: err}
+	}
+	if why != "" {
+		return s.refuse(ctx, tx, w, op, CodeRecoveryHold, why)
+	}
+	return nil
 }
 
 // authorizeClaim revalidates authorization usability for one claim: state,

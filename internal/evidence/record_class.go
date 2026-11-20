@@ -73,6 +73,9 @@ var nonRequestClass = map[string]RecordClass{
 	// request would double that request in traffic queries.
 	"budget_threshold": ClassOperatorEvent,
 
+	// `talon backup resume` ended a recovery hold after a restore (#465).
+	"recovery_resumed": ClassOperatorEvent,
+
 	// Configuration lifecycle.
 	"config_reload": ClassConfigEvent,
 

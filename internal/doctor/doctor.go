@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
@@ -106,6 +107,7 @@ func checkConfig() []CheckResult {
 	results = append(results, checkCryptoKeys(cfg)...)
 	results = append(results, checkEvidenceDB(cfg))
 	results = append(results, checkRegistrations(cfg))
+	results = append(results, checkRecoveryHold(cfg))
 	results = append(results, checkCache(cfg))
 	results = append(results, checkSovereignty(cfg, nil))
 	results = append(results, checkAirGap(cfg, nil))
@@ -370,17 +372,45 @@ func checkLLMKeys(cfg *config.Config) CheckResult {
 			sources = append(sources, providerType+" (llm.providers)")
 		}
 	}
+	// A gateway installation declares its providers under gateway.providers
+	// with vault-backed credentials (the production pilot profile). They are
+	// provider paths too; whether each secret resolves is reported by the
+	// gateway_secrets_<provider> checks.
+	sources = append(sources, gatewayProviderSources()...)
 	if len(sources) == 0 {
 		return CheckResult{
 			Name: "llm_keys", Category: "config", Status: "fail",
-			Message: "No LLM provider configured (no OPENAI_API_KEY/ANTHROPIC_API_KEY/AWS credentials and no llm.providers)",
-			Fix:     "Set a provider key (env or vault) or declare a local provider (e.g. Ollama) in llm.providers",
+			Message: "No LLM provider configured (no OPENAI_API_KEY/ANTHROPIC_API_KEY/AWS credentials, no llm.providers and no enabled gateway.providers)",
+			Fix:     "Set a provider key (env or vault), declare a local provider (e.g. Ollama) in llm.providers, or enable a provider under gateway.providers",
 		}
 	}
 	return CheckResult{
 		Name: "llm_keys", Category: "config", Status: "pass",
 		Message: "LLM providers available: " + strings.Join(sources, ", "),
 	}
+}
+
+// gatewayProviderSources lists the enabled providers of the gateway config
+// `talon serve --gateway` would load ($TALON_GATEWAY_CONFIG, default
+// talon.config.yaml). An absent or invalid file contributes nothing here;
+// gateway_config_valid reports an invalid one.
+func gatewayProviderSources() []string {
+	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
+	if path == "" {
+		path = "talon.config.yaml"
+	}
+	gw, err := gateway.LoadGatewayConfig(path)
+	if err != nil || !gw.Enabled {
+		return nil
+	}
+	names := make([]string, 0, len(gw.Providers))
+	for name := range gw.Providers {
+		if gw.Providers[name].Enabled {
+			names = append(names, name+" (gateway.providers)")
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func checkCryptoKeys(cfg *config.Config) []CheckResult {
@@ -443,6 +473,43 @@ func checkRegistrations(cfg *config.Config) CheckResult {
 		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("registration records could not be read: %v", err)}
 	}
 	return registrationsResult(name, lookup, registration.Probe(cfg.DataDir))
+}
+
+// checkRecoveryHold reports whether this installation runs on a restored
+// backup that has not been resumed (#465). It says what the hold covers:
+// the dispatch of governed actions through the Action Gateway. It does not
+// hold LLM gateway or MCP proxy traffic, and the message says so.
+func checkRecoveryHold(cfg *config.Config) CheckResult {
+	const name = "recovery_hold"
+	res := CheckResult{Name: name, Category: "config", Status: "pass"}
+	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if err != nil {
+		res.Status, res.Message = "warn", fmt.Sprintf("the recovery state could not be read: %v", err)
+		return res
+	}
+	defer store.Close()
+	ctx := context.Background()
+	holds, err := action.ActiveRecoveryHolds(ctx, store.DB())
+	if err != nil {
+		res.Status, res.Message = "warn", fmt.Sprintf("the recovery state could not be read: %v", err)
+		return res
+	}
+	var held int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_held_operations`).Scan(&held); err != nil {
+		held = 0 // a store that never held an operation has no such table
+	}
+	if len(holds) > 0 {
+		h := holds[0]
+		res.Status = "fail"
+		res.Message = fmt.Sprintf("RECOVERY HOLD: this installation runs on backup %s, taken %s, and has not been resumed. No governed action is dispatched: every Action Gateway claim is refused (recovery_hold). The hold does not cover LLM gateway requests or MCP proxy tool calls; those are served.", h.BackupID, h.BackupCreatedAt.UTC().Format(time.RFC3339))
+		res.Fix = "Reconcile with the downstream systems, then: talon backup resume (lists what was open), talon backup resume --reconciled [--hold-operation <operation_id>]..."
+		return res
+	}
+	res.Message = "No recovery hold."
+	if held > 0 {
+		res.Message = fmt.Sprintf("No recovery hold. %d operation id(s) are held for good since an earlier resume: they are never dispatched.", held)
+	}
+	return res
 }
 
 // registrationsResult words what is known about registrations whose intent

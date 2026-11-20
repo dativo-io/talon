@@ -68,8 +68,33 @@ jobs:
       - name: Run repository guard tests
         run: go test ./tests
 
+      # The N-1 upgrade gate (#467 narrow slice): the stable release that
+      # immediately precedes the one being built — resolved from the published
+      # releases, never a fixed version — writes state, and the binary under
+      # test takes it over (TestE2E_UpgradeFromPreviousStable). v1.16.1 stays
+      # as a historical compatibility run when it is not N-1 itself.
+      - name: Fetch the preceding stable release and the historical v1.16.1 (checksum-verified)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PREV="$(bash scripts/previous-stable.sh)"
+          echo "preceding stable release: $PREV"
+          echo "TALON_PREVIOUS_STABLE_BINARY=$(bash scripts/fetch-release-binary.sh "$PREV" "$RUNNER_TEMP/previous-stable/$PREV")" >> "$GITHUB_ENV"
+          if [ "$PREV" != "1.16.1" ]; then
+            echo "TALON_COMPAT_BINARIES=$(bash scripts/fetch-release-binary.sh 1.16.1 "$RUNNER_TEMP/previous-stable/1.16.1")" >> "$GITHUB_ENV"
+          fi
+
       - name: Run e2e tests
-        run: go test -tags=e2e -timeout 5m ./tests/e2e/...
+        run: go test -tags=e2e -timeout 8m ./tests/e2e/...
+
+      - name: The upgrade and rollback tests ran against the preceding stable release (a skip is not a pass)
+        run: |
+          set -euo pipefail
+          go test -tags=e2e ./tests/e2e -run 'TestE2E_UpgradeFromPreviousStable|TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing|TestE2E_PreUpgradeBackup_FromThePreviousStable' -count=1 -v | tee "$RUNNER_TEMP/upgrade.log"
+          grep -q -- '--- PASS: TestE2E_UpgradeFromPreviousStable' "$RUNNER_TEMP/upgrade.log"
+          grep -q -- '--- PASS: TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing' "$RUNNER_TEMP/upgrade.log"
+          grep -q -- '--- PASS: TestE2E_PreUpgradeBackup_FromThePreviousStable' "$RUNNER_TEMP/upgrade.log"
 
       - name: MCP governance-contract smoke (#372, offline, no keys)
         # Named PR gate for the governance extension's truth semantics:

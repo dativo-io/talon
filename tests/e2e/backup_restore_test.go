@@ -1,0 +1,621 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// Single-node backup and restore (#465, #561) over the built binary:
+//
+//	governed state (a succeeded refund, a pending approval, a denial)
+//	→ `talon backup create` WHILE serve runs → `talon backup verify` PASS
+//	→ disaster: stores deleted → restore = stop, copy the files back, start
+//	→ the pending approval survives and dispatches exactly once after an
+//	  authorized decision; the succeeded refund cannot be replayed; every
+//	  lifecycle verifies under the same signing key
+//	→ a tampered backup and a wrong signing key FAIL verification.
+func TestE2E_BackupRestore_SingleNode(t *testing.T) {
+	down := startRefundService(t)
+	dir := t.TempDir()
+	if _, stderr, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", agAgent); code != 0 {
+		t.Fatalf("talon init: %d\n%s", code, stderr)
+	}
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	raw, _ := os.ReadFile(agentPath)
+	yaml := strings.Replace(string(raw), "\ncapabilities:\n", "\ncapabilities:\n  forbidden_tools: [delete_customer]\n", 1)
+	yaml = strings.Replace(yaml, "\npolicies:\n", `
+actions:
+  definitions:
+    create_refund_request:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount, currency]
+        properties:
+          ticket_id: {type: string}
+          amount: {type: number}
+          currency: {type: string, enum: [EUR]}
+      review:
+        fields: [ticket_id, amount, currency]
+      destination:
+        type: http
+        url: "`+down.srv.URL+`/refunds"
+        method: POST
+        success: {status_codes: [201]}
+    delete_customer:
+      input_schema:
+        type: object
+        additionalProperties: false
+        properties:
+          customer_id: {type: string}
+      destination: {type: http, url: "`+down.srv.URL+`/refunds"}
+
+policies:
+  approvals:
+    expires_after: 30m
+    rules:
+      refund-request:
+        actions: [create_refund_request]
+        approver_groups: [support-leads]
+`, 1)
+	if err := os.WriteFile(agentPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", agAgent+"-talon-key", agAgentKey); code != 0 {
+		t.Fatalf("secrets set: %d\n%s", code, stderr)
+	}
+	out, _, _ := RunTalon(t, dir, nil, "approver", "add", "--name", "lead-1", "--tenant", "default", "--groups", "support-leads")
+	leadKey := regexp.MustCompile(`talon_appr_cred_[0-9a-f]+\.[A-Za-z0-9_-]+`).FindString(out)
+	if leadKey == "" {
+		t.Fatal("approver credential not printed")
+	}
+
+	port := freePort(t)
+	stop := startActionServe(t, dir, port)
+	defer func() { stop() }()
+	c := &agClient{t: t, base: fmt.Sprintf("http://127.0.0.1:%d", port)}
+	approve := func(approvalID string) {
+		t.Helper()
+		if st, res := c.do("POST", "/v1/approvals/"+approvalID+"/decisions", leadKey, `{"decision":"approve","reason":"ok"}`); st != 200 {
+			t.Fatalf("approve %s: %d %v", approvalID, st, res)
+		}
+	}
+
+	// Governed state before the backup.
+	_, res := c.do("POST", "/v1/action-operations", agAgentKey, `{"operation_id":"op-done","action":"create_refund_request","arguments":{"ticket_id":"T-1","amount":20,"currency":"EUR"}}`)
+	doneApproval, _ := dig(res, "operation", "approval", "id").(string)
+	approve(doneApproval)
+	if st, res := c.do("POST", "/v1/action-operations/op-done/attempts", agAgentKey, ""); st != 200 {
+		t.Fatalf("claim op-done: %d %v", st, res)
+	}
+	_, res = c.do("POST", "/v1/action-operations", agAgentKey, `{"operation_id":"op-pending","action":"create_refund_request","arguments":{"ticket_id":"T-2","amount":75,"currency":"EUR"}}`)
+	pendingApproval, _ := dig(res, "operation", "approval", "id").(string)
+	if st, _ := c.do("POST", "/v1/action-operations", agAgentKey, `{"operation_id":"op-denied","action":"delete_customer","arguments":{"customer_id":"c-1"}}`); st != 403 {
+		t.Fatalf("deny: %d", st)
+	}
+	if down.refundCalls.Load() != 1 {
+		t.Fatalf("refund calls before backup: %d", down.refundCalls.Load())
+	}
+
+	// Online backup while serve runs, then offline verification.
+	backup := filepath.Join(t.TempDir(), "backup-1")
+	out, stderr, code := RunTalon(t, dir, nil, "backup", "create", backup)
+	if code != 0 || !strings.Contains(out, "evidence.db") || !strings.Contains(out, "secrets.db") {
+		t.Fatalf("backup create: %d\n%s\n%s", code, out, stderr)
+	}
+	if out, stderr, code = RunTalon(t, dir, nil, "backup", "create", backup); code == 0 || !strings.Contains(stderr, "not empty") {
+		t.Fatalf("a backup must never overwrite one: %d %s", code, stderr)
+	}
+	out, stderr, code = RunTalon(t, dir, nil, "backup", "verify", backup)
+	if !strings.Contains(out, "mode: online") || !strings.Contains(out, "NOT a coherent recovery point") {
+		t.Fatalf("a backup taken while serving must be labelled online:\n%s", out)
+	}
+	if _, stderr2, code2 := RunTalon(t, dir, nil, "backup", "create", "--cold", filepath.Join(t.TempDir(), "cold")); code2 == 0 || !strings.Contains(stderr2, "a Talon process of this installation is running") {
+		t.Fatalf("--cold must refuse while serve runs: %d %s", code2, stderr2)
+	}
+	if code != 0 || !strings.Contains(out, "PASS backup verify") || !strings.Contains(out, "ok   evidence signatures") || !strings.Contains(out, "ok   vault: all") {
+		t.Fatalf("backup verify: %d\n%s\n%s", code, out, stderr)
+	}
+
+	// Disaster: the stores are lost. Restore = stop, copy back, start.
+	stop()
+	for _, f := range []string{"evidence.db", "evidence.db-wal", "evidence.db-shm", "secrets.db", "secrets.db-wal", "secrets.db-shm", "memory.db", "memory.db-wal", "memory.db-shm"} {
+		_ = os.Remove(filepath.Join(dir, f))
+	}
+	entries, _ := os.ReadDir(backup)
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".db") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(backup, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, e.Name()), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop = startActionServe(t, dir, port)
+
+	// The restored installation continues exactly where the backup was taken.
+	if st, res := c.do("GET", "/v1/action-operations/op-done", agAgentKey, ""); st != 200 || dig(res, "operation", "operation_status") != "succeeded" {
+		t.Fatalf("op-done after restore: %d %v", st, res)
+	}
+	if st, _ := c.do("POST", "/v1/action-operations/op-done/attempts", agAgentKey, ""); st != 409 {
+		t.Fatalf("a restored succeeded operation must not dispatch again: %d", st)
+	}
+	if st, res := c.do("POST", "/v1/action-operations/op-pending/attempts", agAgentKey, ""); st != 409 || errCode(res) != "approval_pending" {
+		t.Fatalf("op-pending after restore: %d %v", st, res)
+	}
+	if down.refundCalls.Load() != 1 {
+		t.Fatalf("restore dispatched: %d", down.refundCalls.Load())
+	}
+	approve(pendingApproval)
+	// A restored installation is held: nothing is dispatched until the
+	// operator has reconciled and resumed.
+	if st, res := c.do("POST", "/v1/action-operations/op-pending/attempts", agAgentKey, ""); st != 503 || errCode(res) != "recovery_hold" {
+		t.Fatalf("a restored installation must hold dispatch: %d %v", st, res)
+	}
+	if down.refundCalls.Load() != 1 {
+		t.Fatalf("a held installation dispatched: %d", down.refundCalls.Load())
+	}
+	if out, _, code := RunTalon(t, dir, nil, "backup", "resume"); code == 0 || !strings.Contains(out, "RECOVERY HOLD") || !strings.Contains(out, "op-pending") {
+		t.Fatalf("backup resume without --reconciled must show the hold and change nothing: %d\n%s", code, out)
+	}
+	// Nothing happened between this backup and the restore, so the operator
+	// resumes without holding any operation.
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "resume", "--reconciled"); code != 0 || !strings.Contains(out, "Resumed: 1 hold(s) ended") {
+		t.Fatalf("backup resume --reconciled: %d\n%s\n%s", code, out, stderr)
+	}
+	if st, res := c.do("POST", "/v1/action-operations/op-pending/attempts", agAgentKey, ""); st != 200 {
+		t.Fatalf("claim op-pending after restore: %d %v", st, res)
+	}
+	if down.refundCalls.Load() != 2 {
+		t.Fatalf("refund calls after restore: %d, want 2", down.refundCalls.Load())
+	}
+	for _, opID := range []string{"op-done", "op-pending", "op-denied"} {
+		out, stderr, code := RunTalon(t, dir, nil, "audit", "verify", "--operation", opID)
+		if code != 0 || !strings.Contains(out, "Lifecycle: VALID") {
+			t.Fatalf("verify %s after restore: %d\n%s\n%s", opID, code, out, stderr)
+		}
+	}
+
+	// Verification is a real check: a wrong signing key and a tampered file fail.
+	if out, _, code = RunTalon(t, dir, map[string]string{"TALON_SIGNING_KEY": strings.Repeat("w", 40)}, "backup", "verify", backup); code == 0 || !strings.Contains(out, "FAIL evidence signatures") {
+		t.Fatalf("a wrong signing key must fail verification: %d\n%s", code, out)
+	}
+	ev := filepath.Join(backup, "evidence.db")
+	b, _ := os.ReadFile(ev)
+	b[len(b)/2] ^= 0xff
+	if err := os.WriteFile(ev, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, _, code = RunTalon(t, dir, nil, "backup", "verify", backup); code == 0 || !strings.Contains(out, "FAIL evidence.db: missing, or checksum") {
+		t.Fatalf("a tampered backup must fail verification: %d\n%s", code, out)
+	}
+}
+
+// A restore must not silently repeat a consequential effect (#568 review):
+//
+//	op-a is authorized, op-b awaits approval       → BACKUP
+//	op-a is dispatched; op-b is approved and dispatched (2 downstream effects)
+//	the earlier backup is restored
+//	→ the ledger shows op-a authorized and op-b awaiting approval again
+//	→ every claim is refused recovery_hold: still 2 effects, whatever the
+//	  caller replays, re-establishes or a reviewer approves again
+//	→ `talon backup resume` lists both with the Idempotency-Key the
+//	  downstream already saw; the operator holds both for good
+//	→ they are never dispatched again; a new operation works.
+//
+// op-d is established, approved and executed entirely AFTER the backup: the
+// restored ledger does not know it. Retried by the application it becomes a
+// new operation, is approved again, and is still refused by the hold; Talon
+// cannot list it, so the operator holds it by id from the downstream
+// reconciliation.
+//
+// The restored SQLite ledger alone does not provide at-most-once execution
+// across the lost interval; the hold and the operator's reconciliation do.
+func TestE2E_Restore_DoesNotRepeatEffectsExecutedAfterTheBackup(t *testing.T) {
+	down := startRefundService(t)
+	dir := t.TempDir()
+	if _, stderr, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", agAgent); code != 0 {
+		t.Fatalf("talon init: %d\n%s", code, stderr)
+	}
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	raw, _ := os.ReadFile(agentPath)
+	yaml := strings.Replace(string(raw), "\npolicies:\n", `
+actions:
+  definitions:
+    create_refund_request:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount, currency]
+        properties:
+          ticket_id: {type: string}
+          amount: {type: number}
+          currency: {type: string, enum: [EUR]}
+      review:
+        fields: [ticket_id, amount, currency]
+      destination:
+        type: http
+        url: "`+down.srv.URL+`/refunds"
+        method: POST
+        success: {status_codes: [201]}
+
+policies:
+  approvals:
+    expires_after: 30m
+    rules:
+      refund-request:
+        actions: [create_refund_request]
+        approver_groups: [support-leads]
+`, 1)
+	if err := os.WriteFile(agentPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", agAgent+"-talon-key", agAgentKey); code != 0 {
+		t.Fatalf("secrets set: %d\n%s", code, stderr)
+	}
+	out, _, _ := RunTalon(t, dir, nil, "approver", "add", "--name", "lead-1", "--tenant", "default", "--groups", "support-leads")
+	leadKey := regexp.MustCompile(`talon_appr_cred_[0-9a-f]+\.[A-Za-z0-9_-]+`).FindString(out)
+	if leadKey == "" {
+		t.Fatal("approver credential not printed")
+	}
+	port := freePort(t)
+	stop := startActionServe(t, dir, port)
+	defer func() { stop() }()
+	c := &agClient{t: t, base: fmt.Sprintf("http://127.0.0.1:%d", port)}
+	establish := func(opID, ticket string, amount int) (int, map[string]any) {
+		return c.do("POST", "/v1/action-operations", agAgentKey, fmt.Sprintf(`{"operation_id":%q,"action":"create_refund_request","arguments":{"ticket_id":%q,"amount":%d,"currency":"EUR"}}`, opID, ticket, amount))
+	}
+	approve := func(approvalID string) int {
+		st, _ := c.do("POST", "/v1/approvals/"+approvalID+"/decisions", leadKey, `{"decision":"approve","reason":"ok"}`)
+		return st
+	}
+	claim := func(opID string) (int, string) {
+		st, res := c.do("POST", "/v1/action-operations/"+opID+"/attempts", agAgentKey, "")
+		return st, errCode(res)
+	}
+	calls := func(want int64, why string) {
+		t.Helper()
+		if got := down.refundCalls.Load(); got != want {
+			t.Fatalf("%s: refund calls %d, want %d", why, got, want)
+		}
+	}
+
+	// Before the backup: op-a authorized (approved, not yet claimed), op-b awaiting approval.
+	_, res := establish("op-a", "T-A", 20)
+	aApproval, _ := dig(res, "operation", "approval", "id").(string)
+	if approve(aApproval) != 200 {
+		t.Fatal("approve op-a")
+	}
+	_, res = establish("op-b", "T-B", 75)
+	bApproval, _ := dig(res, "operation", "approval", "id").(string)
+	calls(0, "nothing dispatched before the backup")
+
+	backup := filepath.Join(t.TempDir(), "before-execution")
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "create", backup); code != 0 {
+		t.Fatalf("backup create: %d\n%s\n%s", code, out, stderr)
+	}
+
+	// After the backup: both are executed. Exactly two downstream effects.
+	if st, _ := claim("op-a"); st != 200 {
+		t.Fatalf("claim op-a: %d", st)
+	}
+	if approve(bApproval) != 200 {
+		t.Fatal("approve op-b")
+	}
+	if st, _ := claim("op-b"); st != 200 {
+		t.Fatalf("claim op-b: %d", st)
+	}
+	// op-d does not exist in the backup at all: established, approved and
+	// executed entirely after it.
+	_, res = establish("op-d", "T-D", 60)
+	dApproval, _ := dig(res, "operation", "approval", "id").(string)
+	if approve(dApproval) != 200 {
+		t.Fatal("approve op-d")
+	}
+	if st, _ := claim("op-d"); st != 200 {
+		t.Fatalf("claim op-d: %d", st)
+	}
+	calls(3, "three effects after the backup")
+	down.mu.Lock()
+	keyA := down.idemKeys[0]
+	down.mu.Unlock()
+
+	// Restore the earlier backup: stop, copy, start.
+	stop()
+	for _, f := range []string{"evidence.db", "evidence.db-wal", "evidence.db-shm", "secrets.db", "secrets.db-wal", "secrets.db-shm"} {
+		_ = os.Remove(filepath.Join(dir, f))
+	}
+	for _, f := range []string{"evidence.db", "secrets.db"} {
+		b, err := os.ReadFile(filepath.Join(backup, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop = startActionServe(t, dir, port)
+
+	// The ledger is back in time: op-a looks authorized, op-b looks pending.
+	if st, res := c.do("GET", "/v1/action-operations/op-a", agAgentKey, ""); st != 200 || dig(res, "operation", "operation_status") != "authorized" {
+		t.Fatalf("op-a in the restored ledger: %d %v", st, res)
+	}
+	if st, res := c.do("GET", "/v1/action-operations/op-b", agAgentKey, ""); st != 200 || dig(res, "operation", "approval", "status") != "pending" {
+		t.Fatalf("op-b in the restored ledger: %d %v", st, res)
+	}
+	// Replay, re-establish, re-approve: nothing produces a third effect.
+	if st, code := claim("op-a"); st != 503 || code != "recovery_hold" {
+		t.Fatalf("claim of op-a after restore: %d %s", st, code)
+	}
+	if st, _ := establish("op-a", "T-A", 20); st >= 500 {
+		t.Fatalf("re-establish op-a: %d", st)
+	}
+	if st, code := claim("op-a"); st != 503 || code != "recovery_hold" {
+		t.Fatalf("claim of the re-established op-a: %d %s", st, code)
+	}
+	if approve(bApproval) != 200 {
+		t.Fatal("the approval that was consumed after the backup is pending again and can be decided")
+	}
+	if st, code := claim("op-b"); st != 503 || code != "recovery_hold" {
+		t.Fatalf("claim of op-b after its approval was granted again: %d %s", st, code)
+	}
+	// op-d is unknown to the restored ledger. The application retries it: it
+	// is established as a NEW operation, approved again — and still held.
+	if st, _ := c.do("GET", "/v1/action-operations/op-d", agAgentKey, ""); st != 404 {
+		t.Fatalf("op-d must not exist in the restored ledger: %d", st)
+	}
+	st, res := establish("op-d", "T-D", 60)
+	if st != 202 {
+		t.Fatalf("re-establishing the lost op-d: %d %v", st, res)
+	}
+	dAgain, _ := dig(res, "operation", "approval", "id").(string)
+	if dAgain == "" || dAgain == dApproval || approve(dAgain) != 200 {
+		t.Fatalf("the lost operation is a new one with a new approval: %q (was %q)", dAgain, dApproval)
+	}
+	if st, code := claim("op-d"); st != 503 || code != "recovery_hold" {
+		t.Fatalf("claim of the re-established lost operation: %d %s", st, code)
+	}
+	calls(3, "the restored installation repeated an effect")
+
+	// The operator sees what was open, with the key the downstream already saw.
+	status, _, code := RunTalon(t, dir, nil, "backup", "resume")
+	if !strings.Contains(status, "Operations established after the backup are not listed") {
+		t.Fatalf("backup resume must say that it cannot list operations lost with the restore:\n%s", status)
+	}
+	if code == 0 || !strings.Contains(status, "op-a") || !strings.Contains(status, "op-b") || !strings.Contains(status, "Idempotency-Key "+keyA) {
+		t.Fatalf("backup resume must list the open operations and the Idempotency-Key the downstream received (%s): %d\n%s", keyA, code, status)
+	}
+	// Reconciled: both were executed, so both stay held for good.
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "resume", "--reconciled", "--hold-operation", "op-a", "--hold-operation", "op-b", "--hold-operation", "op-d"); code != 0 {
+		t.Fatalf("backup resume --reconciled: %d\n%s\n%s", code, out, stderr)
+	}
+	// op-d was found in the refund service, not in Talon: the operator held
+	// it by id, from the downstream reconciliation.
+	for _, op := range []string{"op-a", "op-b", "op-d"} {
+		if st, code := claim(op); st != 503 || code != "recovery_hold" {
+			t.Fatalf("a held operation must never dispatch (%s): %d %s", op, st, code)
+		}
+	}
+	calls(3, "held operations after resume")
+
+	// Dispatch is resumed for everything else.
+	_, res = establish("op-c", "T-C", 10)
+	cApproval, _ := dig(res, "operation", "approval", "id").(string)
+	if approve(cApproval) != 200 {
+		t.Fatal("approve op-c")
+	}
+	if st, code := claim("op-c"); st != 200 {
+		t.Fatalf("a new operation after resume: %d %s", st, code)
+	}
+	calls(4, "a new operation after resume")
+	for _, op := range []string{"op-a", "op-b", "op-c"} {
+		out, stderr, code := RunTalon(t, dir, nil, "audit", "verify", "--operation", op)
+		if code != 0 || strings.Contains(out, "INVALID") {
+			t.Fatalf("verify %s: %d\n%s\n%s", op, code, out, stderr)
+		}
+	}
+}
+
+// An ambiguous outcome survives a restore as ambiguous (#568 review). The
+// refund service accepted a request and lost its answer BEFORE the backup:
+// the operation is `unknown`. After the restore it is still unknown, held
+// with everything else until the operator resumes, and after the resume it
+// is still never dispatched again: an unknown outcome is never replayed, by
+// a restore or by a resume.
+func TestE2E_Restore_AnUnknownOutcomeIsNeverReplayed(t *testing.T) {
+	down := startRefundService(t)
+	dir := t.TempDir()
+	if _, stderr, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", agAgent); code != 0 {
+		t.Fatalf("talon init: %d\n%s", code, stderr)
+	}
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	raw, _ := os.ReadFile(agentPath)
+	yaml := strings.Replace(string(raw), "\npolicies:\n", `
+actions:
+  definitions:
+    create_refund_request:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount, currency]
+        properties:
+          ticket_id: {type: string}
+          amount: {type: number}
+          currency: {type: string, enum: [EUR]}
+      review:
+        fields: [ticket_id, amount, currency]
+      destination:
+        type: http
+        url: "`+down.srv.URL+`/lossy"
+        method: POST
+        success: {status_codes: [201]}
+
+policies:
+`, 1)
+	if err := os.WriteFile(agentPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", agAgent+"-talon-key", agAgentKey); code != 0 {
+		t.Fatalf("secrets set: %d\n%s", code, stderr)
+	}
+	port := freePort(t)
+	c := &agClient{t: t, base: fmt.Sprintf("http://127.0.0.1:%d", port)}
+	status := func() string {
+		_, res := c.do("GET", "/v1/action-operations/op-u", agAgentKey, "")
+		s, _ := dig(res, "operation", "operation_status").(string)
+		return s
+	}
+	claim := func() (int, string) {
+		st, res := c.do("POST", "/v1/action-operations/op-u/attempts", agAgentKey, "")
+		return st, errCode(res)
+	}
+	lossy := func(want int64, why string) {
+		t.Helper()
+		if got := down.lossyCalls.Load(); got != want {
+			t.Fatalf("%s: the refund service was called %d time(s), want %d", why, got, want)
+		}
+	}
+
+	shutdown := serveUntilTerminated(t, dir, port)
+	if st, res := c.do("POST", "/v1/action-operations", agAgentKey, `{"operation_id":"op-u","action":"create_refund_request","arguments":{"ticket_id":"T-U","amount":20,"currency":"EUR"}}`); st != 201 {
+		t.Fatalf("establish op-u: %d %v", st, res)
+	}
+	_, _ = claim() // the refund service takes the request and drops the connection
+	lossy(1, "the one dispatch before the backup")
+	if got := status(); got != "unknown" {
+		t.Fatalf("the operation should be unknown before the backup, got %q", got)
+	}
+	shutdown()
+
+	backup := filepath.Join(t.TempDir(), "cold")
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "create", "--cold", backup); code != 0 {
+		t.Fatalf("backup create --cold: %d\n%s\n%s", code, out, stderr)
+	}
+	for _, f := range []string{"evidence.db", "evidence.db-wal", "evidence.db-shm", "secrets.db", "secrets.db-wal", "secrets.db-shm"} {
+		_ = os.Remove(filepath.Join(dir, f))
+	}
+	for _, f := range []string{"evidence.db", "secrets.db"} {
+		b, err := os.ReadFile(filepath.Join(backup, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop := startActionServe(t, dir, port)
+	defer func() { stop() }()
+
+	if got := status(); got != "unknown" {
+		t.Fatalf("the restored operation should still be unknown, got %q", got)
+	}
+	if st, code := claim(); st == 200 {
+		t.Fatalf("an unknown operation was claimed during the hold: %d %s", st, code)
+	}
+	lossy(1, "restored and held")
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "resume", "--reconciled"); code != 0 {
+		t.Fatalf("backup resume: %d\n%s\n%s", code, out, stderr)
+	}
+	for i := 0; i < 3; i++ {
+		if st, code := claim(); st != 409 || code != "operation_outcome_unknown" {
+			t.Fatalf("an unknown outcome must stay unknown after the resume, never replayed: %d %s", st, code)
+		}
+	}
+	lossy(1, "after the resume: the unknown outcome was never replayed")
+	if out, stderr, code := RunTalon(t, dir, nil, "audit", "verify", "--operation", "op-u"); code != 0 || !strings.Contains(out, "Lifecycle: VALID") {
+		t.Fatalf("the lifecycle of the unknown operation must verify after the restore: %d\n%s\n%s", code, out, stderr)
+	}
+}
+
+// The documented single-node layout lets the service user register a use
+// case (#568 review). As seen by the `talon` user: the configuration
+// directory (/etc/talon, root:talon 0750) is readable, not writable; the
+// agents directory (/etc/talon/agents, talon:talon 0750) and the data
+// directory (/var/lib/talon, talon 0700) are writable. `talon agents add`
+// runs there from /etc/talon, as the runbook's talonctl does. A root-owned
+// agents directory (the earlier layout) is not writable for that user, and
+// registration fails without registering anything.
+func TestE2E_SingleNodeLayout_TheServiceUserCanRegisterAUseCase(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission checks do not apply to root")
+	}
+	root := t.TempDir()
+	etc := filepath.Join(root, "etc", "talon")
+	agents := filepath.Join(etc, "agents")
+	data := filepath.Join(root, "var", "lib", "talon")
+	for dir, mode := range map[string]os.FileMode{etc: 0o750, agents: 0o750, data: 0o700} {
+		if err := os.MkdirAll(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := filepath.Join(etc, "talon.config.yaml")
+	if err := os.WriteFile(cfg, []byte(`agents_dir: "`+agents+`"
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "http://127.0.0.1:1"
+  organization_policy:
+    defaults:
+      pii_action: block
+    constraints:
+      forbidden_tools: ["delete_*"]
+`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	// What the talon user may do in /etc/talon: read and traverse, not write.
+	if err := os.Chmod(etc, 0o550); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(etc, 0o750); _ = os.Chmod(agents, 0o750) })
+	add := func(name string) (string, int) {
+		t.Helper()
+		cmd := exec.Command(binaryPath, "agents", "add", name, "--tenant", "acme")
+		cmd.Dir = etc
+		cmd.Env = append(os.Environ(), "TALON_DATA_DIR="+data, "TALON_SECRETS_KEY="+testSecretsKey, "TALON_SIGNING_KEY="+testSigningKey,
+			"TALON_GATEWAY_CONFIG="+cfg, "TALON_AGENTS_DIR="+agents, "TALON_ADMIN_KEY=", "TALON_APPROVER_KEY=")
+		out, err := cmd.CombinedOutput()
+		code := 0
+		if err != nil {
+			code = 1
+		}
+		return string(out), code
+	}
+	if out, code := add("support-assistant"); code != 0 || !strings.Contains(out, "Registered support-assistant") {
+		t.Fatalf("talon agents add in the documented layout: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(agents, "support-assistant", "agent.talon.yaml")); err != nil {
+		t.Fatalf("the agent file was not written: %v", err)
+	}
+	entries, _ := os.ReadDir(etc)
+	for _, e := range entries {
+		if e.Name() != "agents" && e.Name() != "talon.config.yaml" {
+			t.Fatalf("registration wrote into the configuration directory: %s", e.Name())
+		}
+	}
+
+	// The earlier layout: an agents directory the service user cannot write.
+	if err := os.Chmod(agents, 0o550); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := add("hr-copilot"); code == 0 {
+		t.Fatalf("registration into a non-writable agents directory must fail:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(agents, "hr-copilot")); err == nil {
+		t.Fatal("a failed registration left a use case directory behind")
+	}
+}

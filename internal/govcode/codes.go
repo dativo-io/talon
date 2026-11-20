@@ -90,6 +90,7 @@ const (
 	AttemptAlreadyInProgress  = "attempt_already_in_progress"
 	AttemptNotAuthorized      = "attempt_not_authorized"
 	PayloadUnavailable        = "payload_unavailable"
+	RecoveryHold              = "recovery_hold"
 	ExecutionUnsupported      = "execution_unsupported"
 	NotFound                  = "not_found"
 	InvalidRequest            = "invalid_request"
@@ -177,6 +178,7 @@ var registry = []Spec{
 	{Code: AttemptAlreadyInProgress, Class: ClassPending, Retryable: true, Explanation: "ACTION_ATTEMPT_CLAIMED", Producers: []string{ProducerAction}, Summary: "Another claimer holds the attempt; poll the operation."},
 	{Code: AttemptNotAuthorized, Class: ClassDenied, Explanation: "ACTION_AUTHORIZATION_REFUSED", Producers: []string{ProducerAction}, Summary: "No usable authorization permits an attempt."},
 	{Code: PayloadUnavailable, Class: ClassFailed, Explanation: "ACTION_AUTHORIZATION_REFUSED", Producers: []string{ProducerAction}, Summary: "The sealed payload cannot be opened (key rotated or purged); establish a new operation."},
+	{Code: RecoveryHold, Class: ClassFailed, Explanation: "ACTION_AUTHORIZATION_REFUSED", Producers: []string{ProducerAction}, Summary: "The installation runs on a restored backup and has not been resumed by an operator, or the operation id is held after a restore; nothing is dispatched."},
 	{Code: ExecutionUnsupported, Class: ClassUnsupported, Explanation: "ACTION_EXECUTION_UNSUPPORTED", Producers: []string{ProducerAction}, Summary: "This adapter has no executor for the action's destination type."},
 	{Code: NotFound, Class: ClassInvalid, Explanation: "ACTION_NOT_FOUND", Producers: []string{ProducerAction}, Summary: "No such operation or approval in this scope."},
 	{Code: InvalidRequest, Class: ClassInvalid, Explanation: "ACTION_INVALID_REQUEST", Producers: []string{ProducerAction}, Summary: "The request is malformed."},
