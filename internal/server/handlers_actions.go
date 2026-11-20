@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
@@ -68,6 +70,24 @@ type ApprovalOwnerResolver func(ctx context.Context, tenantScope, approvalID str
 type ApproverResolver interface {
 	ResolvePrincipal(ctx context.Context, token string) (*approver.Principal, error)
 	IsActive(ctx context.Context, principalID, credentialID string) (bool, error)
+}
+
+// ApprovalReader is the read side of the reviewer API: SELECTs only
+// (action.Reader). An approval is authorized from ApprovalScope BEFORE its
+// record, which carries the review values, is read.
+type ApprovalReader interface {
+	ApprovalScope(ctx context.Context, approvalID string) (tenant string, groups []string, found bool, err error)
+	ApprovalRecord(ctx context.Context, approvalID string) (*action.ApprovalRecord, error)
+	ListApprovals(ctx context.Context, q action.ApprovalListQuery) (*action.ApprovalPage, error)
+}
+
+// CurrentActionConfig returns the catalog and policy THIS process decides
+// with for one use case (action.CurrentRuntime), or NotServed.
+type CurrentActionConfig func(tenant, useCase string) action.CurrentConfig
+
+// WithApprovalReader enables GET /v1/reviews and GET /v1/reviews/{id}.
+func WithApprovalReader(r ApprovalReader, current CurrentActionConfig) Option {
+	return func(s *Server) { s.approvalReader, s.currentActionConfig = r, current }
 }
 
 // WithActionGateway mounts the Action Gateway routes.
@@ -293,18 +313,8 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approvals are not configured", nil)
 		return
 	}
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer talon_appr_") {
-		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, "an approver credential (Authorization: Bearer talon_appr_…) is required; admin and agent keys carry no approval authority", nil)
-		return
-	}
-	principal, err := s.approvers.ResolvePrincipal(r.Context(), strings.TrimPrefix(auth, "Bearer "))
-	if err != nil || principal == nil {
-		msg := "unknown, revoked or inactive approver credential"
-		if errors.Is(err, approver.ErrLegacyCredential) {
-			msg = err.Error()
-		}
-		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, msg, nil)
+	principal, ok := s.authenticateReviewer(w, r)
+	if !ok {
 		return
 	}
 	var body decisionBody
@@ -342,4 +352,134 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeActionJSON(w, http.StatusOK, map[string]any{"operation": proj, "approval": proj.Approval})
+}
+
+// authenticateReviewer resolves the approver credential of a reviewer
+// request. Only `Authorization: Bearer talon_appr_…` is accepted: an admin
+// key, an agent key, a header name or a body field never makes a reviewer.
+func (s *Server) authenticateReviewer(w http.ResponseWriter, r *http.Request) (*approver.Principal, bool) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer talon_appr_") {
+		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, "an approver credential (Authorization: Bearer talon_appr_…) is required; admin and agent keys carry no approval authority", nil)
+		return nil, false
+	}
+	principal, err := s.approvers.ResolvePrincipal(r.Context(), strings.TrimPrefix(auth, "Bearer "))
+	if err != nil || principal == nil {
+		msg := "unknown, revoked or inactive approver credential"
+		if errors.Is(err, approver.ErrLegacyCredential) {
+			msg = err.Error()
+		}
+		writeActionError(w, http.StatusUnauthorized, action.CodeApprovalNotAuthorized, msg, nil)
+		return nil, false
+	}
+	return principal, true
+}
+
+// sharesGroup reports whether the reviewer holds one of the groups an
+// approval names.
+func sharesGroup(principalGroups, approvalGroups []string) bool {
+	for _, a := range approvalGroups {
+		for _, p := range principalGroups {
+			if a == p {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// handleReviewGet returns what a reviewer reads about one approval (#433):
+// pending, decided or closed, including one whose use case or action
+// definition no longer exists. Authorization comes first: the approval's
+// tenant and approver groups are read on their own, and the record (which
+// carries the exact review values) is read and projected only for a
+// reviewer of that tenant who holds one of those groups. Anything else is
+// "not found": approval ids stay opaque. A storage failure is 503, never
+// "not found".
+func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
+	if s.approvers == nil || s.approvalReader == nil || s.currentActionConfig == nil {
+		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approvals are not configured", nil)
+		return
+	}
+	principal, ok := s.authenticateReviewer(w, r)
+	if !ok {
+		return
+	}
+	approvalID := chi.URLParam(r, "approval_id")
+	tenant, groups, found, err := s.approvalReader.ApprovalScope(r.Context(), approvalID)
+	if err != nil {
+		writeActionError(w, http.StatusServiceUnavailable, action.CodeStoreUnavailable, "reading the approval", nil)
+		return
+	}
+	if !found || tenant != principal.TenantScope || !sharesGroup(principal.Groups, groups) {
+		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approval not found", nil)
+		return
+	}
+	rec, err := s.approvalReader.ApprovalRecord(r.Context(), approvalID)
+	if err != nil {
+		writeActionError(w, http.StatusServiceUnavailable, action.CodeStoreUnavailable, "reading the approval", nil)
+		return
+	}
+	// Re-checked on the record that is projected: scope and record are two
+	// reads, and only the record's own facts authorize its disclosure.
+	if rec == nil || rec.Operation.TenantID != principal.TenantScope || !sharesGroup(principal.Groups, rec.Approval.Groups) {
+		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approval not found", nil)
+		return
+	}
+	cfg := s.currentActionConfig(rec.Operation.TenantID, rec.Operation.AgentID)
+	writeActionJSON(w, http.StatusOK, action.BuildApprovalView(rec, cfg, action.DiscloseReviewer, time.Now().UTC()))
+}
+
+// handleReviewList lists approvals of the reviewer's tenant that name one
+// of the reviewer's groups, as compact rows without argument names or
+// values (GET /v1/reviews/{id} shows one approval in full).
+//
+//	?state=attention   (default) unresolved and decidable now, oldest first
+//	?state=unresolved  every approval still pending in the store, with why
+//	                   it can or cannot be decided
+//	?state=decided     approved, rejected, expired and invalidated, newest
+//	                   first
+//	?limit=1..100&after=<next>
+//
+// The answer is complete across pages: "next" is empty exactly when the
+// selection is exhausted. A storage failure is 503, never an empty list.
+func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
+	if s.approvers == nil || s.approvalReader == nil || s.currentActionConfig == nil {
+		writeActionError(w, http.StatusNotFound, action.CodeNotFound, "approvals are not configured", nil)
+		return
+	}
+	principal, ok := s.authenticateReviewer(w, r)
+	if !ok {
+		return
+	}
+	q := action.ApprovalListQuery{
+		Tenant: principal.TenantScope, Groups: append([]string{}, principal.Groups...),
+		Selection: r.URL.Query().Get("state"), After: r.URL.Query().Get("after"),
+		Config: s.currentActionConfig,
+	}
+	if q.Selection == "" {
+		q.Selection = action.SelectAttention
+	}
+	if !action.ValidSelection(q.Selection) {
+		writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, "state must be attention (default), unresolved or decided", nil)
+		return
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > action.MaxApprovalList {
+			writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, fmt.Sprintf("limit must be 1..%d", action.MaxApprovalList), nil)
+			return
+		}
+		q.Limit = n
+	}
+	page, err := s.approvalReader.ListApprovals(r.Context(), q)
+	switch {
+	case errors.Is(err, action.ErrInvalidListQuery):
+		writeActionError(w, http.StatusBadRequest, action.CodeInvalidRequest, "the after cursor is not one this listing returned", nil)
+		return
+	case err != nil:
+		writeActionError(w, http.StatusServiceUnavailable, action.CodeStoreUnavailable, "reading approvals", nil)
+		return
+	}
+	writeActionJSON(w, http.StatusOK, map[string]any{"tenant": principal.TenantScope, "state": q.Selection, "approvals": page.Items, "next": page.Next})
 }

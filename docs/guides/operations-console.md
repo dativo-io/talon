@@ -1,6 +1,8 @@
 # Operations console
 
-The operations console is a read-only browser view of one Talon installation. It answers the questions an operator asks about the installation and the AI use cases Talon governs: whether the installation can serve governed traffic now, which use cases need attention and why, what they cost against their caps, what Talon decided for a request and what happened to it, what is configured, and how far the shown data can be trusted.
+Talon is a self-hosted control plane for a company's AI use cases: one company policy, with cost control, reliability, shared policy and session understanding applied to every use case that runs through it, and signed, verifiable evidence as the proof layer. The operations console is the **operational view** of that control plane. It is how the people who run Talon see what the control plane is doing; it is not a separate product, and it adds no control of its own.
+
+It is a read-only browser view of one Talon installation. It answers the questions an operator asks about the installation and the AI use cases Talon governs: whether the installation can serve governed traffic now, which use cases need attention and why, what they cost against their caps, what Talon decided for a request and what happened to it, what is configured, and how far the shown data can be trusted.
 
 Every number on a page comes from the same Go projections the `talon` CLI prints. The browser formats and lays out; it does not compute health, budgets, decisions or sessions. When a source could not be read, or a figure is not a measurement, the page says so instead of showing a zero.
 
@@ -14,14 +16,15 @@ talon ui serve               # headless; prints the pairing code to stdout
 talon ui serve --proxy-config proxy.talon.yaml   # also show the MCP proxy configuration
 ```
 
-The browser asks for a one-time pairing code. Read it from the console's own output (`docker compose logs talon-ui`, or the terminal running `talon ui`); `talon ui pair` prints a fresh one. Codes are single use and expire within ten minutes. The browser then holds a read-only session cookie; no admin, agent or vault key ever reaches it. When the session ends (expiry, logout, console restart), the page asks for a new code and returns to where you were. Details and the threat model: [console access](../reference/console-access.md).
+The browser asks for a one-time pairing code. Read it from the console's own output (`docker compose logs talon-ui`, or the terminal running `talon ui`); `talon ui pair` makes the running console print a fresh one to that same output (the `pair` command itself prints no code). Keep that output out of shared logging systems. Codes are single use and expire within ten minutes. The browser then holds a read-only session cookie; no admin, agent or vault key ever reaches it. When the session ends (expiry, logout, console restart), the page asks for a new code and returns to where you were. Details and the threat model: [console access](../reference/console-access.md).
 
-## The six pages
+## The pages
 
 | Page | Question it answers | Source |
 |---|---|---|
 | **Overview** | What needs attention across the installation and the selected tenant, and why? | operational readiness (runtime records, configuration digests, agent keys the processes report, store reads), findings, the `talon agents` fleet projection, today's counters, request-class activity buckets, recent operational events |
-| **AI Use Cases** | What AI use cases do we operate, how are they doing, how are they governed? | the same fleet rows, unchanged order; each use case's page has four sections: **Summary** (is it operating as expected?), **Sessions & Activity** (what happened when it ran?), **Policy & Runtime** (what is permitted, and which policy is active?), **Costs** (what does it cost?) |
+| **AI Use Cases** | What AI use cases do we operate, how are they doing, how are they governed? | the same fleet rows, unchanged order; each use case's page has four sections: **Summary** (is it operating as expected? including the one-line *Connection and verification* reading, loaded or not, authenticated traffic observed or not, under which policy, and the same *Next step* `talon agents show` prints), **Sessions & Activity** (what happened when it ran?), **Policy & Runtime** (what is permitted, and which policy is active?), **Costs** (what does it cost?) |
+| **Approvals** | Which Action Gateway requests wait for a person, why do they need approval, and what was decided? | the action tables of the store, read-only; the same projection as `talon approvals` without argument values ([read contract §2.8](../reference/console-read-contract.md#28-approvals-565)) |
 | **Sessions** | What happened in this session, what did Talon decide, and was anything sent? | session store rows and evidence-observed session ids, summary and timeline from `talon session show` |
 | **Costs** | How much, where, and are budgets respected? | `talon costs --json` (`costs.Build`) |
 | **Configuration** | What is configured, and what can be proven active? | the gateway, agent and MCP proxy files, summarised server-side |
@@ -29,33 +32,55 @@ The browser asks for a one-time pairing code. Read it from the console's own out
 
 Evidence records open from any timeline, event or search result (`/evidence/<id>`).
 
-## Operator walkthrough in pictures
+## Where the console fits when you adopt Talon
 
-These are **real console screenshots** from the synthetic Playwright test installation, not production customer data. The fixture deliberately introduces an undecryptable agent key and other diagnostic conditions; an offline or degraded runtime is intentional for the failure examples. A fresh screenshot is a view of recorded facts, not independent proof of a downstream business effect.
+The console does not connect, configure or change anything; the CLI and the configuration files do. It is where you look at each step of bringing AI use cases under one company policy:
 
-### 1. Identify what needs attention
+| Step | You do it with | The console shows |
+|---|---|---|
+| 1. Connect an existing AI use case | an agent file and its key; the application points at Talon instead of the provider or the MCP server ([quickstart](../QUICKSTART.md)) | **AI Use Cases**: the use case appears with its tenant and owner, and its first governed requests |
+| 2. Establish company policy and the use case's own restrictions | `talon.config.yaml` (organization baseline and hard constraints), the agent file, the MCP proxy config | **Configuration**: what the files say; each use case's **Policy & Runtime**: the effective policy and which layer set each rule |
+| 3. Operate the use case | nothing: traffic flows through Talon | **Overview**, the use case's **Summary**, **Costs** against its caps, **Sessions** |
+| 4. Check readiness, effective policy and activation | `talon serve`; `talon agents show <name> --effective` | **Overview** and **System**: which runtimes run and which keys they hold; *Proven active* only where a running process reports having loaded the current files |
+| 5. Change a supported policy and see the result | edit the file; wait for the reload or restart the process, as that file requires | the effective policy and its activation state change; later decisions carry the new policy; the evidence of earlier decisions stays as recorded |
+| 6. Connect further AI use cases under the same company policy | another agent file and key; the organization baseline and constraints already apply | another row in **AI Use Cases**, governed by the same baseline, with its own budget, sessions and evidence |
+| 7. Investigate and verify a decision when needed | `talon audit show`, `talon audit verify` | use case → session → decision → signed evidence, with the signature check |
+
+**Activation differs per file; the console reports it rather than assuming it.** Agent file contents and `agents_dir` membership are re-scanned by a running `talon serve` (`agents_reload_interval`, default 30s) and a valid change activates as one generation; a rejected reload keeps the previous generation active and is shown on System. The `gateway:` block of `talon.config.yaml` (organization policy, providers), the MCP proxy config, pricing and key rotation are restart-required ([configuration reference](../reference/configuration.md)). Until a running process reports the new digests, the console shows the change as file contents that are *not proven active*.
+
+## Walkthrough in pictures: a sensitive business function under controlled conditions
+
+The walkthrough uses People Analytics: an HR analytics assistant that may run aggregate queries over HR data through an MCP tool and must never export employee records. It is one AI use case in a sensitive business function, introduced under explicit conditions: an allowed tool, a forbidden tool, cost caps, and evidence for every decision. The same conditions hold in the independent real-process acceptance for this scenario (`make test-people-analytics-live`): the allowed aggregate reaches the HR backend, the forbidden export never does, and the backend's own SQL rejection is reported as the backend's, not as a Talon denial.
+
+These are **real console screenshots** from the synthetic Playwright test installation, not production customer data, and not a record of a business result. The fixture deliberately introduces an undecryptable agent key and other diagnostic conditions; an offline or degraded runtime is intentional for the failure examples. The fixture holds a small set of seeded use cases; the pictures do not show several production applications sharing a policy, and no such traffic is claimed. A screenshot is a view of recorded facts, not independent proof of a downstream business effect.
+
+### 1. See whether the installation can serve, before trusting any use-case view
 
 ![Overview: gateway startup failure, MCP status, tenant-scoped findings, and installation-wide readiness](../assets/console/overview-attention.webp)
 
 *Start at Overview: installation readiness is shown separately from the fleet-health assessment; selecting a tenant does not hide shared runtime failures.*
 
-### 2. Inspect the affected AI use case
+### 2. Operate the use case: is it running as intended, under which policy, at what cost
 
 ![HR Analytics Assistant: use-case Summary and operational state](../assets/console/use-case-summary.webp)
 
 *One use case combines Summary, Sessions & Activity, Policy & Runtime, and Costs. A healthy fleet projection does not establish runtime readiness.*
 
-### 3. Follow the session to an intercepted decision
+### 3. See the conditions hold in a real session
 
 ![People Analytics session with an allowed aggregate, blocked export, and destination-side SQL rejection](../assets/console/session-investigation.webp)
 
-*The three outcomes are different: Talon allowed and dispatched an aggregate; Talon denied an employee export before dispatch; Talon allowed a SQL tool call later rejected by HR. The session is evidence-observed, not a lifecycle Talon invented.*
+*Three different outcomes in one session: Talon allowed and dispatched an aggregate; Talon denied an employee export before dispatch, so the HR backend never received it; Talon allowed a SQL tool call that the HR backend itself rejected. The session is evidence-observed, not a lifecycle Talon invented.*
 
-### 4. Verify signed evidence
+### 4. Verify a decision when someone asks
 
 ![Evidence detail: Talon denied the employee-export tool before dispatch, and the HMAC signature verifies](../assets/console/evidence-verification.webp)
 
-*The signature proves the stored record was not changed since signing. It does not prove that no bypass route exists or that an external business outcome completed.*
+*The signature proves the stored record was not changed since signing, checked with the installation's signing key. It does not prove that no bypass route exists or that an external business outcome completed.*
+
+### Adding the next use case
+
+A further AI use case is another agent file and key under the same `talon.config.yaml`. It gets the organization baseline and hard constraints without restating them, its own caps and restrictions, and the same pages: no new dashboard, log pipeline or review procedure per application. The console then lists it beside the first one. What is shared is the operating layer and the company policy; each use case's traffic, budget and evidence stay its own.
 
 ### Other operator views
 
@@ -70,6 +95,14 @@ These are **real console screenshots** from the synthetic Playwright test instal
 ![Effective policy, Action Gateway: refund-bot's refund depends on its arguments; one company rule denies, one use-case rule requires approval](../assets/console/action-policy.webp)
 
 *Each use case's effective policy lists its Action Gateway actions. An action with argument rules reads "Depends on arguments", never "Allowed"; every rule names the layer that declared it. "Proven active" appears only when every running `talon serve` reports this agent file and the gateway config it read the company action policy from.*
+
+![Approvals: a refund that waits for a decision and one whose lifetime elapsed, each with its state and required group](../assets/console/approvals.webp)
+
+*The Approvals page lists Action Gateway requests that wait for a person. "Eligible per current files" means the configuration files still match what the request was established under; it reads "Can be decided now" only when a running `talon serve` is proven to have loaded those files. When the files were changed and no running process is proven to run them, a request reads "Files changed, runtime not confirmed" and stays listed: the process may still hold the configuration it was established under. A request whose lifetime elapsed stays unresolved in the store and reads "Expired, not decidable". No argument name or value is listed, and a reviewer's reason is never shown: the console states that one was recorded.*
+
+![Approval detail: who asks for what, whether it can be decided, argument names without values, the rule that required approval, and the CLI commands](../assets/console/approval-detail.webp)
+
+*One approval: the requesting AI use case, whether it can still be decided and on what that statement rests, the argument **names**, the rule and policy layer that required approval, the decision and what happened afterwards, and the signed lifecycle records. The console shows no argument value and has no decision control: an approver reads the exact values with `talon approvals show <approval-id>` and decides with `talon approvals approve|reject`.*
 
 ![Evidence detail of a refund that needed a reviewer: approval required, not dispatched, the matched use-case rule, signature valid](../assets/console/action-evidence.webp)
 
@@ -111,9 +144,19 @@ The **Tenant scope** selector in the header lists the tenants this installation 
 
 Installation facts are never scoped: operational readiness, the System page and the shared configuration (organization baseline, gateway and providers, MCP proxy) stay visible and are labelled *installation* or *shared*. Talon has no tenant-wide policy: each use case's effective policy is the organization baseline, its own agent file and the hard constraints, and the Configuration page links each use case to that explanation. Selecting a tenant filters what the paired operator may already read; it is not an access control. Filters and scope live in the URL, so a link to an investigation can be shared; no code, cookie or key is ever placed in a URL.
 
+## Has this application connected? (Connection and verification)
+
+After an application is registered (`talon agents add`), its page answers three separate questions, each from its own source, the same way `talon agents show <name> --effective` does:
+
+- **Loaded?** *Policy & Runtime → 2. Loaded by a running process*: a running Talon process reports this agent file in its active generation. A file on disk is not a loaded file.
+- **Connected?** *Policy & Runtime → 5. Connection and verification*: for the LLM gateway, the MCP proxy and the Action Gateway separately, the newest signed record an authenticated request of this use case produced. A registration, an enable or disable, a reload or a reviewer's decision is not traffic. "None recorded" at the LLM gateway for a use case that only uses the Action Gateway is correct, and establishing an action is shown apart from dispatching it. An MCP proxy record reads "caller's identity not established": the proxy does not record whether the use case's key was presented.
+- **Under the expected policy?** The same table: the record's signature check and whether its recorded policy digests equal what the current files compile to (*matches*, *differs*, *not proven*, *not verified*).
+
+The Summary shows the one-line reading of these facts. The console computes none of this in the browser, and none of it says that all of the application's traffic goes through Talon.
+
 ## What the console does not do
 
-It changes nothing: no configuration edits, no approvals, no budget changes, no runs. It shows only traffic and actions Talon intercepted; local shell commands, file edits and calls that bypass Talon are invisible to it. Client-asserted identities (session ids, clients) are attribution, not authentication.
+It changes nothing: no configuration edits, no approval decisions, no budget changes, no runs. It lists approvals and explains them, without the argument values: a paired browser is not a reviewer, and the tenant selection is a filter, not an access control. Values and decisions need an approver credential (`talon approvals`). It shows only traffic and actions Talon intercepted; local shell commands, file edits and calls that bypass Talon are invisible to it. Client-asserted identities (session ids, clients) are attribution, not authentication.
 
 ## Related
 

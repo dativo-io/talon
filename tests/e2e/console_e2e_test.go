@@ -33,9 +33,10 @@ const (
 )
 
 // startConsoleServe runs the built binary as `serve --gateway` with env.
-func startConsoleServe(t *testing.T, dir string, port int, env map[string]string) func() {
+func startConsoleServe(t *testing.T, dir string, port int, env map[string]string, extraArgs ...string) func() {
 	t.Helper()
-	cmd := exec.Command(binaryPath, "serve", "--port", fmt.Sprintf("%d", port), "--gateway", "--gateway-config", filepath.Join(dir, "talon.config.yaml"))
+	args := append([]string{"serve", "--port", fmt.Sprintf("%d", port), "--gateway", "--gateway-config", filepath.Join(dir, "talon.config.yaml")}, extraArgs...)
+	cmd := exec.Command(binaryPath, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "TALON_DATA_DIR="+dir, "TALON_SECRETS_KEY="+testSecretsKey, "TALON_SIGNING_KEY="+testSigningKey)
 	for k, v := range env {

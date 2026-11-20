@@ -41,10 +41,11 @@ If those are your questions, Talon sits in front of your existing OpenAI/Anthrop
 
 ## One control plane, four jobs
 
-### 1. Cost control — stop spend before it happens
+### 1. Cost control — stop disallowed spend before provider access
 
-- Per-agent daily/monthly caps: the request is denied *before* the provider call, not flagged after the money is gone.
-- Session budgets across providers, enforced by atomic reservation of each request's estimate (admission is estimate-based — see [limitations](LIMITATIONS.md)), plus cache-aware, currency-labeled cost attribution by tenant/agent from an editable pricing table.
+- Per-agent daily/monthly caps: admission checks settled spend plus in-flight estimates in the gateway process and denies requests that would exceed the cap *before* the provider call.
+- Session budgets across providers use atomic reservation of each request's estimate, preventing concurrent requests from bypassing the admission cap. Budget checks fail closed when required budget state or pricing is unavailable. Actual provider charges can exceed estimates: these are admission caps, not invoice ceilings (see [limitations](LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
+- Cache-aware, currency-labeled cost attribution by tenant/agent from an editable pricing table.
 
 → [Cap AI spend per agent](docs/guides/cost-governance-by-agent.md)
 
@@ -87,15 +88,26 @@ Active policy is always enforced — there is no observe-and-forward posture —
 3. **Choose each rule's action deliberately** — `pii_action: redact` keeps traffic flowing with PII replaced before the provider; `block` stops it. Cap spend, keep confidential data local, or strip a dangerous tool the same way — one rule at a time.
 4. **See a decision without spending** — `talon run --dry-run "<prompt>"` evaluates the native policy and prints the decision with no provider call. At the gateway, every denial is real, signed, and costs nothing ($0 — the provider is never reached).
 
-**Which are you?**
+**Two ways to start. Pick the one you mean.**
 
-| I have… | Start here |
-|---------|-----------|
-| An existing OpenAI/Anthropic app | [Change the base URL](#drop-in-openai-proxy) |
-| OpenClaw or a coding agent | [Use the integration pack](#integration-paths) |
-| A new agent to build | `talon init` → `talon run` ([guide](docs/tutorials/first-governed-agent.md)) |
+| | Try Talon | Connect your existing application |
+|---|---|---|
+| For | seeing real policy decisions and signed evidence in a few minutes | putting an application you already run behind your company policy |
+| Needs | Docker. No provider key, no application | a provider key, a company policy, one Talon key per application |
+| Start | [Quickstart](docs/QUICKSTART.md) | [Connect an existing application](docs/guides/add-talon-to-existing-app.md) |
 
-Or just [try it with no key](#try-it-in-60-seconds-no-api-key) first, then [open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A) with your stack and the first control you need.
+Connecting an application is one command and two settings, and the second application is the same command again:
+
+```bash
+talon agents add customer-support --owner support-engineering   # registers it, issues its key, says what to set
+# in the application: base URL = <talon-url>/v1/proxy/openai/v1, API key = the issued Talon key
+talon agents show customer-support                               # is it working, and what to do next
+talon agents                                                     # every application on one screen
+```
+
+Day two is in [Operate AI use cases](docs/guides/operate-ai-use-cases.md). Coding agents, MCP tools, business actions and building a new agent on Talon's own runtime are other ways to connect the same use case: [integration paths](#integration-paths).
+
+Trying first? [No key needed](#try-it-in-60-seconds-no-api-key). Then [open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A) with your stack and the first control you need.
 
 ---
 
@@ -230,7 +242,7 @@ Full byte-level breakdown: [What Talon does to your request](docs/explanation/wh
 
 | Pillar | What you get | Details |
 |--------|--------------|---------|
-| **Cost control** | Per-agent daily/monthly caps evaluated before the call; session budgets (soft); cache-aware, currency-labeled per-request estimation from an editable pricing table; attribution by tenant/agent. | [Cap AI spend per agent](docs/guides/cost-governance-by-agent.md) |
+| **Cost control** | Estimate-based admission before provider access; per-agent daily/monthly caps with a process-local in-flight ledger; atomic session reservations across providers; fail-closed budget checks. Actual charges can exceed estimates ([limitations](LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)). Cache-aware, currency-labeled cost attribution by tenant/agent. | [Cap AI spend per agent](docs/guides/cost-governance-by-agent.md) |
 | **Reliability** | Error-driven, policy-valid provider fallback chains; connect/response-header timeout controls; provider-native error shapes; OTel GenAI traces. | [Fallback chains](docs/reference/configuration.md#provider-fallback-chains-error-driven-failover) · [Observability](docs/OBSERVABILITY.md) |
 | **Shared policy** | Presidio-compatible input/output PII scanning (EU identifiers + email, phone, card, passport, IP) with redact/block/warn; tool allowlists/forbidden globs filtered before the model; egress and sovereignty rules. | [Policy cookbook](docs/guides/policy-cookbook.md) |
 | **Session understanding** | Session identity (explicit/vendor/synthetic), session-scoped audit + cost rollups, metrics API + SSE stream with session drill-down. | [Governing coding agents](docs/guides/governing-coding-agents.md) · [Gateway metrics API](docs/reference/gateway-metrics-api.md) |

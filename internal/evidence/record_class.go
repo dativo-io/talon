@@ -80,7 +80,22 @@ var nonRequestClass = map[string]RecordClass{
 	CacheEventEviction:      ClassToolEvent,
 	CacheEventErasureTenant: ClassToolEvent,
 	CacheEventErasureUser:   ClassToolEvent,
+
+	// `talon agents add` (#472): intent before the agent file appears, the
+	// completed registration, and a terminal record when it is undone.
+	InvocationTypeRegistrationIntent:     ClassOperatorEvent,
+	InvocationTypeRegistered:             ClassOperatorEvent,
+	InvocationTypeRegistrationRolledBack: ClassOperatorEvent,
 }
+
+// Lifecycle record types of a use-case registration (`talon agents add`).
+// They are named here because the store has fixed-text statements over them
+// (UnresolvedRegistrationIntents and its partial index).
+const (
+	InvocationTypeRegistrationIntent     = "agent_registration_intent"
+	InvocationTypeRegistered             = "agent_registered"
+	InvocationTypeRegistrationRolledBack = "agent_registration_rolled_back"
+)
 
 // toolActionType is the closed registry of request-class invocation types that
 // are intercepted tool actions rather than LLM traffic units: MCP calls Talon

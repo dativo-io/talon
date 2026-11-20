@@ -60,6 +60,20 @@ func startRuntimeStatus(ctx context.Context, cfg *config.Config, fleetView func(
 	}
 }
 
+// serveStartedAt is the start time `talon serve` reports in its runtime
+// record. It is taken at one precise point: after the vault is open and
+// before the process reads its first agent key. Readers rely on both sides
+// (effective.Verification attributes traffic to the credential stored now
+// on that basis):
+//
+//   - a process whose record says it started at or after a moment T read
+//     its agent keys after T. Taking the time when the record is first
+//     written, after the keys were read, would not give that;
+//   - a process that opened an older vault, and thereby made it record
+//     value versions, reports a start time after that moment, so it counts
+//     as "started after the vault began to record versions".
+var serveStartedAt time.Time
+
 // runtimeBase is the static part of this process's record: installation,
 // roles from the serve flags, version, loaded config files.
 func runtimeBase(cfg *config.Config) runtimestatus.Record {
@@ -79,15 +93,41 @@ func runtimeBase(cfg *config.Config) runtimestatus.Record {
 		Roles:        roles,
 		Version:      resolvedVersion(),
 		Commit:       Commit,
-		StartedAt:    time.Now().UTC(),
+		StartedAt:    serveStartedAt,
+	}
+	if base.StartedAt.IsZero() {
+		base.StartedAt = time.Now().UTC()
 	}
 	if serveProxyConfig != "" {
 		base.ProxyConfig = configRef(serveProxyConfig)
 	}
 	if serveGateway {
-		base.GatewayConfig = configRef(serveGatewayConfig)
+		base.GatewayConfig = loadedConfigRef(serveGatewayConfig, loadedGatewayConfigDigest)
 	}
 	return base
+}
+
+// loadedGatewayConfigDigest is the SHA-256 of the bytes this process parsed
+// its gateway config from (gateway.LoadGatewayConfigWithDigest), set when
+// serve loads it. Empty until then.
+var loadedGatewayConfigDigest string
+
+// loadedConfigRef records a configuration file with the digest of the bytes
+// the process parsed it from. The console compares that digest with the
+// current file before it calls a policy "confirmed by the runtime", so it
+// must name what the process compiled: a digest taken with a second read of
+// the file would name other bytes when the file changed in between (#565
+// review). A process that has not loaded the file runs nothing of it (a
+// start-up that failed earlier): only then is the file as found recorded.
+func loadedConfigRef(path, loadedDigest string) *runtimestatus.ConfigRef {
+	if loadedDigest == "" {
+		return configRef(path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	return &runtimestatus.ConfigRef{Path: abs, Digest: loadedDigest, LoadedAt: time.Now().UTC()}
 }
 
 func catalogOf(v agentcatalog.FleetView, reloadEnabled bool) *runtimestatus.Catalog {
@@ -185,9 +225,9 @@ func classifyStartupFailure(err error) runtimestatus.StartupFailure {
 	}
 }
 
-// configRef records a loaded configuration file and the digest of its
-// current bytes. It is called once at start-up, right after the file was
-// loaded, so the digest describes what the process runs.
+// configRef records a configuration file and the digest of its bytes as the
+// file is found now. Where the process knows the bytes it parsed, use
+// loadedConfigRef instead.
 func configRef(path string) *runtimestatus.ConfigRef {
 	abs, err := filepath.Abs(path)
 	if err != nil {

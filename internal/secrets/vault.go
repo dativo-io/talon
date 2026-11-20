@@ -123,7 +123,8 @@ func NewSecretStore(dbPath string, encryptionKey string) (*SecretStore, error) {
 	CREATE INDEX IF NOT EXISTS idx_access_log_timestamp ON secret_access_log(timestamp);
 	`
 
-	if _, err := db.ExecContext(context.Background(), schema); err != nil {
+	if err := initSchema(context.Background(), db, schema); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("creating schema: %w", err)
 	}
 
@@ -180,9 +181,9 @@ func (s *SecretStore) Set(ctx context.Context, name string, value []byte, acl AC
 	return nil
 }
 
-// storeSecret encrypts and persists a secret without writing an audit entry.
-// Used by Set (which then logs "set") and by Rotate (which then logs "rotate") so that
-// a single operation produces exactly one audit record.
+// storeSecret encrypts and persists a secret without writing an audit entry
+// (Set then logs "set"). The value's version is recorded by the vault's
+// triggers inside this statement (versions.go), not by the audit entry.
 func (s *SecretStore) storeSecret(ctx context.Context, name string, value []byte, acl ACL) error {
 	nonce := make([]byte, s.gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
@@ -376,15 +377,23 @@ func (s *SecretStore) ListAll(ctx context.Context) ([]SecretMetadata, error) {
 	return results, nil
 }
 
-// Rotate re-encrypts an existing secret with a fresh nonce.
+// ErrSecretChanged: the secret was written by someone else while it was
+// being re-encrypted. Nothing was written.
+var ErrSecretChanged = errors.New("the secret changed while it was being re-encrypted; nothing was written, run the command again")
+
+// Rotate re-encrypts an existing secret with a fresh nonce. The value does
+// not change, so this is not a new value version: the UPDATE says so by
+// incrementing reencryptions (see versions.go), and it writes only when the
+// row is still the one that was read, so it can never put an older value
+// back over a newer one.
 func (s *SecretStore) Rotate(ctx context.Context, name string) error {
 	ctx, span := tracer.Start(ctx, "secrets.rotate",
 		trace.WithAttributes(attribute.String("secret.name", name)))
 	defer span.End()
 
-	var encryptedValue, nonceB64, aclJSON string
-	query := `SELECT encrypted_value, nonce, acl_json FROM secrets WHERE name = ?`
-	err := s.db.QueryRowContext(ctx, query, name).Scan(&encryptedValue, &nonceB64, &aclJSON)
+	var encryptedValue, nonceB64 string
+	query := `SELECT encrypted_value, nonce FROM secrets WHERE name = ?`
+	err := s.db.QueryRowContext(ctx, query, name).Scan(&encryptedValue, &nonceB64)
 
 	if err == sql.ErrNoRows {
 		return ErrSecretNotFound
@@ -412,15 +421,21 @@ func (s *SecretStore) Rotate(ctx context.Context, name string) error {
 		return fmt.Errorf("decrypting for rotation: %w", err)
 	}
 
-	var acl ACL
-	if err := json.Unmarshal([]byte(aclJSON), &acl); err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("unmarshaling ACL: %w", err)
+	fresh := make([]byte, s.gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, fresh); err != nil {
+		return fmt.Errorf("generating nonce: %w", err)
 	}
-
-	if err := s.storeSecret(ctx, name, plaintext, acl); err != nil {
+	reencrypted := base64.StdEncoding.EncodeToString(s.gcm.Seal(nil, fresh, plaintext, nil))
+	res, err := s.db.ExecContext(ctx, `UPDATE secrets SET encrypted_value = ?, nonce = ?, reencryptions = reencryptions + 1 WHERE name = ? AND nonce = ?`,
+		reencrypted, base64.StdEncoding.EncodeToString(fresh), name, nonceB64)
+	if err != nil {
 		span.RecordError(err)
-		return err
+		return fmt.Errorf("storing secret: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("storing secret: %w", err)
+	} else if n == 0 {
+		return ErrSecretChanged
 	}
 	s.logAccess(ctx, name, "system", "operator", true, "rotate")
 	return nil

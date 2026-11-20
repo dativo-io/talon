@@ -74,6 +74,7 @@ func init() {
 
 //nolint:gocyclo // orchestration flow is inherently branched
 func runServe(cmd *cobra.Command, args []string) (err error) {
+	serveStartedAt = time.Time{} // stamped below, once the vault is open
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -154,8 +155,12 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 
 	var openshellServer *openshell.Server
 	var preloadedGatewayCfg *gateway.GatewayConfig
+	loadedGatewayConfigDigest = ""
 	if serveGateway {
-		preloadedGatewayCfg, err = gateway.LoadGatewayConfig(serveGatewayConfig)
+		// The digest is of the bytes this configuration was parsed from. It
+		// is what the runtime record publishes: the process says which
+		// gateway config it RUNS, not what the file holds later.
+		preloadedGatewayCfg, loadedGatewayConfigDigest, err = gateway.LoadGatewayConfigWithDigest(serveGatewayConfig)
 		if err != nil {
 			return fmt.Errorf("loading gateway config for sovereignty: %w", err)
 		}
@@ -190,6 +195,10 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 		return fmt.Errorf("initializing secrets: %w", err)
 	}
 	defer secretsStore.Close()
+	// The vault is open (and, on the first start after an upgrade, records
+	// value versions from now on); no agent key has been read yet. See
+	// serveStartedAt for why the start time is taken exactly here.
+	serveStartedAt = time.Now().UTC()
 
 	adminKey := os.Getenv("TALON_ADMIN_KEY")
 	if adminKey == "" {
@@ -615,7 +624,8 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 		server.WithSovereigntyMode(cfg.EffectiveSovereigntyMode()),
 	}
 	if actionGW != nil {
-		opts = append(opts, server.WithActionGateway(actionGW.resolver(), actionGW.ownerResolver(), actionGW.approvers))
+		opts = append(opts, server.WithActionGateway(actionGW.resolver(), actionGW.ownerResolver(), actionGW.approvers),
+			server.WithApprovalReader(actionGW.repo.Reader(), actionGW.currentConfig))
 	}
 	opts = append(opts, []server.Option{
 		server.WithActiveRunTracker(activeRunTracker),

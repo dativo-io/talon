@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-console-smoke test-console-compose-smoke test-browser-console test-people-analytics-live console-frontend test-console-frontend test-openshell-live test-openshell-showcase-contract test-release-verify verify-release openshell-showcase-validate openshell-agent-image showcase-bundle test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-mcp-smoke test-mcp-governance-smoke test-action-catalog-smoke test-console-smoke test-console-compose-smoke test-browser-console test-people-analytics-live test-onboarding console-frontend test-console-frontend test-openshell-live test-openshell-showcase-contract test-release-verify verify-release openshell-showcase-validate openshell-agent-image showcase-bundle test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -68,6 +68,9 @@ test-console-smoke: ## Operations-console smoke (#535/#536/#537, no keys, no Doc
 test-people-analytics-live: ## People Analytics over real processes (#545, no keys, no Docker): HR MCP backend with its own counters + `talon serve --proxy-config` + `talon ui serve`; allowed dispatched, forbidden never reaches the backend, backend rejection shown as such, console = CLI = browser, SIGKILL/restart, tamper, negative auth; also the CI e2e (processes) and browser (Chromium) jobs
 	@bash scripts/people-analytics-live.sh
 
+test-onboarding: ## Onboarding acceptance over real processes (#472, no keys, no Docker): `talon agents add` for a first and a second application, the pinned OpenAI Node SDK against `talon serve --gateway` with a counting upstream, verified activation/traffic/policy (CLI = console), key replacement and revocation, concurrent registration; needs node and npm; also the CI browser job
+	@bash scripts/onboarding-acceptance.sh
+
 console-frontend: ## Build the console frontend into internal/console/web/static (embedded in the binary; needs node 22; commit the result)
 	@cd internal/console/frontend && npm ci --no-audit --no-fund && npm run build
 
@@ -109,6 +112,7 @@ test-rego: install-opa ## OPA/Rego policy tests with the pinned OPA (installs it
 test-release-verify: ## Offline failure-injection tests of the published-artifact path (#359): scripts/verify-release.sh + scripts/install.sh against a fake release on 127.0.0.1 (altered binary, modified/missing manifest digest, version/commit mismatch, registry without digest, unparseable metadata, private image, draft, relative paths) and scripts/release-platform-report.sh (darwin outcome classification); no Docker, no network
 	@bash ./scripts/test-verify-release.sh
 	@bash ./scripts/test-release-platform-report.sh
+	@bash ./scripts/test-release-toolchain-check.sh
 
 verify-release: ## Verify a PUBLISHED release from the public artifacts (TAG=vX.Y.Z, default latest): checksums, executable version/commit, showcase manifest digest, bundle, anonymous image pulls, install.sh
 	@bash ./scripts/verify-release.sh --tag "$(or $(TAG),latest)" --install "$(CURDIR)/dist/verify-release-install"

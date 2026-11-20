@@ -129,6 +129,7 @@ input, select { border: 1px solid var(--border-strong); background: var(--surfac
 dl.facts { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 6px 16px; margin: 0; }
 dl.facts dt { color: var(--text-2); }
 dl.facts dd { margin: 0; overflow-wrap: anywhere; }
+dl.facts.ap-facts { margin-top: 12px; }
 
 /* tables */
 .table-wrap { overflow-x: auto; }
