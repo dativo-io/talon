@@ -159,8 +159,8 @@ operation executed and one created after the backup, restore with the recovery h
 second use case and the replacement of its key), the same model requests through a real
 application client (the official OpenAI Node SDK, pinned) for both use cases, the action,
 registration and recovery suites, the in-place upgrade from the **immediately preceding stable
-release** and the rollback safety check (that release on a restored, held store dispatches
-nothing), the real n8n refund
+release**, the rollback safety check (that release on a restored, held store dispatches
+nothing) and the pre-upgrade backup from it, the real n8n refund
 workflow (`scripts/n8n-refund-live.sh`, pinned n8n) with the released executable as `TALON_BIN`,
 and `scripts/quickstart.sh` against the released image. The job runs in release mode
 (`PILOT_REQUIRE_ALL=1`): a missing input, a required test that skips, an n8n other than the

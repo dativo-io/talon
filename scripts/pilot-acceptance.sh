@@ -28,7 +28,7 @@
 #   - the action-gateway, registration, recovery and quickstart e2e suites;
 #   - with TALON_PREVIOUS_STABLE_BINARY: the in-place upgrade from it and the
 #     rollback safety check (that release on a restored, held store
-#     dispatches nothing).
+#     dispatches nothing) and the pre-upgrade backup procedure.
 # Results are PASS, FAIL, NOT RUN or NOT APPLICABLE. A required test that
 # skips is a FAILURE, never a pass.
 # The checkout must be the release's own tag (tests and fixtures come from
@@ -123,9 +123,11 @@ if [ -n "${TALON_PREVIOUS_STABLE_BINARY:-}" ]; then
   prev_line="$("$TALON_PREVIOUS_STABLE_BINARY" version | sed -n 1p)"
   run "in-place upgrade from the immediately preceding stable release ($prev_line)" e2e '^TestE2E_UpgradeFromPreviousStable$'
   run "rollback safety: $prev_line on a restored, held store dispatches nothing" e2e '^TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing$'
+  run "pre-upgrade backup from $prev_line (plain copy restores a failed upgrade; the new binary's cold backup holds after a restore)" e2e '^TestE2E_PreUpgradeBackup_FromThePreviousStable$'
 else
   missing "in-place upgrade from the immediately preceding stable release (TALON_PREVIOUS_STABLE_BINARY is not set)"
   missing "rollback safety with the preceding stable release (TALON_PREVIOUS_STABLE_BINARY is not set)"
+  missing "pre-upgrade backup from the preceding stable release (TALON_PREVIOUS_STABLE_BINARY is not set)"
 fi
 if [ -n "${TALON_COMPAT_BINARIES:-}" ]; then
   run "historical upgrade compatibility (not the N-1 gate)" go test -count=1 -tags=e2e -timeout 12m -run '^TestE2E_UpgradeFromHistoricalReleases$' ./tests/e2e/
