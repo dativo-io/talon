@@ -397,12 +397,19 @@ func TestVerification_TrafficIsAttributedToTheCurrentCredential(t *testing.T) {
 		assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code, "the record's own facts still hold")
 		assert.Contains(t, r.Verification.Reading.Text, "which credential it was authenticated with is not established")
 
-		// The agent file binds a key the vault does not hold.
+		// The key was removed from a vault that can be read: the earlier
+		// request is history, not a (caveated) verified connection.
 		k.revoke()
 		r, err = Build(ctx, k.inputs())
 		require.NoError(t, err)
 		assert.Equal(t, CredentialAbsent, r.Verification.Credential.State)
-		assert.Contains(t, r.Verification.Credential.Note, "no request can present this use case's key")
+		assert.Contains(t, r.Verification.Credential.Note, "no credential of this use case is stored now")
+		g = observation(t, r, BoundaryLLMGateway)
+		assert.Equal(t, CredentialPrevious, g.Credential)
+		assert.Contains(t, g.CredentialNote, "no longer stored")
+		assert.Equal(t, ReadingTrafficHistorical, r.Verification.Reading.Code)
+		assert.Contains(t, r.Verification.Reading.Text, "No credential of this use case is stored now")
+		assert.NotContains(t, r.Verification.Reading.Text, "Authenticated traffic observed")
 
 		// A use case whose file binds no key at all.
 		f := peopleAnalytics(t)
@@ -451,12 +458,19 @@ func TestCredentialFacts_ReadTheVaultReadOnly(t *testing.T) {
 		require.Equal(t, before, raw, "reading the credential facts changes nothing in the vault file")
 		require.NotContains(t, r.Verification.Credential.Note+r.Verification.Credential.RuntimeNote, "key-A")
 	}
-	// A path that holds no vault: nothing is stored, and nothing is created.
+	// A path where no vault file is visible (a reader without the vault, a
+	// console on another host): nothing is concluded from it, in particular
+	// not that the key is gone, and nothing is created.
 	in := k.inputs()
 	in.SecretsDB = filepath.Join(t.TempDir(), "absent.db")
 	r, err := Build(ctx, in)
 	require.NoError(t, err)
-	assert.Equal(t, CredentialAbsent, r.Verification.Credential.State)
+	assert.Equal(t, CredentialUnread, r.Verification.Credential.State)
+	assert.Contains(t, r.Verification.Credential.Note, "no vault file is visible to this process")
+	g := observation(t, r, BoundaryLLMGateway)
+	assert.Equal(t, CredentialUnknown, g.Credential)
+	assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code, "the record's own facts hold, with the caveat")
+	assert.Contains(t, r.Verification.Reading.Text, "which credential it was authenticated with is not established")
 	_, statErr := os.Stat(in.SecretsDB)
 	assert.True(t, os.IsNotExist(statErr))
 }

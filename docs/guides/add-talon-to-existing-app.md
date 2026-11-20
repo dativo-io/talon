@@ -255,7 +255,7 @@ Evidence does not record which key a request presented. Talon infers it from two
 2. send one request from the application with the new key;
 3. read section 5 again: it now reads *Authenticated traffic observed under the expected policy*, and the row says the request used the credential stored now.
 
-A use case you configured by hand, without `talon agents add`, is verified the same way; it has no registration record and needs none. When the vault cannot be read, the report says that the credential is not known instead of guessing.
+A use case you configured by hand, without `talon agents add`, is verified the same way; it has no registration record and needs none. When the vault cannot be read (or the reader, for example a console on another host, cannot see the vault file), the report says that the credential is not known instead of guessing. When the key was removed from the vault, earlier traffic is history: no credential of the use case is stored that it could be attributed to.
 
 ## 6. Operate
 

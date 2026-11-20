@@ -3,6 +3,7 @@ package effective
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -71,7 +72,8 @@ const (
 	ReadingTrafficIdentityUnknown = "traffic_observed_identity_not_established"
 	// ReadingTrafficHistorical: authenticated traffic exists, all of it from
 	// before the credential stored now was written (an earlier registration
-	// of the name, or a key that was replaced since).
+	// of the name, or a key that was replaced since), or no credential of
+	// the use case is stored at all any more (its key was removed).
 	ReadingTrafficHistorical = "traffic_predates_current_credential"
 	// ReadingTrafficCredentialUnproven: authenticated traffic exists since
 	// the credential stored now was written, but the process that served it
@@ -103,9 +105,9 @@ const (
 // States of what is known about the credential stored now.
 const (
 	CredentialKnown  = "known"
-	CredentialAbsent = "absent"  // the agent file binds a key the vault does not hold
+	CredentialAbsent = "absent"  // the vault was read and holds no key under the name the agent file binds
 	CredentialNoKey  = "no_key"  // the agent file binds no key
-	CredentialUnread = "unknown" // the vault could not be read
+	CredentialUnread = "unknown" // the vault could not be read, or no vault file is visible to this process
 )
 
 // What the running process(es) hold.
@@ -683,8 +685,12 @@ func authenticatedReading(v *Verification, activation string) Reading {
 				boundaryLabel(un.Boundary), un.Timestamp.UTC().Format(time.RFC3339), un.EvidenceID, un.CredentialNote, activation)}
 		}
 		old := v.newestProven(nil)
-		return Reading{ReadingTrafficHistorical, fmt.Sprintf("No authenticated traffic since the current credential was stored: the newest authenticated request is at the %s at %s (%s), and %s; %s.",
-			boundaryLabel(old.Boundary), old.Timestamp.UTC().Format(time.RFC3339), old.EvidenceID, old.CredentialNote, activation)}
+		head := "No authenticated traffic since the current credential was stored"
+		if v.Credential != nil && v.Credential.State == CredentialAbsent {
+			head = "No credential of this use case is stored now, so no authenticated traffic is attributed to one"
+		}
+		return Reading{ReadingTrafficHistorical, fmt.Sprintf("%s: the newest authenticated request is at the %s at %s (%s), and %s; %s.",
+			head, boundaryLabel(old.Boundary), old.Timestamp.UTC().Format(time.RFC3339), old.EvidenceID, old.CredentialNote, activation)}
 	}
 	where := fmt.Sprintf("the newest authenticated request was recorded at the %s at %s (%s)", boundaryLabel(newest.Boundary), newest.Timestamp.UTC().Format(time.RFC3339), newest.EvidenceID)
 	caveat := ""
@@ -801,6 +807,14 @@ func credentialOf(ctx context.Context, in verificationInputs) *Credential {
 		c.RuntimeNote = c.Note
 		return c
 	}
+	if _, err := os.Stat(in.secretsDB); err != nil {
+		// A vault file this process cannot see is not a vault without the
+		// secret: a reader on another host or in another container (the
+		// console) may simply not have it. Nothing is concluded from it.
+		c.Note = "no vault file is visible to this process at " + in.secretsDB + " (no secret was stored in this installation yet, or this process cannot read the vault), so when the current credential was stored is not known"
+		c.RuntimeNote = c.Note
+		return c
+	}
 	w, err := secrets.CredentialWritesReadOnly(ctx, in.secretsDB, c.SecretName)
 	switch {
 	case err != nil:
@@ -809,8 +823,8 @@ func credentialOf(ctx context.Context, in verificationInputs) *Credential {
 		return c
 	case !w.Exists:
 		c.State, c.Writes = CredentialAbsent, w.Writes
-		c.Note = fmt.Sprintf("the vault holds no secret %q: no request can present this use case's key", c.SecretName)
-		c.RuntimeNote = "there is no credential to hold"
+		c.Note = fmt.Sprintf("the vault holds no secret %q: no credential of this use case is stored now. A process that loaded the key before it was removed keeps accepting it until that process reloads the use case or restarts", c.SecretName)
+		c.RuntimeNote = "no credential is stored that a process could hold"
 		return c
 	}
 	since := w.LastWrittenAt
@@ -897,6 +911,11 @@ func attributeCredential(o *TrafficObservation, c *Credential, view *runtimestat
 	switch {
 	case strings.HasPrefix(o.Identity, "verified workload identity"):
 		o.Credential, o.CredentialNote = CredentialNotApplicable, "the request was authenticated by a verified workload identity, not by the use case's key"
+	case c != nil && c.State == CredentialAbsent:
+		// The vault is readable and holds no key for this use case: whatever
+		// authenticated this request is not a credential that exists now.
+		o.Credential = CredentialPrevious
+		o.CredentialNote = "the vault holds no secret " + c.SecretName + " now, so it was authenticated with a credential that is no longer stored (removed since). It is historical evidence, not a connection of a current credential"
 	case c == nil || c.State != CredentialKnown:
 		o.Credential = CredentialUnknown
 		o.CredentialNote = "nothing is known about the credential stored now"
