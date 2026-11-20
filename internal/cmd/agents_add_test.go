@@ -6,12 +6,15 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -182,7 +185,7 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 		"always enforced", "forbidden_tools delete_customer",
 		"can only tighten these", "talon agents show customer-support --effective",
 		"Runtime", "Not active: no Talon process of this installation is running",
-		"Connect your application", "<talon-url>/v1/proxy/openai/v1", "none answers at http://localhost:8080 now", "never the provider's key", "docs/guides/choosing-integration-path.md",
+		"Connect your application", "<talon-url>/v1/proxy/openai/v1", "<talon-url>: the address of the Talon gateway that serves this installation; you supply it", "never the provider's key", "docs/guides/choosing-integration-path.md",
 		"Verify", "Send one request from the application, then:", "talon agents show customer-support",
 		"SECRET — shown once", key1,
 	}
@@ -192,9 +195,9 @@ func TestAgentsAdd_FirstAndSecondUseCase(t *testing.T) {
 	for _, detail := range []string{"precedence:", "from organization.defaults", "Not verified by this command", "Authorization: Bearer"} {
 		require.NotContains(t, text, detail, "detail that belongs to --effective or the guide")
 	}
-	// Nothing is claimed that is not established: no server answered, so no
-	// address is printed and nothing is called active.
-	require.NotContains(t, text, "http://localhost:8080/v1/proxy")
+	// Nothing is claimed that is not established: no address is printed
+	// (the operator supplies the gateway's) and nothing is called active.
+	require.NotContains(t, text, "localhost:8080")
 	require.NotContains(t, text, "Active:")
 	at := 0
 	for _, want := range order {
@@ -992,4 +995,89 @@ func TestAgentsAdd_DryRunLeavesExistingStoresUntouched(t *testing.T) {
 	require.NoError(t, e.Close())
 	_, err = secrets.MetadataReadOnly(ctx, empty.SecretsDBPath(), "refund-bot-talon-key")
 	require.ErrorIs(t, err, secrets.ErrSecretNotFound)
+}
+
+// #567 review. A Talon server that answers at an address is not thereby the
+// gateway of the installation an application was registered in. Two
+// installations on one host: A registers `customer-support`; B's server
+// answers at localhost:8080, the address a registration used to probe and,
+// on an answer, print as the application's endpoint. A's registration must
+// not send the application to B: it names no address, and says that the
+// operator supplies the one of the gateway serving this installation.
+func TestAgentsAdd_NeverNamesADiscoveredServerAsTheEndpoint(t *testing.T) {
+	ctx := context.Background()
+
+	// Installation B: its own configuration and data directories, and a
+	// Talon server at localhost:8080 (it answers the probe as `talon serve`
+	// does: GET /health with the X-Talon-Service marker).
+	b := addEnv(t, t.TempDir(), addGateway)
+	var probes atomic.Int64
+	serverB := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		probes.Add(1)
+		w.Header().Set("X-Talon-Service", "talon")
+	})}
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", "127.0.0.1:8080")
+	listening := err == nil
+	if !listening {
+		// The port is taken on this machine. Whatever holds it, the
+		// assertions on A's output below hold all the same; only "B was not
+		// asked" cannot be observed.
+		t.Logf("127.0.0.1:8080 is in use (%v): the output is still checked, B's request count is not", err)
+	} else {
+		go func() { _ = serverB.Serve(ln) }()
+		defer func() { _ = serverB.Close() }()
+		// B really answers there as a Talon server.
+		require.True(t, isTalonServer(ctx, "http://localhost:8080"), "installation B's server answers at localhost:8080")
+		probes.Store(0)
+	}
+
+	// Installation A: separate configuration and data directories.
+	cfg, agentsDir := setupAddFleetWith(t, addGateway)
+	require.NotEqual(t, b["TALON_DATA_DIR"], cfg.DataDir, "separate data directories")
+	require.NotEqual(t, b["TALON_AGENTS_DIR"], agentsDir, "separate configuration")
+	resetAgentsAddFlags(t)
+	agentsAddNoCompanyPolicy, agentsAddOwner = false, "support-engineering"
+	var out bytes.Buffer
+	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "customer-support"))
+	text := out.String()
+
+	// B's address is not recommended, in any form.
+	for _, bad := range []string{"localhost:8080", "127.0.0.1:8080", "http://", "a Talon server answers there"} {
+		require.NotContains(t, text, bad, "A's registration names a discovered server:\n%s", text)
+	}
+	if listening {
+		require.Zero(t, probes.Load(), "A's registration asked the server at localhost:8080")
+	}
+	// The endpoint is the provider's gateway path behind a placeholder, and
+	// the output says whose address belongs there.
+	require.Contains(t, text, "  Base URL  <talon-url>/v1/proxy/openai/v1   (<talon-url>: the address of the Talon gateway that serves this installation; you supply it)\n")
+	// The rest of the block is as before: the key, the SDK line, the chooser.
+	require.Contains(t, text, "  API key   the application key below (never the provider's key)\n")
+	require.Contains(t, text, "  Set these two in the application's OpenAI-compatible SDK. Other ways to connect: docs/guides/choosing-integration-path.md\n")
+	require.Regexp(t, `(?s)Connect your application\n  Base URL .*\n  API key .*\n  Set these two .*\n\nVerify\n`, text, "the block's structure is unchanged")
+	require.Contains(t, text, "SECRET — shown once")
+
+	// One line per enabled provider, each with its own path.
+	two := strings.Replace(addGateway, "  organization_policy:", "    anthropic:\n      enabled: true\n      secret_name: anthropic-api-key\n      base_url: \"https://api.anthropic.com\"\n    mistral:\n      enabled: false\n      secret_name: mistral-api-key\n      base_url: \"https://api.mistral.ai\"\n  organization_policy:", 1)
+	require.NotEqual(t, addGateway, two)
+	require.NoError(t, os.WriteFile(os.Getenv("TALON_GATEWAY_CONFIG"), []byte(two), 0o600))
+	out.Reset()
+	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "hr-copilot"))
+	text = out.String()
+	require.Contains(t, text, "  Base URL  <talon-url>/v1/proxy/openai/v1   (")
+	require.Contains(t, text, "  Base URL  <talon-url>/v1/proxy/anthropic/v1   (")
+	require.NotContains(t, text, "/v1/proxy/mistral/", "a provider that is not enabled has no endpoint")
+	require.NotContains(t, text, "localhost:8080")
+
+	// No provider enabled: no endpoint is named at all, and no address.
+	none := strings.Replace(addGateway, "      enabled: true\n      secret_name: openai-api-key", "      enabled: false\n      secret_name: openai-api-key", 1)
+	require.NotEqual(t, addGateway, none)
+	require.NoError(t, os.WriteFile(os.Getenv("TALON_GATEWAY_CONFIG"), []byte(none), 0o600))
+	out.Reset()
+	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "legal-review"))
+	text = out.String()
+	require.Contains(t, text, "No model provider is enabled in the gateway config this command read, so no endpoint can be named.")
+	require.Contains(t, text, "the endpoint is then <talon-url>/v1/proxy/<provider>/v1")
+	require.NotContains(t, text, "Base URL")
+	require.NotContains(t, text, "localhost:8080")
 }

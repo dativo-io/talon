@@ -126,7 +126,7 @@ Runtime
   Not active: no Talon process of this installation is running. `talon serve` loads this use case when it starts.
 
 Connect your application
-  Base URL  <talon-url>/v1/proxy/openai/v1   (<talon-url>: where `talon serve` listens; none answers at http://localhost:8080 now)
+  Base URL  <talon-url>/v1/proxy/openai/v1   (<talon-url>: the address of the Talon gateway that serves this installation; you supply it)
   API key   the application key below (never the provider's key)
   Set these two in the application's OpenAI-compatible SDK. Other ways to connect: docs/guides/choosing-integration-path.md
 
@@ -140,7 +140,7 @@ Application key — SECRET — shown once
   It cannot be shown again; a lost key is replaced (docs/guides/operate-ai-use-cases.md).
 ```
 
-Everything above the key block is safe to copy into a ticket. The command states only what is established: it prints the server's address only when a Talon server answers there, and calls the use case active only when a running process has loaded it.
+Everything above the key block is safe to copy into a ticket. The command states only what is established. It never names the gateway's address: a Talon server that answers somewhere is not thereby the gateway of this installation, so `<talon-url>` stays a placeholder for the address you supply (section 4). It calls the use case active only when a running process has loaded it.
 
 It refuses, without registering anything, when the company policy is missing (`--no-company-policy` states that you intend that), the name is taken, or the existing fleet does not validate. `--dry-run` prints the file and writes nothing. `--tenant` sets the tenant (default `default`).
 

@@ -181,7 +181,7 @@ func printAgentsAddResult(ctx context.Context, out io.Writer, cfg *config.Config
 	}
 
 	fmt.Fprintf(out, "\nConnect your application\n")
-	printConnectionRecipe(ctx, out, report)
+	printConnectionRecipe(out, report)
 
 	fmt.Fprintf(out, "\nVerify\n  Send one request from the application, then:\n    talon agents show %s\n", plan.Name)
 
@@ -272,15 +272,17 @@ func printInheritedPolicy(out io.Writer, plan *agentsAddPlan, report *effective.
 	fmt.Fprintf(out, "  The use case's own file can only tighten these. Why each rule applies: talon agents show %s --effective\n", plan.Name)
 }
 
-// defaultTalonURL is where `talon serve` listens when started as the guide
-// documents it, and where `talon agents` looks for a server by default.
-const defaultTalonURL = "http://localhost:8080"
-
 // printConnectionRecipe states the endpoint only as far as it is
-// established: the gateway path per provider the configuration enables, and
-// the server's address only when a Talon server answers there now.
-// <talon-url> is never guessed.
-func printConnectionRecipe(ctx context.Context, out io.Writer, r *effective.Report) {
+// established: the gateway path per provider the configuration enables.
+//
+// The address is never named. A Talon server that answers at some address is
+// not thereby the gateway of the installation this application was
+// registered in: another installation on the same host answers the same
+// way, and no existing contract says whose a server is. Printing a
+// discovered address would send the application to a gateway that may not
+// hold its key or its policy (#567 review). The operator supplies the
+// address of the gateway that serves this installation.
+func printConnectionRecipe(out io.Writer, r *effective.Report) {
 	var providers []string
 	if r != nil {
 		for _, p := range r.Effective.Providers {
@@ -294,12 +296,8 @@ func printConnectionRecipe(ctx context.Context, out io.Writer, r *effective.Repo
 		fmt.Fprintf(out, "  Add gateway.providers (docs/guides/add-talon-to-existing-app.md); the endpoint is then <talon-url>/v1/proxy/<provider>/v1\n")
 		return
 	}
-	base, note := "<talon-url>", fmt.Sprintf("<talon-url>: where `talon serve` listens; none answers at %s now", defaultTalonURL)
-	if isTalonServer(ctx, defaultTalonURL) {
-		base, note = defaultTalonURL, "a Talon server answers there now"
-	}
 	for _, p := range providers {
-		fmt.Fprintf(out, "  Base URL  %s/v1/proxy/%s/v1   (%s)\n", base, p, note)
+		fmt.Fprintf(out, "  Base URL  <talon-url>/v1/proxy/%s/v1   (<talon-url>: the address of the Talon gateway that serves this installation; you supply it)\n", p)
 	}
 	fmt.Fprintf(out, "  API key   the application key below (never the provider's key)\n")
 	fmt.Fprintf(out, "  Set these two in the application's OpenAI-compatible SDK. Other ways to connect: docs/guides/choosing-integration-path.md\n")
