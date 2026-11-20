@@ -1,8 +1,10 @@
 # AI use case "refund-bot": the support workflow that n8n runs.
-# Register it with 'talon agents add refund-bot --tenant acme' and merge the
-# blocks below into the generated file, or copy this file to
-# <agents_dir>/refund-bot/agent.talon.yaml and store its key with
-# 'talon secrets set refund-bot-talon-key <key>'.
+# Product-level example: not a Shopify/customer-support application.
+# For the currently supported manual setup, copy this file to
+# <agents_dir>/refund-bot/agent.talon.yaml, securely provision the vault key
+# named refund-bot-talon-key, then validate the configuration. No dependency
+# on the deferred self-service registration CLI from #567.
+# This is a synthetic-fixture refund action, not a real payment integration.
 agent:
   name: refund-bot
   description: Support refunds requested from the n8n workflow
