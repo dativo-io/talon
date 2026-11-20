@@ -15,7 +15,8 @@ OUT.mkdir(parents=True, exist_ok=True)
 # Meaningful, full-width above-the-fold crops; preserve original UI pixels.
 SHOTS = {
     'overview-attention': ('light-13-overview-case-g.png', 0, 800),
-    'use-case-summary': ('light-03-use-case.png', 0, 925),
+    # Through the end of the Summary card, so the next step is in the image.
+    'use-case-summary': ('light-03-use-case.png', 0, 1080),
     'session-investigation': ('light-18-session-proof.png', 0, 1120),
     'evidence-verification': ('light-16-evidence-export-denied.png', 0, 1180),
     'costs': ('light-17-costs-all-tenants.png', 0, 750),
