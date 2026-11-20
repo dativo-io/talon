@@ -70,34 +70,55 @@ expected policy, is shown by 'talon agents show <name> --effective'.`,
 	},
 }
 
+// printDryRun reports what a registration would do. It reads without the
+// registration lock and creates nothing, so it judges the name only when no
+// registration is running: what exists under the name while one runs may be
+// that registration's work in progress.
+func printDryRun(ctx context.Context, out io.Writer, cfg *config.Config, plan *agentsAddPlan) error {
+	lock := registration.Probe(cfg.DataDir)
+	if len(plan.Unresolved) == 0 {
+		if err := nameOccupied(ctx, cfg, plan); err != nil {
+			if lock == registration.LockHeld {
+				return fmt.Errorf("a registration is running now (the registration lock is held): what exists under the name %q may be its work in progress, so the name is not judged. Nothing was written; run the command again when it has finished", plan.Name)
+			}
+			return err
+		}
+	}
+	fmt.Fprintf(out, "Dry run: nothing was written. A registration would create %s and generate key secret %q.\n", plan.Path, plan.SecretName)
+	if len(plan.Unresolved) > 0 {
+		state := map[string]string{
+			registration.LockHeld:    "a registration is running now (the registration lock is held), so this may be in progress",
+			registration.LockFree:    "no registration is running now (the registration lock is free)",
+			registration.LockUnknown: "whether a registration is running now could not be established",
+		}[lock]
+		for i := range plan.Unresolved {
+			in := &plan.Unresolved[i]
+			fmt.Fprintf(out, "An earlier registration of this name has no completion or rollback record (signed intent %s of %s); %s. A real run decides under the registration lock and removes only what that intent proves it created.\n", in.IntentID, in.At.UTC().Format(time.RFC3339), state)
+		}
+	}
+	fmt.Fprintf(out, "Company policy: %s\n\n%s", plan.CompanyPolicy, plan.Content)
+	return nil
+}
+
 func runAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, name string) error {
 	req := registrationRequest{
 		Name: name, Tenant: agentsAddTenant, Description: agentsAddDescription, Owner: agentsAddOwner, AllowNoCompanyPolicy: agentsAddNoCompanyPolicy,
 	}
 	// Planning reads only: nothing below this call has been written yet.
-	plan, err := planRegistration(ctx, cfg, req)
+	// Before the lock it validates what does not depend on another
+	// registration's progress (the name's form, the fleet, the company
+	// policy, the generated file). Whether the NAME is free is not decided
+	// here: a key or a file under it may be the work in progress of a
+	// registration that is running right now.
+	plan, err := planRegistration(ctx, cfg, req, false)
 	if err != nil {
 		return err
 	}
 	if agentsAddDryRun {
-		fmt.Fprintf(out, "Dry run: nothing was written. A registration would create %s and generate key secret %q.\n", plan.Path, plan.SecretName)
-		if len(plan.Unresolved) > 0 {
-			// Read without the lock and without creating anything: whether
-			// the earlier registration is running is only probed.
-			state := map[string]string{
-				registration.LockHeld:    "a registration is running now (the registration lock is held), so this may be in progress",
-				registration.LockFree:    "no registration is running now (the registration lock is free)",
-				registration.LockUnknown: "whether a registration is running now could not be established",
-			}[registration.Probe(cfg.DataDir)]
-			for i := range plan.Unresolved {
-				in := &plan.Unresolved[i]
-				fmt.Fprintf(out, "An earlier registration of this name has no completion or rollback record (signed intent %s of %s); %s. A real run decides under the registration lock and removes only what that intent proves it created.\n", in.IntentID, in.At.UTC().Format(time.RFC3339), state)
-			}
-		}
-		fmt.Fprintf(out, "Company policy: %s\n\n%s", plan.CompanyPolicy, plan.Content)
-		return nil
+		return printDryRun(ctx, out, cfg, plan)
 	}
-	// The execution takes the registration lock and plans again under it.
+	// The execution takes the registration lock, plans again under it and
+	// decides there whether the name is free.
 	plan, res, err := executeRegistration(ctx, cfg, req)
 	if err != nil {
 		return err

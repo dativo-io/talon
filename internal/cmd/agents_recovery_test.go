@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -148,6 +149,188 @@ func TestAgentsAdd_LiveRegistrationIsInProgressNeverInterrupted(t *testing.T) {
 	errB = runAgentsAdd(ctx, &outB, cfg, "refund-bot")
 	require.ErrorContains(t, errB, "already registered")
 	require.Len(t, registrationRecords(t, cfg, "acme", "refund-bot")[registration.TypeIntent], 1)
+}
+
+// Found by the five-process acceptance race (#567 review). Registration B
+// planned BEFORE it took the lock, saw the key that the still-running
+// registration A had just stored, and refused with "vault secret ... already
+// exists ... remove the existing secret deliberately with 'talon secrets
+// delete ...'": a deletion hint about the key of a live registration.
+//
+// Whether a name is free is now decided under the lock only. While A runs,
+// whatever A has created so far, B is refused at the lock ("in progress")
+// and a dry run says that a registration is running; neither mentions a
+// deletion or calls the name taken. After A has completed, B is refused
+// because the name is registered.
+func TestAgentsAdd_ARunningRegistrationIsNeverJudgedByItsArtifacts(t *testing.T) {
+	for _, step := range []string{stepKeyStored, stepFilePublished, stepFleetValidated} {
+		t.Run("A paused after "+step, func(t *testing.T) {
+			ctx := context.Background()
+			cfg, agentsDir := setupAddFleet(t)
+			resetAgentsAddFlags(t)
+			agentsAddTenant = "acme"
+			shortLockWait(t)
+
+			paused, resume := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			registrationFault = func(point string) error {
+				if point == step {
+					once.Do(func() {
+						close(paused)
+						<-resume
+					})
+				}
+				return nil
+			}
+			var outA bytes.Buffer
+			doneA := make(chan error, 1)
+			go func() { doneA <- runAgentsAdd(ctx, &outA, cfg, "refund-bot") }()
+			<-paused
+			_, hasKey := vaultValue(t, cfg, "refund-bot-talon-key")
+			require.True(t, hasKey, "A has stored its key and is still running")
+
+			noJudgment := func(text string) {
+				t.Helper()
+				for _, forbidden := range []string{"secrets delete", "already exists", "already registered", "rm -r"} {
+					require.NotContains(t, text, forbidden, "a running registration's work in progress was judged")
+				}
+			}
+			// B, a real run: refused at the lock, nothing judged or changed.
+			var outB bytes.Buffer
+			errB := runAgentsAdd(ctx, &outB, cfg, "refund-bot")
+			require.ErrorIs(t, errB, registration.ErrLockBusy)
+			require.ErrorContains(t, errB, "in progress, not interrupted")
+			noJudgment(errB.Error() + outB.String())
+			recs := registrationRecords(t, cfg, "acme", "refund-bot")
+			require.Len(t, recs[registration.TypeIntent], 1)
+			require.Empty(t, recs[registration.TypeRolledBack])
+
+			// A dry run of the same name: reads only, says what is going on.
+			agentsAddDryRun = true
+			var dry bytes.Buffer
+			require.NoError(t, runAgentsAdd(ctx, &dry, cfg, "refund-bot"))
+			require.Contains(t, dry.String(), "a registration is running now")
+			noJudgment(dry.String())
+			// A dry run of ANOTHER name that is taken: while a registration
+			// runs, the name is not judged either.
+			errDry := runAgentsAdd(ctx, &dry, cfg, "support")
+			require.ErrorContains(t, errDry, "a registration is running now")
+			require.ErrorContains(t, errDry, "not judged")
+			agentsAddDryRun = false
+
+			// A completes: its key is the stored one, and nothing says it
+			// was rolled back.
+			close(resume)
+			require.NoError(t, <-doneA)
+			key := printedKeyRe.FindString(outA.String())
+			stored, _ := vaultValue(t, cfg, "refund-bot-talon-key")
+			require.Equal(t, key, stored)
+			require.True(t, registered(t, agentsDir, "refund-bot"))
+			recs = registrationRecords(t, cfg, "acme", "refund-bot")
+			require.Len(t, recs[registration.TypeIntent], 1)
+			require.Len(t, recs[registration.TypeRegistered], 1)
+			require.Empty(t, recs[registration.TypeRolledBack])
+
+			// Now the judgment is sound, and it is made under the lock.
+			errB = runAgentsAdd(ctx, &outB, cfg, "refund-bot")
+			require.ErrorContains(t, errB, "already registered")
+			agentsAddDryRun = true
+			require.ErrorContains(t, runAgentsAdd(ctx, &dry, cfg, "support"), "already registered")
+			agentsAddDryRun = false
+		})
+	}
+}
+
+// The exact interleaving of that race, held still. B has read the name's
+// unfinished registrations (none) and has not yet looked at the vault. A
+// then writes its intent and stores its key, and is still running. B goes
+// on: with the judgment made before the lock, B found "a secret that
+// already exists" and printed a deletion hint about A's live key. B must
+// instead reach the lock, find it held, and say that a registration is in
+// progress.
+func TestAgentsAdd_PlanningBeforeTheLockNeverJudgesTheName(t *testing.T) {
+	ctx := context.Background()
+	cfg, agentsDir := setupAddFleet(t)
+	resetAgentsAddFlags(t)
+	agentsAddTenant = "acme"
+	shortLockWait(t)
+
+	bPlanned, bResume := make(chan struct{}), make(chan struct{})
+	aPaused, aResume := make(chan struct{}), make(chan struct{})
+	var plans atomic.Int32
+	var aOnce sync.Once
+	registrationFault = func(point string) error {
+		switch point {
+		case pointPlanRead:
+			if plans.Add(1) == 1 { // B's plan, made before the lock
+				close(bPlanned)
+				<-bResume
+			}
+		case stepKeyStored:
+			aOnce.Do(func() {
+				close(aPaused)
+				<-aResume
+			})
+		}
+		return nil
+	}
+	var outA, outB bytes.Buffer
+	doneA, doneB := make(chan error, 1), make(chan error, 1)
+	go func() { doneB <- runAgentsAdd(ctx, &outB, cfg, "refund-bot") }()
+	<-bPlanned // B saw no unfinished registration of the name
+	go func() { doneA <- runAgentsAdd(ctx, &outA, cfg, "refund-bot") }()
+	<-aPaused // A: intent written, key stored, still running
+	_, hasKey := vaultValue(t, cfg, "refund-bot-talon-key")
+	require.True(t, hasKey)
+
+	close(bResume)
+	errB := <-doneB
+	require.ErrorIs(t, errB, registration.ErrLockBusy, "B must reach the lock, not judge A's key: %v", errB)
+	require.ErrorContains(t, errB, "in progress, not interrupted")
+	for _, forbidden := range []string{"secrets delete", "already exists", "already registered"} {
+		require.NotContains(t, errB.Error()+outB.String(), forbidden, "a deletion hint or a verdict about a live registration's key")
+	}
+	_, hasKey = vaultValue(t, cfg, "refund-bot-talon-key")
+	require.True(t, hasKey, "B changed nothing")
+
+	close(aResume)
+	require.NoError(t, <-doneA)
+	require.True(t, registered(t, agentsDir, "refund-bot"))
+	recs := registrationRecords(t, cfg, "acme", "refund-bot")
+	require.Len(t, recs[registration.TypeIntent], 1)
+	require.Len(t, recs[registration.TypeRegistered], 1)
+	require.Empty(t, recs[registration.TypeRolledBack])
+}
+
+// Found by repeating the five-process race: a plan made before the lock
+// can read the evidence store at the moment another registration is
+// creating it, when the file exists and its table does not yet. That is a
+// store without records, not an unreadable one. A store that cannot be read
+// for another reason is still an error.
+func TestAgentsAdd_AnEvidenceStoreWithoutItsTableHoldsNoRecords(t *testing.T) {
+	ctx := context.Background()
+	cfg, agentsDir := setupAddFleet(t)
+	resetAgentsAddFlags(t)
+	agentsAddTenant = "acme"
+	require.NoError(t, cfg.EnsureDataDir())
+	require.NoError(t, os.WriteFile(cfg.EvidenceDBPath(), nil, 0o600))
+
+	lookup, err := unresolvedRegistrations(ctx, cfg, "refund-bot")
+	require.NoError(t, err)
+	require.True(t, lookup.Complete)
+	require.Empty(t, lookup.Unresolved)
+	// The registration proceeds and creates the store's schema itself.
+	var out bytes.Buffer
+	require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
+	require.True(t, registered(t, agentsDir, "refund-bot"))
+	require.Len(t, registrationRecords(t, cfg, "acme", "refund-bot")[registration.TypeRegistered], 1)
+
+	// A file that is not a database is not "no records".
+	other, _ := setupAddFleet(t)
+	require.NoError(t, other.EnsureDataDir())
+	require.NoError(t, os.WriteFile(other.EvidenceDBPath(), []byte("this is not a database, it is a text file of some length"), 0o600))
+	_, err = unresolvedRegistrations(ctx, other, "refund-bot")
+	require.ErrorContains(t, err, "reading the evidence store")
 }
 
 // killedAt runs one registration of refund-bot in a subprocess that is

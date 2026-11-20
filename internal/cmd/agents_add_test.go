@@ -283,6 +283,17 @@ func TestAgentsAdd_RefusesWithoutWriting(t *testing.T) {
 		_, ok := vaultValue(t, cfg, "support-talon-key")
 		require.False(t, ok, "no key minted for a refused registration")
 		require.Empty(t, registrationRecords(t, cfg, "default", "support"), "a refusal in planning writes no evidence")
+		// Whether a name is taken is decided under the registration lock
+		// (#567 review), so this refusal leaves the lock file, empty, and
+		// nothing else: no vault, no evidence store.
+		entries, err := os.ReadDir(cfg.DataDir)
+		require.NoError(t, err)
+		for _, e := range entries {
+			require.Equal(t, registration.LockFileName, e.Name(), "a refused registration created %s", e.Name())
+			info, err := e.Info()
+			require.NoError(t, err)
+			require.Zero(t, info.Size(), "the lock file holds no data")
+		}
 	})
 	t.Run("an existing secret is never replaced or bound", func(t *testing.T) {
 		cfg, agentsDir := setupAddFleet(t)
@@ -314,6 +325,7 @@ func TestAgentsAdd_RefusesWithoutWriting(t *testing.T) {
 		require.ErrorContains(t, err, "does not validate")
 		_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
 		require.True(t, os.IsNotExist(statErr))
+		require.NoDirExists(t, cfg.DataDir, "refused before the lock: not even the data directory or the lock file is created")
 		_, ok := vaultValue(t, cfg, "refund-bot-talon-key")
 		require.False(t, ok)
 	})
@@ -329,6 +341,7 @@ func TestAgentsAdd_RefusesWithoutWriting(t *testing.T) {
 		for _, n := range []string{"Refund", "../escape", "a b", "", "-x"} {
 			require.ErrorContains(t, runAgentsAdd(ctx, &bytes.Buffer{}, cfg, n), "invalid use case name", n)
 		}
+		require.NoDirExists(t, cfg.DataDir, "refused before the lock")
 	})
 	t.Run("an invalid company policy", func(t *testing.T) {
 		cfg, agentsDir := setupAddFleetWith(t, "gateway:\n  enabled: true\n  not_a_key: 1\n")
@@ -336,6 +349,7 @@ func TestAgentsAdd_RefusesWithoutWriting(t *testing.T) {
 		require.ErrorContains(t, runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot"), "present but invalid")
 		_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot"))
 		require.True(t, os.IsNotExist(statErr))
+		require.NoDirExists(t, cfg.DataDir, "refused before the lock")
 	})
 }
 

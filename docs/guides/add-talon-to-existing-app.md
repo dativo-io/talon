@@ -319,7 +319,7 @@ A registration writes to three places that share no transaction: the evidence st
 What happens in each case:
 
 - **It fails with an error.** It removes exactly what it created, writes a signed rollback record that says what it removed, and tells you whether anything was left. You can run the command again. If the evidence store is the part that failed, the rollback cannot be recorded: what was created is still removed, the error says so, and the next registration of the name records the rollback.
-- **Another registration is running.** Its signed intent has no completion record *yet*. That is work in progress, not a fault: `talon doctor` reports it as **IN PROGRESS**, a second `talon agents add` waits for it, and nothing of it is touched.
+- **Another registration is running.** Its signed intent has no completion record *yet*. That is work in progress, not a fault: `talon doctor` reports it as **IN PROGRESS**, a second `talon agents add` waits for it, and nothing of it is touched or judged. A key or a file it has already created is not reported as a taken name: whether a name is free is decided only by the registration that holds the lock.
 - **The process died** (killed, power loss). Nothing was cleaned up, but no key was shown, so nobody can use what it left. `talon doctor` reports it as **INTERRUPTED**. Run the registration again:
 
   ```bash

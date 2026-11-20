@@ -151,6 +151,9 @@ const (
 	// stepRollbackRecord is the signed rollback record of a failed
 	// registration (a fault point only: it is not a step of a successful one).
 	stepRollbackRecord = "rollback_record"
+	// pointPlanRead is not a step: it is the moment in planning after the
+	// unfinished registrations of the name were read.
+	pointPlanRead = "plan_read"
 )
 
 // registrationFault is the fault-injection seam of a registration. It is a
@@ -173,10 +176,17 @@ func faultOr(step string, do func() error) error {
 }
 
 // planRegistration validates everything that needs no write: the
-// installation mode, the existing fleet, the name, the vault, earlier
-// interrupted registrations of the name, the company policy and the
-// rendered file. It creates nothing, on a fresh installation too.
-func planRegistration(ctx context.Context, cfg *config.Config, req registrationRequest) (*agentsAddPlan, error) {
+// installation mode, the existing fleet, the name, earlier unfinished
+// registrations of the name, the company policy and the rendered file. It
+// creates nothing, on a fresh installation too.
+//
+// judgeName decides whether a name that looks taken (an agent file or a
+// vault secret exists) is refused. That judgment is only sound under the
+// registration lock: without it, the key or the file may belong to a
+// registration that is running right now and has not finished. The
+// execution plans with judgeName under the lock; the plan made before the
+// lock does not judge.
+func planRegistration(ctx context.Context, cfg *config.Config, req registrationRequest, judgeName bool) (*agentsAddPlan, error) {
 	name := req.Name
 	if !agentNameRe.MatchString(name) {
 		return nil, fmt.Errorf("invalid use case name %q: lower-case letters, digits, '-' and '_', starting with a letter or digit, at most 63 characters", name)
@@ -202,7 +212,7 @@ func planRegistration(ctx context.Context, cfg *config.Config, req registrationR
 		plan.AbsPath = abs
 	}
 
-	if err := checkNameAvailable(ctx, cfg, plan); err != nil {
+	if err := checkNameAvailable(ctx, cfg, plan, judgeName); err != nil {
 		return nil, err
 	}
 	cp, err := readCompanyPolicy(cfg)
@@ -236,18 +246,24 @@ func planRegistration(ctx context.Context, cfg *config.Config, req registrationR
 // exists the artifacts under the name may be its leftovers, so the name is
 // not refused yet; the execution decides under the lock (resolveUnresolved)
 // and then applies the same refusals.
-func checkNameAvailable(ctx context.Context, cfg *config.Config, plan *agentsAddPlan) error {
+func checkNameAvailable(ctx context.Context, cfg *config.Config, plan *agentsAddPlan, judgeName bool) error {
 	lookup, err := unresolvedRegistrations(ctx, cfg, plan.Name)
 	if err != nil {
 		return err
 	}
 	plan.Unresolved, plan.UnresolvedIncomplete = lookup.Unresolved, !lookup.Complete
+	// Between this read and the checks below another registration can write
+	// its intent and its key. That gap is why the name is judged under the
+	// lock only (judgeName); the fault point lets a test hold a plan in it.
+	if err := registrationFault(pointPlanRead); err != nil {
+		return err
+	}
 	if _, err := os.Stat(cfg.AgentsDir); os.IsNotExist(err) {
 		plan.AgentsDirMissing = true // a first registration: no fleet to validate yet
 	} else if _, err := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir); err != nil {
 		return fmt.Errorf("the existing fleet under %s does not validate, so nothing was added (fix it first; 'talon validate --dir %s'): %w", cfg.AgentsDir, cfg.AgentsDir, err)
 	}
-	if len(plan.Unresolved) > 0 {
+	if len(plan.Unresolved) > 0 || !judgeName {
 		return nil
 	}
 	return nameOccupied(ctx, cfg, plan)
@@ -304,6 +320,14 @@ func unresolvedRegistrations(ctx context.Context, cfg *config.Config, name strin
 	}
 	ro, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			// The file exists and has no evidence table: a store another
+			// registration is creating right now (a plan made before the
+			// lock can see that moment), or one whose creation was cut off.
+			// No record was ever written through it. The vault read treats
+			// a vault without its table the same way.
+			return registration.Lookup{Complete: true}, nil
+		}
 		return registration.Lookup{}, fmt.Errorf("reading the evidence store: %w", err)
 	}
 	defer ro.Close()
@@ -334,7 +358,7 @@ func executeRegistration(ctx context.Context, cfg *config.Config, req registrati
 	}
 	defer release()
 
-	plan, err := planRegistration(ctx, cfg, req)
+	plan, err := planRegistration(ctx, cfg, req, true)
 	if err != nil {
 		return nil, nil, err
 	}
