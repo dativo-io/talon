@@ -13,7 +13,8 @@
 #                                       reviewer approves; then one
 #   900.00 EUR                        → zero
 #   rejected / expired approval       → zero
-#   changed amount, same ticket       → conflict, zero
+#   changed amount, same operation     → conflict, zero
+#   distinct request_id, same ticket   → independently authorized operation
 #   replay of a finished ticket       → "refunded" from Talon's record, no second dispatch
 #   concurrent identical requests     → one dispatch
 #   Talon stopped before dispatch     → the run fails, zero
@@ -239,15 +240,23 @@ curl -fsS "http://127.0.0.1:${REFUND_PORT}/mode/ok" >/dev/null
 check "a second request for the unknown ticket still reports UNKNOWN" "$(call "$(refund T-32 32.00)")" "202 unknown"
 check "unknown: no blind retry" "$(refunds)" "4"
 
+echo; echo "== distinct operations sharing one business ticket"
+check "second legitimate request on T-30 is independently authorized" "$(call '{"ticket_id":"T-30","amount":"30.00","currency":"EUR","request_id":"second"}')" "200 refunded"
+check "two distinct requests on one ticket: two dispatches" "$(refunds)" "5"
+check "retry reuses the exact second request identity" "$(call '{"ticket_id":"T-30","amount":"30.00","currency":"EUR","request_id":"second"}')" "200 refunded"
+check "same request_id: no duplicate dispatch" "$(refunds)" "5"
+check "invalid request_id fails before Talon" "$(call '{"ticket_id":"T-30","amount":"30.00","currency":"EUR","request_id":"invalid/path"}')" "400 invalid_request"
+check "invalid request_id: no extra dispatch" "$(refunds)" "5"
+
 echo; echo "== Talon unavailable"
 kill "$talon_pid"; wait "$talon_pid" 2>/dev/null || true
 st="$(call "$(refund T-33 33.00)" | cut -d' ' -f1)"
 check "with Talon stopped the run fails (no fallback path)" "$([ "$st" -ge 500 ] && echo failed || echo "$st")" "failed"
-check "Talon stopped: zero dispatch" "$(refunds)" "4"
+check "Talon stopped: zero dispatch" "$(refunds)" "5"
 start_talon
 
 echo; echo "== signed evidence"
-for op in refund-T-30 refund-T-75 refund-T-900 refund-T-76 refund-T-32; do
+for op in refund-T-30 refund-T-75 refund-T-900 refund-T-76 refund-T-32 refund-T-30-second; do
   out="$(talon audit verify --operation "$op" 2>&1 || true)"
   check "lifecycle of $op verifies" "$(echo "$out" | grep -c 'INVALID' || true)" "0"
 done
