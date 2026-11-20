@@ -60,6 +60,15 @@ func startRuntimeStatus(ctx context.Context, cfg *config.Config, fleetView func(
 	}
 }
 
+// serveStartedAt is when `talon serve` began, taken before it reads any
+// configuration, secret or agent key. The runtime record reports it as the
+// process's start time, and readers rely on the order: a process whose
+// record says it started after a moment T read its agent keys after T
+// (effective.Verification attributes traffic to the credential stored now
+// on that basis). Taking the time when the record is first written, after
+// the keys were read, would not give that.
+var serveStartedAt time.Time
+
 // runtimeBase is the static part of this process's record: installation,
 // roles from the serve flags, version, loaded config files.
 func runtimeBase(cfg *config.Config) runtimestatus.Record {
@@ -79,7 +88,10 @@ func runtimeBase(cfg *config.Config) runtimestatus.Record {
 		Roles:        roles,
 		Version:      resolvedVersion(),
 		Commit:       Commit,
-		StartedAt:    time.Now().UTC(),
+		StartedAt:    serveStartedAt,
+	}
+	if base.StartedAt.IsZero() {
+		base.StartedAt = time.Now().UTC()
 	}
 	if serveProxyConfig != "" {
 		base.ProxyConfig = configRef(serveProxyConfig)

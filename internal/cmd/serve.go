@@ -74,6 +74,8 @@ func init() {
 
 //nolint:gocyclo // orchestration flow is inherently branched
 func runServe(cmd *cobra.Command, args []string) (err error) {
+	// Before anything is read: see serveStartedAt.
+	serveStartedAt = time.Now().UTC()
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

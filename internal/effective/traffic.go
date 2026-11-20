@@ -844,7 +844,9 @@ func credentialOf(ctx context.Context, in verificationInputs) *Credential {
 // startedSince reports whether the process started at or after t. A process
 // reads every agent key from the vault when it starts and has no earlier
 // generation to carry a key over from, so such a process cannot hold a value
-// that was replaced before t.
+// that was replaced before t. The start time in a runtime record is taken
+// before the process reads anything (cmd.serveStartedAt), so "started at or
+// after t" implies "read its keys after t".
 //
 // A RELOAD is deliberately not accepted as the same proof. A rebuilt
 // generation normally reads the vault again, but it keeps the previous

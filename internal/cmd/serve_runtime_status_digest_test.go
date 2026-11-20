@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -51,4 +52,24 @@ func TestRuntimeRecord_GatewayConfigDigestIsOfTheLoadedBytes(t *testing.T) {
 	// A start-up that failed before the load: nothing was parsed, the file
 	// as found is recorded.
 	require.Equal(t, sha(later), loadedConfigRef(path, "").Digest)
+}
+
+// The runtime record's start time is when `talon serve` began, before it
+// read any agent key, not when the record was first written: a reader that
+// sees "started after T" may conclude that the keys were read after T
+// (#567 review, credential attribution).
+func TestRuntimeBase_StartedAtIsWhenServeBeganNotWhenTheRecordIsWritten(t *testing.T) {
+	old := serveStartedAt
+	t.Cleanup(func() { serveStartedAt = old })
+	began := time.Now().UTC().Add(-90 * time.Second)
+	serveStartedAt = began
+	base := runtimeBase(&config.Config{DataDir: t.TempDir(), SigningKey: "runtime-record-start-time-0000001"})
+	if !base.StartedAt.Equal(began) {
+		t.Fatalf("StartedAt = %s, want the moment serve began (%s)", base.StartedAt, began)
+	}
+	// Outside `talon serve` (no start recorded) the record still has a time.
+	serveStartedAt = time.Time{}
+	if runtimeBase(&config.Config{DataDir: t.TempDir(), SigningKey: "runtime-record-start-time-0000001"}).StartedAt.IsZero() {
+		t.Fatal("StartedAt must never be zero")
+	}
 }
