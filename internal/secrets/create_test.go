@@ -2,7 +2,6 @@ package secrets
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -152,65 +151,4 @@ func TestOwnership_IssuedBeforeCreationAndProvableLater(t *testing.T) {
 	removed, err := s.DeleteOwned(ctx, again)
 	require.NoError(t, err)
 	require.False(t, removed)
-}
-
-// The vault's own log says when the value stored now was written and how
-// many values ever existed under a name. It is read through a read-only
-// connection without a key, counts creates and sets, ignores a rotation
-// (the same value re-encrypted) and remembers values that were deleted.
-func TestCredentialWritesReadOnly(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "secrets.db")
-
-	w, err := CredentialWritesReadOnly(ctx, path, "k")
-	require.NoError(t, err)
-	require.Equal(t, CredentialWrites{}, w, "no vault file: nothing is stored")
-	_, statErr := os.Stat(path)
-	require.True(t, os.IsNotExist(statErr), "and none is created")
-
-	s, err := NewSecretStore(path, "0123456789abcdef0123456789abcdef")
-	require.NoError(t, err)
-	defer s.Close()
-	w, err = CredentialWritesReadOnly(ctx, path, "k")
-	require.NoError(t, err)
-	require.False(t, w.Exists)
-	require.Zero(t, w.Writes)
-
-	_, err = s.Create(ctx, "k", []byte("v1"), ACL{})
-	require.NoError(t, err)
-	first, err := CredentialWritesReadOnly(ctx, path, "k")
-	require.NoError(t, err)
-	require.True(t, first.Exists)
-	require.Equal(t, 1, first.Writes)
-	require.False(t, first.LastWrittenAt.IsZero())
-
-	require.NoError(t, s.Rotate(ctx, "k"))
-	rotated, err := CredentialWritesReadOnly(ctx, path, "k")
-	require.NoError(t, err)
-	require.Equal(t, 1, rotated.Writes, "a rotation re-encrypts the same value: it is not a new credential")
-	require.True(t, rotated.LastWrittenAt.Equal(first.LastWrittenAt))
-
-	require.NoError(t, s.Set(ctx, "k", []byte("v2"), ACL{}))
-	replaced, err := CredentialWritesReadOnly(ctx, path, "k")
-	require.NoError(t, err)
-	require.Equal(t, 2, replaced.Writes)
-	require.False(t, replaced.LastWrittenAt.Before(first.LastWrittenAt))
-
-	require.NoError(t, s.Delete(ctx, "k"))
-	gone, err := CredentialWritesReadOnly(ctx, path, "k")
-	require.NoError(t, err)
-	require.False(t, gone.Exists)
-	require.Equal(t, 2, gone.Writes, "the log remembers that values existed under the name")
-
-	_, err = s.Create(ctx, "k", []byte("v3"), ACL{})
-	require.NoError(t, err)
-	again, err := CredentialWritesReadOnly(ctx, path, "k")
-	require.NoError(t, err)
-	require.True(t, again.Exists)
-	require.Equal(t, 3, again.Writes, "a re-created secret is not the first credential under its name")
-
-	other, err := CredentialWritesReadOnly(ctx, path, "another")
-	require.NoError(t, err)
-	require.Equal(t, CredentialWrites{}, other)
 }

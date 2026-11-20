@@ -51,23 +51,39 @@ func (k *keyed) store(do func(*secrets.SecretStore)) {
 	do(s)
 }
 
-// stamp moves the write the vault recorded last to at. The vault stamps
-// writes with the wall clock; the tests need a timeline they control, so
-// they set the recorded time of each write (and nothing else).
+// stamp moves the write the vault's version record holds for the key to at.
+// The vault stamps writes with its own clock; the tests need a timeline they
+// control, so they set the recorded time of the last write (and nothing
+// else). The record has millisecond precision and a reader rounds it up by
+// one millisecond, so the stored value is one millisecond earlier.
 func (k *keyed) stamp(at time.Time) time.Time {
+	k.t.Helper()
+	k.exec(`UPDATE secret_value_versions SET written_at = ? WHERE name = ?`, at.Add(-time.Millisecond).UTC().Format("2006-01-02T15:04:05.000Z"), keySecret)
+	got := k.since()
+	require.True(k.t, got.Equal(at), "the vault reports the write at %s, want %s", got, at)
+	return got
+}
+
+// exec runs one statement on the vault file directly (test timeline and
+// failure injection only).
+func (k *keyed) exec(stmt string, args ...interface{}) {
 	k.t.Helper()
 	db, err := sql.Open("sqlite3", k.vault)
 	require.NoError(k.t, err)
 	defer db.Close()
-	ctx := context.Background()
-	_, err = db.ExecContext(ctx, `UPDATE secret_access_log SET timestamp = ? WHERE id = (
-		SELECT id FROM secret_access_log WHERE secret_name = ? AND reason IN ('create', 'set') ORDER BY rowid DESC LIMIT 1)`, at, keySecret)
+	_, err = db.ExecContext(context.Background(), stmt, args...)
 	require.NoError(k.t, err)
-	_, err = db.ExecContext(ctx, `UPDATE secrets SET created_at = MIN(created_at, ?) WHERE name = ?`, at, keySecret)
-	require.NoError(k.t, err)
-	got := k.since()
-	require.True(k.t, got.Equal(at), "the vault reports the write at %s, want %s", got, at)
-	return got
+}
+
+// asOlderVault makes the vault look as the migration of a vault from an
+// earlier Talon version leaves it (secrets.TestValueVersions_AnOlderVaultHasNoHistory
+// proves that state): versions are recorded since `since`, not from the
+// vault's creation, and the stored values have no recorded write.
+func (k *keyed) asOlderVault(since time.Time) {
+	k.t.Helper()
+	k.exec(`UPDATE vault_meta SET value = '0' WHERE key = 'value_versions_from_creation'`)
+	k.exec(`UPDATE vault_meta SET value = ? WHERE key = 'value_versions_since'`, since.UTC().Format(time.RFC3339Nano))
+	k.exec(`UPDATE secret_value_versions SET generation = 0, written_at = '', complete = 0`)
 }
 
 // issue stores a NEW key under the secret name at the given time, as a
@@ -97,9 +113,9 @@ func (k *keyed) revoke() {
 
 func (k *keyed) since() time.Time {
 	k.t.Helper()
-	w, err := secrets.CredentialWritesReadOnly(context.Background(), k.vault, keySecret)
+	v, err := secrets.CredentialVersionReadOnly(context.Background(), k.vault, keySecret)
 	require.NoError(k.t, err)
-	return w.LastWrittenAt
+	return v.WrittenAt
 }
 
 func (k *keyed) inputs() Inputs {
@@ -171,7 +187,8 @@ func TestVerification_TrafficIsAttributedToTheCurrentCredential(t *testing.T) {
 		require.Equal(t, CredentialKnown, c.State)
 		assert.Equal(t, keySecret, c.SecretName)
 		assert.True(t, c.Since.Equal(w))
-		assert.Equal(t, 1, c.Writes)
+		assert.Equal(t, 1, c.Generation)
+		assert.Equal(t, HistoryOnlyValue, c.History)
 		require.NotNil(t, c.Registration)
 		assert.Equal(t, "reg-A", c.Registration.EvidenceID)
 		assert.Equal(t, "valid", c.Registration.Verification)
@@ -203,7 +220,8 @@ func TestVerification_TrafficIsAttributedToTheCurrentCredential(t *testing.T) {
 		r, err := Build(ctx, k.inputs())
 		require.NoError(t, err)
 		c := r.Verification.Credential
-		assert.Equal(t, 2, c.Writes, "the vault's log remembers that another value existed under the name")
+		assert.Equal(t, 2, c.Generation, "the vault's version record remembers that another value existed under the name")
+		assert.Equal(t, HistoryEarlierValues, c.History)
 		assert.True(t, c.Since.Equal(w2))
 		assert.Equal(t, "reg-B", c.Registration.EvidenceID, "the current registration")
 		g := observation(t, r, BoundaryLLMGateway)
@@ -359,28 +377,153 @@ func TestVerification_TrafficIsAttributedToTheCurrentCredential(t *testing.T) {
 		c := r.Verification.Credential
 		assert.Nil(t, c.Registration, "no 'talon agents add' record exists, and none is required")
 		assert.Equal(t, CredentialKnown, c.State)
-		assert.Equal(t, 1, c.Writes)
+		assert.Equal(t, 1, c.Generation)
 		assert.Equal(t, CredentialCurrent, observation(t, r, BoundaryLLMGateway).Credential)
 		assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code)
 	})
 
-	t.Run("a vault whose log holds no write for the name: when the value was stored is not known", func(t *testing.T) {
+	t.Run("the access log is not the authority: a replacement whose audit entry failed is still a replacement", func(t *testing.T) {
+		k := newKeyed(t)
+		w1 := k.issue("key-A", t1)
+		started := w1.Add(time.Second)
+		k.request("req-A", w1.Add(time.Minute))
+		running := process("serve1", started, started, true)
+		r, err := Build(ctx, withRuntime(k.inputs(), running))
+		require.NoError(t, err)
+		require.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code)
+
+		// The audit entry of the replacement cannot be written. Read from the
+		// access log, the credential would still look like the first and only
+		// one, written at w1, and req-A would keep verifying it.
+		k.exec(`CREATE TRIGGER fail_log BEFORE INSERT ON secret_access_log BEGIN SELECT RAISE(ABORT, 'injected: the access log is unavailable'); END`)
+		w2 := k.replace("key-B", t2)
+		k.exec(`DROP TRIGGER fail_log`)
+		var sets int
+		db, err := sql.Open("sqlite3", k.vault)
+		require.NoError(t, err)
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM secret_access_log WHERE secret_name = ? AND reason = 'set'`, keySecret).Scan(&sets))
+		require.NoError(t, db.Close())
+		require.Zero(t, sets, "the access log holds no trace of the replacement")
+
+		r, err = Build(ctx, withRuntime(k.inputs(), running))
+		require.NoError(t, err)
+		c := r.Verification.Credential
+		assert.True(t, c.Since.Equal(w2), "the credential stored now was written at the replacement")
+		assert.Equal(t, 2, c.Generation)
+		assert.Equal(t, HistoryEarlierValues, c.History)
+		g := observation(t, r, BoundaryLLMGateway)
+		assert.Equal(t, CredentialPrevious, g.Credential, "traffic of key A never verifies key B")
+		assert.Equal(t, ReadingTrafficHistorical, r.Verification.Reading.Code)
+
+		// The runtime restarts and a request arrives with key B.
+		restart := w2.Add(time.Minute)
+		k.request("req-B", restart.Add(time.Second))
+		serve2 := process("serve2", restart, restart, true)
+		r, err = Build(ctx, withRuntime(k.inputs(), serve2))
+		require.NoError(t, err)
+		assert.Equal(t, CredentialCurrent, observation(t, r, BoundaryLLMGateway).Credential)
+		assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code)
+
+		// Key B is deleted and the use case is registered again with key C.
+		// Nothing recorded so far verifies key C.
+		k.revoke()
+		w3 := k.issue("key-C", t2.Add(time.Hour))
+		r, err = Build(ctx, withRuntime(k.inputs(), serve2))
+		require.NoError(t, err)
+		assert.Equal(t, 3, r.Verification.Credential.Generation)
+		assert.Equal(t, CredentialPrevious, observation(t, r, BoundaryLLMGateway).Credential)
+		assert.Equal(t, ReadingTrafficHistorical, r.Verification.Reading.Code)
+		restart3 := w3.Add(time.Minute)
+		k.request("req-C", restart3.Add(time.Second))
+		serve3 := process("serve3", restart3, restart3, true)
+		r, err = Build(ctx, withRuntime(k.inputs(), serve3))
+		require.NoError(t, err)
+		require.Equal(t, CredentialCurrent, observation(t, r, BoundaryLLMGateway).Credential)
+
+		// `talon secrets rotate` re-encrypts key C. It is the same
+		// credential: its generation and its write time do not move, and the
+		// request that verified it still does.
+		k.store(func(s *secrets.SecretStore) { require.NoError(t, s.Rotate(ctx, keySecret)) })
+		r, err = Build(ctx, withRuntime(k.inputs(), serve3))
+		require.NoError(t, err)
+		c = r.Verification.Credential
+		assert.Equal(t, 3, c.Generation, "a re-encryption is not a new credential generation")
+		assert.True(t, c.Since.Equal(w3))
+		assert.Equal(t, CredentialCurrent, observation(t, r, BoundaryLLMGateway).Credential)
+		assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code)
+	})
+
+	t.Run("a vault from an earlier version: no history is invented", func(t *testing.T) {
 		k := newKeyed(t)
 		w := k.issue("key-A", t1)
 		k.request("req-1", w.Add(time.Minute))
-		db, err := sql.Open("sqlite3", k.vault)
+		upgraded := t2
+		k.asOlderVault(upgraded)
+
+		// The key was stored before the vault recorded versions: when, and
+		// whether another existed, is not known. One stored value is not
+		// proof that it is the only one there ever was.
+		running := process("serve1", w.Add(time.Second), w.Add(time.Second), true)
+		r, err := Build(ctx, withRuntime(k.inputs(), running))
 		require.NoError(t, err)
-		_, err = db.ExecContext(ctx, `DELETE FROM secret_access_log WHERE secret_name = ?`, keySecret)
-		require.NoError(t, err)
-		require.NoError(t, db.Close())
-		r, err := Build(ctx, withRuntime(k.inputs(), process("serve1", w.Add(time.Second), w.Add(time.Second), true)))
-		require.NoError(t, err)
-		assert.Equal(t, 0, r.Verification.Credential.Writes)
+		c := r.Verification.Credential
+		assert.Equal(t, CredentialUnversioned, c.State)
+		assert.Equal(t, HistoryNotRecorded, c.History)
+		assert.Nil(t, c.Since)
+		assert.Contains(t, c.Note, "before this vault recorded value versions")
 		g := observation(t, r, BoundaryLLMGateway)
-		assert.Equal(t, CredentialUnknown, g.Credential, "an unlogged later write cannot be excluded")
-		assert.Contains(t, g.CredentialNote, "holds no write for this secret name")
+		assert.Equal(t, CredentialUnknown, g.Credential)
 		assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code, "the record's own facts still hold, with the caveat")
 		assert.Contains(t, r.Verification.Reading.Text, "which credential it was authenticated with is not established")
+
+		// The key is written again after the upgrade: from then on its
+		// version is recorded, and an earlier value is known to have existed.
+		w2 := k.replace("key-B", upgraded.Add(time.Hour))
+		r, err = Build(ctx, withRuntime(k.inputs(), running))
+		require.NoError(t, err)
+		c = r.Verification.Credential
+		assert.Equal(t, CredentialKnown, c.State)
+		assert.Equal(t, HistoryEarlierValues, c.History)
+		assert.True(t, c.Since.Equal(w2))
+		assert.Equal(t, CredentialPrevious, observation(t, r, BoundaryLLMGateway).Credential)
+		assert.Equal(t, ReadingTrafficHistorical, r.Verification.Reading.Code)
+	})
+
+	t.Run("a name first stored after the upgrade of an older vault", func(t *testing.T) {
+		k := newKeyed(t)
+		// Another secret makes the vault exist before the upgrade.
+		k.store(func(s *secrets.SecretStore) {
+			require.NoError(t, s.Set(ctx, "provider-key", []byte("sk"), secrets.ACL{}))
+		})
+		upgraded := t1
+		k.asOlderVault(upgraded)
+		w := k.issue("key-A", t2) // registered after the upgrade
+		k.request("req-1", w.Add(time.Minute))
+
+		// A process that was already running before the upgrade may hold a
+		// key of this name that existed, and was deleted, before versions
+		// were recorded. Nothing shows that it does not.
+		old := process("serve-old", upgraded.Add(-time.Hour), w.Add(time.Second), true)
+		r, err := Build(ctx, withRuntime(k.inputs(), old))
+		require.NoError(t, err)
+		c := r.Verification.Credential
+		assert.Equal(t, HistoryOnlyValueSinceRecord, c.History)
+		assert.Contains(t, c.Note, "whether another existed before that is not recorded")
+		g := observation(t, r, BoundaryLLMGateway)
+		assert.Equal(t, CredentialNotEstablished, g.Credential)
+		assert.Contains(t, g.CredentialNote, "began to record value versions")
+		assert.Equal(t, RuntimeNotEstablished, c.Runtime)
+
+		// A process that started after the upgrade read the vault when any
+		// such earlier value was already gone: the registration verifies
+		// without another restart, as on a new vault.
+		current := process("serve-new", upgraded.Add(time.Minute), w.Add(time.Second), true)
+		r, err = Build(ctx, withRuntime(k.inputs(), current))
+		require.NoError(t, err)
+		g = observation(t, r, BoundaryLLMGateway)
+		assert.Equal(t, CredentialCurrent, g.Credential)
+		assert.Equal(t, RuntimeHoldsCurrent, r.Verification.Credential.Runtime)
+		assert.Equal(t, ReadingTrafficMatches, r.Verification.Reading.Code)
 	})
 
 	t.Run("what cannot be read is unknown, and is said", func(t *testing.T) {

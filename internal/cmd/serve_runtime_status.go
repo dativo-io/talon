@@ -60,13 +60,18 @@ func startRuntimeStatus(ctx context.Context, cfg *config.Config, fleetView func(
 	}
 }
 
-// serveStartedAt is when `talon serve` began, taken before it reads any
-// configuration, secret or agent key. The runtime record reports it as the
-// process's start time, and readers rely on the order: a process whose
-// record says it started after a moment T read its agent keys after T
+// serveStartedAt is the start time `talon serve` reports in its runtime
+// record. It is taken at one precise point: after the vault is open and
+// before the process reads its first agent key. Readers rely on both sides
 // (effective.Verification attributes traffic to the credential stored now
-// on that basis). Taking the time when the record is first written, after
-// the keys were read, would not give that.
+// on that basis):
+//
+//   - a process whose record says it started at or after a moment T read
+//     its agent keys after T. Taking the time when the record is first
+//     written, after the keys were read, would not give that;
+//   - a process that opened an older vault, and thereby made it record
+//     value versions, reports a start time after that moment, so it counts
+//     as "started after the vault began to record versions".
 var serveStartedAt time.Time
 
 // runtimeBase is the static part of this process's record: installation,

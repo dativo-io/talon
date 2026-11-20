@@ -108,6 +108,24 @@ const (
 	CredentialAbsent = "absent"  // the vault was read and holds no key under the name the agent file binds
 	CredentialNoKey  = "no_key"  // the agent file binds no key
 	CredentialUnread = "unknown" // the vault could not be read, or no vault file is visible to this process
+	// CredentialUnversioned: a key is stored, but the vault holds no record
+	// of when its value was written (the value predates the vault's version
+	// record). Nothing is attributed to it until it is written again.
+	CredentialUnversioned = "not_recorded"
+)
+
+// What the vault's version record says about earlier values under the
+// secret name (secrets.CredentialVersion).
+const (
+	// HistoryOnlyValue: no other value has ever existed under the name.
+	HistoryOnlyValue = "only_value"
+	// HistoryOnlyValueSinceRecord: no other value since the vault began to
+	// record versions; whether one existed before that is not recorded.
+	HistoryOnlyValueSinceRecord = "only_value_since_record"
+	// HistoryEarlierValues: another value existed under the name.
+	HistoryEarlierValues = "earlier_values"
+	// HistoryNotRecorded: the vault holds no version record for the value.
+	HistoryNotRecorded = "not_recorded"
 )
 
 // What the running process(es) hold.
@@ -135,12 +153,16 @@ type Credential struct {
 	State string `json:"state"`
 	// SecretName is the vault secret the agent file binds as the key.
 	SecretName string `json:"secret_name,omitempty"`
-	// Since is when the value stored now was written to the vault.
+	// Since is when the value stored now was written to the vault (an upper
+	// bound, at most a millisecond after the write).
 	Since *time.Time `json:"since,omitempty"`
-	// Writes is how many values were ever written under the secret name
-	// (replaced and deleted ones included). 1: no other credential has ever
-	// existed under this name.
-	Writes int `json:"writes"`
+	// Generation counts the values written under the secret name since the
+	// vault records value versions, replaced and deleted ones included.
+	Generation int `json:"generation"`
+	// History: only_value | only_value_since_record | earlier_values |
+	// not_recorded. It comes from the vault's version record, which commits
+	// with every write of a value; the vault's access log is not used.
+	History string `json:"history"`
 	// Registration is the newest signed `talon agents add` completion record
 	// of this tenant and name; absent for a use case configured by hand.
 	Registration *RegistrationFact `json:"registration,omitempty"`
@@ -150,6 +172,8 @@ type Credential struct {
 	Runtime     string `json:"runtime"`
 	RuntimeNote string `json:"runtime_note"`
 	Note        string `json:"note,omitempty"`
+
+	version secrets.CredentialVersion
 }
 
 // RegistrationFact is a signed registration completion record.
@@ -815,30 +839,54 @@ func credentialOf(ctx context.Context, in verificationInputs) *Credential {
 		c.RuntimeNote = c.Note
 		return c
 	}
-	w, err := secrets.CredentialWritesReadOnly(ctx, in.secretsDB, c.SecretName)
+	v, err := secrets.CredentialVersionReadOnly(ctx, in.secretsDB, c.SecretName)
+	c.version, c.Generation, c.History = v, v.Generation, HistoryNotRecorded
 	switch {
 	case err != nil:
 		c.Note = "the vault could not be read (" + err.Error() + "), so when the current credential was stored is not known"
 		c.RuntimeNote = c.Note
 		return c
-	case !w.Exists:
-		c.State, c.Writes = CredentialAbsent, w.Writes
+	case !v.Exists:
+		c.State = CredentialAbsent
 		c.Note = fmt.Sprintf("the vault holds no secret %q: no credential of this use case is stored now. A process that loaded the key before it was removed keeps accepting it until that process reloads the use case or restarts", c.SecretName)
 		c.RuntimeNote = "no credential is stored that a process could hold"
 		return c
+	case !v.Tracked || v.WrittenAt.IsZero():
+		c.State = CredentialUnversioned
+		c.Note = fmt.Sprintf("a key is stored as %q, but the vault holds no record of when its value was written: it was stored before this vault recorded value versions (the vault was created by an earlier Talon version). Whether an earlier value existed, and which requests used this one, is not established; it is recorded from the next time the key is written", c.SecretName)
+		c.RuntimeNote = "which value a running process holds cannot be established without that record"
+		return c
 	}
-	since := w.LastWrittenAt
-	c.State, c.Since, c.Writes = CredentialKnown, &since, w.Writes
+	since := v.WrittenAt
+	c.State, c.Since = CredentialKnown, &since
 	switch {
-	case w.Writes == 1:
-		c.Note = "the only value ever stored under this secret name"
-	case w.Writes > 1:
-		c.Note = fmt.Sprintf("%d values were stored under this secret name over time (an earlier registration of the name, or a replaced key): records from before %s were authenticated with an earlier one", w.Writes, since.UTC().Format(time.RFC3339))
+	case v.OnlyValueEver():
+		c.History, c.Note = HistoryOnlyValue, "the only value ever stored under this secret name"
+	case v.OnlyValueSinceTracking():
+		c.History = HistoryOnlyValueSinceRecord
+		c.Note = "the only value stored under this secret name since this vault began to record value versions at " + rfc(v.Since) + "; whether another existed before that is not recorded (the vault was created by an earlier Talon version)"
 	default:
-		c.Note = "the vault's log holds no write for this secret name, so whether an earlier value existed is not known"
+		c.History = HistoryEarlierValues
+		c.Note = "another value existed under this secret name before (an earlier registration of the name, or a replaced key): records from before " + rfc(since) + " were authenticated with an earlier one"
 	}
-	c.Runtime, c.RuntimeNote = runtimeHolds(in, since)
+	c.Runtime, c.RuntimeNote = runtimeHolds(in, c)
 	return c
+}
+
+func rfc(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
+// onlyCredentialFor reports whether process p can hold no value of the key
+// other than the one stored now, and why.
+//
+//   - No other value has ever existed: nothing else to hold.
+//   - The process started after the value was written: a process reads its
+//     keys from the vault when it starts (startedSince).
+//   - The value is the only one stored since the vault began to record
+//     versions, and the process started after that: any earlier value was
+//     gone from the vault before the process read it.
+func onlyCredentialFor(p *runtimestatus.Process, c *Credential) bool {
+	v := c.version
+	return v.OnlyValueEver() || startedSince(p, *c.Since) || (v.OnlyValueSinceTracking() && startedSince(p, v.Since))
 }
 
 // startedSince reports whether the process started at or after t. A process
@@ -859,12 +907,13 @@ func startedSince(p *runtimestatus.Process, t time.Time) bool {
 }
 
 // runtimeHolds states what is established about the credential the running
-// processes hold, given that the one stored now was written at since.
-func runtimeHolds(in verificationInputs, since time.Time) (state, note string) {
+// processes hold. Whether a process has loaded the use case at all is a
+// different fact (Loaded); this is only about WHICH value it can hold.
+func runtimeHolds(in verificationInputs, c *Credential) (state, note string) {
 	if in.runtime == nil || !in.runtimeReadable {
 		return RuntimeCredentialUnknown, "runtime records were not read, so which credential a running process holds is not known"
 	}
-	at := since.UTC().Format(time.RFC3339)
+	at := rfc(*c.Since)
 	var running, stale, reloaded []string
 	for i := range in.runtime.Processes {
 		p := &in.runtime.Processes[i]
@@ -873,9 +922,9 @@ func runtimeHolds(in verificationInputs, since time.Time) (state, note string) {
 		}
 		running = append(running, p.InstanceID)
 		switch {
-		case startedSince(p, since):
-		case p.Catalog.ActivatedAt.Before(since):
-			stale = append(stale, fmt.Sprintf("%s (generation activated %s)", p.InstanceID, p.Catalog.ActivatedAt.UTC().Format(time.RFC3339)))
+		case onlyCredentialFor(p, c):
+		case p.Catalog.ActivatedAt.Before(*c.Since):
+			stale = append(stale, fmt.Sprintf("%s (generation activated %s)", p.InstanceID, rfc(p.Catalog.ActivatedAt)))
 		default:
 			reloaded = append(reloaded, p.InstanceID)
 		}
@@ -888,23 +937,29 @@ func runtimeHolds(in verificationInputs, since time.Time) (state, note string) {
 	case len(reloaded) > 0:
 		return RuntimeNotEstablished, "the running process " + strings.Join(reloaded, ", ") + " was already running when the credential stored now was written at " + at + " and has rebuilt its generation since. A rebuild normally reads the vault again, but it keeps the previous key when that read fails, and the runtime record does not say which happened: that it holds the credential stored now is not established. A process started after " + at + " can only hold that credential"
 	}
-	return RuntimeHoldsCurrent, "every running Talon process started after the credential stored now was written at " + at + ", and a process reads its keys from the vault when it starts"
+	if c.History == HistoryOnlyValue {
+		return RuntimeHoldsCurrent, "no other credential has ever been stored under " + c.SecretName + ": a running process that serves this use case can hold only this one"
+	}
+	return RuntimeHoldsCurrent, "no running Talon process can hold an earlier value: each started after the earlier value was gone from the vault, and a process reads its keys from the vault when it starts"
 }
 
 // attributeCredential says which credential an observed record's request
 // was authenticated with, as far as that can be established. Evidence does
 // not record the credential a request presented, so this is an inference
-// from recorded times, and it is conservative:
+// from recorded facts, and it is conservative:
 //
 //   - a record from before the current value was stored used an earlier one;
-//   - when no other value ever existed under the secret name, any
+//   - when no other value has ever existed under the secret name, any
 //     authenticated record used the current one;
 //   - otherwise a record counts for the current credential only when every
-//     process that was running at that moment had STARTED after the value
-//     was stored (startedSince). A request served by a process that was
-//     already running may have presented the earlier key, and is not
-//     counted: the time of a record alone never proves the current
-//     credential.
+//     process that was running at that moment can hold no other value
+//     (onlyCredentialFor). A request served by a process that may hold an
+//     earlier key is not counted: the time of a record alone never proves
+//     the current credential.
+//
+// The facts about the value come from the vault's version record
+// (secrets.CredentialVersion), which commits with every write of a value.
+// Where that record does not exist, nothing is attributed.
 func attributeCredential(o *TrafficObservation, c *Credential, view *runtimestatus.View, readable bool) {
 	if o.State != TrafficObserved || !o.IdentityProven || o.Timestamp == nil {
 		return
@@ -926,27 +981,17 @@ func attributeCredential(o *TrafficObservation, c *Credential, view *runtimestat
 		}
 	case ts.Before(*c.Since):
 		o.Credential = CredentialPrevious
-		o.CredentialNote = "it was recorded before the credential stored now was written at " + c.Since.UTC().Format(time.RFC3339) + ", so it was authenticated with an earlier credential of this use-case name (an earlier registration, or a key replaced since). It is historical evidence, not a connection of the current credential"
-	case c.Writes == 1:
+		o.CredentialNote = "it was recorded before the credential stored now was written at " + rfc(*c.Since) + ", so it was authenticated with an earlier credential of this use-case name (an earlier registration, or a key replaced since). It is historical evidence, not a connection of the current credential"
+	case c.version.OnlyValueEver():
 		o.Credential, o.CredentialNote = CredentialCurrent, "no other credential has ever been stored under "+c.SecretName+", so the request presented the one stored now"
-	case c.Writes < 1:
-		// The vault's log holds no write for the name: when the value stored
-		// now replaced an earlier one, if it did, is not known.
-		o.Credential, o.CredentialNote = CredentialUnknown, c.Note
 	default:
-		o.Credential, o.CredentialNote = servedByCurrent(ts, *c.Since, view, readable)
+		o.Credential, o.CredentialNote = servedByCurrent(ts, c, view, readable)
 	}
 }
 
-// servedByCurrent decides, for a record written at ts after the current
-// credential was stored at since, whether every process that could have
-// served it could only hold that credential.
-func servedByCurrent(ts, since time.Time, view *runtimestatus.View, readable bool) (state, note string) {
-	at := since.UTC().Format(time.RFC3339)
-	if view == nil || !readable {
-		return CredentialNotEstablished, "runtime records were not read, so it is not established that the process that served it held the credential stored at " + at
-	}
-	var covering, earlier []string
+// runningAt lists the processes whose runtime record covers the moment ts,
+// and those of them that had started before floor.
+func runningAt(view *runtimestatus.View, ts, floor time.Time) (covering, earlier []string) {
 	for i := range view.Processes {
 		p := &view.Processes[i]
 		if p.Catalog == nil || p.StartedAt.After(ts) {
@@ -960,15 +1005,39 @@ func servedByCurrent(ts, since time.Time, view *runtimestatus.View, readable boo
 			continue // it was no longer running when the record was written
 		}
 		covering = append(covering, p.InstanceID)
-		if !startedSince(p, since) {
+		if !startedSince(p, floor) {
 			earlier = append(earlier, p.InstanceID)
 		}
 	}
+	return covering, earlier
+}
+
+// servedByCurrent decides, for a record written at ts after the current
+// credential was stored, whether every process that could have served it
+// could hold only that credential.
+func servedByCurrent(ts time.Time, c *Credential, view *runtimestatus.View, readable bool) (state, note string) {
+	at := rfc(*c.Since)
+	recorded := "it was recorded after the credential stored now was written at " + at
+	// What a process must have started after to be unable to hold another
+	// value: the write itself, or, when this is the only value since the
+	// vault began to record versions, that beginning.
+	floor, sinceRecord := *c.Since, c.version.OnlyValueSinceTracking()
+	if sinceRecord {
+		floor = c.version.Since
+	}
+	if view == nil || !readable {
+		return CredentialNotEstablished, "runtime records were not read, so it is not established that the process that served it held the credential stored at " + at
+	}
+	covering, earlier := runningAt(view, ts, floor)
 	switch {
 	case len(covering) == 0:
-		return CredentialNotEstablished, "it was recorded after the credential stored now was written at " + at + ", but no runtime record covers that moment (records of stopped processes are kept for a limited time), so it is not established which credential the serving process held"
+		return CredentialNotEstablished, recorded + ", but no runtime record covers that moment (records of stopped processes are kept for a limited time), so it is not established which credential the serving process held"
+	case len(earlier) > 0 && sinceRecord:
+		return CredentialNotEstablished, recorded + ", but the process " + strings.Join(earlier, ", ") + " that was running then had started before this vault began to record value versions at " + rfc(floor) + ": it may hold a key of this name that existed before that, and nothing records whether one did. A request served by a process started after " + rfc(floor) + " establishes the current credential"
 	case len(earlier) > 0:
-		return CredentialNotEstablished, "it was recorded after the credential stored now was written at " + at + ", but the process " + strings.Join(earlier, ", ") + " that was running then had started before that write. A running process keeps the key it holds until it reads the vault again, and the records do not establish that it had: a request with the earlier key would look the same. A request served by a process started after " + at + " establishes the current credential"
+		return CredentialNotEstablished, recorded + ", but the process " + strings.Join(earlier, ", ") + " that was running then had started before that write. A running process keeps the key it holds until it reads the vault again, and the records do not establish that it had: a request with the earlier key would look the same. A request served by a process started after " + at + " establishes the current credential"
+	case sinceRecord:
+		return CredentialCurrent, recorded + "; no other value has been stored under the name since this vault began to record value versions at " + rfc(floor) + ", and every process running then (" + strings.Join(covering, ", ") + ") had started after that, so it cannot hold an earlier one"
 	}
-	return CredentialCurrent, "it was recorded after the credential stored now was written at " + at + ", while every process running then (" + strings.Join(covering, ", ") + ") had started after that write, and a process reads its keys from the vault when it starts"
+	return CredentialCurrent, recorded + ", while every process running then (" + strings.Join(covering, ", ") + ") had started after that write, and a process reads its keys from the vault when it starts"
 }

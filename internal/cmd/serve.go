@@ -74,8 +74,7 @@ func init() {
 
 //nolint:gocyclo // orchestration flow is inherently branched
 func runServe(cmd *cobra.Command, args []string) (err error) {
-	// Before anything is read: see serveStartedAt.
-	serveStartedAt = time.Now().UTC()
+	serveStartedAt = time.Time{} // stamped below, once the vault is open
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -196,6 +195,10 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 		return fmt.Errorf("initializing secrets: %w", err)
 	}
 	defer secretsStore.Close()
+	// The vault is open (and, on the first start after an upgrade, records
+	// value versions from now on); no agent key has been read yet. See
+	// serveStartedAt for why the start time is taken exactly here.
+	serveStartedAt = time.Now().UTC()
 
 	adminKey := os.Getenv("TALON_ADMIN_KEY")
 	if adminKey == "" {
