@@ -515,6 +515,15 @@ func TestUseCaseView_SaysWhatIsHappeningAndWhatToDoNext(t *testing.T) {
 	out = render(report(effective.NextStep{Code: effective.NextEnable, Text: "This use case is disabled in its file.", Commands: []string{"talon agents enable customer-support"}}, runtimestatus.LoadedMatchesFile, effective.PolicyMatchesCurrent))
 	assert.Contains(t, out, "Next\n  This use case is disabled in its file.\n    talon agents enable customer-support\n")
 
+	// A record without a reason code (a request to a disabled use case):
+	// the placeholder explains nothing, so the view points at the record.
+	unclassified := report(effective.NextStep{Code: effective.NextEnable, Text: "This use case is disabled in its file."}, runtimestatus.LoadedMatchesFile, effective.PolicyMatchesCurrent)
+	unclassified.LastDecision.PrimaryCode, unclassified.LastDecision.PrimaryReason = "LEGACY_REASON_UNMIGRATED", "Request processed with legacy policy explanation mapping."
+	out = render(unclassified)
+	assert.Contains(t, out, "reason recorded without a reason code; read it with: talon audit show gw_1")
+	assert.NotContains(t, out, "LEGACY_REASON_UNMIGRATED")
+	assert.NotContains(t, out, "legacy policy explanation mapping")
+
 	// Attention from the fleet row (budget, denials) is shown as it is.
 	blocked := row
 	blocked.Health, blocked.Why = fleet.HealthBlocked, "daily budget exhausted ($50.00 / $50.00)"

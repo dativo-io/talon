@@ -15,6 +15,7 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/effective"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/fleet"
 	"github.com/dativo-io/talon/internal/runtimestatus"
 )
@@ -363,7 +364,13 @@ func renderUseCaseFacts(w io.Writer, row *fleet.AgentRow, report *effective.Repo
 // renderLastRequest prints the newest request decision with its evidence.
 func renderLastRequest(w io.Writer, d *effective.LastDecision) {
 	fmt.Fprintf(w, "\nLast request\n  %s · %s · %s\n", d.Timestamp.UTC().Format("2006-01-02 15:04:05Z"), boundaryOf(d.InvocationType), outcomeWords(&d.Outcome))
-	if d.PrimaryCode != "" {
+	switch {
+	case d.PrimaryCode == explanation.CodeLegacyReasonUnmigrated:
+		// The record states its reason in its own words but carries no
+		// reason code (for example a request to a disabled use case). The
+		// placeholder text explains nothing: point at the record.
+		fmt.Fprintf(w, "  reason recorded without a reason code; read it with: talon audit show %s\n", d.EvidenceID)
+	case d.PrimaryCode != "":
 		fmt.Fprintf(w, "  %s: %s\n", d.PrimaryCode, d.PrimaryReason)
 	}
 	sig := "signature valid"

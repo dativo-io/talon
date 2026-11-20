@@ -28,7 +28,7 @@
     "internal/cmd/agents_registration.go": "e63741bed6d74d9a53dc144926fcc732ca2bffd1",
     "internal/cmd/agents_root.go": "1e727bebe498427b91bb1e64d6429bd3d4a5f5ce",
     "internal/cmd/agents_toggle.go": "4ab15fb70150aed30df78a043d5be5a1b1b1f2d4",
-    "internal/cmd/agents_view.go": "879928371a7d77b150906028a13675bdc5a5ebed",
+    "internal/cmd/agents_view.go": "c7a0e5b9c5b0b98ff8ab6335802d9f72467702ac",
     "internal/cmd/costs.go": "20cf19b087fdc6e67ea3fd4fa7fa87a139cc79e5",
     "internal/cmd/serve.go": "f309fa59d54cc7687a92be20a2fd46c2256021bc",
     "internal/cmd/serve_runtime_status.go": "4109219e0f865028e4e222ccb325918cc4e93945",
