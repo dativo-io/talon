@@ -13,6 +13,7 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/effective"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/registration"
 	"github.com/dativo-io/talon/internal/runtimestatus"
 )
 
@@ -44,9 +45,14 @@ key, stores it in the encrypted vault as <name>-talon-key and prints it ONCE,
 after the registration has completed.
 
 Refuses, writing nothing, when agents_dir is not configured, the existing fleet
-is invalid, the name is already registered, a vault secret of that name already
-exists, or an earlier registration of the name was interrupted (the message
-names what it left and how to remove it).
+is invalid, the name is already registered or a vault secret of that name
+already exists.
+
+Registrations of one installation run one at a time (a lock in the data
+directory). When an earlier registration of the name never finished, this
+command removes only what that registration's signed intent proves it created,
+records it as rolled back and then registers; anything else under the name is
+left untouched and named.
 
 The command does not start or change a running process. A running 'talon
 serve' re-scans agents_dir every agents_reload_interval; whether it has loaded
@@ -65,19 +71,34 @@ expected policy, is shown by 'talon agents show <name> --effective'.`,
 }
 
 func runAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, name string) error {
-	// Planning reads only: nothing below this call has been written yet.
-	plan, err := planRegistration(ctx, cfg, registrationRequest{
+	req := registrationRequest{
 		Name: name, Tenant: agentsAddTenant, Description: agentsAddDescription, Owner: agentsAddOwner, AllowNoCompanyPolicy: agentsAddNoCompanyPolicy,
-	})
+	}
+	// Planning reads only: nothing below this call has been written yet.
+	plan, err := planRegistration(ctx, cfg, req)
 	if err != nil {
 		return err
 	}
 	if agentsAddDryRun {
 		fmt.Fprintf(out, "Dry run: nothing was written. A registration would create %s and generate key secret %q.\n", plan.Path, plan.SecretName)
+		if len(plan.Unresolved) > 0 {
+			// Read without the lock and without creating anything: whether
+			// the earlier registration is running is only probed.
+			state := map[string]string{
+				registration.LockHeld:    "a registration is running now (the registration lock is held), so this may be in progress",
+				registration.LockFree:    "no registration is running now (the registration lock is free)",
+				registration.LockUnknown: "whether a registration is running now could not be established",
+			}[registration.Probe(cfg.DataDir)]
+			for i := range plan.Unresolved {
+				in := &plan.Unresolved[i]
+				fmt.Fprintf(out, "An earlier registration of this name has no completion or rollback record (signed intent %s of %s); %s. A real run decides under the registration lock and removes only what that intent proves it created.\n", in.IntentID, in.At.UTC().Format(time.RFC3339), state)
+			}
+		}
 		fmt.Fprintf(out, "Company policy: %s\n\n%s", plan.CompanyPolicy, plan.Content)
 		return nil
 	}
-	res, err := executeRegistration(ctx, cfg, plan)
+	// The execution takes the registration lock and plans again under it.
+	plan, res, err := executeRegistration(ctx, cfg, req)
 	if err != nil {
 		return err
 	}
@@ -89,7 +110,7 @@ func runAgentsAdd(ctx context.Context, out io.Writer, cfg *config.Config, name s
 // new use case: the projection `talon agents show --effective` and the
 // console use, so the registration output interprets no policy of its own.
 func registrationReport(ctx context.Context, cfg *config.Config, plan *agentsAddPlan) (*effective.Report, error) {
-	in := effective.Inputs{AgentsDir: cfg.AgentsDir, GatewayConfig: gatewayConfigPath(""), Name: plan.Name, Tenant: plan.Tenant, Now: time.Now().UTC()}
+	in := effective.Inputs{AgentsDir: cfg.AgentsDir, GatewayConfig: gatewayConfigPath(""), Name: plan.Name, Tenant: plan.Tenant, Now: time.Now().UTC(), SecretsDB: cfg.SecretsDBPath()}
 	v := runtimestatus.NewReader().Assess(cfg.DataDir, runtimestatus.Fingerprint(cfg.SigningKey), nil, time.Now())
 	in.Runtime, in.RuntimeReadable = &v, v.Err == ""
 	if ro, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey); err == nil {
@@ -120,8 +141,11 @@ func printAgentsAddResult(ctx context.Context, out io.Writer, cfg *config.Config
 	row("config", plan.Path)
 	row("key", fmt.Sprintf("generated, vault secret %q; one active key per use case; the value is shown once, at the end", plan.SecretName))
 	row("evidence", fmt.Sprintf("%s (signed completion record; intent %s). Verify: talon audit verify %s", res.EvidenceID, res.IntentID, res.EvidenceID))
-	for _, in := range plan.Superseded {
-		row("recovered", fmt.Sprintf("the interrupted registration of %s (intent %s) is now recorded as rolled back", in.At.UTC().Format(time.RFC3339), in.IntentID))
+	for _, msg := range res.Recovered {
+		row("recovered", msg)
+	}
+	for _, msg := range res.Residual {
+		row("leftover", msg+" (also in the completion record)")
 	}
 
 	report, rerr := registrationReport(ctx, cfg, plan)

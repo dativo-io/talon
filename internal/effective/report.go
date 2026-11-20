@@ -62,7 +62,13 @@ type Inputs struct {
 	// caller has none (the "loaded" layer is then unknown).
 	Runtime         *runtimestatus.View
 	RuntimeReadable bool
-	Now             time.Time
+	// SecretsDB is the path of the installation's vault file. It is read
+	// for METADATA only, through a read-only connection and without a
+	// decryption key: when the use case's key was last written and how many
+	// values ever existed under its name. "" = not given (which credential
+	// observed traffic used is then reported as unknown).
+	SecretsDB string
+	Now       time.Time
 }
 
 // Report is the effective-policy report.
@@ -293,6 +299,7 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 	r.observe(ctx, in, verificationInputs{
 		store: in.Evidence, tenant: tenant, name: in.Name, agent: agent, digest: digest,
 		providers: r.Effective.Providers, action: r.ActionBoundary, loaded: r.Loaded,
+		secretsDB: in.SecretsDB, runtime: in.Runtime, runtimeReadable: in.RuntimeReadable,
 	})
 	return r, nil
 }

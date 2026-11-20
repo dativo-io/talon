@@ -20,6 +20,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/doctor"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/registration"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -119,6 +120,22 @@ func registrationRecords(t *testing.T, cfg *config.Config, tenant, name string) 
 		out[rows[i].InvocationType] = append(out[rows[i].InvocationType], rows[i])
 	}
 	return out
+}
+
+// unresolved returns the registrations of name whose signed intent has no
+// terminal record, as a complete lookup.
+func unresolved(t *testing.T, cfg *config.Config, name string) []registration.Unresolved {
+	t.Helper()
+	lookup, err := unresolvedRegistrations(context.Background(), cfg, name)
+	require.NoError(t, err)
+	require.True(t, lookup.Complete)
+	return lookup.Unresolved
+}
+
+// checkRegistrationsForTest is `talon doctor`'s agent_registrations check.
+func checkRegistrationsForTest(t *testing.T, cfg *config.Config) doctor.CheckResult {
+	t.Helper()
+	return doctor.CheckRegistrations(cfg)
 }
 
 func registered(t *testing.T, agentsDir, name string) bool {
@@ -374,11 +391,9 @@ func TestAgentsAdd_FailureAtEveryStepIsRolledBack(t *testing.T) {
 			case stepKeyStored:
 				require.Contains(t, reasons, "cleanup: removed the key this registration stored")
 			default:
-				require.Contains(t, reasons, "removed the agent file; removed the key this registration stored")
+				require.Contains(t, reasons, "removed the agent file this registration published; removed the key this registration stored")
 			}
-			in, err := interruptedRegistrations(ctx, cfg, "refund-bot")
-			require.NoError(t, err)
-			require.Empty(t, in, "a rolled-back registration is terminal, not interrupted")
+			require.Empty(t, unresolved(t, cfg, "refund-bot"), "a rolled-back registration is terminal, not unresolved")
 
 			registrationFault = func(string) error { return nil }
 			out.Reset()
@@ -427,8 +442,8 @@ func TestAgentsAdd_AStepItselfFails(t *testing.T) {
 		{stepIntentRecorded, ""},
 		{stepKeyStored, "cleanup: nothing had been created"},
 		{stepFilePublished, "cleanup: removed the key this registration stored"},
-		{stepFleetValidated, "cleanup: removed the agent file; removed the key this registration stored"},
-		{stepCompleted, "cleanup: removed the agent file; removed the key this registration stored"},
+		{stepFleetValidated, "cleanup: removed the agent file this registration published; removed the key this registration stored"},
+		{stepCompleted, "cleanup: removed the agent file this registration published; removed the key this registration stored"},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			cfg, agentsDir := setupAddFleet(t)
@@ -464,9 +479,7 @@ func TestAgentsAdd_AStepItselfFails(t *testing.T) {
 				require.Contains(t, reasons, "cause: ")
 				require.Contains(t, reasons, tc.cleanup)
 			}
-			in, ierr := interruptedRegistrations(ctx, cfg, "refund-bot")
-			require.NoError(t, ierr)
-			require.Empty(t, in)
+			require.Empty(t, unresolved(t, cfg, "refund-bot"))
 		})
 	}
 
@@ -482,7 +495,7 @@ func TestAgentsAdd_AStepItselfFails(t *testing.T) {
 		}
 		var out bytes.Buffer
 		err := runAgentsAdd(ctx, &out, cfg, "refund-bot")
-		require.ErrorContains(t, err, "what this registration created was removed (removed the agent file; removed the key this registration stored)")
+		require.ErrorContains(t, err, "what this registration created was removed (removed the agent file this registration published; removed the key this registration stored)")
 		require.ErrorContains(t, err, "the rollback could not be recorded as evidence")
 		require.ErrorContains(t, err, "talon doctor")
 		require.NotContains(t, err.Error(), "nothing of this registration was left behind", "an unrecorded rollback is not reported as a clean one")
@@ -494,17 +507,13 @@ func TestAgentsAdd_AStepItselfFails(t *testing.T) {
 
 		// The signed intent has no terminal record: detected, and closed by
 		// the next registration, which works because nothing was left.
-		in, ierr := interruptedRegistrations(ctx, cfg, "refund-bot")
-		require.NoError(t, ierr)
-		require.Len(t, in, 1)
+		require.Len(t, unresolved(t, cfg, "refund-bot"), 1)
 		registrationFault = func(string) error { return nil }
 		out.Reset()
 		require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
-		require.Contains(t, out.String(), "is now recorded as rolled back")
+		require.Contains(t, out.String(), "left nothing of its own and is now recorded as rolled back")
 		require.NotEmpty(t, printedKeyRe.FindString(out.String()))
-		in, ierr = interruptedRegistrations(ctx, cfg, "refund-bot")
-		require.NoError(t, ierr)
-		require.Empty(t, in)
+		require.Empty(t, unresolved(t, cfg, "refund-bot"))
 	})
 }
 
@@ -577,9 +586,17 @@ func TestAgentsAdd_ConcurrentRegistrationsOneWinner(t *testing.T) {
 	require.True(t, registered(t, agentsDir, "refund-bot"))
 	recs := registrationRecords(t, cfg, "acme", "refund-bot")
 	require.Len(t, recs[registration.TypeRegistered], 1)
-	in, err := interruptedRegistrations(context.Background(), cfg, "refund-bot")
-	require.NoError(t, err)
-	require.Empty(t, in, "every loser that recorded an intent also recorded its rollback")
+	require.Empty(t, unresolved(t, cfg, "refund-bot"), "no registration is left without a terminal record")
+	// The registrations ran one at a time: every loser found the name
+	// registered and wrote nothing, so there is exactly one intent and no
+	// rollback.
+	require.Len(t, recs[registration.TypeIntent], 1)
+	require.Empty(t, recs[registration.TypeRolledBack])
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			require.ErrorContains(t, errs[i], "already registered")
+		}
+	}
 }
 
 // TestAgentsAdd_CrashHelper is not a test of its own: the abrupt-death test
@@ -607,23 +624,25 @@ func TestAgentsAdd_CrashHelper(t *testing.T) {
 	os.Exit(3) // not reached when the step exists
 }
 
-// The process dies abruptly at each step. Whatever it left, nobody has
-// seen a key; the next registration of the name detects the interruption
-// and names the artifacts and the recovery; after the operator removed
-// them, registration works and the interrupted one is recorded as rolled
-// back. The existing use case is never affected.
+// The process dies abruptly at each step, while it holds the registration
+// lock. The kernel releases the lock, so nothing has to be unlocked by hand.
+// Whatever the process left, nobody has seen a key. `talon doctor` reports
+// the registration as INTERRUPTED (not in progress: the lock is free). The
+// next registration of the name proves from the signed intent which
+// artifacts that registration created, removes exactly those, records it as
+// rolled back and registers. The existing use case is never affected.
 func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 	ctx := context.Background()
 	const supportKey = "talon_uc_the_existing_application_key_000000000000001"
 	for _, tc := range []struct {
-		step          string
-		key, file     bool
-		selfRecovered bool
+		step      string
+		key, file bool
+		recovery  string // what the rollback record says was done
 	}{
-		{stepIntentRecorded, false, false, true},
-		{stepKeyStored, true, false, false},
-		{stepFilePublished, true, true, false},
-		{stepFleetValidated, true, true, false},
+		{stepIntentRecorded, false, false, "observed now: neither the key version nor the agent file its signed intent committed to exists"},
+		{stepKeyStored, true, false, "recovery: removed the key version (its vault ownership token equals the one in the signed intent; the key was never shown)"},
+		{stepFilePublished, true, true, "recovery: removed the agent file (its SHA-256 equals the one in the signed intent); removed the key version"},
+		{stepFleetValidated, true, true, "recovery: removed the agent file (its SHA-256 equals the one in the signed intent); removed the key version"},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			dir := t.TempDir()
@@ -643,6 +662,8 @@ func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, seed.Set(ctx, "support-talon-key", []byte(supportKey), secrets.ACL{}))
 			require.NoError(t, seed.Close())
+			// An unrelated file an operator keeps next to the agent files.
+			note := filepath.Join(agentsDir, "refund-bot", "NOTES.md")
 
 			child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAgentsAdd_CrashHelper$")
 			child.Env = append(os.Environ(), "TALON_TEST_CRASH_STEP="+tc.step)
@@ -655,8 +676,9 @@ func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 			require.True(t, ws.Signaled() && ws.Signal() == syscall.SIGKILL, "the helper must die by SIGKILL at the step: %v\n%s", err, childOut.String())
 			require.Empty(t, printedKeyRe.FindString(childOut.String()), "a key is never printed before completion")
 
-			// What it left.
-			_, hasKey := vaultValue(t, cfg, "refund-bot-talon-key")
+			// What it left. The lock is not among it.
+			require.Equal(t, registration.LockFree, registration.Probe(cfg.DataDir), "a killed registration leaves no lock")
+			leftKey, hasKey := vaultValue(t, cfg, "refund-bot-talon-key")
 			require.Equal(t, tc.key, hasKey)
 			_, statErr := os.Stat(filepath.Join(agentsDir, "refund-bot", "agent.talon.yaml"))
 			require.Equal(t, tc.file, statErr == nil)
@@ -665,9 +687,23 @@ func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 			require.Len(t, recs[registration.TypeIntent], 1)
 			require.Empty(t, recs[registration.TypeRegistered])
 			require.Empty(t, recs[registration.TypeRolledBack], "an abrupt death writes no terminal record")
-			in, err := interruptedRegistrations(ctx, cfg, "refund-bot")
-			require.NoError(t, err)
-			require.Len(t, in, 1, "the interruption is detected from the signed intent")
+			in := unresolved(t, cfg, "refund-bot")
+			require.Len(t, in, 1, "the unfinished registration is found from its signed intent")
+			require.True(t, in[0].Verified)
+			require.NotEmpty(t, in[0].Commitments.KeyOwnershipToken, "the intent committed to the key version before storing it")
+			require.NotEmpty(t, in[0].Commitments.FileSHA256)
+			intentText := strings.Join(recs[registration.TypeIntent][0].PolicyDecision.Reasons, " | ")
+			if hasKey {
+				require.NotContains(t, intentText, leftKey, "the intent commits to the key VERSION, never to the key")
+			}
+
+			// `talon doctor`: interrupted, because no registration is running.
+			check := checkRegistrationsForTest(t, cfg)
+			require.Equal(t, "warn", check.Status)
+			require.Contains(t, check.Message, "INTERRUPTED")
+			require.Contains(t, check.Message, in[0].IntentID)
+			require.NotContains(t, check.Fix, "rm ")
+			require.Contains(t, check.Fix, "Do not delete files or secrets by hand")
 
 			// A restart of `talon serve` after the interruption: the start-up
 			// identity registry (the function serve calls) builds, the
@@ -678,37 +714,36 @@ func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 			require.Equal(t, "support", ids[supportKey], "the existing application keeps working across a restart")
 			require.Equal(t, tc.file, hasIdentity(ids, "refund-bot"), "a half-registered use case is served exactly when its file was published")
 
-			var out bytes.Buffer
-			err = runAgentsAdd(ctx, &out, cfg, "refund-bot")
-			if !tc.selfRecovered {
-				// Detection and diagnosis: nothing is written, the artifacts
-				// and the recovery are named.
-				require.ErrorContains(t, err, "was interrupted")
-				require.ErrorContains(t, err, in[0].IntentID)
-				require.ErrorContains(t, err, "Its key was never printed")
-				require.ErrorContains(t, err, "talon secrets delete refund-bot-talon-key")
-				if tc.file {
-					require.ErrorContains(t, err, "rm -r "+filepath.Join(agentsDir, "refund-bot"))
-				}
-				require.Len(t, registrationRecords(t, cfg, "acme", "refund-bot")[registration.TypeIntent], 1, "the refused retry wrote nothing")
-
-				// The documented operator recovery, with the existing commands.
-				if tc.file {
-					require.NoError(t, os.RemoveAll(filepath.Join(agentsDir, "refund-bot")))
-				}
-				store, serr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-				require.NoError(t, serr)
-				require.NoError(t, store.Delete(ctx, "refund-bot-talon-key"))
-				require.NoError(t, store.Close())
-				out.Reset()
-				err = runAgentsAdd(ctx, &out, cfg, "refund-bot")
+			// A dry run reads only: it reports the unfinished registration
+			// and changes nothing.
+			if tc.file {
+				require.NoError(t, os.WriteFile(note, []byte("ours"), 0o600))
 			}
-			require.NoError(t, err)
+			before := registrationRecords(t, cfg, "acme", "refund-bot")
+			agentsAddDryRun = true
+			var dry bytes.Buffer
+			require.NoError(t, runAgentsAdd(ctx, &dry, cfg, "refund-bot"))
+			agentsAddDryRun = false
+			require.Contains(t, dry.String(), "no registration is running now")
+			require.Contains(t, dry.String(), in[0].IntentID)
+			require.Equal(t, before, registrationRecords(t, cfg, "acme", "refund-bot"), "a dry run writes no record")
+			_, stillKey := vaultValue(t, cfg, "refund-bot-talon-key")
+			require.Equal(t, tc.key, stillKey, "a dry run removes nothing")
+
+			// The next registration recovers by proof and registers.
+			var out bytes.Buffer
+			require.NoError(t, runAgentsAdd(ctx, &out, cfg, "refund-bot"))
 			key := printedKeyRe.FindString(out.String())
 			require.NotEmpty(t, key)
+			require.NotEqual(t, leftKey, key, "the interrupted registration's key was removed, not adopted")
 			require.Contains(t, out.String(), "is now recorded as rolled back")
 			stored, _ := vaultValue(t, cfg, "refund-bot-talon-key")
 			require.Equal(t, key, stored)
+			if tc.file {
+				raw, rerr := os.ReadFile(note)
+				require.NoError(t, rerr, "an unrelated file in the directory is never removed")
+				require.Equal(t, "ours", string(raw))
+			}
 
 			recs = registrationRecords(t, cfg, "acme", "refund-bot")
 			require.Len(t, recs[registration.TypeIntent], 2)
@@ -716,10 +751,11 @@ func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 			require.Len(t, recs[registration.TypeRolledBack], 1)
 			rb := recs[registration.TypeRolledBack][0]
 			require.Equal(t, in[0].Correlation, rb.CorrelationID, "the terminal record closes the interrupted registration")
-			require.Contains(t, strings.Join(rb.PolicyDecision.Reasons, " | "), "the registration was interrupted")
-			in, err = interruptedRegistrations(ctx, cfg, "refund-bot")
-			require.NoError(t, err)
-			require.Empty(t, in)
+			reasons := strings.Join(rb.PolicyDecision.Reasons, " | ")
+			require.Contains(t, reasons, "its process is not running: the registration lock was free")
+			require.Contains(t, reasons, tc.recovery)
+			require.Empty(t, unresolved(t, cfg, "refund-bot"))
+			require.Equal(t, "pass", checkRegistrationsForTest(t, cfg).Status)
 
 			// After the recovery a restart serves both applications, the new
 			// one under the key that was just shown.
@@ -758,9 +794,8 @@ func TestAgentsAdd_AbruptProcessDeathAtEveryStep(t *testing.T) {
 		require.True(t, hasKey)
 		recs := registrationRecords(t, cfg, "acme", "refund-bot")
 		require.Len(t, recs[registration.TypeRegistered], 1)
-		in, err := interruptedRegistrations(ctx, cfg, "refund-bot")
-		require.NoError(t, err)
-		require.Empty(t, in, "a completed registration is not an interrupted one")
+		require.Empty(t, unresolved(t, cfg, "refund-bot"), "a completed registration is not an unresolved one")
+		require.Equal(t, registration.LockFree, registration.Probe(cfg.DataDir), "the killed process left no lock")
 		err = runAgentsAdd(ctx, &bytes.Buffer{}, cfg, "refund-bot")
 		require.ErrorContains(t, err, "already registered")
 	})

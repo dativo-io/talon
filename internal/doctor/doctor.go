@@ -427,6 +427,10 @@ func checkEvidenceDB(cfg *config.Config) CheckResult {
 // #472) whose signed intent has no completion or rollback record: the
 // process died in between. Such a registration may have left a generated
 // key (never shown to anyone) and an agent file a running server loads.
+// CheckRegistrations is the agent_registrations check on its own: what is
+// known about registrations whose signed intent has no terminal record.
+func CheckRegistrations(cfg *config.Config) CheckResult { return checkRegistrations(cfg) }
+
 func checkRegistrations(cfg *config.Config) CheckResult {
 	const name = "agent_registrations"
 	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
@@ -434,22 +438,59 @@ func checkRegistrations(cfg *config.Config) CheckResult {
 		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("registration records could not be read: %v", err)}
 	}
 	defer store.Close()
-	interrupted, err := registration.FindInterrupted(context.Background(), store, "")
+	lookup, err := registration.FindUnresolved(context.Background(), store, "")
 	if err != nil {
 		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("registration records could not be read: %v", err)}
 	}
-	if len(interrupted) == 0 {
-		return CheckResult{Name: name, Category: "config", Status: "pass", Message: "No interrupted use-case registration"}
+	return registrationsResult(name, lookup, registration.Probe(cfg.DataDir))
+}
+
+// registrationsResult words what is known about registrations whose intent
+// has no terminal record. An intent alone does not say why: the
+// registration lock tells a registration that is running NOW (in progress)
+// from one whose process is gone (interrupted); where the lock cannot be
+// probed, the work is reported as unresolved and nothing more is claimed.
+// A lookup that could not list every unresolved intent says so and never
+// reads as "none".
+func registrationsResult(name string, lookup registration.Lookup, lock string) CheckResult {
+	res := CheckResult{Name: name, Category: "config", Status: "pass"}
+	partial := ""
+	if !lookup.Complete {
+		partial = fmt.Sprintf(" The store holds more unresolved registrations than one lookup reads: the %d newest are listed, older ones are not.", len(lookup.Unresolved))
+		res.Status = "warn"
+	}
+	if len(lookup.Unresolved) == 0 {
+		res.Message = "No unresolved use-case registration." + partial
+		return res
 	}
 	var parts []string
-	for _, in := range interrupted {
-		parts = append(parts, fmt.Sprintf("%s (tenant %s, intent %s at %s)", in.Name, in.Tenant, in.IntentID, in.At.UTC().Format(time.RFC3339)))
+	for i := range lookup.Unresolved {
+		in := &lookup.Unresolved[i]
+		p := fmt.Sprintf("%s (tenant %s, intent %s of %s", in.Name, in.Tenant, in.IntentID, in.At.UTC().Format(time.RFC3339))
+		if !in.Verified {
+			p += "; the intent record does NOT verify"
+		}
+		parts = append(parts, p+")")
 	}
-	return CheckResult{
-		Name: name, Category: "config", Status: "warn",
-		Message: "Interrupted use-case registration(s), no completion or rollback record: " + strings.Join(parts, "; "),
-		Fix:     "Run 'talon agents add <name>' for each: it names what the interrupted registration left (a key nobody has seen, an agent file) and how to remove it; the next registration records it as rolled back",
+	list := strings.Join(parts, "; ")
+	switch lock {
+	case registration.LockHeld:
+		// A registration is running now. Its intent has no terminal record
+		// YET; that is not a fault. (With several unresolved intents, the
+		// older ones belong to earlier processes: the running registration
+		// resolves those of its own name.)
+		res.Message = "A use-case registration is IN PROGRESS (the registration lock is held). Intent(s) without a terminal record yet: " + list + "." + partial
+		res.Fix = "Nothing to do while it runs. Run 'talon doctor' again when 'talon agents add' has finished"
+	case registration.LockFree:
+		res.Status = "warn"
+		res.Message = "INTERRUPTED use-case registration(s): no registration is running (the registration lock is free) and these have no completion or rollback record: " + list + "." + partial
+		res.Fix = "Run 'talon agents add <name>' for the name: under the registration lock it removes ONLY what the signed intent proves that registration created, records it as rolled back and then registers; anything else under the name is left untouched and named. Do not delete files or secrets by hand because of this message"
+	default:
+		res.Status = "warn"
+		res.Message = "UNRESOLVED use-case registration(s) (whether one is still running cannot be established here: the registration lock could not be probed): " + list + "." + partial
+		res.Fix = "Make sure no 'talon agents add' is running, then run 'talon agents add <name>': it decides under the registration lock"
 	}
+	return res
 }
 
 // checkCache validates cache config when present. Pass when disabled; when enabled, validate config and writable path.

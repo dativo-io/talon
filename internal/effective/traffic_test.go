@@ -3,6 +3,7 @@ package effective
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,14 +267,9 @@ func TestVerification_ActionOnlyUseCase(t *testing.T) {
 	f := peopleAnalytics(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
-	life := func(id, event string, at time.Time) {
-		f.put(t, id, evidence.InvocationTypeActionLifecycle, at, func(ev *evidence.Evidence) {
-			ev.ActionLifecycle = &evidence.ActionLifecycle{Event: event, OperationID: "op-1", OperationRef: "op_1", Action: "create_refund_request", PolicyDigest: "recorded-digest", OperationStatus: "awaiting_approval"}
-		})
-	}
-	life("established", evidence.ActionEventOperationEstablished, now.Add(-3*time.Minute))
-	life("requested", evidence.ActionEventApprovalRequested, now.Add(-3*time.Minute+time.Second))
-	life("decided", evidence.ActionEventApprovalDecided, now.Add(-2*time.Minute))
+	life(f, t, "established", evidence.ActionEventOperationEstablished, now.Add(-3*time.Minute), nil)
+	life(f, t, "requested", evidence.ActionEventApprovalRequested, now.Add(-3*time.Minute+time.Second), nil)
+	life(f, t, "decided", evidence.ActionEventApprovalDecided, now.Add(-2*time.Minute), nil)
 
 	r, err := Build(ctx, f.inputs())
 	require.NoError(t, err)
@@ -290,17 +286,180 @@ func TestVerification_ActionOnlyUseCase(t *testing.T) {
 	assert.Contains(t, r.Verification.Reading.Text, "Action Gateway")
 
 	// The application claims and Talon dispatches: now a dispatch is recorded.
-	life("claimed", evidence.ActionEventAttemptClaimed, now.Add(-time.Minute))
+	life(f, t, "claimed", evidence.ActionEventAttemptClaimed, now.Add(-time.Minute), nil)
 	f.put(t, "completed", evidence.InvocationTypeActionLifecycle, now, func(ev *evidence.Evidence) {
 		ev.ActionLifecycle = &evidence.ActionLifecycle{Event: evidence.ActionEventAttemptCompleted, OperationID: "op-1", OperationRef: "op_1", PolicyDigest: "recorded-digest", OperationStatus: "succeeded", ResultProvenance: "observed", AttemptStatus: "completed"}
 	})
 	r, err = Build(ctx, f.inputs())
 	require.NoError(t, err)
 	a = observation(t, r, BoundaryActionGateway)
-	assert.Equal(t, "completed", a.EvidenceID)
-	require.NotNil(t, a.LastDispatch)
+	assert.Equal(t, "claimed", a.EvidenceID, "the application's claim is its newest request; the execution record is not connectivity")
+	assert.Equal(t, evidence.ActionEventAttemptClaimed, a.Event)
+	require.NotNil(t, a.LastDispatch, "the execution outcome is reported on its own")
 	assert.Equal(t, "completed", a.LastDispatch.EvidenceID)
 	assert.NotContains(t, strings.Join(r.Verification.NotEstablished, "\n"), "that a governed action reached its destination")
+}
+
+func life(f fixture, t *testing.T, id, event string, at time.Time, mod func(*evidence.ActionLifecycle)) {
+	t.Helper()
+	f.put(t, id, evidence.InvocationTypeActionLifecycle, at, func(ev *evidence.Evidence) {
+		ev.ActionLifecycle = &evidence.ActionLifecycle{Event: event, OperationID: "op-1", OperationRef: "op_1", Action: "create_refund_request", PolicyDigest: "bound-digest", OperationStatus: "awaiting_approval"}
+		if mod != nil {
+			mod(ev.ActionLifecycle)
+		}
+	})
+}
+
+// #567 review. Only records that unambiguously establish a request of the
+// application count as its Action Gateway traffic. An authorization refusal
+// is written for an application's refused claim AND for a reviewer who was
+// not allowed to decide, so it never counts; neither does a reviewer's
+// decision, Talon closing an approval, or an execution record. None of them
+// advances the application's last authenticated request, however many are
+// written after it: the lookup selects qualifying events directly, so more
+// than the earlier window of 25 records cannot hide the application's
+// request, and a completed dispatch is found the same way.
+func TestVerification_ActionGatewayCountsOnlyApplicationRequests(t *testing.T) {
+	f := peopleAnalytics(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	t0 := now.Add(-time.Hour)
+	life(f, t, "established", evidence.ActionEventOperationEstablished, t0, nil)
+	life(f, t, "requested", evidence.ActionEventApprovalRequested, t0.Add(time.Second), nil)
+	life(f, t, "dispatched-earlier", evidence.ActionEventAttemptCompleted, t0.Add(2*time.Second), func(a *evidence.ActionLifecycle) { a.AttemptStatus = "completed" })
+
+	// A reviewer who is not authorized tries to decide; an authorized
+	// reviewer decides; Talon expires another approval; the application's
+	// own claim is refused. All newer than the establishment.
+	life(f, t, "reviewer-refused", evidence.ActionEventAuthorizationRefused, t0.Add(time.Minute), func(a *evidence.ActionLifecycle) {
+		a.ReviewerPrincipal, a.RefusalCode = "apr_intruder", "approval_not_authorized"
+	})
+	life(f, t, "reviewer-decided", evidence.ActionEventApprovalDecided, t0.Add(2*time.Minute), func(a *evidence.ActionLifecycle) { a.ReviewerPrincipal = "apr_lead" })
+	life(f, t, "system-expired", evidence.ActionEventApprovalDecided, t0.Add(3*time.Minute), func(a *evidence.ActionLifecycle) { a.ApprovalStatus = "expired" })
+	life(f, t, "claim-refused", evidence.ActionEventAuthorizationRefused, t0.Add(4*time.Minute), func(a *evidence.ActionLifecycle) { a.RefusalCode = "approval_pending" })
+	life(f, t, "reconciled-armed", evidence.ActionEventAttemptArmed, t0.Add(5*time.Minute), nil)
+	// ...and more reviewer and system records than the earlier lookup read.
+	for i := 0; i < 40; i++ {
+		event := evidence.ActionEventApprovalDecided
+		if i%2 == 0 {
+			event = evidence.ActionEventAuthorizationRefused
+		}
+		life(f, t, "noise-"+string(rune('a'+i%26))+string(rune('a'+i/26)), event, t0.Add(6*time.Minute+time.Duration(i)*time.Second), func(a *evidence.ActionLifecycle) { a.ReviewerPrincipal = "apr_other" })
+	}
+
+	r, err := Build(ctx, f.inputs())
+	require.NoError(t, err)
+	a := observation(t, r, BoundaryActionGateway)
+	require.Equal(t, TrafficObserved, a.State, "48 later records do not hide the application's request")
+	assert.Equal(t, "established", a.EvidenceID)
+	assert.True(t, a.Timestamp.Equal(t0), "no reviewer or system record advanced the application's last authenticated request")
+	assert.True(t, a.IdentityProven)
+	assert.Contains(t, a.Identity, "the use case's agent key")
+	assert.Contains(t, a.Establishes, "A reviewer's decision, an expiry, a refused authorization and an execution record are not counted")
+	require.NotNil(t, a.LastDispatch, "the recorded execution outcome stays available, on its own")
+	assert.Equal(t, "dispatched-earlier", a.LastDispatch.EvidenceID)
+	assert.Equal(t, "established", r.LastDecision.EvidenceID, "the last decision is a request, never a reviewer or system record")
+	assert.Equal(t, TrafficNone, observation(t, r, BoundaryLLMGateway).State, "an action-only use case is not LLM-connected")
+
+	// The lookups are index searches for exactly the event asked for.
+	rows, err := f.store.DB().QueryContext(ctx, `EXPLAIN QUERY PLAN SELECT evidence_json FROM evidence
+		 WHERE invocation_type = 'action_lifecycle' AND tenant_id = ? AND agent_id = ?
+		   AND json_extract(evidence_json, '$.action_lifecycle.event') = ?
+		 ORDER BY timestamp DESC, id DESC LIMIT 1`, "default", uc, evidence.ActionEventOperationEstablished)
+	require.NoError(t, err)
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		require.NoError(t, rows.Scan(&id, &parent, &unused, &detail))
+		plan = append(plan, detail)
+	}
+	require.NoError(t, rows.Close())
+	assert.Contains(t, strings.Join(plan, " | "), "idx_evidence_action_event", strings.Join(plan, " | "))
+	assert.NotContains(t, strings.Join(plan, " | "), "SCAN", strings.Join(plan, " | "))
+
+	// The application claims: THAT is a request of the application.
+	life(f, t, "claimed", evidence.ActionEventAttemptClaimed, now, nil)
+	r, err = Build(ctx, f.inputs())
+	require.NoError(t, err)
+	a = observation(t, r, BoundaryActionGateway)
+	assert.Equal(t, "claimed", a.EvidenceID)
+	assert.True(t, a.IdentityProven)
+
+	// A record whose signature fails establishes nothing: no identity, no
+	// policy, and a dispatch record that fails is not a dispatch.
+	_, err = f.store.DB().ExecContext(ctx, `UPDATE evidence SET evidence_json = replace(evidence_json, '"operation_id":"op-1"', '"operation_id":"op-2"') WHERE id IN ('claimed', 'dispatched-earlier')`)
+	require.NoError(t, err)
+	r, err = Build(ctx, f.inputs())
+	require.NoError(t, err)
+	a = observation(t, r, BoundaryActionGateway)
+	assert.Equal(t, "invalid", a.Verification)
+	assert.False(t, a.IdentityProven, "an invalid signature never establishes authenticated identity")
+	assert.Equal(t, PolicyUnverified, a.Policy)
+	assert.Empty(t, a.Credential)
+	require.NotNil(t, a.LastDispatch)
+	assert.Equal(t, "invalid", a.LastDispatch.Verification)
+	assert.Contains(t, strings.Join(r.Verification.NotEstablished, "\n"), "the newest dispatch record does not verify")
+	assert.Equal(t, ReadingTrafficUnverified, r.Verification.Reading.Code)
+
+	// A store that cannot be read is "unavailable", never "none".
+	require.NoError(t, f.store.Close())
+	r, err = Build(ctx, f.inputs())
+	require.NoError(t, err)
+	a = observation(t, r, BoundaryActionGateway)
+	assert.Equal(t, TrafficUnavailable, a.State)
+	assert.NotEmpty(t, a.Error)
+}
+
+// The policy digest on an Action Gateway record is the one the operation was
+// BOUND to at establishment. Only the establishment record evaluated it; a
+// later record of the operation repeats it and is reported as "bound", never
+// as "evaluated under the expected policy" (#567 review).
+func TestComparePolicy_ActionBoundVersusEvaluated(t *testing.T) {
+	in := verificationInputs{action: &ActionBoundary{PolicyDigest: "current"}}
+	at := func(event, digest string) TrafficObservation {
+		o := TrafficObservation{Boundary: BoundaryActionGateway, Verification: "valid"}
+		comparePolicy(&o, &evidence.Evidence{ActionLifecycle: &evidence.ActionLifecycle{Event: event, PolicyDigest: digest}}, in)
+		return o
+	}
+	assert.Equal(t, PolicyMatchesCurrent, at(evidence.ActionEventOperationEstablished, "current").Policy, "the establishment evaluated this policy")
+	assert.Equal(t, PolicyDiffers, at(evidence.ActionEventOperationEstablished, "older").Policy)
+
+	claim := at(evidence.ActionEventAttemptClaimed, "current")
+	assert.Equal(t, PolicyBoundOnly, claim.Policy)
+	assert.Contains(t, claim.PolicyNote, "bound to when it was established (it equals what the current files compile to), not a policy evaluated for this event")
+	conflict := at(evidence.ActionEventOperationConflict, "older")
+	assert.Equal(t, PolicyBoundOnly, conflict.Policy)
+	assert.Contains(t, conflict.PolicyNote, "it differs from what the current files compile to")
+
+	assert.Equal(t, PolicyNotRecorded, at(evidence.ActionEventAttemptClaimed, "").Policy, "nothing recorded stays 'not recorded'")
+	unverified := TrafficObservation{Boundary: BoundaryActionGateway, Verification: "invalid"}
+	comparePolicy(&unverified, &evidence.Evidence{ActionLifecycle: &evidence.ActionLifecycle{Event: evidence.ActionEventOperationEstablished, PolicyDigest: "current"}}, in)
+	assert.Equal(t, PolicyUnverified, unverified.Policy, "an invalid signature never verifies a policy")
+}
+
+// The request's session id stays on the last decision (#567 review: the new
+// projection dropped a field the effective report had before) and is the
+// same on the boundary's observation.
+func TestVerification_LastDecisionKeepsTheSessionID(t *testing.T) {
+	f := peopleAnalytics(t)
+	f.put(t, "with-session", "gateway", time.Now().UTC(), func(ev *evidence.Evidence) { ev.SessionID = "sess-4711" })
+	r, err := Build(context.Background(), f.inputs())
+	require.NoError(t, err)
+	require.NotNil(t, r.LastDecision)
+	assert.Equal(t, "sess-4711", r.LastDecision.SessionID)
+	assert.Equal(t, "sess-4711", observation(t, r, BoundaryLLMGateway).SessionID)
+	raw, err := json.Marshal(r)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"last_decision":{"evidence_id":"with-session"`)
+	assert.Contains(t, string(raw), `"session_id":"sess-4711"`)
+
+	// A request without a session carries none.
+	g := peopleAnalytics(t)
+	g.put(t, "no-session", "gateway", time.Now().UTC(), nil)
+	r, err = Build(context.Background(), g.inputs())
+	require.NoError(t, err)
+	assert.Empty(t, r.LastDecision.SessionID)
 }
 
 // MCP proxy records do not record how the caller was identified (the proxy

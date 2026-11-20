@@ -37,6 +37,9 @@ func runAgentShowEffective(ctx context.Context, cmd *cobra.Command, cfg *config.
 		AgentsDir: cfg.AgentsDir, DefaultPolicy: cfg.DefaultPolicy,
 		GatewayConfig: offlineGatewayConfigPath(), ProxyConfig: strings.TrimSpace(agentsShowProxyConfig),
 		Name: name, Tenant: agentsQueueTenant, Now: time.Now().UTC(),
+		// Vault METADATA only (read-only, no key): when the use case's
+		// credential was last written.
+		SecretsDB: cfg.SecretsDBPath(),
 	}
 	if _, err := os.Stat(cfg.EvidenceDBPath()); err == nil {
 		store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
@@ -104,6 +107,9 @@ func renderEffective(w io.Writer, r *effective.Report) {
 			fmt.Fprintf(w, "   %s: SIGNATURE INVALID — changed after signing; not authenticated\n", d.EvidenceID)
 		}
 		fmt.Fprintf(w, "   %s at %s: %s, dispatch %s (%s), signature %s\n", d.EvidenceID, d.Timestamp.UTC().Format(time.RFC3339), d.Outcome.Decision, d.Outcome.Dispatch, d.InvocationType, d.Verification)
+		if d.SessionID != "" {
+			fmt.Fprintf(w, "   session: %s\n", d.SessionID)
+		}
 		if d.PrimaryCode != "" {
 			fmt.Fprintf(w, "   %s: %s\n", d.PrimaryCode, d.PrimaryReason)
 		}
@@ -118,6 +124,26 @@ func renderEffective(w io.Writer, r *effective.Report) {
 	}
 }
 
+// renderCredential prints what is known about the credential the use case
+// presents now: observed traffic is attributed against it.
+func renderCredential(w io.Writer, c *effective.Credential) {
+	if c == nil {
+		return
+	}
+	switch c.State {
+	case effective.CredentialKnown:
+		fmt.Fprintf(w, "   credential: vault secret %s, current value stored %s; %s\n", c.SecretName, c.Since.UTC().Format(time.RFC3339), c.Note)
+	default:
+		fmt.Fprintf(w, "   credential: %s — %s\n", c.State, c.Note)
+	}
+	if r := c.Registration; r != nil {
+		fmt.Fprintf(w, "               registered %s (%s, signature %s)\n", r.At.UTC().Format(time.RFC3339), r.EvidenceID, r.Verification)
+	} else {
+		fmt.Fprintln(w, "               no 'talon agents add' record for this use case (configured by hand)")
+	}
+	fmt.Fprintf(w, "               running process: %s — %s\n", c.Runtime, c.RuntimeNote)
+}
+
 // renderVerification prints the independent observations of
 // effective.Verification: configured state, observed authenticated traffic
 // per boundary with its policy comparison, the one-line reading and what is
@@ -130,6 +156,7 @@ func renderVerification(w io.Writer, v *effective.Verification) {
 	}
 	fmt.Fprintf(w, "   %s\n", v.Reading.Text)
 	fmt.Fprintf(w, "   configured: %s\n", v.Configured)
+	renderCredential(w, v.Credential)
 	for i := range v.Traffic {
 		o := &v.Traffic[i]
 		switch o.State {
@@ -142,6 +169,9 @@ func renderVerification(w io.Writer, v *effective.Verification) {
 			if o.Event != "" {
 				line += ", " + o.Event
 			}
+			if o.SessionID != "" {
+				line += ", session " + o.SessionID
+			}
 			line += ")"
 			if o.Outcome != nil {
 				line += fmt.Sprintf(": Talon %s, dispatch %s", o.Outcome.Decision, o.Outcome.Dispatch)
@@ -149,6 +179,9 @@ func renderVerification(w io.Writer, v *effective.Verification) {
 			fmt.Fprintf(w, "   %-15s %s\n", o.Boundary+":", line)
 			fmt.Fprintf(w, "   %-15s signature %s; policy %s — %s\n", "", o.Verification, o.Policy, o.PolicyNote)
 			fmt.Fprintf(w, "   %-15s identity: %s\n", "", o.Identity)
+			if o.Credential != "" {
+				fmt.Fprintf(w, "   %-15s credential: %s — %s\n", "", o.Credential, o.CredentialNote)
+			}
 			if d := o.LastDispatch; d != nil {
 				fmt.Fprintf(w, "   %-15s last dispatch %s (%s): dispatch %s, destination %s, signature %s\n", "", d.Timestamp.UTC().Format(time.RFC3339), d.EvidenceID, d.Outcome.Dispatch, d.Outcome.Downstream, d.Verification)
 			}
