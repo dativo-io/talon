@@ -160,3 +160,39 @@ func TestResumeRecovery_ConcurrentAndRepeatedResumesEndTheHoldOnce(t *testing.T)
 	require.NoError(t, err)
 	require.Contains(t, block, "held by the operator")
 }
+
+// #568 review. The hold is enforced in the store, not only by the code that
+// knows about it. A binary without recovery-hold support (a rollback to the
+// previous stable release on a restored store) claims by writing an attempt
+// record before it dispatches. The store refuses that record while a hold
+// is active and, after the resume, for every operation id held for good.
+func TestRecoveryHold_TheStoreRefusesAttemptRecordsOfABinaryThatKnowsNoHold(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	h.establish(t, "op-kept", "notify_customer", `{"ticket_id":"T-1"}`)
+	h.establish(t, "op-free", "notify_customer", `{"ticket_id":"T-2"}`)
+	// What an older binary does to claim: one attempt row, then the dispatch.
+	olderBinaryClaims := func(operationID string) error {
+		var ref string
+		require.NoError(t, h.store.DB().QueryRowContext(ctx, `SELECT ref FROM action_operations WHERE operation_id = ?`, operationID).Scan(&ref))
+		_, err := h.store.DB().ExecContext(ctx, `INSERT INTO action_attempts (id, operation_ref, ordinal, status, idempotency_key, started_at) VALUES (?, ?, 1, 'claimed', 'k', ?)`, "att-"+operationID, ref, h.now)
+		return err
+	}
+
+	require.NoError(t, StampRecoveryHold(ctx, h.store.DB(), "bk_1", h.now.Add(-time.Hour), "cfg"))
+	for _, op := range []string{"op-kept", "op-free"} {
+		err := olderBinaryClaims(op)
+		require.Error(t, err, "an attempt of %s was recorded during the hold", op)
+		require.Contains(t, err.Error(), "recovery_hold")
+	}
+	var attempts int
+	require.NoError(t, h.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM action_attempts`).Scan(&attempts))
+	require.Zero(t, attempts)
+
+	_, err := ResumeRecovery(ctx, h.store.DB(), "operator", []string{"op-kept"}, h.now, func(context.Context, *sql.Tx, []RecoveryHold) error { return nil })
+	require.NoError(t, err)
+	err = olderBinaryClaims("op-kept")
+	require.Error(t, err, "a held operation id is refused for good")
+	require.Contains(t, err.Error(), "recovery_hold")
+	require.NoError(t, olderBinaryClaims("op-free"), "everything else is dispatched again after the resume")
+}

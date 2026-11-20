@@ -37,6 +37,42 @@ CREATE TABLE IF NOT EXISTS recovery_held_operations (
 	held_at TIMESTAMP NOT NULL
 );`
 
+// recoveryGuardTriggers enforce the hold in the store itself. A dispatch is
+// always preceded by its attempt record, so a store that refuses the attempt
+// record refuses the dispatch: for every binary that writes this store,
+// including a release that knows nothing of recovery holds (a rollback to
+// the previous stable release on a restored store).
+const recoveryGuardTriggers = `
+CREATE TRIGGER IF NOT EXISTS recovery_hold_refuses_attempts BEFORE INSERT ON action_attempts
+WHEN EXISTS (SELECT 1 FROM recovery_holds WHERE resumed_at IS NULL)
+BEGIN
+	SELECT RAISE(ABORT, 'recovery_hold: this installation runs on a restored backup that has not been resumed; no attempt is recorded and nothing is dispatched');
+END;
+CREATE TRIGGER IF NOT EXISTS recovery_held_operation_refuses_attempts BEFORE INSERT ON action_attempts
+WHEN EXISTS (SELECT 1 FROM recovery_held_operations h JOIN action_operations o ON o.operation_id = h.operation_id WHERE o.ref = NEW.operation_ref)
+BEGIN
+	SELECT RAISE(ABORT, 'recovery_hold: this operation id was held when the installation was resumed after a restore; it is never dispatched');
+END;`
+
+// ensureRecoveryGuards creates the hold tables and, once the attempt table
+// exists, the triggers that enforce a hold in the store.
+func ensureRecoveryGuards(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, RecoveryHoldSchema); err != nil {
+		return fmt.Errorf("recovery hold schema: %w", err)
+	}
+	var attempts int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'action_attempts'`).Scan(&attempts); err != nil {
+		return err
+	}
+	if attempts == 0 {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, recoveryGuardTriggers); err != nil {
+		return fmt.Errorf("recovery hold guards: %w", err)
+	}
+	return nil
+}
+
 // RecoveryHold is one hold stamped into a backup snapshot.
 type RecoveryHold struct {
 	BackupID        string
@@ -54,8 +90,14 @@ func StampRecoveryHold(ctx context.Context, db *sql.DB, backupID string, created
 	if backupID == "" {
 		return errors.New("recovery hold: empty backup id")
 	}
-	if _, err := db.ExecContext(ctx, RecoveryHoldSchema); err != nil {
-		return fmt.Errorf("recovery hold schema: %w", err)
+	// The snapshot gets the action tables when the installation never used
+	// the Action Gateway, so that the guards exist in every restored store:
+	// a binary that creates the tables later would create them unguarded.
+	if _, err := db.ExecContext(ctx, repoSchema); err != nil {
+		return fmt.Errorf("action schema in the snapshot: %w", err)
+	}
+	if err := ensureRecoveryGuards(ctx, db); err != nil {
+		return err
 	}
 	_, err := db.ExecContext(ctx, `INSERT INTO recovery_holds (backup_id, backup_created_at, config_digest) VALUES (?, ?, ?)`, backupID, createdAt.UTC(), configDigest)
 	return err

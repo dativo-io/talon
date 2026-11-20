@@ -4,12 +4,15 @@ package e2e
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // Upgrade from an earlier release (#467 narrow slice, #465): state written
@@ -189,5 +192,200 @@ policies:
 	}
 	if out, stderr, code := RunTalon(t, dir, nil, "backup", "verify", backup); code != 0 || !strings.Contains(out, "PASS backup verify") {
 		t.Fatalf("upgraded: backup verify: %d\n%s\n%s", code, out, stderr)
+	}
+}
+
+// Rollback on a restored store (#568 review). The previous stable release
+// knows nothing of recovery holds. A restored store is held: operations that
+// ran after the backup are missing from it, so a claim could be a second
+// business effect. If the operator rolls the binary back before reconciling,
+// the OLD binary must not dispatch either. The hold is therefore enforced in
+// the store (it refuses the attempt record every dispatch starts with), and
+// this test runs the actual previous release against it.
+//
+//	current: op-a approved                              → COLD BACKUP
+//	current: op-a dispatched (one downstream effect)
+//	restore the backup                                  → op-a looks authorized again
+//	PREVIOUS release serves the restored store: claims of op-a and of a new
+//	operation dispatch nothing
+//	current: still held; the operator resumes, holding op-a for good
+//	→ op-a is never dispatched again; the other operation is, once
+func TestE2E_RollbackOnARestoredStore_ThePreviousStableDispatchesNothing(t *testing.T) {
+	prev := os.Getenv("TALON_PREVIOUS_STABLE_BINARY")
+	if prev == "" {
+		t.Skip("TALON_PREVIOUS_STABLE_BINARY is not set: the rollback of a restored store to the previous stable release was NOT RUN")
+	}
+	current := binaryPath
+	defer func() { binaryPath = current }()
+	down := startRefundService(t)
+	dir := t.TempDir()
+	if _, stderr, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", agAgent); code != 0 {
+		t.Fatalf("talon init: %d\n%s", code, stderr)
+	}
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	raw, _ := os.ReadFile(agentPath)
+	yaml := strings.Replace(string(raw), "\npolicies:\n", `
+actions:
+  definitions:
+    create_refund_request:
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [ticket_id, amount, currency]
+        properties:
+          ticket_id: {type: string}
+          amount: {type: number}
+          currency: {type: string, enum: [EUR]}
+      review:
+        fields: [ticket_id, amount, currency]
+      destination:
+        type: http
+        url: "`+down.srv.URL+`/refunds"
+        method: POST
+        success: {status_codes: [201]}
+
+policies:
+  approvals:
+    expires_after: 30m
+    rules:
+      refund-request:
+        actions: [create_refund_request]
+        approver_groups: [support-leads]
+`, 1)
+	if err := os.WriteFile(agentPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", agAgent+"-talon-key", agAgentKey); code != 0 {
+		t.Fatalf("secrets set: %d\n%s", code, stderr)
+	}
+	out, _, _ := RunTalon(t, dir, nil, "approver", "add", "--name", "lead-1", "--tenant", "default", "--groups", "support-leads")
+	leadKey := regexp.MustCompile(`talon_appr_cred_[0-9a-f]+\.[A-Za-z0-9_-]+`).FindString(out)
+	if leadKey == "" {
+		t.Fatal("approver credential not printed")
+	}
+	port := freePort(t)
+	c := &agClient{t: t, base: fmt.Sprintf("http://127.0.0.1:%d", port)}
+	establishApproved := func(opID, ticket string) {
+		t.Helper()
+		_, res := c.do("POST", "/v1/action-operations", agAgentKey, fmt.Sprintf(`{"operation_id":%q,"action":"create_refund_request","arguments":{"ticket_id":%q,"amount":20,"currency":"EUR"}}`, opID, ticket))
+		approval, _ := dig(res, "operation", "approval", "id").(string)
+		if st, res := c.do("POST", "/v1/approvals/"+approval+"/decisions", leadKey, `{"decision":"approve","reason":"ok"}`); st != 200 {
+			t.Fatalf("approve %s: %d %v", opID, st, res)
+		}
+	}
+	claim := func(opID string) (int, string) {
+		st, res := c.do("POST", "/v1/action-operations/"+opID+"/attempts", agAgentKey, "")
+		return st, errCode(res)
+	}
+	calls := func(want int64, why string) {
+		t.Helper()
+		if got := down.refundCalls.Load(); got != want {
+			t.Fatalf("%s: refund calls %d, want %d", why, got, want)
+		}
+	}
+
+	// As the runbook does it: stop Talon the way `systemctl stop` does
+	// (SIGTERM), so that it records its shutdown; a cold backup refuses
+	// while a process may still be running.
+	shutdown := serveUntilTerminated(t, dir, port)
+	establishApproved("op-a", "T-A")
+	shutdown()
+	backup := filepath.Join(t.TempDir(), "cold")
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "create", "--cold", backup); code != 0 {
+		t.Fatalf("backup create --cold: %d\n%s\n%s", code, out, stderr)
+	}
+	stop := startActionServe(t, dir, port)
+	if st, code := claim("op-a"); st != 200 {
+		t.Fatalf("claim op-a after the backup: %d %s", st, code)
+	}
+	calls(1, "op-a was executed after the backup")
+	stop()
+
+	// Restore.
+	for _, f := range []string{"evidence.db", "evidence.db-wal", "evidence.db-shm", "secrets.db", "secrets.db-wal", "secrets.db-shm"} {
+		_ = os.Remove(filepath.Join(dir, f))
+	}
+	for _, f := range []string{"evidence.db", "secrets.db"} {
+		b, err := os.ReadFile(filepath.Join(backup, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The operator rolls the binary back BEFORE reconciling.
+	binaryPath = prev
+	stop = startActionServe(t, dir, port)
+	if st, res := c.do("GET", "/v1/action-operations/op-a", agAgentKey, ""); st != 200 || dig(res, "operation", "operation_status") != "authorized" {
+		t.Fatalf("the restored ledger should show op-a authorized again to the previous release: %d %v", st, res)
+	}
+	if st, code := claim("op-a"); st == 200 {
+		t.Fatalf("the previous release dispatched op-a from a restored store that was not reconciled: %d %s", st, code)
+	}
+	calls(1, "previous release, op-a")
+	establishApproved("op-new", "T-N")
+	if st, code := claim("op-new"); st == 200 {
+		t.Fatalf("the previous release dispatched a new operation from a held store: %d %s", st, code)
+	}
+	calls(1, "previous release, a new operation")
+	stop()
+
+	// Back on the current release: still held, then reconciled.
+	binaryPath = current
+	stop = startActionServe(t, dir, port)
+	defer func() { stop() }()
+	if st, code := claim("op-a"); st != 503 || code != "recovery_hold" {
+		t.Fatalf("current release before the resume: %d %s", st, code)
+	}
+	calls(1, "current release before the resume")
+	if out, stderr, code := RunTalon(t, dir, nil, "backup", "resume", "--reconciled", "--hold-operation", "op-a"); code != 0 {
+		t.Fatalf("backup resume: %d\n%s\n%s", code, out, stderr)
+	}
+	if st, code := claim("op-a"); st != 503 || code != "recovery_hold" {
+		t.Fatalf("op-a is held for good: %d %s", st, code)
+	}
+	if st, code := claim("op-new"); st != 200 {
+		t.Fatalf("an operation that was not held dispatches after the resume: %d %s", st, code)
+	}
+	calls(2, "after the resume: op-a never again, op-new once")
+}
+
+// serveUntilTerminated starts `talon serve` like startActionServe and
+// returns a function that stops it with SIGTERM and waits for it to exit:
+// the graceful stop a service manager performs.
+func serveUntilTerminated(t *testing.T, dir string, port int) func() {
+	t.Helper()
+	cmd := exec.Command(binaryPath, "serve", "--port", fmt.Sprintf("%d", port))
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "TALON_DATA_DIR="+dir, "TALON_SECRETS_KEY="+testSecretsKey, "TALON_SIGNING_KEY="+testSigningKey, "TALON_ADMIN_KEY="+agAdminKey)
+	logFile, err := os.OpenFile(filepath.Join(dir, "serve.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start serve: %v", err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			t.Fatal("talon serve did not become healthy")
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_, _ = cmd.Process.Wait()
+		_ = logFile.Close()
 	}
 }
