@@ -451,6 +451,16 @@ func TestReadiness_MCPOnlyActivation(t *testing.T) {
 		assert.Equal(t, ReadyUnverified, dim(r, DimActivation).State, dim(r, DimActivation).Reason)
 		assert.NotEqual(t, OverallOperational, r.Overall, "unverified activation is never an operational claim")
 	})
+	t.Run("a running serve that does not report its active generation: unverified, never 'not running'", func(t *testing.T) {
+		f := seed(t)
+		withMCPSource(t, f)
+		svc := readinessService(t, f, false)
+		putProc(t, f, svc, "serve1", native, withKeys(1, 1), func(r *runtimestatus.Record) { r.Catalog = nil })
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyUnverified, dim(r, DimActivation).State, dim(r, DimActivation).Reason)
+		assert.NotContains(t, dim(r, DimActivation).Reason, "no talon serve")
+		assert.Equal(t, ReadyOK, dim(r, DimMCP).State, "the endpoint itself runs")
+	})
 	t.Run("stale serve: unknown, as the endpoint is degraded", func(t *testing.T) {
 		f := seed(t)
 		withMCPSource(t, f)

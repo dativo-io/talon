@@ -72,7 +72,17 @@ func ProveActionPolicy(v View, readable bool, name, tenant, agentDigest, gateway
 	var ids []string
 	for i := range v.Processes {
 		p := &v.Processes[i]
-		if p.Assessed != Running || p.Catalog == nil {
+		if p.Assessed != Running {
+			continue
+		}
+		if p.Catalog == nil {
+			// A process reporting the governed MCP role is a talon serve
+			// (#431): one that does not report its active generation is
+			// unverifiable, never "not running".
+			if hasRole(p.Roles, RoleMCP) {
+				ids = append(ids, p.InstanceID)
+				return Loaded{State: BoundaryUnknown, Reason: fmt.Sprintf("the running %s %s does not report its active generation, so which agent files it enforces cannot be compared", label, p.InstanceID), InstanceIDs: ids}
+			}
 			continue
 		}
 		ids = append(ids, p.InstanceID)
