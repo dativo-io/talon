@@ -81,6 +81,11 @@ type ReviewerPrincipal struct {
 
 // EstablishRequest is the adapter-neutral first call.
 type EstablishRequest struct {
+	// Attribution is optional, client-asserted metadata an adapter links to
+	// a NEW operation (the MCP session and correlation ids, #431). It is
+	// never authority, never part of the digest, and a later request for the
+	// same operation id cannot change it.
+	Attribution    *Attribution
 	OperationID    string
 	Action         string
 	Arguments      json.RawMessage
@@ -167,6 +172,7 @@ func (s *Service) commit(ctx context.Context, tx *sql.Tx, w *evidence.TxWriter, 
 	ev.Sequence = op.Sequence
 	rec := s.lifecycleRecord(op, ev, allowed, reasons, code)
 	attachWorkloadFacts(ctx, op, rec)
+	attachAttribution(op, rec)
 	if err := w.Store(ctx, tx, rec); err != nil {
 		return &Error{Code: CodeStoreUnavailable, Message: "committing lifecycle evidence", Err: err}
 	}
@@ -241,6 +247,7 @@ type establishPlan struct {
 	verdict        Verdict
 	reviewJSON     []byte
 	identitySource string
+	attribution    []byte
 }
 
 func (s *Service) prepareEstablish(req EstablishRequest) (*establishPlan, error) {
@@ -280,6 +287,7 @@ func (s *Service) prepareEstablish(req EstablishRequest) (*establishPlan, error)
 	return &establishPlan{
 		opID: opID, def: def, canonical: canonical, digest: s.operationDigest(def, canonical),
 		verdict: s.Policy.EvaluateArguments(def.Name, canonical), reviewJSON: reviewJSON, identitySource: identitySource,
+		attribution: req.Attribution.encode(),
 	}, nil
 }
 
@@ -316,7 +324,7 @@ func (s *Service) insertNewOperation(ctx context.Context, tx *sql.Tx, w *evidenc
 		PolicyDigest: s.Policy.Digest, CatalogDigest: s.Catalog.Digest,
 		ExecutionProfile: def.ExecutionProfile, BindingProfile: def.BindingProfile, DestinationID: def.DestinationID,
 		IdentitySource: plan.identitySource, Verdict: verdict.Outcome, RuleID: verdict.RuleID, Version: 1, ReviewJSON: plan.reviewJSON,
-		OriginJSON: originFacts(ctx), CreatedAt: now, UpdatedAt: now,
+		OriginJSON: originFacts(ctx), AttributionJSON: plan.attribution, CreatedAt: now, UpdatedAt: now,
 	}
 	op.IdempotencyKey = "talon-" + op.Ref
 	code, allowed := "ACTION_AUTHORIZED", true

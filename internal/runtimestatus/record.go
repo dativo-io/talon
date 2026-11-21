@@ -25,13 +25,15 @@ import (
 const SchemaVersion = 1
 
 // Roles a process can serve.
-// The governed MCP route (#431) is not a role: it is served by every
-// talon serve as an adapter of the Action Gateway. A record written by an
-// earlier release may still name the removed "mcp_proxy" role; readers show
-// it as written.
+// A record written by an earlier release may still name the removed
+// "mcp_proxy" role (#431); readers show it as written.
 const (
 	RoleGateway = "gateway"
 	RoleNative  = "native" // native agent execution routes (talon serve without --gateway)
+	// RoleMCP is the governed MCP endpoint (POST /mcp, #431): every talon
+	// serve serves it, with or without the LLM gateway, as an adapter of
+	// the Action Gateway.
+	RoleMCP = "mcp"
 )
 
 // Record states written by the process.

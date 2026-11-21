@@ -84,6 +84,8 @@ func runtimeBase(cfg *config.Config) runtimestatus.Record {
 	if len(roles) == 0 {
 		roles = append(roles, runtimestatus.RoleNative)
 	}
+	// Every serve mounts the governed MCP endpoint (#431).
+	roles = append(roles, runtimestatus.RoleMCP)
 	store, _ := filepath.Abs(cfg.EvidenceDBPath())
 	base := runtimestatus.Record{
 		Installation: runtimestatus.Installation{KeyFingerprint: runtimestatus.Fingerprint(cfg.SigningKey), StorePath: store},

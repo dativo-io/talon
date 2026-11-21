@@ -358,3 +358,58 @@ func TestUseCaseDetail_ReadinessFindingsAndOwnDecisions(t *testing.T) {
 	assert.False(t, ids["e_acme"])
 	assert.NotNil(t, d.Issues)
 }
+
+// withMCPSource adds an AI use case that declares an MCP action source, so
+// the governed MCP endpoint is part of this installation's configuration.
+func withMCPSource(t *testing.T, f *fixture) {
+	t.Helper()
+	d := filepath.Join(f.dir, "agents", "hr-mcp")
+	require.NoError(t, os.MkdirAll(d, 0o755))
+	y := "agent:\n  name: hr-mcp\n  version: \"1.0.0\"\npolicies:\n  cost_limits:\n    monthly: 10\nactions:\n  sources:\n    hr:\n      type: mcp\n      url: \"http://127.0.0.1:9/mcp\"\n  definitions:\n    hr_aggregate_sql:\n      source: hr\n      read_only: true\n"
+	require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte(y), 0o600))
+}
+
+// An MCP-only installation (#431): a native talon serve serving the
+// governed MCP endpoint, no LLM gateway. A healthy endpoint is an active
+// data plane: operational, the absent gateway not an incident.
+func TestReadiness_MCPOnlyInstallationIsOperational(t *testing.T) {
+	f := seed(t)
+	withMCPSource(t, f)
+	svc := readinessService(t, f, false)
+	putProc(t, f, svc, "serve1", []string{runtimestatus.RoleNative, runtimestatus.RoleMCP}, withKeys(1, 1))
+
+	r := svc.Overview(context.Background(), "").Readiness
+	assert.Equal(t, OverallOperational, r.Overall, r.Summary)
+	assert.Equal(t, ReadyOK, dim(r, DimMCP).State, dim(r, DimMCP).Reason)
+	assert.Equal(t, ReadyNotConfigured, dim(r, DimGateway).State)
+	assert.Equal(t, ReadyOK, dim(r, DimAgentKeys).State, "the MCP endpoint reports holding the keys")
+	assert.Empty(t, r.Findings)
+}
+
+// Reachable, unhealthy and unconfigured are told apart.
+func TestReadiness_MCPEndpointStates(t *testing.T) {
+	t.Run("stale heartbeat is degraded", func(t *testing.T) {
+		f := seed(t)
+		withMCPSource(t, f)
+		svc := readinessService(t, f, false)
+		putProc(t, f, svc, "serve1", []string{runtimestatus.RoleNative, runtimestatus.RoleMCP}, withKeys(1, 1), written(30*time.Second))
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyDegraded, dim(r, DimMCP).State)
+		assert.Contains(t, codes(r.Findings), "runtime_stale")
+	})
+	t.Run("expected but nothing serves it is critical", func(t *testing.T) {
+		f := seed(t)
+		withMCPSource(t, f)
+		svc := readinessService(t, f, false)
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyDegraded, dim(r, DimMCP).State, dim(r, DimMCP).Reason)
+		assert.Contains(t, codes(r.Findings), "runtime_offline")
+	})
+	t.Run("no MCP source configured and nothing serves it", func(t *testing.T) {
+		f := seed(t)
+		svc := readinessService(t, f, false)
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyNotConfigured, dim(r, DimMCP).State)
+		assert.NotContains(t, codes(r.Findings), "runtime_offline")
+	})
+}

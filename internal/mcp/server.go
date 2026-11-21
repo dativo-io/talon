@@ -141,6 +141,9 @@ type Handler struct {
 	classifier    classifier.Facade
 	// Transport is the protocol gate (#447).
 	Transport *wire.Transport
+	// attr is the request's client-asserted attribution; set only on the
+	// per-request copy (forCall), never on the shared handler.
+	attr *action.Attribution
 }
 
 // NewHandler creates the governed MCP handler.
@@ -176,6 +179,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	span.SetAttributes(attribute.String("mcp.method", req.Method))
+	attr, aerr := attributionFrom(r)
+	if aerr != nil {
+		// Malformed client-asserted attribution is rejected before anything
+		// is evaluated or recorded (the same header hygiene as the gateway).
+		wire.WriteError(w, req.ID, &wire.Error{Status: http.StatusBadRequest, Code: wire.CodeInvalidRequest, Reason: wire.ReasonInvalidRequest, Message: govcode.Bounded(aerr.Error())})
+		return
+	}
+	echoAttribution(w, attr)
+	ctx = withAttribution(ctx, attr)
 
 	var resp *jsonrpcResponse
 	switch req.Method {
@@ -202,9 +214,10 @@ func (h *Handler) discoverResult() map[string]interface{} {
 
 // useCase is the authenticated AI use case one request acts for.
 type useCase struct {
-	id  requestctx.AgentIdentity
-	svc *action.Service // nil: the use case has no action catalog
-	pii UseCasePII
+	id   requestctx.AgentIdentity
+	svc  *action.Service // nil: the use case has no action catalog
+	pii  UseCasePII
+	attr *action.Attribution // client-asserted; nil when none
 }
 
 // generation is the short runtime-generation identity for the extension.
@@ -224,7 +237,7 @@ func (h *Handler) resolveUseCase(reqID json.RawMessage, ctx context.Context) (*u
 	if !ok || id.AgentID == "" {
 		return nil, actionResponse(reqID, govcode.AgentIdentityRequired, "an AI use case key is required for /mcp", nil, nil)
 	}
-	uc := &useCase{id: id, pii: UseCasePII{Classifier: h.classifier}}
+	uc := &useCase{id: id, pii: UseCasePII{Classifier: h.classifier}, attr: attributionOf(ctx)}
 	if h.pii != nil {
 		uc.pii = h.pii(id)
 		if uc.pii.Classifier == nil {
@@ -413,7 +426,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, re
 		opID = "mcp-" + uuid.NewString()
 		identitySource = action.IdentityAdapterGenerated
 	}
-	est, err := uc.svc.Establish(ctx, action.EstablishRequest{OperationID: opID, Action: def.Name, Arguments: args, IdentitySource: identitySource})
+	est, err := uc.svc.Establish(ctx, action.EstablishRequest{OperationID: opID, Action: def.Name, Arguments: args, IdentitySource: identitySource, Attribution: uc.attr})
 	if err != nil {
 		return h.actionFailure(ctx, w, req.ID, err, uc)
 	}
@@ -702,7 +715,7 @@ func (h *Handler) applyRequestPII(ctx context.Context, span trace.Span, reqID js
 	if cls == nil || mode == "" || mode == "allow" || uc.svc == nil {
 		return args, nil
 	}
-	hc := h.withClassifier(cls)
+	hc := h.forCall(cls, uc.attr)
 	policyVersion := uc.svc.Policy.Digest
 	tenantID, agentID := uc.svc.TenantID, uc.svc.AgentID
 	argStr := string(args)
@@ -776,7 +789,7 @@ func (h *Handler) applyResponsePII(ctx context.Context, span trace.Span, reqID j
 	if cls == nil || mode == "" || mode == "allow" {
 		return result, nil
 	}
-	hc := h.withClassifier(cls)
+	hc := h.forCall(cls, uc.attr)
 	flow := &serverFlowState{}
 	subject := piiSubject{uc.svc.TenantID, uc.svc.AgentID, op.Action, uc.svc.Policy.Digest}
 	meta := result["_meta"]
@@ -883,11 +896,11 @@ func (r *jsonrpcResponse) withOperation(op *action.Projection, uc *useCase) *jso
 	return r
 }
 
-// withClassifier is the handler with the use case's scanner for the
-// evidence and data-flow helpers.
-func (h *Handler) withClassifier(cls classifier.Facade) *Handler {
+// forCall is the handler for one request: the use case's scanner and the
+// request's attribution for the evidence and data-flow helpers.
+func (h *Handler) forCall(cls classifier.Facade, attr *action.Attribution) *Handler {
 	c := *h
-	c.classifier = cls
+	c.classifier, c.attr = cls, attr
 	return &c
 }
 
@@ -996,6 +1009,9 @@ func (h *Handler) newServerEvidence(
 	durationMS int64,
 	flow *serverFlowState,
 ) *evidence.Evidence {
+	if h.attr != nil && h.attr.CorrelationID != "" && strings.HasPrefix(correlationID, "mcp_") {
+		correlationID = h.attr.CorrelationID // the client's own reference for an adapter record
+	}
 	ev := &evidence.Evidence{
 		ID:              "req_" + uuid.New().String()[:8],
 		CorrelationID:   correlationID,
@@ -1031,6 +1047,13 @@ func (h *Handler) newServerEvidence(
 		ev.Classification.Scanner = scannerInfo
 	}
 	ev.DataFlow = h.buildServerDataFlow(tenantID, correlationID, toolName, flow)
+	if h.attr != nil {
+		ev.SessionID = h.attr.SessionID
+		if h.attr.Orchestration != nil {
+			o := *h.attr.Orchestration
+			ev.Orchestration = &o
+		}
+	}
 	return ev
 }
 
@@ -1072,4 +1095,69 @@ func entityTypeSet(entities []classifier.PIIEntity) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// attributionHeaders are the client-asserted attribution headers the
+// governed route validates and links to an operation (#431): the same
+// neutral X-Talon-* set and hygiene (128-byte cap, token charset, reject
+// rather than truncate) as the gateway.
+var attributionHeaders = []string{"X-Talon-Session-ID", "X-Correlation-ID", "X-Talon-Agent-ID", "X-Talon-Parent-Agent-ID", "X-Talon-Client"}
+
+// attributionFrom validates the request's attribution headers. nil when the
+// client asserted none. Attribution is never authentication.
+func attributionFrom(r *http.Request) (*action.Attribution, error) {
+	vals := make(map[string]string, len(attributionHeaders))
+	asserted := false
+	for _, name := range attributionHeaders {
+		v, err := evidence.ValidateOrchValue(name, r.Header.Get(name))
+		if err != nil {
+			return nil, err
+		}
+		vals[name] = v
+		asserted = asserted || v != ""
+	}
+	if !asserted {
+		return nil, nil
+	}
+	a := &action.Attribution{SessionID: vals["X-Talon-Session-ID"], CorrelationID: vals["X-Correlation-ID"]}
+	sub, parent, client := vals["X-Talon-Agent-ID"], vals["X-Talon-Parent-Agent-ID"], vals["X-Talon-Client"]
+	if sub != "" || parent != "" || client != "" {
+		if client == "" {
+			client = "generic"
+		}
+		source := ""
+		if a.SessionID != "" {
+			source = "client_asserted"
+		}
+		a.Orchestration = &evidence.OrchestrationContext{SessionID: a.SessionID, AgentID: sub, ParentAgentID: parent, Client: client, SessionSource: source, Provenance: "client_asserted"}
+	}
+	return a, nil
+}
+
+// echoAttribution returns the asserted session and correlation ids, so a
+// client can join its own log to Talon's records.
+func echoAttribution(w http.ResponseWriter, a *action.Attribution) {
+	if a == nil {
+		return
+	}
+	if a.SessionID != "" {
+		w.Header().Set("X-Talon-Session-ID", a.SessionID)
+	}
+	if a.CorrelationID != "" {
+		w.Header().Set("X-Correlation-ID", a.CorrelationID)
+	}
+}
+
+type attributionKey struct{}
+
+func withAttribution(ctx context.Context, a *action.Attribution) context.Context {
+	if a == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, attributionKey{}, a)
+}
+
+func attributionOf(ctx context.Context) *action.Attribution {
+	a, _ := ctx.Value(attributionKey{}).(*action.Attribution)
+	return a
 }

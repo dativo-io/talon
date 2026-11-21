@@ -94,6 +94,8 @@ type govFixture struct {
 	pii     UseCasePII
 	id      requestctx.AgentIdentity
 	seq     atomic.Int64
+	headers map[string]string // client-asserted attribution sent with every request
+	echoed  http.Header
 }
 
 func newGovFixture(t *testing.T) *govFixture {
@@ -149,8 +151,12 @@ func (f *govFixture) rpc(t *testing.T, method string, params map[string]any) (st
 	t.Helper()
 	body := mcpBody(t, f.seq.Add(1), method, params)
 	req := stamp(httptest.NewRequestWithContext(requestctx.SetAgentIdentity(context.Background(), f.id), http.MethodPost, "/mcp", bytes.NewReader(body)))
+	for k, v := range f.headers {
+		req.Header.Set(k, v)
+	}
 	rec := httptest.NewRecorder()
 	f.handler.ServeHTTP(rec, req)
+	f.echoed = rec.Header()
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out), rec.Body.String())
 	return rec.Code, out
 }
@@ -486,4 +492,44 @@ func TestGoverned_RequestFaults(t *testing.T) {
 	for _, tool := range f.src.calls {
 		assert.Zero(t, tool.Load())
 	}
+}
+
+// Client-asserted attribution (#431): the MCP session and correlation ids
+// are linked to the operation as untrusted metadata, joined to every one of
+// its lifecycle records (the existing session projection), echoed back, and
+// never change the operation, its digest or its authority.
+func TestGoverned_AttributionJoinsTheClientSession(t *testing.T) {
+	f := newGovFixture(t)
+	f.headers = map[string]string{"X-Talon-Session-ID": "pa-session-1", "X-Correlation-ID": "corr-voucher-1", "X-Talon-Client": "claude-code"}
+	_, out := f.call(t, "send_voucher", map[string]any{"ticket_id": "T-1", "amount": 20})
+	opID := ext(t, out)["operationId"].(string)
+	assert.Equal(t, "pa-session-1", f.echoed.Get("X-Talon-Session-ID"))
+	assert.Equal(t, "corr-voucher-1", f.echoed.Get("X-Correlation-ID"))
+
+	// The execute call comes in another session: the operation keeps the
+	// attribution it was established with.
+	f.headers = map[string]string{"X-Talon-Session-ID": "another-session"}
+	_, out = f.execute(t, opID)
+	require.NotNil(t, result(out), out)
+
+	recs, err := f.svc.ListLifecycle(context.Background(), opID)
+	require.NoError(t, err)
+	require.Len(t, recs, 4, "established, claimed, armed, completed")
+	for _, r := range recs {
+		assert.Equal(t, "pa-session-1", r.SessionID, "every record of the operation joins the client's session")
+		require.NotNil(t, r.ActionLifecycle)
+		assert.Equal(t, "corr-voucher-1", r.ActionLifecycle.ClientCorrelationID)
+		assert.NotEqual(t, "corr-voucher-1", r.CorrelationID, "the record's correlation id stays the operation reference")
+		require.NotNil(t, r.Orchestration)
+		assert.Equal(t, "claude-code", r.Orchestration.Client)
+		assert.Equal(t, "client_asserted", r.Orchestration.Provenance)
+	}
+	assert.Equal(t, action.LifecycleValid, f.verified(t, opID).Verdict)
+
+	// Malformed attribution is a protocol error: nothing is evaluated,
+	// recorded or sent.
+	f.headers = map[string]string{"X-Talon-Session-ID": "has space"}
+	code, _ := f.call(t, "send_voucher", map[string]any{"ticket_id": "T-2", "amount": 1})
+	assert.Equal(t, http.StatusBadRequest, code)
+	assert.EqualValues(t, 1, f.src.count("voucher.send"))
 }

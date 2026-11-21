@@ -254,6 +254,7 @@
               "description": {"type": "string", "maxLength": 512},
               "source": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$", "description": "actions.sources entry this definition is discovered from."},
               "upstream_name": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Tool name at the source when it differs from the canonical action name. Only the canonical name is callable."},
+              "read_only": {"type": "boolean", "description": "Trusted overlay for an MCP-sourced definition (#431): the action has no business side effect, so an allowed call over POST /mcp executes in one tools/call instead of preparing first. Policy still decides; a source's readOnlyHint never sets it. Not allowed without source."},
               "input_schema": {"type": "object", "description": "JSON Schema (2020-12) for the arguments of an explicit definition; must describe an object. Not allowed with source."},
               "review": {
                 "type": "object",

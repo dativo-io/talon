@@ -44,6 +44,7 @@ const (
 // Dimension keys.
 const (
 	DimGateway        = "runtime.gateway"
+	DimMCP            = "runtime.mcp"
 	DimActivation     = "configuration.activation"
 	DimAgentKeys      = "authentication.agent_keys"
 	DimEvidenceStore  = "data.evidence_store"
@@ -185,6 +186,8 @@ func assessReadiness(in readinessInputs) Readiness {
 	readable := rt.Availability.State == StateOK
 	gw := roleDimension(rt, runtimestatus.RoleGateway, DimGateway, "LLM gateway")
 	add(gw.dim, gw.finding)
+	mp := roleDimension(rt, runtimestatus.RoleMCP, DimMCP, "MCP endpoint")
+	add(mp.dim, mp.finding)
 	d, f := activationDimension(in, readable)
 	add(d, f)
 	d, f = agentKeysDimension(rt, readable)
@@ -263,7 +266,8 @@ func currentProcess(rt Runtime, id string) *runtimestatus.Process {
 	return nil
 }
 
-// runningDataPlane lists the running processes that serve the gateway.
+// runningDataPlane lists the running processes that serve the gateway or
+// the governed MCP endpoint.
 func runningDataPlane(rt Runtime) []*runtimestatus.Process {
 	var out []*runtimestatus.Process
 	for i := range rt.Processes {
@@ -272,7 +276,7 @@ func runningDataPlane(rt Runtime) []*runtimestatus.Process {
 			continue
 		}
 		for _, r := range p.Roles {
-			if r == runtimestatus.RoleGateway {
+			if r == runtimestatus.RoleGateway || r == runtimestatus.RoleMCP {
 				out = append(out, p)
 				break
 			}
@@ -305,7 +309,7 @@ func activationDimension(in readinessInputs, readable bool) (ReadinessDimension,
 		proofs = append(proofs, configProof{"gateway config", runtimestatus.ProveGatewayConfig(view, true, in.GatewayConfigDigest)})
 	}
 	if len(proofs) == 0 {
-		d.State, d.Reason = ReadyNotConfigured, "no gateway is configured for this installation"
+		d.State, d.Reason = ReadyNotConfigured, "no gateway or MCP endpoint is configured for this installation"
 		return d, nil
 	}
 	d.State, d.Reason = worstProof(proofs)
@@ -400,10 +404,10 @@ func agentKeysDimension(rt Runtime, readable bool) (ReadinessDimension, *Finding
 	}
 	switch {
 	case len(procs) == 0 && anyExpected(rt):
-		d.State, d.Reason = ReadyUnknown, "no gateway process is running, so no process reports which agent keys it holds"
+		d.State, d.Reason = ReadyUnknown, "no gateway or MCP endpoint process is running, so no process reports which agent keys it holds"
 		return d, nil
 	case len(procs) == 0:
-		d.State, d.Reason = ReadyNotConfigured, "no gateway is configured for this installation"
+		d.State, d.Reason = ReadyNotConfigured, "no gateway or MCP endpoint is configured for this installation"
 		return d, nil
 	case unreported > 0:
 		d.State = ReadyUnverified
@@ -415,7 +419,7 @@ func agentKeysDimension(rt Runtime, readable bool) (ReadinessDimension, *Finding
 		return d, nil
 	}
 	d.State = ReadyOK
-	d.Reason = "every running gateway reports holding the keys of all use cases that declare one; the console did not attempt to authenticate"
+	d.Reason = "every running gateway and MCP endpoint reports holding the keys of all use cases that declare one; the console did not attempt to authenticate"
 	return d, nil
 }
 
@@ -479,8 +483,11 @@ func anyExpected(rt Runtime) bool {
 }
 
 func roleName(role string) string {
-	if role == runtimestatus.RoleGateway {
+	switch role {
+	case runtimestatus.RoleGateway:
 		return "LLM gateway"
+	case runtimestatus.RoleMCP:
+		return "MCP endpoint"
 	}
 	return role
 }
@@ -549,7 +556,7 @@ func overall(dims []ReadinessDimension) string {
 	runtimeConfigured := false
 	for _, d := range dims {
 		has[d.State] = true
-		if d.Key == DimGateway && d.State != ReadyNotConfigured {
+		if (d.Key == DimGateway || d.Key == DimMCP) && d.State != ReadyNotConfigured {
 			runtimeConfigured = true
 		}
 	}
@@ -574,7 +581,7 @@ func summary(r Readiness) string {
 		}
 		return "At least one operational dimension is degraded."
 	case OverallNotConfigured:
-		return "No gateway is configured for this console; only recorded history can be shown."
+		return "No gateway or MCP endpoint is configured for this console; only recorded history can be shown."
 	case OverallUnknown:
 		return "Nothing is known to be broken, but part of the runtime cannot be assessed."
 	case OverallUnverified:
