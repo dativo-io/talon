@@ -20,8 +20,8 @@ Talon is an open-source, self-hosted AI control plane. Control model access, dat
 | Boundary | Shipped behavior | Important limit |
 |---|---|---|
 | **LLM gateway** | Organization + per-use-case policy, PII and egress checks, budget denial before provider access, retries and policy-valid fallback, signed evidence | Only requests routed through Talon; active policy is always enforced (no global shadow/log-only) |
-| **HTTP Action Gateway** | Trusted exact-action catalog, immutable operation/payload binding, authenticated human approval, at-most-once `talon_forwarded` HTTP dispatch, signed lifecycle evidence | MCP-sourced actions may be catalogued but cannot dispatch through this adapter yet; native and MCP tool execution remain separate (#431/#430) |
-| **MCP** | Tool interception on the **2026-07-28 protocol only**, with signed denials | No previous MCP version or `initialize`; `tools/call` does not yet use ActionGovernance |
+| **HTTP Action Gateway** | Trusted exact-action catalog, immutable operation/payload binding, authenticated human approval, at-most-once `talon_forwarded` HTTP dispatch, signed lifecycle evidence | Only actions declared in the use case's trusted catalog and sent through Talon; Plan Review and native runner actions are not on this spine yet (#430) |
+| **MCP** | One governed `POST /mcp` (**2026-07-28 protocol only**): every `tools/call` to a declared MCP action source is an Action Gateway operation — company policy, approvals, at most one dispatch, signed lifecycle evidence ([guide](docs/guides/mcp-governed-tools.md)) | No previous MCP version or `initialize`; tools a client reaches without going through Talon are not governed |
 | **OpenShell supervisor middleware (v0.1.3 validated baseline)** | Delegated request policy, opt-in `PRE_RETURN` response governance and actual-usage settlement, verified sandbox → HTTP Action Gateway hop, and the [customer showcase](examples/openshell/showcase/README.md) (SDK agent inside the sandbox, human approval, at-most-once refund dispatch) | OpenShell enforces delegated model decisions; Talon cannot attest that enforcement or provide model-path retry/fallback. Response/action additions are fixture-tested; check the dedicated live workflow for runtime verification (v0.1.4 remains experimental). |
 
 Start with the [integration chooser](docs/guides/choosing-integration-path.md), [reproduce the exact-action proof](docs/tutorials/action-gateway-proof.md) (no provider key), the [Action Gateway reference](docs/reference/action-gateway.md), or the [OpenShell integration](docs/integration/openshell.md). For which state or operation Talon owns, see [Control-plane boundaries](docs/reference/control-plane-boundaries.md).
@@ -59,7 +59,7 @@ If those are your questions, Talon sits in front of your existing OpenAI/Anthrop
 ### 3. Shared policy — central defaults, explicit exceptions
 
 - PII scanning (regex, Presidio, HTTP, or local-LLM engines) on prompts, attachments, tool arguments, and responses; redact, block, or warn before the provider — EU identifiers (IBAN MOD-97, VAT, national IDs) plus email, phone, card, passport, IP.
-- Tool allowlists and forbidden globs (`admin_*`): dangerous tools are stripped or blocked before the model ever sees them; MCP tool calls routed through Talon are policy-checked before execution.
+- Tool allowlists and forbidden globs (`admin_*`): dangerous tools are stripped or blocked before the model ever sees them; MCP tool calls sent through Talon's governed `POST /mcp` to a declared action source are policy-checked before dispatch.
 - Egress and sovereignty rules: `eu_strict` / `eu_preferred` / `global` routing and destination controls, air-gap friendly.
 
 → [Policy cookbook](docs/guides/policy-cookbook.md)
@@ -269,7 +269,7 @@ Full table with regions and notes: [Provider registry](docs/reference/provider-r
 | Slack bot | A bot calls an LLM SDK | Route the OpenAI SDK through Talon. See [Slack bot integration](docs/guides/slack-bot-integration.md). |
 | OpenClaw | You run OpenClaw | Point its provider base URL at the gateway. See [OpenClaw integration](docs/guides/openclaw-integration.md). |
 | Coding agents | You run Claude Code or Codex CLI | `talon init --pack coding-agents`, point the tool's base URL at the gateway. See [Claude Code](docs/guides/claude-code-integration.md), [Codex CLI](docs/guides/codex-cli-integration.md), [Governing coding agents](docs/guides/governing-coding-agents.md). |
-| MCP / vendor proxy | Third-party AI vendors | Route MCP traffic through Talon for tool governance and evidence. See [Vendor integration guide](docs/VENDOR_INTEGRATION_GUIDE.md). |
+| Governed MCP tools | An MCP client calls consequential tools of an MCP server | Declare the server as a trusted action source of the use case; the client calls `POST /mcp` with the use case's key. See [Governed MCP tools](docs/guides/mcp-governed-tools.md) and [`examples/mcp-governed`](examples/mcp-governed/). |
 | Native Talon agent | Greenfield agent | Run governed agents directly with `talon run`. See [Your first governed agent](docs/tutorials/first-governed-agent.md). |
 
 ---

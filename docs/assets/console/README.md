@@ -8,7 +8,7 @@ These are **real screenshots** of Talon's packaged, read-only Operations Console
 - `session-investigation.webp`, `evidence-verification.webp`: seeded People Analytics allow, deny, HR-rejected timeline and valid HMAC record.
 - `tamper-detection.webp`: intentionally modified HMAC evidence, not a valid signed decision.
 - `costs.webp`: example with incompatible currencies and unavailable measurements.
-- `configuration.webp`: organization policy, shared proxy and per-agent declarations.
+- `configuration.webp`: organization policy and per-agent declarations.
 - `overview-mobile.webp`: responsive layout.
 - `approvals.webp`, `approval-detail.webp`: the Approvals page and one approval of the `refund-bot` use case: a refund that waits for a decision (argument names only, the rule that required approval, the CLI commands) and one whose lifetime elapsed while it was pending. The requests are established and decided by the production action service; the single hand-written change is the elapsed lifetime of that one approval.
 - `action-policy.webp`, `action-evidence.webp`: the Action Gateway block of the `refund-bot` use case (one company argument rule, one use-case argument rule) and the signed record of a refund that needed a reviewer. The fixture produces this lifecycle with the production action service (establish, reviewer decision, claim, dispatch to a loopback refund service that counts its calls); the records are not written by hand. The reviewer principal is the fixture's own, not an operator's credential.

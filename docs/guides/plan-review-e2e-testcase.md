@@ -14,12 +14,12 @@ Structured end-to-end test for all **user-facing** Plan Review workflows. Pair w
 | # | Area | User surface | PR behavior |
 |---|------|--------------|-------------|
 | F1 | Policy | `agent.talon.yaml` → `compliance.human_oversight` | `always` / `on-demand` / `none` controls whether gate can fire |
-| F2 | Policy | `compliance.plan_review` thresholds | Selective triggers: registry tools, cost, tier, volume (intent path) |
+| F2 | Policy | `compliance.plan_review` thresholds | Selective triggers: cost, tier, volume (intent path); `require_for_tools` never fires on a native run since #431 (no in-process tools) |
 | F3 | Trigger | `talon run "..."` | Creates `plan_<id>`, no LLM until approved + dispatched |
 | F4 | Trigger | `talon run --dry-run` | Policy check only; **skips** plan gate (no plan created) |
 | F5 | Trigger | `POST /v1/agents/run` | HTTP 202 + `plan_pending` + `session_id` when gated |
 | F6 | Trigger | `POST /v1/chat/completions` | HTTP 202 OpenAI-style `plan_pending` error when gated |
-| F7 | Gate rules | `on-demand` + plain text | Run proceeds without plan (no PII, low cost, empty tool registry) |
+| F7 | Gate rules | `on-demand` + plain text | Run proceeds without plan (no PII, low cost) |
 | F8 | Gate rules | `on-demand` + PII input | Tier ≥ 2 → plan created |
 | F9 | Gate rules | `human_oversight: always` | Every run gated regardless of tier/cost/tools |
 | F10 | Intent preview | `talon intent classify` / `talon intent classes` | Shows tool-level review posture; **does not** gate `talon run` |

@@ -2,7 +2,7 @@
 
 Plan review is an **optional human-oversight gate** for native `talon run` agents — most Talon deployments (gateway proxying, coding agents) never enable it, and none of the four operating pillars depend on it. This operator guide covers Talon's **Plan Review Gate**: when enabled, it pauses agent execution **before the first LLM call** until an operator approves the execution plan, with every decision recorded in signed evidence. It provides supporting controls for EU AI Act Art. 14-style human oversight — not a compliance claim.
 
-**Not covered here:** per-tool approval during the agentic loop (`/v1/tool-approvals`). That is a separate mid-run gate. See [Operational control plane](../reference/operational-control-plane.md).
+**Not covered here:** the legacy per-tool approval routes (`/v1/tool-approvals`), a separate mid-run gate; the native agentic tool loop that requested them was removed in #431. See [Operational control plane](../reference/operational-control-plane.md).
 
 ---
 
@@ -85,7 +85,7 @@ Evaluated in the Plan Review Gate **before** the LLM call:
 
 | Rule | Fires when |
 |------|------------|
-| `require_for_tools: true` | Runtime **tool registry** has ≥1 registered tool |
+| `require_for_tools: true` | never on `talon run` since #431: the in-process tool registry is removed, so a native run has no tools |
 | `cost_threshold` | Pre-run cost estimate (EUR) ≥ threshold |
 | `require_for_tier: "tier_2"` | Classified input tier ≥ 2 (e.g. PII in prompt) |
 | `volume_threshold` | Destructive verb + number > threshold in plan text (intent/tool path; see limitation below) |
@@ -97,7 +97,7 @@ capabilities:
   allowed_tools: [sql_query, file_read]   # policy allowlist only
 ```
 
-The gate checks `len(toolRegistry.List()) > 0`, not `allowed_tools`. On `talon run`, the registry starts **empty** unless tools are registered at runtime. Listing tools in policy alone does not trigger `require_for_tools`.
+The gate does not read `allowed_tools`. Since #431 a native run has no in-process tools (the tool registry is removed), so `require_for_tools` does not fire on `talon run`; listing tools in policy does not change that.
 
 ### `talon intent classify` is not `talon run`
 
@@ -108,7 +108,7 @@ talon intent classify summarize '{"prompt":"..."}'
 
 `intent classify` answers: *if this **tool** were invoked, would review be required?* It simulates `hasTools: true`.
 
-`talon run "..."` answers: *should **this run** gate before any LLM call?* It uses the real registry, input tier, and pre-run cost estimate.
+`talon run "..."` answers: *should **this run** gate before any LLM call?* It uses the input tier and pre-run cost estimate (a native run has no tools).
 
 **Known limitation:** `volume_threshold` on user prompts may not fire on `talon run` today because the gate does not pass prompt text into `RequiresReview`. Volume rules apply reliably via `talon intent classify` and tool-intent paths.
 

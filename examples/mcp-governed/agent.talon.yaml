@@ -1,0 +1,64 @@
+# A governed MCP use case (#431): the CRM's MCP server is a trusted action
+# source; an MCP client (Claude Code, an agent framework) connects to Talon's
+# POST /mcp with this use case's key. Every tools/call is an Action Gateway
+# operation: policy, approval, at most one dispatch, signed evidence.
+#
+#   talon secrets set support-assistant-talon-key "$(openssl rand -hex 24)"
+#   talon secrets set crm-mcp-token "<the CRM MCP server's token>" \
+#     --tenant default --agent support-assistant
+#   talon serve            # POST /mcp on :8080
+agent:
+  name: support-assistant
+  version: "1.0.0"
+  key:
+    secret_name: support-assistant-talon-key
+
+capabilities:
+  # Never callable, never listed: denied by the Action Gateway with zero
+  # calls to the CRM.
+  forbidden_tools: [delete_customer]
+
+actions:
+  sources:
+    crm:
+      type: mcp
+      url: "https://crm.example.com/mcp"   # https, or http on loopback only
+      auth:
+        secret_name: crm-mcp-token          # vault entry, read per attempt
+  definitions:
+    # Read-only (trusted Talon overlay): one tools/call when policy allows.
+    lookup_ticket:
+      source: crm
+      upstream_name: ticket.lookup
+      read_only: true
+      review: {fields: [ticket_id]}
+    # Consequential: the first call prepares and returns an operation id;
+    # talon_execute_operation executes it, at most once.
+    issue_voucher:
+      source: crm
+      upstream_name: voucher.issue
+      review: {fields: [ticket_id, amount]}
+    create_refund:
+      source: crm
+      upstream_name: refund.create
+      review: {fields: [ticket_id, amount]}
+    delete_customer:
+      source: crm
+      upstream_name: customer.delete
+      review: {fields: [customer_id]}
+
+policies:
+  cost_limits:
+    daily: 10
+    monthly: 100
+  approvals:
+    expires_after: 30m
+    argument_rules:
+      refund-needs-approval:
+        actions: [create_refund]
+        argument: amount
+        type: decimal
+        operator: gt
+        value: "50.00"
+        effect: require_approval
+        approver_groups: [support-leads]

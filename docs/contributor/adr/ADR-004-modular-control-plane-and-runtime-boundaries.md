@@ -124,6 +124,8 @@ Shipped at the time of acceptance: one compiled runtime generation with generati
 
 Target, not yet shipped: MCP `tools/call` through ActionGovernance and one canonical `POST /mcp` (#431); MCP Tasks continuation (#448); the `externally_executed` profile and n8n reference (#434); native convergence on the typed kernel (#430); the shared kernel as one implementation across plan review and action execution (#426); reviewer surfaces (#433); unknown-outcome reconciliation (#146); workload federation breadth (#457); OpenShell `HTTP_RESPONSE / PRE_RETURN` and WebSocket governance; full parity gate (#435). The reference keeps the authoritative table.
 
+**Note, 2026-11-21:** D8's one canonical governed `POST /mcp` is implemented by [#431](https://github.com/dativo-io/talon/issues/431): every `tools/call` is an Action Gateway operation of the authenticated AI use case, and the MCP proxy (`/mcp/proxy`) and the in-process tool registry are removed. The decisions above are unchanged; the living reference records the current status.
+
 ## References
 
 - Living reference: [Control-plane boundaries](../../reference/control-plane-boundaries.md)

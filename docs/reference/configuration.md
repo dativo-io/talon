@@ -198,7 +198,7 @@ All `TALON_*` environment variables map to fields in `talon.config.yaml`. Enviro
 | `TALON_MAX_ATTACHMENT_MB` | Max attachment size in MB. | `10` |
 | `TALON_OLLAMA_BASE_URL` | Ollama endpoint. | `http://localhost:11434` |
 | `TALON_ADMIN_KEY` | Admin key for control-plane and metrics endpoints (serve only). | — |
-| `TALON_MCP_ALLOWED_ORIGINS` | Comma-separated browser origins allowed on `/mcp` and `/mcp/proxy` in addition to absent, loopback and same-host `Origin` (DNS-rebinding guard, #447). `*` is ignored; the CORS wildcard never applies to MCP. | — |
+| `TALON_MCP_ALLOWED_ORIGINS` | Comma-separated browser origins allowed on `/mcp` in addition to absent, loopback and same-host `Origin` (DNS-rebinding guard, #447). `*` is ignored; the CORS wildcard never applies to MCP. | — |
 | `OPENAI_API_KEY` | OpenAI key (dev fallback when not in vault). | -- |
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL (e.g. for tests). | -- |
 | `ANTHROPIC_API_KEY` | Anthropic key (dev fallback). | -- |
@@ -376,7 +376,16 @@ actions:
       review:
         fields: [ticket_id, amount, currency]
         non_material: [note]
+    lookup_ticket:
+      source: refunds
+      upstream_name: ticket.lookup
+      read_only: true                        # trusted overlay (MCP-sourced only): no business side effect, so an
+                                             # allowed call on POST /mcp executes in one step (#431); policy still decides
+      review:
+        fields: [ticket_id]
 ```
+
+An MCP-sourced definition is executed by the MCP dispatcher as one `tools/call` to its source, over `POST /v1/action-operations` or the governed MCP endpoint `POST /mcp` ([governed MCP tools](../guides/mcp-governed-tools.md)).
 
 Inspect what compiles with `talon actions list --agent <name>`, `talon actions show --agent <name> <action>` and `talon actions validate --agent <name> --action <name> --input <file>` (a candidate compiled by the CLI; the running server's active generation is reported by `GET /v1/agents/fleet`).
 
@@ -387,7 +396,7 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 **Removed in #442 — live non-enforcing postures.** The following keys no longer exist, and a config that still contains one fails at load with an error naming the key, "#442", and the non-live alternatives:
 
 - `gateway.mode` (`enforce|shadow|log_only`) (#442)
-- MCP `proxy.mode` (`intercept|passthrough|shadow`) — governed MCP calls are always intercepted (#442)
+- MCP `proxy.mode` (`intercept|passthrough|shadow`) (#442) — the MCP proxy itself was later removed (#431); governed MCP calls are Action Gateway operations
 - `audit.observation_only` (agent policy) (#442)
 - `tool_policies.*.schema_validation` (agent policy) (#442)
 
@@ -806,7 +815,7 @@ See [Gateway metrics API reference](gateway-metrics-api.md) for the full API sch
 - **Admin key:** Set `TALON_ADMIN_KEY` to protect admin-only and metrics endpoints.
 - **Agent keys:** each agent's vault-bound traffic key (`agent.key.secret_name`) authenticates `/v1/proxy` **and** the tenant-scoped evidence/costs/status APIs, scoped to the agent's derived tenant.
 - **Gateway:** Enable with `--gateway` and `--gateway-config <path>`. See [How to choose your integration path](../guides/choosing-integration-path.md) and gateway guides.
-- **MCP proxy:** Enable with `--proxy-config <path>`. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md).
+- **Governed MCP:** every `talon serve` serves `POST /mcp` for the AI use cases that declare MCP action sources; the use case's key is the identity. `--proxy-config` was removed (#431). See [governed MCP tools](../guides/mcp-governed-tools.md).
 - **Auth model:** See [Authentication and key scopes](authentication-and-key-scopes.md) for endpoint-to-key mapping (agent keys vs admin key).
 - **Operational control:** Run management, overrides, and tool approval gates are exposed via admin API. See [Operational control plane](operational-control-plane.md).
 

@@ -2,6 +2,8 @@
 
 What did your coding assistant actually do? This page answers that question for one real, reproducible session — and is equally explicit about what the answer does not cover.
 
+> **History note.** The experiment ran on a release that shipped the MCP proxy (`/mcp/proxy`, `proxy_tool_call` records). The proxy was removed in #431: on current releases the action plane goes through the one governed MCP endpoint, `POST /mcp`, where each tool call is an Action Gateway operation with signed lifecycle evidence ([Governed MCP tools](../guides/mcp-governed-tools.md)). The model plane is unchanged.
+
 The experiment gave the real GitHub Copilot CLI — unmodified, straight from GitHub — this prompt, which references an MCP (Model Context Protocol) tool server:
 
 ```text
@@ -17,7 +19,7 @@ use subagents, or inspect anything else.
 
 (`<run-nonce>` is a fresh random value minted for each run — more on why below.)
 
-Copilot could see a release-management API exposing release operations over MCP. Between Copilot and everything else stood Talon: one self-hosted Go binary serving an OpenAI-compatible model endpoint and an MCP proxy for tool calls. Copilot kept its native protocol on both.
+Copilot could see a release-management API exposing release operations over MCP. Between Copilot and everything else stood Talon: one self-hosted Go binary serving an OpenAI-compatible model endpoint and, in that release, an MCP proxy for tool calls. Copilot kept its native protocol on both.
 
 What happened: three model turns on gpt-4o-mini, two tool calls, and a stop — exactly as instructed. The run finished inside its 90-second timeout and left this record (summarized from the signed session):
 

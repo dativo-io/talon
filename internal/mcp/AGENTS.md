@@ -20,3 +20,12 @@ Keep these boundaries explicit:
 Do not preserve removed handshake/session semantics merely because tests or helpers still mention them. Update conformance fixtures/tests to the active protocol contract.
 
 For preventive MCP tests, prove zero upstream dispatch on denied/invalid paths.
+
+Since #431 there is one governed route, `POST /mcp`, and it is an adapter over the Action Gateway:
+
+- every `tools/call` goes through the use case's `action.Service` (establish, Execute); the adapter never decides, approves, claims or dispatches itself, never touches operation or approval tables, and never calls Talon over localhost HTTP;
+- the only identity is the authenticated AI use case (`requestctx.AgentIdentity`); there is no synthetic or admin identity on this route;
+- operation ids are Talon-generated (`mcp-<uuid>`) or caller-provided through `_meta["io.dativo.talon/operationId"]` — never model-generated or derived from the arguments;
+- a preparing call dispatches nothing; `read_only` comes from Talon's configuration, never from a source's hints;
+- attribution headers are untrusted metadata linked to the operation, never authority;
+- no in-process tool execution exists; do not add a tool registry back.

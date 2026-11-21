@@ -26,7 +26,7 @@ Enforcement doctrine, one mechanism chosen per boundary, always the strongest ho
 
 | Mechanism | Who prevents | Talon's claim in evidence | Shipped example | Target example |
 |---|---|---|---|---|
-| **INTERCEPT** | Talon owns the prevention boundary | Talon enforced the decision it made (`talon_enforced`, the default when no `enforcement` object is present) | HTTP model gateway `/v1/proxy`; Action Gateway `talon_forwarded` dispatch | governed MCP adapter once [#431](https://github.com/dativo-io/talon/issues/431) ships |
+| **INTERCEPT** | Talon owns the prevention boundary | Talon enforced the decision it made (`talon_enforced`, the default when no `enforcement` object is present) | HTTP model gateway `/v1/proxy`; Action Gateway `talon_forwarded` dispatch; governed MCP `POST /mcp` ([#431](https://github.com/dativo-io/talon/issues/431)) | — |
 | **DELEGATE** | A trusted external runtime, at its pre-execution hook | Talon made and returned the decision; enforcement is expected of the runtime (`delegated_expected`) | OpenShell v0.1.3 supervisor middleware, `HTTP_REQUEST / PRE_CREDENTIALS` and, with `response_governance`, `HTTP_RESPONSE / PRE_RETURN` ([#482](https://github.com/dativo-io/talon/issues/482)); the sandbox → Action Gateway hop is DELEGATE for identity and INTERCEPT for the action itself (Talon dispatches, `talon_enforced`) | — |
 | **COMPILE** | The runtime's native primitive, from a Talon rule proven semantically equivalent and versioned | would state the compiled rule version | none; no OpenShell mapping is certified (the provider-allowlist → endpoint-allowlist candidate was rejected as non-equivalent) | none planned |
 | **VERIFY** | Someone else; Talon reads back the fact | Talon imported or received a fact it did not enforce (`external_asserted` or `client_asserted`; never preventive) | `talon audit import-external --runtime openshell` (OCSF denials, `receipt.verified: false`) | authenticated `externally_executed` outcome reports and reconciliation ([#434](https://github.com/dativo-io/talon/issues/434), [#146](https://github.com/dativo-io/talon/issues/146)) |
@@ -54,7 +54,7 @@ Talon never labels a delegated or imported fact as enforced or verified by itsel
 │───────────────────────────────────▼────────────────────────────────────────────│
 │ REPOSITORIES AND CONTROLLED DISPATCHERS                                         │
 │  SQLite stores (one local transaction per transition + evidence)                │
-│  provider dispatchers   action dispatcher (HTTP today; MCP upstream: #431)      │
+│  provider dispatchers   action dispatchers (HTTP; MCP upstream, #431)           │
 │  vault / payload cryptor   evidence sink   clock / id source                    │
 └────────────────────────────────────────────────────────────────────────────────┘
 dependency direction: adapters → application/domain → repositories/dispatchers
@@ -67,13 +67,13 @@ forbidden: adapter→adapter over localhost, internal HTTP/gRPC, parallel policy
 |---|---|---|---|---|
 | Runtime generation | one atomic snapshot per `agents_dir` scan: policies, compiled engines, catalog, workload bindings; last-known-good on rejected reload; `generation_changed` on mismatch | config loader, catalog compiler, MCP source discovery | adapters | SHIPPED (`internal/agentcatalog`) |
 | ModelGovernance | provider/model eligibility, effective policy, PII classification and transformation, budgets, retries and policy-valid fallback, tool-schema filtering, model-call evidence | generation, provider dispatchers, evidence | action domain, MCP types | SHIPPED (one pre-dispatch decision shared by `/v1/proxy` and the delegated path) |
-| ActionGovernance | definition resolution, normalization and digest, operation identity and conflict, verdict, approval binding, attempt claim/arm/complete, outcome provenance, lifecycle evidence | generation, repositories, action dispatcher, approver resolver, cryptor, evidence | HTTP, Cobra, MCP, UI | SHIPPED (`internal/action`, HTTP destinations only) |
+| ActionGovernance | definition resolution, normalization and digest, operation identity and conflict, verdict, approval binding, attempt claim/arm/complete, outcome provenance, lifecycle evidence | generation, repositories, action dispatcher, approver resolver, cryptor, evidence | HTTP, Cobra, MCP, UI | SHIPPED (`internal/action`; HTTP destinations and MCP sources, [#431](https://github.com/dativo-io/talon/issues/431)) |
 | Approval kernel (typed) | durable request and decision, reviewer authorization, expiry and invalidation, concurrency, projection linkage, decision evidence | repositories, approver resolver, evidence | dispatch, plan semantics | SHIPPED for `action_execution` inside the action domain; TARGET as one kernel also serving `plan_review` ([#426](https://github.com/dativo-io/talon/issues/426), [#430](https://github.com/dativo-io/talon/issues/430)) |
 | Native run controller | durable run and checkpoints, approval waits, claim-revalidate-dispatch, restart recovery | ModelGovernance, ActionGovernance, approval kernel | localhost adapters | TARGET ([#430](https://github.com/dativo-io/talon/issues/430)); today the native runner uses its own plan-review and tool-approval stores |
 | Evidence | signed, tamper-evident lifecycle records (verifiable, not immutable; gap-checked, not proven complete), lifecycle verifier, exports and projections | repositories, signing key | adapters | SHIPPED (spec 1.12; `talon audit verify` runs the lifecycle verifier) |
 | HTTP model gateway | OpenAI-compatible ingress, agent-key auth, provider-native errors | ModelGovernance | action domain | SHIPPED |
 | Action Gateway HTTP | `/v1/action-operations*`, `/v1/approvals*`, status mapping, generation binding | ActionGovernance | — | SHIPPED (`talon_forwarded`) |
-| MCP adapter | 2026-07-28 wire, header/body integrity, `server/discover`, `tools/list`, `tools/call`, upstream transport | TARGET: ActionGovernance | its own policy path | SHIPPED wire ([#447](https://github.com/dativo-io/talon/issues/447)); TARGET governance convergence ([#431](https://github.com/dativo-io/talon/issues/431)) |
+| MCP adapter | 2026-07-28 wire, header/body integrity, `server/discover`, `tools/list`, `tools/call`, upstream transport | ActionGovernance | its own policy path | SHIPPED wire ([#447](https://github.com/dativo-io/talon/issues/447)); SHIPPED governed MCP adapter over ActionGovernance on one `POST /mcp` ([#431](https://github.com/dativo-io/talon/issues/431), [guide](../guides/mcp-governed-tools.md)) |
 | OpenShell middleware service | extension-protocol negotiation, manifest, workload JWT verification, request evaluation via ModelGovernance, response settlement and response PII policy at PRE_RETURN (opt-in `response_governance`, durable settlement ledger), the Action Gateway hop (workload assertion) | ModelGovernance, workload verifier, evidence, settlement ledger | OpenShell-specific policy | SHIPPED (request side; response side and action hop on PR #501, live-lane validated) |
 | Reviewer surfaces | CLI/API/minimal UI over one shared projection | approval kernel projections | direct store writes | TARGET ([#433](https://github.com/dativo-io/talon/issues/433)); today `talon approver` manages principals and decisions arrive over the Action Gateway API |
 | External workflow client (n8n) | workflow waiting, branching, downstream execution and reporting | public Action Gateway API | Talon internals | TARGET ([#434](https://github.com/dativo-io/talon/issues/434)) |
@@ -157,13 +157,13 @@ Reviewer rules: `approve` or `reject` only, bounded comment, required rejection 
 
 | | `talon_forwarded` — SHIPPED | `externally_executed` — TARGET ([#434](https://github.com/dativo-io/talon/issues/434), [#429](https://github.com/dativo-io/talon/issues/429)) |
 |---|---|---|
-| Who dispatches | Talon, through a trusted dispatcher (HTTP destinations today; MCP upstream with [#431](https://github.com/dativo-io/talon/issues/431)) | the external runtime, with its own credential and transport |
+| Who dispatches | Talon, through a trusted dispatcher (HTTP destinations; MCP sources, [#431](https://github.com/dativo-io/talon/issues/431)) | the external runtime, with its own credential and transport |
 | Talon owns | authorization, attempt claim, idempotency identity, transport result, evidence | operation identity, exact binding, approval, attempt permission, authenticated report validation, reconciliation |
 | Runtime owns | nothing on the dispatch path | waiting, polling, retries, downstream execution, outcome reporting |
 | Outcome provenance | `observed` when the outcome was actually observed; `not_dispatched`; `unknown` after an ambiguous post-dispatch failure | `client_asserted` until reconciled by an explicitly supported mechanism; Talon never claims to have observed the effect |
 | Retry | `failed` may be retried under the same approval; `unknown` blocks | runtime may claim a new attempt only through Talon's explicit retry authorization; `unknown` blocks |
 
-The profile is part of the trusted definition and cannot be chosen by the calling runtime. MCP-discovered definitions are catalogued as `talon_forwarded` but return `execution_unsupported` until #431 adds the upstream dispatcher.
+The profile is part of the trusted definition and cannot be chosen by the calling runtime. MCP-discovered definitions are catalogued as `talon_forwarded` and dispatched by the MCP upstream dispatcher as one `tools/call` to the trusted source (#431).
 
 ## 7. Waiting and continuation ownership
 
@@ -179,8 +179,8 @@ approval decision committed → optional signal → owning runtime/controller re
 | Native Talon | durable run checkpoint in SQLite | native run controller: reloads truth, revalidates, claims attempt, dispatches; in-process wake-up is an optimization, scan/restart recovery is sufficient | no | TARGET ([#430](https://github.com/dativo-io/talon/issues/430)); current legacy paths block on an in-memory channel (tool approval) or poll approved plans (Plan Review) |
 | External workflow (n8n, custom) | the runtime, polling stable operation and approval resources with `Retry-After` | the runtime continues the same exact operation and claims an attempt; notifications may lower latency but never carry authorization truth | no | SHIPPED polling contract on the Action Gateway; TARGET reference adapter ([#434](https://github.com/dativo-io/talon/issues/434)) |
 | MCP, client advertises Tasks in the current request | durable MCP Task bound to the same operation and approval | the same controller rules; `tasks/get` polls canonical state and creates no authorization; `tasks/update` cannot submit a human approval | no | TARGET ([#448](https://github.com/dativo-io/talon/issues/448)); today `server/discover` advertises no Tasks and an upstream `resultType: task` is rejected |
-| MCP, client without Tasks | nobody: honest non-execution, zero dispatch, no later background dispatch | — | no | TARGET behavior; today MCP calls do not reach ActionGovernance at all |
-| MRTR (`input_required`, `requestState`, `inputResponses`) | protocol input continuation only | — | no | SHIPPED pass-through on `/mcp/proxy`; never a Talon human approval |
+| MCP, client without Tasks | nobody inside Talon: the call prepares the operation and returns its id, zero dispatch, no later background dispatch | the client, calling `talon_execute_operation` with the operation id after the decision; the claim revalidates | no | SHIPPED on the governed `POST /mcp` ([#431](https://github.com/dativo-io/talon/issues/431)) |
+| MRTR (`input_required`, `requestState`, `inputResponses`) | protocol input continuation only | — | no | an upstream `input_required` on a governed call is an `unknown` outcome and cannot continue the action ([#431](https://github.com/dativo-io/talon/issues/431)); never a Talon human approval |
 
 ## 8. Native sequence (diagram 2)
 
@@ -255,13 +255,13 @@ sequenceDiagram
 
 ## 9. External and MCP sequence (diagram 3)
 
-`break` frames are terminal. SHIPPED: the Action Gateway path with the external-runtime polling contract and `talon_forwarded` HTTP dispatch. TARGET: MCP reaching ActionGovernance at all ([#431](https://github.com/dativo-io/talon/issues/431)), Tasks continuation ([#448](https://github.com/dativo-io/talon/issues/448)), `externally_executed` ([#434](https://github.com/dativo-io/talon/issues/434)), reconciliation of `unknown` ([#146](https://github.com/dativo-io/talon/issues/146)). A Task is a projection over the operation and approval, never the operation.
+`break` frames are terminal. SHIPPED: the Action Gateway path with the external-runtime polling contract and `talon_forwarded` HTTP dispatch, and the governed MCP `POST /mcp` over ActionGovernance with the MCP upstream dispatcher ([#431](https://github.com/dativo-io/talon/issues/431)). TARGET: Tasks continuation ([#448](https://github.com/dativo-io/talon/issues/448)), `externally_executed` ([#434](https://github.com/dativo-io/talon/issues/434)), reconciliation of `unknown` ([#146](https://github.com/dativo-io/talon/issues/146)). A Task is a projection over the operation and approval, never the operation.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant C as MCP client / n8n / raw HTTP client
-    participant AD as adapter (Action Gateway HTTP — SHIPPED | MCP 2026-07-28 — TARGET #431)
+    participant AD as adapter (Action Gateway HTTP — SHIPPED | MCP 2026-07-28 POST /mcp — SHIPPED #431)
     participant AG as ActionGovernance
     participant AK as approval kernel
     participant R as authenticated reviewer
@@ -296,9 +296,9 @@ sequenceDiagram
             loop tasks/get polls canonical state
                 C->>AD: tasks/get → projection only, tasks/update, inputResponses and MRTR input cannot authorize
             end
-        else MCP client without Tasks — non-execution (TARGET #431/#372)
-            break honest non-execution — terminal
-                AD-->>C: approval cannot be awaited on this transport, zero dispatch, request not held open, no hidden continuation, no background dispatch
+        else MCP client without Tasks — SHIPPED #431 (prepare, then talon_execute_operation)
+            break honest non-execution — terminal for this tools/call
+                AD-->>C: prepared tool result: operation_id + approval_id, zero dispatch, request not held open, no hidden continuation, no background dispatch
             end
         end
         R->>AK: approve | reject (approver credential, admin keys, agent keys, workload identities and MCP metadata refused)
@@ -307,16 +307,16 @@ sequenceDiagram
             AG->>EV: operation cancelled
             AD-->>C: terminal state on the next poll or tasks/get, zero dispatch
         end
-        Note over C,AD: approved and currently usable: the runtime or task controller explicitly resumes the same exact operation
+        Note over C,AD: approved and currently usable: the runtime, the MCP client (a new talon_execute_operation call) or the task controller explicitly resumes the same exact operation
     end
-    C->>AD: request attempt claim (POST .../attempts | task controller continuation)
+    C->>AD: request attempt claim (POST .../attempts | talon_execute_operation | task controller continuation)
     AD->>AG: claim
     AG->>AG: revalidate exact operation, current trusted definition and effective policy, approval usability, one winner among concurrent claims
     break unusable authorization — terminal (approval_binding_stale, approval_expired, attempt_already_in_progress, operation succeeded or unknown)
         AD-->>C: refused, zero dispatch
     end
     AG->>EV: attempt_claimed, attempt_armed (durable marker before any effect)
-    alt talon_forwarded — SHIPPED for HTTP destinations (MCP upstream dispatcher TARGET #431)
+    alt talon_forwarded — SHIPPED for HTTP destinations and MCP sources (#431)
         AG->>D: dispatch at most once with idempotency identity
         alt observed result
             D-->>AG: status in the success contract, or a known failure
@@ -341,13 +341,13 @@ sequenceDiagram
 | No `initialize` / `notifications/initialized` exchange (rejected with 404 / -32601); no `Mcp-Session-Id` (ignored, never minted); GET/DELETE 405 | SHIPPED |
 | `Mcp-Method`, `Mcp-Name`, `Mcp-Param-*` must agree with the body; mismatch is `-32020`, a protocol and security failure before governance, with no governance evidence written | SHIPPED |
 | `server/discover` advertises only implemented capabilities (today `tools`, no extensions) | SHIPPED |
-| `tools/list` is a deterministic projection of one captured trusted catalog generation | TARGET ([#431](https://github.com/dativo-io/talon/issues/431)); today `/mcp` lists the in-process registry and `/mcp/proxy` lists a TTL-bound capture of the upstream |
-| `tools/call` re-enters ActionGovernance on every call; visibility grants nothing | TARGET ([#431](https://github.com/dativo-io/talon/issues/431)); today both routes use the OPA tool-access path and `/mcp` runs tools in-process |
-| one canonical `POST /mcp`; the server/proxy split and the `native | proxy | hybrid` modes are removed | TARGET ([#431](https://github.com/dativo-io/talon/issues/431)) |
-| synthetic execution identities (`mcp-client`, `mcp-proxy`) replaced by the authenticated use case | TARGET ([#431](https://github.com/dativo-io/talon/issues/431)) |
+| `tools/list` is a deterministic projection of one captured trusted catalog generation | SHIPPED ([#431](https://github.com/dativo-io/talon/issues/431)): the use case's MCP-sourced action definitions under their canonical names, plus `talon_execute_operation` |
+| `tools/call` re-enters ActionGovernance on every call; visibility grants nothing | SHIPPED ([#431](https://github.com/dativo-io/talon/issues/431)) |
+| one canonical `POST /mcp`; the server/proxy split and the `native | proxy | hybrid` modes are removed | SHIPPED ([#431](https://github.com/dativo-io/talon/issues/431)): `/mcp/proxy` and `--proxy-config` are removed |
+| synthetic execution identities (`mcp-client`, `mcp-proxy`) replaced by the authenticated use case | SHIPPED ([#431](https://github.com/dativo-io/talon/issues/431)): the use case's key or a verified workload hop; the admin key is refused |
 | Tasks as adapter continuation; `resultType: task` upstream is deferred state, not success | TARGET ([#448](https://github.com/dativo-io/talon/issues/448)); today rejected |
-| MRTR passes through as non-authorizing input | SHIPPED on `/mcp/proxy` |
-| Talon governance extension `io.dativo.talon/governance`: one registry of stable codes shared with the Action Gateway, retryability, committed evidence references in `error.data` / result `_meta`, advertised in `server/discover`; protocol errors carry none | SHIPPED ([#372](https://github.com/dativo-io/talon/issues/372), [reference](mcp-governance-extension.md)); operation/approval/task identifiers in the extension arrive with [#431](https://github.com/dativo-io/talon/issues/431)/[#448](https://github.com/dativo-io/talon/issues/448) |
+| MRTR is never authorizing input; an upstream `input_required` on a governed call is an `unknown` outcome, not a continuation | SHIPPED ([#431](https://github.com/dativo-io/talon/issues/431)) |
+| Talon governance extension `io.dativo.talon/governance`: one registry of stable codes shared with the Action Gateway, retryability, committed evidence references in `error.data` / result `_meta`, advertised in `server/discover`; protocol errors carry none | SHIPPED ([#372](https://github.com/dativo-io/talon/issues/372), [reference](mcp-governance-extension.md)); operation, approval and attempt identifiers in the extension SHIPPED with [#431](https://github.com/dativo-io/talon/issues/431); task identifiers arrive with [#448](https://github.com/dativo-io/talon/issues/448) |
 
 Talon `session_id` is application correlation and is never derived from any MCP transport concept.
 
@@ -406,10 +406,10 @@ Live traffic has no global non-enforcing posture; the removal shipped in [#442](
 | Native model execution (`talon run`, `/v1/agents/run`) | SHIPPED, in-process | RETAIN; calls ModelGovernance directly | [#430](https://github.com/dativo-io/talon/issues/430) |
 | Native Plan Review | SHIPPED legacy: plan store, admin-key decision, approve → auto-dispatch poller | MIGRATE to typed `plan_review` over the approval kernel; controller resumes, decision never dispatches | [#430](https://github.com/dativo-io/talon/issues/430), [#426](https://github.com/dativo-io/talon/issues/426) |
 | Native tool approval | SHIPPED legacy: in-memory store, admin-key decision, approve → run | REPLACE with canonical `action_execution` | [#430](https://github.com/dativo-io/talon/issues/430) |
-| Process-local customer business tools (`Tool.Execute` registry) | SHIPPED as implementation detail of `/mcp` and the native runner | REMOVE as target product dependency; business actions execute in upstream MCP servers or external runtimes | [#431](https://github.com/dativo-io/talon/issues/431) |
-| MCP server/proxy split (`/mcp`, `/mcp/proxy`) | SHIPPED: one 2026-07-28 wire, two governance paths, synthetic fallback identities | MIGRATE to one governed `POST /mcp` over ActionGovernance | [#431](https://github.com/dativo-io/talon/issues/431) |
+| Process-local customer business tools (in-process tool registry) | REMOVED: the registry, the in-process `/mcp` tool route, the native runner's agentic tool loop and the CoPaw tool adapter (production never registered a tool) | SHIPPED: business actions execute in upstream MCP servers (declared action sources) or external runtimes | [#431](https://github.com/dativo-io/talon/issues/431) |
+| MCP server/proxy split (`/mcp`, `/mcp/proxy`) | SHIPPED: converged to one governed `POST /mcp` over ActionGovernance; `/mcp/proxy`, `--proxy-config` and the synthetic fallback identities are removed | none | [#431](https://github.com/dativo-io/talon/issues/431), [guide](../guides/mcp-governed-tools.md) |
 | MCP initialize/session lifecycle | REMOVED: rejected on the wire (not supported) | none; no previous-protocol compatibility | [#447](https://github.com/dativo-io/talon/issues/447) closed |
-| MCP approval continuation | none (Tasks not advertised; approval-required calls cannot occur before #431) | Tasks extension over canonical state; MRTR for non-authorizing input only; honest non-execution without Tasks | [#448](https://github.com/dativo-io/talon/issues/448), [#372](https://github.com/dativo-io/talon/issues/372) |
+| MCP approval continuation | SHIPPED without Tasks ([#431](https://github.com/dativo-io/talon/issues/431)): an approval-required call prepares the operation and dispatches nothing; after the decision the client executes it with `talon_execute_operation`; Tasks not advertised | Tasks extension over canonical state; MRTR for non-authorizing input only; honest non-execution without Tasks | [#448](https://github.com/dativo-io/talon/issues/448), [#372](https://github.com/dativo-io/talon/issues/372) |
 | Graph event ingestion (`/v1/graph/events`) | SHIPPED: allow/deny decisions from the OPA path | RETAIN as context and telemetry; never enforcement authority or approval channel | [#431](https://github.com/dativo-io/talon/issues/431) scope note, ADR-003 amended |
 | n8n / custom workflows | none shipped (hidden wizard pack only) | external client over the public Action Gateway; owns waiting and external execution | [#434](https://github.com/dativo-io/talon/issues/434) |
 | Session store | SHIPPED with the older status vocabulary | RETAIN as lightweight correlation and summary: `open \| completed`, `managed_by` | [#401](https://github.com/dativo-io/talon/issues/401) |
@@ -422,7 +422,7 @@ Live traffic has no global non-enforcing posture; the removal shipped in [#442](
 ## 16. Shipped-versus-target migration notes
 
 1. **Action spine first.** The action domain, Action Gateway, approver principals and lifecycle evidence are the canonical implementation. New adapters (#431 MCP, #430 native, #434 external) call them; they do not fork them.
-2. **MCP convergence (#431)** replaces two governance paths with one adapter, removes synthetic identities and in-process business tools, adds the MCP upstream dispatcher so MCP-sourced definitions stop returning `execution_unsupported`, and makes `tools/list` a generation projection. #372 shipped the extension vocabulary and evidence references that #431 and #448 reuse.
+2. **MCP convergence (#431)** — SHIPPED: one governed adapter replaced the two governance paths, synthetic identities and in-process business tools are removed, the MCP upstream dispatcher executes MCP-sourced definitions, and `tools/list` is a generation projection. #372 shipped the extension vocabulary and evidence references that #431 and #448 reuse.
 3. **Native convergence (#430)** moves Plan Review and tool approval onto the typed kernel and a durable run controller. Until then the legacy approve-then-run behavior is current product behavior and is documented as such, not as target.
 4. **External profile (#434)** adds `externally_executed` and `client_asserted` outcomes without new domain authorities. Reconciliation of `unknown` (#146) lands with it or before.
 5. **Sessions (#401)** simplify to `open | completed` plus `managed_by`; docs describing that vocabulary are target until the store changes.
@@ -440,7 +440,7 @@ Live traffic has no global non-enforcing posture; the removal shipped in [#442](
 | atomic state + evidence transitions, gap-free lifecycle, verifier | [#146](https://github.com/dativo-io/talon/issues/146) | `verify_test.go`, `talon audit verify`; #435 |
 | DENY → zero provider or destination dispatch on every surface | [#432](https://github.com/dativo-io/talon/issues/432), [#431](https://github.com/dativo-io/talon/issues/431) | `TestDeny_ZeroDispatch`, OpenShell live case C, gateway tests; #435 |
 | MCP 2026-07-28 only; header/body integrity before governance; no session or handshake | [#447](https://github.com/dativo-io/talon/issues/447) (closed) | `internal/mcp/wire` tests, `legacy_guard_test.go`; #435 |
-| `tools/call` re-authorized through ActionGovernance; no synthetic identities; no in-process business tools | [#431](https://github.com/dativo-io/talon/issues/431) | #431 tests; #435 |
+| `tools/call` re-authorized through ActionGovernance; no synthetic identities; no in-process business tools | [#431](https://github.com/dativo-io/talon/issues/431) | `internal/action` `TestMCPAction_*` / `TestMCPDispatcher_*`, `internal/mcp` governed tests, `TestE2E_MCP_GovernanceContract`; #435 |
 | Tasks are projection; MRTR and `tasks/update` never approve; non-Tasks client gets zero dispatch | [#448](https://github.com/dativo-io/talon/issues/448), [#372](https://github.com/dativo-io/talon/issues/372) | #448 tests; #435 |
 | native run controller resumes from durable state; wake-up optional; restart recovery | [#430](https://github.com/dativo-io/talon/issues/430) | #430 tests; #435 |
 | `externally_executed` outcomes are `client_asserted`; missing reports never become observed failures | [#434](https://github.com/dativo-io/talon/issues/434) | #434 tests; #435 |
@@ -453,7 +453,7 @@ Live traffic has no global non-enforcing posture; the removal shipped in [#442](
 
 ## 18. What Talon cannot control
 
-Talon controls only effects at supported boundaries: model traffic through its gateway or a delegating runtime, and catalogued actions attempted through the Action Gateway (and, after #431, the governed MCP adapter). It cannot prevent local shell commands, direct filesystem edits, direct browser automation, direct business API calls, an alternate provider path, or local tool execution when those effects bypass every Talon-controlled or delegated boundary. OpenShell can contain its own sandbox, which narrows those paths for that sandbox only; it does not make Talon a universal agent-control product, and no diagram above implies otherwise. Attribution metadata is not authentication; `delegated_expected` is not observation; `external_asserted` is not verification; signed evidence is tamper-evident, not immutable.
+Talon controls only effects at supported boundaries: model traffic through its gateway or a delegating runtime, and catalogued actions attempted through the Action Gateway (including governed MCP calls on `POST /mcp` to a declared action source, #431). It cannot prevent local shell commands, direct filesystem edits, direct browser automation, direct business API calls, an alternate provider path, or local tool execution when those effects bypass every Talon-controlled or delegated boundary. OpenShell can contain its own sandbox, which narrows those paths for that sandbox only; it does not make Talon a universal agent-control product, and no diagram above implies otherwise. Attribution metadata is not authentication; `delegated_expected` is not observation; `external_asserted` is not verification; signed evidence is tamper-evident, not immutable.
 
 ## 19. Issue index
 
