@@ -69,7 +69,7 @@ These are **real console screenshots** from the synthetic Playwright test instal
 
 ![People Analytics session with an allowed aggregate, blocked export, and destination-side SQL rejection](../assets/console/session-investigation.webp)
 
-*Three different outcomes in one session: Talon allowed and dispatched an aggregate; Talon denied an employee export before dispatch, so the HR backend never received it; Talon allowed a SQL tool call that the HR backend itself rejected. The session is evidence-observed, not a lifecycle Talon invented. (Captured before #431 removed the MCP proxy: on the governed `POST /mcp`, a rejection the backend reports after dispatch reads *Outcome unknown*.)*
+*Three different outcomes in one session: Talon allowed and dispatched an aggregate; Talon denied an employee export before dispatch, so the HR backend never received it; Talon allowed a SQL tool call that the HR backend itself rejected. The session is evidence-observed, not a lifecycle Talon invented. (The tool records shown are the shape an earlier release's MCP proxy wrote, which the console still reads; on the governed `POST /mcp`, a rejection the backend reports after dispatch reads *Outcome unknown*.)*
 
 ### 4. Verify a decision when someone asks
 
@@ -89,7 +89,7 @@ A further AI use case is another agent file and key under the same `talon.config
 
 ![Configuration: organization baseline, the MCP proxy settings of an earlier release, and configured AI use cases](../assets/console/configuration.webp)
 
-*Configuration shows current file contents; separately reported process activation proves which bytes have actually been loaded. (Captured before #431: the MCP proxy section shown here is removed.)*
+*Configuration shows current file contents; separately reported process activation proves which bytes have actually been loaded.*
 
 ![Effective policy, Action Gateway: refund-bot's refund depends on its arguments; one company rule denies, one use-case rule requires approval](../assets/console/action-policy.webp)
 
