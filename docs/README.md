@@ -19,7 +19,7 @@ Two ways to start. Pick the one you mean.
 |---|---|---|
 | For | seeing real policy decisions and signed evidence in a few minutes, with no provider key and no application | putting an application you already run behind your company policy |
 | Start | [Quickstart](QUICKSTART.md) (published image), or the [60-second demo](tutorials/quickstart-demo.md) (Docker Compose from a clone) | [Connect an existing application](guides/add-talon-to-existing-app.md) |
-| Then | — | [Operate AI use cases](guides/operate-ai-use-cases.md): the task reference for day two |
+| Then | — | [Operate AI use cases](guides/operate-ai-use-cases.md): the day-two task reference. For consequential actions, use the [n8n refund approval walkthrough](guides/n8n-refund-approvals.md). |
 
 ## New here?
 
@@ -48,7 +48,7 @@ Choose the shortest path for your situation:
 
 1. **"I need to apply company policy and authorize consequential actions before execution."**
    - Choose the boundary: [Integration paths](guides/choosing-integration-path.md)
-   - Exact action and human decision: [Action Gateway](reference/action-gateway.md) and [repeatable no-key action proof](tutorials/action-gateway-proof.md) (shipped on HTTP; MCP/native convergence remains roadmap)
+   - Exact action and human decision: [Action Gateway](reference/action-gateway.md), [n8n refund approvals](guides/n8n-refund-approvals.md), and [repeatable no-key action proof](tutorials/action-gateway-proof.md)
    - Runtime policy: [Policy cookbook](guides/policy-cookbook.md) · [Control-plane boundaries](reference/control-plane-boundaries.md)
    - Containment integration: [OpenShell](integration/openshell.md) (delegated request policy, opt-in response governance, verified sandbox-to-Action-Gateway hop; v0.1.3 live baseline, newer integration capabilities require fixture/live qualification)
 2. **"I need to operate my AI use cases: budgets, reliability, one policy, session visibility."**
@@ -106,7 +106,11 @@ Choose the shortest path for your situation:
 | [Plan Review E2E test case](guides/plan-review-e2e-testcase.md) | Policy | Feature inventory (F1–F30) and phased testcase TC-PR-001–012 with pass criteria. |
 | [How to choose your integration path](guides/choosing-integration-path.md) | Integrate | Choose between model gateway, MCP, exact HTTP actions, native and OpenShell delegated boundaries. |
 | [Migrate to MCP 2026-07-28 and enforced policy](guides/mcp-2026-migration.md) | Integrate | Breaking protocol, config and governance error-contract migration checklist. |
-| [Add Talon to your existing app](guides/add-talon-to-existing-app.md) | Integrate | Point your existing app (Python, Node, curl) at Talon in a few minutes; first real request and evidence. |
+| [Add Talon to your existing app](guides/add-talon-to-existing-app.md) | Integrate | Register an AI use case, connect an existing SDK app, and verify effective policy and traffic. |
+| [Govern n8n refunds with human approval](guides/n8n-refund-approvals.md) | Actions | Import an n8n workflow, apply company and use-case argument rules, route allowed/approved actions through Talon and verify signed outcomes. |
+| [Operate AI use cases](guides/operate-ai-use-cases.md) | Operate | Inspect fleet state and next steps, investigate denials, replace credentials and stop a use case safely. |
+| [Operations Console](guides/operations-console.md) | Operate | Read-only installation readiness, effective policy, approvals, sessions, costs and signed evidence. |
+| [Production pilot runbook](guides/production-pilot.md) | Operate | Connect a model application and governed business action; verify the whole lifecycle and recovery steps. |
 | [Docker primer: OpenClaw + Talon (cloud-ready)](guides/openclaw-talon-primer/docker-openclaw-talon-primer.md) | Integrate | Predefined Docker setup to run Talon gateway for OpenClaw; deploy in the cloud. |
 | [Slack bot integration](guides/slack-bot-integration.md) | Integrate | Route your Slack bot's LLM calls through Talon for cost caps, PII controls, and an audit trail. |
 | [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) | Integrate | Use Talon from GitHub Actions or GitLab CI. |

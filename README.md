@@ -9,7 +9,7 @@ Talon is an open-source, self-hosted AI control plane. Control model access, dat
 [![Latest Release](https://img.shields.io/github/v/release/dativo-io/talon)](https://github.com/dativo-io/talon/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**[Try it in 60 seconds](#try-it-in-60-seconds-no-api-key)** · [Product demo](#product-demo--three-use-cases-one-control-plane) · [Documentation](https://dativo.io/talon/docs/) · [Website](https://dativo.io/)
+**[Try it in 60 seconds](#try-it-in-60-seconds-no-api-key)** · [Connect an application](docs/guides/add-talon-to-existing-app.md) · [n8n refund approvals](docs/guides/n8n-refund-approvals.md) · [Product demo](#product-demo--three-use-cases-one-control-plane) · [Documentation](https://dativo.io/talon/docs/) · [Website](https://dativo.io/)
 
 [![Talon Operations Console: readiness, AI use cases, sessions, signed evidence, costs, configuration and system diagnostics](docs/assets/console/showcase.webp)](docs/guides/operations-console.md)
 
@@ -105,7 +105,7 @@ talon agents show customer-support                               # is it working
 talon agents                                                     # every application on one screen
 ```
 
-Day two is in [Operate AI use cases](docs/guides/operate-ai-use-cases.md). Coding agents, MCP tools, business actions and building a new agent on Talon's own runtime are other ways to connect the same use case: [integration paths](#integration-paths).
+Day two is in [Operate AI use cases](docs/guides/operate-ai-use-cases.md) and the read-only [Operations Console](docs/guides/operations-console.md). To govern a consequential action in an existing automation, follow the [n8n refund approvals walkthrough](docs/guides/n8n-refund-approvals.md): allow, require human approval, or deny before Talon dispatches the bound action. Coding agents, MCP tools and native runs have distinct [integration paths](#integration-paths).
 
 Trying first? [No key needed](#try-it-in-60-seconds-no-api-key). Then [open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A) with your stack and the first control you need.
 
