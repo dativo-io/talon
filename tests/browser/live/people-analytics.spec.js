@@ -30,7 +30,7 @@ test("Session: a valid aggregate, the forbidden export and an aggregate the HR b
   const unknown = item(f.evidence.invalid_sql);
   await expect(unknown.getByText("Talon allowed", { exact: true })).toBeVisible();
   await expect(unknown.getByText("Dispatch unknown", { exact: true })).toBeVisible();
-  await expect(unknown.getByText("Outcome unknown", { exact: true })).toBeVisible();
+  await expect(unknown.locator("strong", { hasText: /^Outcome unknown$/ })).toBeVisible();
   await expect(unknown.getByText("Talon denied", { exact: true })).toHaveCount(0);
 });
 
@@ -55,8 +55,14 @@ test("Effective policy: the running serve loaded the file, gateway policy not pr
   expect(report.last_decision.verification).toBe("valid");
   await pair(page, `/use-cases/${f.use_case}`);
   const eff = page.getByRole("region", { name: "Effective policy" });
-  await expect(eff.getByText("Compiled from current files, not proven active")).toBeVisible();
+  await expect(eff.locator("p", { hasText: "LLM gateway:" }).getByText("Compiled from current files, not proven active")).toBeVisible();
   await expect(eff.locator("p", { hasText: "LLM gateway:" }).getByText(report.effective.proof.reason)).toBeVisible();
+  // The Action Gateway's own proof, as the CLI states it (it needs the gateway
+  // config the company action policy was read from; this serve has none).
+  expect(report.action_boundary.proven_active).toBe(false);
+  const boundary = eff.getByTestId("action-boundary");
+  await expect(boundary.getByText("Compiled from current files, not proven active")).toBeVisible();
+  await expect(boundary.getByText(report.action_boundary.proof.reason, { exact: true })).toBeVisible();
   const last = eff.getByRole("region", { name: "4. Last recorded decision" });
   await expect(last.getByText("Signature valid")).toBeVisible();
   await expect(last.getByRole("link", { name: report.last_decision.evidence_id })).toBeVisible();

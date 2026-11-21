@@ -41,7 +41,9 @@ test("Use case detail: identity, costs with caps, effective policy in four layer
   }
   // No talon serve runs in this suite: compiled, never claimed active.
   expect(report.effective.proven_active).toBe(false);
-  await expect(eff.getByText("Compiled from current files, not proven active")).toBeVisible();
+  await expect(eff.locator("p", { hasText: "LLM gateway:" }).getByText("Compiled from current files, not proven active")).toBeVisible();
+  // The use case declares an MCP action source (#431): its Action Gateway policy is compiled as well, and is not claimed active without a running serve.
+  await expect(eff.getByTestId("action-boundary").getByText("Compiled from current files, not proven active")).toBeVisible();
   await expect(eff.getByText("Not proven", { exact: true })).toBeVisible();
   // The forbidden-tools rule: the union of the organization and use-case lists, as the CLI prints it.
   const ft = report.effective.rules.find((r) => r.rule === "forbidden_tools");

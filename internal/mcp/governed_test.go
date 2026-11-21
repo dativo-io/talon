@@ -95,6 +95,7 @@ type govFixture struct {
 	id      requestctx.AgentIdentity
 	seq     atomic.Int64
 	headers map[string]string // client-asserted attribution sent with every request
+	mu      sync.Mutex        // guards echoed: the concurrency tests call rpc from several goroutines
 	echoed  http.Header
 }
 
@@ -156,7 +157,9 @@ func (f *govFixture) rpc(t *testing.T, method string, params map[string]any) (st
 	}
 	rec := httptest.NewRecorder()
 	f.handler.ServeHTTP(rec, req)
+	f.mu.Lock()
 	f.echoed = rec.Header()
+	f.mu.Unlock()
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out), rec.Body.String())
 	return rec.Code, out
 }
