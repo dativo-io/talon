@@ -296,6 +296,45 @@ func TestAnalyze_RequestsAreTokenBounded(t *testing.T) {
 	require.NoError(t, json.Unmarshal(captured, &req))
 	assert.Equal(t, float64(2048), req["max_tokens"], "NER completions must be token-bounded")
 	assert.Equal(t, float64(0), req["temperature"])
+
+	// Plain json_object mode allows a shape observed in CI:
+	// {"entities":["EMAIL_ADDRESS","KAI_NAVA@example.com"]}.
+	// The API request must constrain nested entities to typed objects.
+	format, ok := req["response_format"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "json_schema", format["type"])
+	definition, ok := format["json_schema"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "pii_entities", definition["name"])
+	assert.Equal(t, true, definition["strict"])
+	schema, ok := definition["schema"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "object", schema["type"])
+	assert.Equal(t, []interface{}{"entities"}, schema["required"])
+	entries, ok := schema["properties"].(map[string]interface{})["entities"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "array", entries["type"])
+	item, ok := entries["items"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "object", item["type"])
+	assert.Equal(t, []interface{}{"type", "value"}, item["required"])
+	properties, ok := item["properties"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "string", properties["value"].(map[string]interface{})["type"])
+}
+
+func TestAnalyze_FieldMalformedEntitiesArrayFailsClosed(t *testing.T) {
+	// Exact output seen in scanner-ollama-smoke on 2026-11-21.
+	// Even if a provider ignores the schema, an invalid reply never
+	// becomes a clean scan or permits unredacted egress.
+	a := newAdapter(t, func(string) string {
+		return `{"entities":["EMAIL_ADDRESS","KAI_NAVA@example.com"]}`
+	})
+	cls, err := a.Analyze(context.Background(), "Please contact kai.nova@example.com about invoice 42.")
+	require.Error(t, err)
+	assert.Nil(t, cls)
+	assert.True(t, errors.Is(err, adapter.ErrScannerUnavailable))
+	assert.Equal(t, string(adapter.KindDecode), adapter.FailureKind(err))
 }
 
 func TestParseDetections_ToleratedModelShapes(t *testing.T) {

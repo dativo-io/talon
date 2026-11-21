@@ -129,7 +129,45 @@ type chatMessage struct {
 }
 
 type respFormat struct {
-	Type string `json:"type"`
+	Type       string         `json:"type"`
+	JSONSchema *nerJSONSchema `json:"json_schema,omitempty"`
+}
+
+type nerJSONSchema struct {
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict"`
+	Schema json.RawMessage `json:"schema"`
+}
+
+// JSON mode (json_object) only constrains syntax: small local models have
+// returned {"entities":["EMAIL_ADDRESS","KAI_NAVA@example.com"]}, which is
+// valid JSON but not a usable NER result. Constrain the *shape* at generation
+// time instead. Relocation still validates verbatim values and byte offsets.
+var nerResponseFormat = &respFormat{
+	Type: "json_schema",
+	JSONSchema: &nerJSONSchema{
+		Name:   "pii_entities",
+		Strict: true,
+		Schema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"entities": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"type": {"type": "string"},
+							"value": {"type": "string"}
+						},
+						"required": ["type", "value"],
+						"additionalProperties": false
+					}
+				}
+			},
+			"required": ["entities"],
+			"additionalProperties": false
+		}`),
+	},
 }
 
 type chatResponse struct {
@@ -235,7 +273,7 @@ func (a *Adapter) complete(ctx context.Context, messages []chatMessage) (string,
 		Temperature:    0,
 		MaxTokens:      maxCompletionTokens,
 		Stream:         false,
-		ResponseFormat: &respFormat{Type: "json_object"},
+		ResponseFormat: nerResponseFormat,
 	})
 	if err != nil {
 		return "", a.fail(adapter.KindTransport, fmt.Errorf("encoding request: %w", err))

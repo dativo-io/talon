@@ -5,6 +5,10 @@ name: scanner-ollama-smoke
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'internal/classifier/adapter/llm/**'
+      - '.github/workflows/scanner-ollama-smoke.yml'
   schedule:
     - cron: '30 3 * * *'
 
