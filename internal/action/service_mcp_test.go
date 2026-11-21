@@ -166,6 +166,14 @@ func TestMCPAction_UnknownBlocksEveryRetry(t *testing.T) {
 	f := h.verify(t, "op-mcp-u")
 	assert.Equal(t, LifecycleValid, f.Verdict, f.Details)
 	assert.Equal(t, OpUnknown, f.FinalStatus)
+	recs, err := h.svc.ListLifecycle(context.Background(), "op-mcp-u")
+	require.NoError(t, err)
+	last := recs[len(recs)-1]
+	require.Equal(t, evidence.ActionEventAttemptCompleted, last.ActionLifecycle.Event)
+	assert.Contains(t, last.PolicyDecision.Reasons[0], "MCP source", "the signed reason names the MCP outcome")
+	assert.Contains(t, last.PolicyDecision.Reasons[0], "upstream_tool_error")
+	assert.NotContains(t, last.PolicyDecision.Reasons[0], "HTTP", "an MCP outcome is not described as an HTTP status")
+	assert.NotContains(t, last.PolicyDecision.Reasons[0], "ledger timeout", "never source text")
 }
 
 // A structurally malformed result after dispatch (here a string isError: a

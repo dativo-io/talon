@@ -416,6 +416,7 @@ export interface SessionSummary {
   tool_calls?: number;
   tool_calls_denied?: number;
   tool_calls_failed?: number;
+  tool_calls_unknown?: number;
   tool_names?: string[];
   tools_filtered?: string[];
   pii_redactions?: number;

@@ -910,6 +910,11 @@ func (s *Service) complete(ctx context.Context, op *Operation, at *Attempt, outc
 			reason = "the request may or did reach the destination and no trustworthy outcome exists; automatic retry is blocked"
 			if outcome.ResponseObserved {
 				reason = fmt.Sprintf("the destination answered HTTP %d, which the trusted success contract does not declare as success; the business effect may have happened; automatic retry is blocked", outcome.HTTPStatus)
+				if def, ok := s.Catalog.Lookup(op.Action); ok && def.Destination.Type == DestinationTypeMCP {
+					// The outcome code is Talon's typed classification, never
+					// source text.
+					reason = fmt.Sprintf("the MCP source answered, but not with a valid complete result without a tool error (%s); the business effect may have happened; automatic retry is blocked", outcome.Code)
+				}
 			}
 		default:
 			op.Status = OpFailed
