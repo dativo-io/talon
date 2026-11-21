@@ -26,6 +26,8 @@
 #     verified as the CLI does), backup, restore with the recovery hold,
 #     resume, a second use case under the same policy;
 #   - the action-gateway, registration, recovery and quickstart e2e suites;
+#   - the gateway streaming warn/allow/redact e2e proofs on the released
+#     binary: early first chunk, post-delivery observation and prevention;
 #   - with TALON_PREVIOUS_STABLE_BINARY: the in-place upgrade from it and the
 #     rollback safety check (that release on a restored, held store
 #     dispatches nothing) and the pre-upgrade backup procedure.
@@ -111,6 +113,12 @@ journey() {
 run "customer journey (registration, company policy, SDK traffic, allow/approval/deny with counted dispatch, reviewer boundaries, console, evidence, restart, cold backup, restore with the hold, resume, second use case, key replacement)" journey
 [ -n "$sdk_dir" ] || missing "application client check with the OpenAI Node SDK (node and npm are needed)"
 run "exact action governance and argument rules" e2e '^TestE2E_ActionGateway'
+# #476: run the existing real-gateway streaming contract on the DISTRIBUTED
+# executable, not a Talon built from source. Each anchored pattern must execute
+# and pass; a missing or skipped test fails release acceptance.
+run "streaming warn sends the first event before upstream completion and signs its post-delivery observation" e2e '^TestE2E_StreamingWarn_DeliversBeforeCompletionAndRecordsObservation$'
+run "streaming redact retains preventive withholding and signed evidence" e2e '^TestE2E_StreamingRedact_RemainsPreventive$'
+run "streaming allow delivers immediately without a response scan" e2e '^TestE2E_StreamingAllow_DeliversBeforeCompletion$'
 # #567's onboarding acceptance with the same binary (TALON_E2E_BINARY): the
 # documented secure startup, two applications through the pinned SDK, key
 # replacement, disable, revocation, concurrent registrations. It fails,
