@@ -44,7 +44,7 @@ type actionGateway struct {
 // startup error when some agent already declares a catalog, and "no action
 // gateway" otherwise. Attempts interrupted by a previous crash are
 // recovered for every agent of the boot generation that declares a catalog.
-func buildActionGateway(ctx context.Context, holder *agentcatalog.RuntimeHolder, evStore *evidence.Store, approverDBPath, vaultKey string) (*actionGateway, error) {
+func buildActionGateway(ctx context.Context, holder *agentcatalog.RuntimeHolder, evStore *evidence.Store, approverDBPath, vaultKey string, sources action.SecretGetter) (*actionGateway, error) {
 	snap := holder.Current()
 	withCatalog := agentsWithCatalog(snap)
 	cryptor, err := action.NewPayloadCryptor(vaultKey)
@@ -65,8 +65,14 @@ func buildActionGateway(ctx context.Context, holder *agentcatalog.RuntimeHolder,
 	}
 	ag := &actionGateway{
 		holder: holder, repo: repo, evStore: evStore, cryptor: cryptor, approvers: store,
-		dispatcher: action.NewHTTPDispatcher(&http.Client{Timeout: 35 * time.Second}),
-		services:   map[string]*action.Service{},
+		// One trusted dispatcher per destination type: http destinations and
+		// MCP sources (#431). Each refuses anything else before a request
+		// exists; establish refuses a type no dispatcher executes.
+		dispatcher: action.Dispatchers{
+			action.DestinationTypeHTTP: action.NewHTTPDispatcher(&http.Client{Timeout: 35 * time.Second}),
+			action.DestinationTypeMCP:  action.NewMCPDispatcher(&http.Client{Timeout: 35 * time.Second}, sources, resolvedVersion()),
+		},
+		services: map[string]*action.Service{},
 	}
 	for _, ra := range withCatalog {
 		svc, err := ag.serviceFor(snap, ra)

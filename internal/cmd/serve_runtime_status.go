@@ -81,9 +81,6 @@ func runtimeBase(cfg *config.Config) runtimestatus.Record {
 	if serveGateway {
 		roles = append(roles, runtimestatus.RoleGateway)
 	}
-	if serveProxyConfig != "" {
-		roles = append(roles, runtimestatus.RoleMCPProxy)
-	}
 	if len(roles) == 0 {
 		roles = append(roles, runtimestatus.RoleNative)
 	}
@@ -97,9 +94,6 @@ func runtimeBase(cfg *config.Config) runtimestatus.Record {
 	}
 	if base.StartedAt.IsZero() {
 		base.StartedAt = time.Now().UTC()
-	}
-	if serveProxyConfig != "" {
-		base.ProxyConfig = configRef(serveProxyConfig)
 	}
 	if serveGateway {
 		base.GatewayConfig = loadedConfigRef(serveGatewayConfig, loadedGatewayConfigDigest)

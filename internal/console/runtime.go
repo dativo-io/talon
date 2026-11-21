@@ -82,9 +82,6 @@ func (s *Service) runtime() Runtime {
 // no gateway.
 func (s *Service) expectedRoles() (exp map[string]bool, configErrs map[string]string) {
 	exp, configErrs = map[string]bool{}, map[string]string{}
-	if s.cfg.ConfigSources.ProxyConfig != "" {
-		exp[runtimestatus.RoleMCPProxy] = true
-	}
 	if p := s.cfg.ConfigSources.GatewayConfig; p != "" {
 		gw, err := gateway.LoadGatewayConfig(p)
 		switch {

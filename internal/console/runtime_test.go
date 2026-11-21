@@ -34,9 +34,7 @@ func runtimeService(t *testing.T, f *fixture) *Service {
 	svc := f.service(t)
 	svc.cfg.DataDir = f.dir
 	svc.cfg.InstallationFingerprint = runtimestatus.Fingerprint(testKey)
-	px := filepath.Join(f.dir, "proxy.talon.yaml")
-	require.NoError(t, os.WriteFile(px, []byte("agent:\n  name: hr-mcp-proxy\n  type: mcp_proxy\nproxy:\n  upstream:\n    vendor: hr\n    url: http://hr:9000/mcp\n  allowed_tools:\n    - name: hr_aggregate_sql\n  forbidden_tools: [hr_employee_export]\n"), 0o600))
-	svc.cfg.ConfigSources = ConfigSources{AgentsDir: filepath.Join(f.dir, "agents"), ProxyConfig: px}
+	svc.cfg.ConfigSources = ConfigSources{AgentsDir: filepath.Join(f.dir, "agents")}
 	return svc
 }
 
@@ -49,7 +47,7 @@ func role(rt Runtime, name string) runtimestatus.RoleStatus {
 	return runtimestatus.RoleStatus{}
 }
 
-// TestRuntime_SystemShowsProcessesFromTheirRecords (#538): the MCP proxy
+// TestRuntime_SystemShowsProcessesFromTheirRecords (#538): a native serve
 // reports running, the optional gateway is not configured, a record from
 // another installation is rejected rather than combined, and the store's
 // history is unaffected by any of it.
@@ -61,7 +59,7 @@ func TestRuntime_SystemShowsProcessesFromTheirRecords(t *testing.T) {
 	scan, err := fleetview.Scan(context.Background(), filepath.Join(f.dir, "agents"), "")
 	require.NoError(t, err)
 	putRuntime(t, f.dir, runtimestatus.Record{
-		InstanceID: "mcp1", Installation: runtimestatus.Installation{KeyFingerprint: fp}, Roles: []string{runtimestatus.RoleMCPProxy},
+		InstanceID: "serve1", Installation: runtimestatus.Installation{KeyFingerprint: fp}, Roles: []string{runtimestatus.RoleNative},
 		Version: "v1.17.0", StartedAt: now.Add(-time.Hour), WrittenAt: now.Add(-2 * time.Second), State: runtimestatus.StateRunning, Sequence: 9,
 		Catalog: &runtimestatus.Catalog{ActiveGeneration: "gen-A", ScanDigest: scan.Digest, ActivatedAt: now.Add(-time.Hour), ReloadEnabled: true},
 	})
@@ -73,7 +71,7 @@ func TestRuntime_SystemShowsProcessesFromTheirRecords(t *testing.T) {
 	sys := svc.System(context.Background())
 	rt := sys.Runtime
 	require.Equal(t, StateOK, rt.Availability.State, rt.Availability.Error)
-	assert.Equal(t, runtimestatus.Running, role(rt, runtimestatus.RoleMCPProxy).State)
+	assert.Equal(t, runtimestatus.Running, role(rt, runtimestatus.RoleNative).State)
 	assert.Equal(t, runtimestatus.NotConfigured, role(rt, runtimestatus.RoleGateway).State, "absent optional gateway: not configured, not offline, not running")
 	assert.Equal(t, "gen-A", rt.ActiveGeneration)
 	require.Len(t, rt.Rejected, 1)
@@ -82,7 +80,7 @@ func TestRuntime_SystemShowsProcessesFromTheirRecords(t *testing.T) {
 
 	ov := svc.Overview(context.Background(), "")
 	assert.Equal(t, HealthBasisProjected, ov.UseCases.HealthBasis, "health stays a projection of the store; runtime is reported beside it")
-	assert.Equal(t, runtimestatus.Running, role(ov.UseCases.Runtime, runtimestatus.RoleMCPProxy).State)
+	assert.Equal(t, runtimestatus.Running, role(ov.UseCases.Runtime, runtimestatus.RoleNative).State)
 }
 
 func TestRuntime_KilledProcessIsStaleThenOfflineAndHistoryRemains(t *testing.T) {
@@ -90,15 +88,15 @@ func TestRuntime_KilledProcessIsStaleThenOfflineAndHistoryRemains(t *testing.T) 
 	svc := runtimeService(t, f)
 	fp := runtimestatus.Fingerprint(testKey)
 	rec := runtimestatus.Record{
-		InstanceID: "mcp1", Installation: runtimestatus.Installation{KeyFingerprint: fp}, Roles: []string{runtimestatus.RoleMCPProxy},
+		InstanceID: "serve1", Installation: runtimestatus.Installation{KeyFingerprint: fp}, Roles: []string{runtimestatus.RoleNative},
 		StartedAt: f.now.Add(-time.Hour), State: runtimestatus.StateRunning,
 	}
 	rec.WrittenAt = f.now.Add(-30 * time.Second) // killed: no shutdown record, heartbeat stopped
 	putRuntime(t, f.dir, rec)
-	assert.Equal(t, runtimestatus.Stale, role(svc.System(context.Background()).Runtime, runtimestatus.RoleMCPProxy).State)
+	assert.Equal(t, runtimestatus.Stale, role(svc.System(context.Background()).Runtime, runtimestatus.RoleNative).State)
 	rec.WrittenAt = f.now.Add(-10 * time.Minute)
 	putRuntime(t, f.dir, rec)
-	assert.Equal(t, runtimestatus.Offline, role(svc.System(context.Background()).Runtime, runtimestatus.RoleMCPProxy).State)
+	assert.Equal(t, runtimestatus.Offline, role(svc.System(context.Background()).Runtime, runtimestatus.RoleNative).State)
 	d, err := svc.Session(context.Background(), "hr-demo-s1", "default", "", evidenceCursorZero(), 0)
 	require.NoError(t, err)
 	assert.Equal(t, 3, d.Detail.Summary.RecordCount, "the session's evidence is unchanged when the process is gone")
@@ -133,7 +131,7 @@ func TestRuntime_UnreadableRecordsAreUnknownAndWithoutDataDirToo(t *testing.T) {
 // TestConfiguration_ActiveVersusFiles (#538, #305): a use case is "loaded"
 // only when a running process reports the policy digest of the current
 // file; an edited file reads "differs"; a rejected reload is shown with its
-// causes; the proxy file is compared by digest.
+// causes.
 func TestConfiguration_ActiveVersusFiles(t *testing.T) {
 	f := seed(t)
 	svc := runtimeService(t, f)
@@ -147,9 +145,8 @@ func TestConfiguration_ActiveVersusFiles(t *testing.T) {
 	}
 	rejectedAt := f.now.Add(-time.Minute)
 	putRuntime(t, f.dir, runtimestatus.Record{
-		InstanceID: "mcp1", Installation: runtimestatus.Installation{KeyFingerprint: fp}, Roles: []string{runtimestatus.RoleMCPProxy},
+		InstanceID: "serve1", Installation: runtimestatus.Installation{KeyFingerprint: fp}, Roles: []string{runtimestatus.RoleNative},
 		StartedAt: f.now.Add(-time.Hour), WrittenAt: f.now, State: runtimestatus.StateRunning,
-		ProxyConfig: &runtimestatus.ConfigRef{Path: "/policies/proxy.talon.yaml", Digest: fileDigest(svc.cfg.ConfigSources.ProxyConfig), LoadedAt: f.now.Add(-time.Hour)},
 		Catalog: &runtimestatus.Catalog{
 			ActiveGeneration: "gen-A", ScanDigest: scan.Digest, ActivatedAt: f.now.Add(-time.Hour), ReloadEnabled: true,
 			ReloadRejected: true, RejectedAt: &rejectedAt, RejectedCauses: []string{"agents/x/agent.talon.yaml: invalid"},
@@ -168,9 +165,6 @@ func TestConfiguration_ActiveVersusFiles(t *testing.T) {
 	assert.True(t, *a.AgentFilesMatch)
 	assert.True(t, a.ReloadRejected)
 	assert.Equal(t, []string{"agents/x/agent.talon.yaml: invalid"}, a.RejectedCauses)
-	require.NotNil(t, a.Proxy)
-	require.NotNil(t, a.Proxy.Matches)
-	assert.True(t, *a.Proxy.Matches, "the proxy file on disk is the one the process loaded")
 	states := map[string]string{}
 	for _, u := range c.UseCases.Items {
 		states[u.Name] = u.Active.State
@@ -180,7 +174,7 @@ func TestConfiguration_ActiveVersusFiles(t *testing.T) {
 
 	// The process stops: nothing is proven active any more.
 	putRuntime(t, f.dir, runtimestatus.Record{
-		InstanceID: "mcp1", Installation: runtimestatus.Installation{KeyFingerprint: fp}, Roles: []string{runtimestatus.RoleMCPProxy},
+		InstanceID: "serve1", Installation: runtimestatus.Installation{KeyFingerprint: fp}, Roles: []string{runtimestatus.RoleNative},
 		StartedAt: f.now.Add(-time.Hour), WrittenAt: f.now, State: runtimestatus.StateStopped, Sequence: 99,
 	})
 	c = svc.Configuration(ctx, "")

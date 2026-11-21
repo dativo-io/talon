@@ -215,7 +215,7 @@ func assessProcesses(recs []Record, now time.Time) []Process {
 }
 
 func assessRoles(procs []Process, expected map[string]bool) []RoleStatus {
-	roles := map[string]bool{RoleMCPProxy: true, RoleGateway: true}
+	roles := map[string]bool{RoleGateway: true}
 	for r := range expected {
 		roles[r] = true
 	}
@@ -330,7 +330,7 @@ func stateRank(state string) int {
 }
 
 func unknownRoles(expected map[string]bool, reason string) []RoleStatus {
-	out := []RoleStatus{{Role: RoleGateway, Expected: expected[RoleGateway], State: Unknown, Reason: reason}, {Role: RoleMCPProxy, Expected: expected[RoleMCPProxy], State: Unknown, Reason: reason}}
+	out := []RoleStatus{{Role: RoleGateway, Expected: expected[RoleGateway], State: Unknown, Reason: reason}}
 	return out
 }
 

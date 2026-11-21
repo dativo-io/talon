@@ -77,14 +77,14 @@ func TestProveServed_CountsOnlyProcessesOfTheRole(t *testing.T) {
 	proc := func(id string, roles ...string) Process {
 		return Process{Record: Record{InstanceID: id, Roles: roles, Catalog: &Catalog{Agents: []Agent{{Name: "app", PolicyDigest: "d1"}}}}, Assessed: Running, Current: true}
 	}
-	proxyOnly := View{Processes: []Process{proc("px", RoleMCPProxy)}}
+	proxyOnly := View{Processes: []Process{proc("px", "mcp_proxy")}}
 	if got := ProveLoaded(proxyOnly, true, "app", "", "d1").State; got != LoadedMatchesFile {
 		t.Fatalf("a Talon process has read the file: ProveLoaded = %s", got)
 	}
 	if got := ProveServed(proxyOnly, true, RoleGateway, "app", "", "d1").State; got == LoadedMatchesFile {
 		t.Fatalf("no gateway process runs, yet ProveServed(gateway) = %s", got)
 	}
-	both := View{Processes: []Process{proc("px", RoleMCPProxy), proc("gw", RoleGateway)}}
+	both := View{Processes: []Process{proc("px", "mcp_proxy"), proc("gw", RoleGateway)}}
 	if got := ProveServed(both, true, RoleGateway, "app", "", "d1").State; got != LoadedMatchesFile {
 		t.Fatalf("a gateway process loaded it: ProveServed(gateway) = %s", got)
 	}

@@ -151,10 +151,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		} else {
 			components["memory_store"] = "ok"
 		}
-		if s.mcpProxy == nil {
-			components["mcp_proxy"] = "disabled"
+		if s.mcpServer == nil {
+			components["mcp"] = "disabled"
 		} else {
-			components["mcp_proxy"] = "ok"
+			components["mcp"] = "ok"
 		}
 		if s.planReviewStore == nil {
 			components["plan_review"] = "disabled"

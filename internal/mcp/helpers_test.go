@@ -10,15 +10,6 @@ import (
 	"github.com/dativo-io/talon/internal/mcp/wire"
 )
 
-// jsonrpcRequest is what fake upstreams decode. ID keeps the raw bytes so
-// echoing it back preserves the client's exact id.
-type jsonrpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	ID      json.RawMessage `json:"id,omitempty"`
-}
-
 // testMeta is the per-request protocol metadata every 2026-07-28 request
 // must carry.
 func testMeta() map[string]interface{} {
@@ -105,27 +96,4 @@ func mcpBody(t *testing.T, id interface{}, method string, params map[string]inte
 		t.Fatal(err)
 	}
 	return b
-}
-
-// answerToolsList makes a fake upstream speak the current protocol for the
-// proxy's definition capture: when Talon asks tools/list (recognizable by
-// the Mcp-Method header Talon generates), it answers a valid
-// ListToolsResult naming the given tools, with the required cache hints.
-// Returns true when the request was a list and has been answered.
-func answerToolsList(w http.ResponseWriter, r *http.Request, names ...string) bool {
-	if r.Header.Get(wire.HeaderMethod) != wire.MethodToolsList {
-		return false
-	}
-	var req jsonrpcRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	tools := make([]map[string]interface{}, 0, len(names))
-	for _, n := range names {
-		tools = append(tools, map[string]interface{}{"name": n, "inputSchema": map[string]interface{}{"type": "object"}})
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"jsonrpc": "2.0", "id": req.ID,
-		"result": map[string]interface{}{"resultType": "complete", "tools": tools, "ttlMs": 60000, "cacheScope": "public"},
-	})
-	return true
 }

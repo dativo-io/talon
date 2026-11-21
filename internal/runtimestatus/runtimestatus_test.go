@@ -54,7 +54,7 @@ func TestFingerprint_StableAndKeyBound(t *testing.T) {
 func TestPublisher_WritesRunningThenStoppedAtomically(t *testing.T) {
 	dir := t.TempDir()
 	calls := 0
-	p, err := NewPublisher(dir, time.Second, base(RoleMCPProxy), func(r *Record) {
+	p, err := NewPublisher(dir, time.Second, base(RoleNative), func(r *Record) {
 		calls++
 		r.Catalog = &Catalog{ActiveGeneration: "gen-1", ScanDigest: "scan-1", Agents: []Agent{{Name: "a", PolicyDigest: "d"}}}
 	})
@@ -65,8 +65,8 @@ func TestPublisher_WritesRunningThenStoppedAtomically(t *testing.T) {
 
 	r := NewReader()
 	require.Eventually(t, func() bool {
-		v := r.Assess(dir, Fingerprint(key), map[string]bool{RoleMCPProxy: true}, time.Now())
-		return role(v, RoleMCPProxy).State == Running
+		v := r.Assess(dir, Fingerprint(key), map[string]bool{RoleNative: true}, time.Now())
+		return role(v, RoleNative).State == Running
 	}, 3*time.Second, 50*time.Millisecond)
 	v := r.Assess(dir, Fingerprint(key), nil, time.Now())
 	require.Len(t, v.Processes, 1)
@@ -75,9 +75,9 @@ func TestPublisher_WritesRunningThenStoppedAtomically(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-done)
-	v = r.Assess(dir, Fingerprint(key), map[string]bool{RoleMCPProxy: true}, time.Now())
-	assert.Equal(t, Offline, role(v, RoleMCPProxy).State)
-	assert.Contains(t, role(v, RoleMCPProxy).Reason, "graceful shutdown")
+	v = r.Assess(dir, Fingerprint(key), map[string]bool{RoleNative: true}, time.Now())
+	assert.Equal(t, Offline, role(v, RoleNative).State)
+	assert.Contains(t, role(v, RoleNative).Reason, "graceful shutdown")
 	assert.GreaterOrEqual(t, calls, 2, "the live fields are refreshed on every write")
 	entries, _ := os.ReadDir(filepath.Join(dir, DirName))
 	for _, e := range entries {
@@ -106,12 +106,12 @@ func TestAssess_States(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			rec := base(RoleMCPProxy)
+			rec := base(RoleNative)
 			rec.InstanceID, rec.State, rec.StartedAt, rec.WrittenAt = "i1", tc.state, now.Add(-time.Hour), now.Add(-tc.age)
 			writeRec(t, dir, rec)
-			v := NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleMCPProxy: true}, now)
-			assert.Equal(t, tc.expected, role(v, RoleMCPProxy).State)
-			assert.NotEmpty(t, role(v, RoleMCPProxy).Reason)
+			v := NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleNative: true}, now)
+			assert.Equal(t, tc.expected, role(v, RoleNative).State)
+			assert.NotEmpty(t, role(v, RoleNative).Reason)
 			g := role(v, RoleGateway)
 			assert.Equal(t, NotConfigured, g.State, "the optional gateway is absent: not configured, not an error")
 		})
@@ -128,7 +128,7 @@ func TestAssess_States(t *testing.T) {
 func TestAssess_RejectsOtherInstallationsAndBadRecords(t *testing.T) {
 	now := time.Now().UTC()
 	dir := t.TempDir()
-	other := base(RoleMCPProxy)
+	other := base(RoleNative)
 	other.InstanceID, other.Installation.KeyFingerprint, other.State, other.WrittenAt = "other", Fingerprint("another-installation-key-000000"), StateRunning, now
 	writeRec(t, dir, other)
 	future := base(RoleGateway)
@@ -137,9 +137,9 @@ func TestAssess_RejectsOtherInstallationsAndBadRecords(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, DirName, "broken.json"), []byte("{not json"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, DirName, "huge.json"), []byte(`{"instance_id":"h","x":"`+strings.Repeat("a", maxRecordLen+10)+`"}`), 0o600))
 
-	v := NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleMCPProxy: true}, now)
+	v := NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleNative: true}, now)
 	assert.Empty(t, v.Processes, "nothing from another installation or a bad file is combined")
-	assert.Equal(t, Offline, role(v, RoleMCPProxy).State, "a foreign runtime does not make this installation's proxy running")
+	assert.Equal(t, Offline, role(v, RoleNative).State, "a foreign runtime does not make this installation's runtime running")
 	reasons := map[string]string{}
 	for _, r := range v.Rejected {
 		reasons[r.File] = r.Reason
@@ -159,7 +159,7 @@ func TestAssess_UnreadableDirectoryIsUnknown(t *testing.T) {
 	require.NoError(t, os.MkdirAll(rd, 0o750))
 	require.NoError(t, os.Chmod(rd, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(rd, 0o750) })
-	v := NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleMCPProxy: true}, time.Now())
+	v := NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleNative: true}, time.Now())
 	assert.NotEmpty(t, v.Err)
 	for _, r := range v.Roles {
 		assert.Equal(t, Unknown, r.State, "unreadable records are unknown, never offline or running")
@@ -170,7 +170,7 @@ func TestAssess_NeverGoesBackToAnOlderSnapshot(t *testing.T) {
 	now := time.Now().UTC()
 	dir := t.TempDir()
 	r := NewReader()
-	rec := base(RoleMCPProxy)
+	rec := base(RoleNative)
 	rec.InstanceID, rec.State, rec.Sequence, rec.WrittenAt = "i1", StateRunning, 7, now
 	rec.Catalog = &Catalog{ActiveGeneration: "gen-new"}
 	writeRec(t, dir, rec)
@@ -184,16 +184,16 @@ func TestAssess_NeverGoesBackToAnOlderSnapshot(t *testing.T) {
 func TestAssess_RestartKeepsHistoryAndPicksTheNewestInstance(t *testing.T) {
 	now := time.Now().UTC()
 	dir := t.TempDir()
-	old := base(RoleMCPProxy)
+	old := base(RoleNative)
 	old.InstanceID, old.State, old.StartedAt, old.WrittenAt = "old", StateRunning, now.Add(-time.Hour), now.Add(-10*time.Minute)
 	writeRec(t, dir, old)
-	cur := base(RoleMCPProxy, RoleGateway)
+	cur := base(RoleNative, RoleGateway)
 	cur.InstanceID, cur.State, cur.StartedAt, cur.WrittenAt = "new", StateRunning, now.Add(-time.Minute), now
 	writeRec(t, dir, cur)
-	v := NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleMCPProxy: true}, now)
+	v := NewReader().Assess(dir, Fingerprint(key), map[string]bool{RoleNative: true}, now)
 	require.Len(t, v.Processes, 2, "the killed instance stays visible as history")
-	assert.Equal(t, "new", role(v, RoleMCPProxy).InstanceID)
-	assert.Equal(t, Running, role(v, RoleMCPProxy).State)
+	assert.Equal(t, "new", role(v, RoleNative).InstanceID)
+	assert.Equal(t, Running, role(v, RoleNative).State)
 	assert.Equal(t, Running, role(v, RoleGateway).State, "one process can serve both roles")
 	for _, p := range v.Processes {
 		assert.Equal(t, p.InstanceID == "new", p.Current)
@@ -203,16 +203,16 @@ func TestAssess_RestartKeepsHistoryAndPicksTheNewestInstance(t *testing.T) {
 func TestPublisher_PrunesOnlyOldRecordsOfItsInstallation(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC()
-	ancient := base(RoleMCPProxy)
+	ancient := base(RoleNative)
 	ancient.InstanceID, ancient.State, ancient.WrittenAt = "ancient", StateStopped, now.Add(-30*24*time.Hour)
 	writeRec(t, dir, ancient)
-	foreign := base(RoleMCPProxy)
+	foreign := base(RoleNative)
 	foreign.InstanceID, foreign.Installation.KeyFingerprint, foreign.WrittenAt = "foreign", "ffff", now.Add(-30*24*time.Hour)
 	writeRec(t, dir, foreign)
-	recent := base(RoleMCPProxy)
+	recent := base(RoleNative)
 	recent.InstanceID, recent.State, recent.WrittenAt = "recent", StateStopped, now.Add(-time.Hour)
 	writeRec(t, dir, recent)
-	p, err := NewPublisher(dir, time.Second, base(RoleMCPProxy), nil)
+	p, err := NewPublisher(dir, time.Second, base(RoleNative), nil)
 	require.NoError(t, err)
 	p.prune()
 	_, err = os.Stat(filepath.Join(dir, DirName, "ancient.json"))
@@ -295,7 +295,7 @@ func TestStartupFailure_IsOfflineWithItsCause_AndClearedByAServingProcess(t *tes
 	assert.Equal(t, FailureAgentKeyUnavailable, v.Processes[0].StartupFailure.Code)
 
 	// A process serving the gateway role starts: the failure is history.
-	p, err := NewPublisher(dir, time.Second, base(RoleGateway, RoleMCPProxy), nil)
+	p, err := NewPublisher(dir, time.Second, base(RoleGateway, RoleNative), nil)
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -315,7 +315,7 @@ func TestStartupFailure_NeedsRolesAndInstallation(t *testing.T) {
 
 func TestAgentKeys_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	rec := base(RoleMCPProxy)
+	rec := base(RoleNative)
 	rec.InstanceID = "proxy-1"
 	rec.State = StateRunning
 	rec.WrittenAt = time.Now().UTC()

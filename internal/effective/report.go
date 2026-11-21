@@ -4,14 +4,14 @@
 // projection. It keeps four facts apart and never substitutes one for
 // another:
 //
-//  1. current files: what the agent, gateway and MCP proxy files say now;
+//  1. current files: what the agent and gateway files say now;
 //  2. loaded: whether a running process proves it loaded the current agent
 //     file (runtimestatus.ProveLoaded) — otherwise unknown;
 //  3. effective: the policy the canonical resolver
 //     (gateway.ExplainEffectivePolicy over gateway.ResolveEffectivePolicy)
 //     compiles from the current files, with each selected rule's winning
-//     layer, plus the MCP proxy's own pre-dispatch decision per tool
-//     (mcp.EvaluateToolAccess);
+//     layer (governed MCP tools are action definitions: the action
+//     boundary below covers them, #431);
 //  4. last decision: the newest request-decision record of the use case at
 //     an interception boundary (never an operator event), with the policy
 //     identity it recorded, compared to the current files only by recorded
@@ -23,8 +23,6 @@ package effective
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -38,7 +36,6 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/fleetview"
 	"github.com/dativo-io/talon/internal/gateway"
-	"github.com/dativo-io/talon/internal/mcp"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/runtimestatus"
 )
@@ -46,15 +43,11 @@ import (
 // ErrUnknownUseCase is returned when no agent file defines the use case.
 var ErrUnknownUseCase = errors.New("unknown AI use case")
 
-// maxTools bounds the tool decisions listed for the MCP boundary.
-const maxTools = 50
-
 // Inputs are the files and stores the report reads.
 type Inputs struct {
 	AgentsDir     string
 	DefaultPolicy string
 	GatewayConfig string
-	ProxyConfig   string
 	Name          string
 	Tenant        string // "" = the agent file's tenant
 	Evidence      *evidence.Store
@@ -79,7 +72,6 @@ type Report struct {
 	CurrentFiles CurrentFiles         `json:"current_files"`
 	Loaded       runtimestatus.Loaded `json:"loaded"`
 	Effective    Effective            `json:"effective"`
-	MCPBoundary  *MCPBoundary         `json:"mcp_boundary,omitempty"`
 	// ActionBoundary is the effective ACTION policy (#425, #205): present
 	// when the use case declares actions or action approvals. Additive.
 	ActionBoundary *ActionBoundary `json:"action_boundary,omitempty"`
@@ -100,7 +92,6 @@ type CurrentFiles struct {
 	AgentFile     string `json:"agent_file"`
 	PolicyDigest  string `json:"policy_digest"`
 	GatewayConfig *File  `json:"gateway_config,omitempty"`
-	ProxyConfig   *File  `json:"proxy_config,omitempty"`
 }
 
 // File is one configuration file: present, its digest, or why not.
@@ -145,20 +136,6 @@ type ProviderEffective struct {
 	EffectiveDigest string   `json:"effective_digest"`
 	ForbiddenTools  []string `json:"forbidden_tools,omitempty"`
 	AllowedModels   []string `json:"allowed_models,omitempty"`
-}
-
-// MCPBoundary is the MCP proxy's pre-dispatch decision for each tool the
-// configuration names.
-type MCPBoundary struct {
-	Proxy string           `json:"proxy"`
-	File  string           `json:"file"`
-	Scope string           `json:"scope"`
-	Tools []mcp.ToolAccess `json:"tools"`
-	Error string           `json:"error,omitempty"`
-	// ProvenActive: every running MCP proxy loaded exactly this proxy config
-	// (Proof says why or why not). Independent of the gateway proof.
-	ProvenActive bool                 `json:"proven_active"`
-	Proof        runtimestatus.Loaded `json:"proof"`
 }
 
 // LastDecision points at the newest evidence record of the use case.
@@ -291,10 +268,6 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 	if !r.Effective.BaselinePresent {
 		r.Notes = append(r.Notes, "no organization baseline was read (no or invalid gateway config): the effective values are the use case's own")
 	}
-
-	// 3b. MCP boundary
-	r.MCPBoundary = mcpBoundary(ctx, in.ProxyConfig, agent, &r.CurrentFiles)
-	proveMCP(in, r)
 
 	r.observe(ctx, in, verificationInputs{
 		store: in.Evidence, tenant: tenant, name: in.Name, agent: agent, digest: digest,
@@ -431,23 +404,6 @@ func checkAgainstDeclaredCatalog(agent *policy.Policy, ap *action.ApprovalPolicy
 	return ap.ValidateAgainstCatalog(cat)
 }
 
-// proveMCP proves the MCP boundary independently of the gateway: a running
-// MCP proxy must have loaded the current proxy config.
-func proveMCP(in Inputs, r *Report) {
-	b := r.MCPBoundary
-	if b == nil {
-		return
-	}
-	if b.Error != "" {
-		b.Proof = runtimestatus.Loaded{State: runtimestatus.BoundaryUnknown, Reason: "the proxy config cannot be loaded, so no decision is shown or proved"}
-		return
-	}
-	b.Proof = proveBoundary(in, func(v runtimestatus.View) runtimestatus.Loaded {
-		return runtimestatus.ProveProxy(v, in.RuntimeReadable, r.CurrentFiles.ProxyConfig.Digest)
-	})
-	b.ProvenActive = b.Proof.State == runtimestatus.BoundaryProven
-}
-
 // proveBoundary runs a boundary proof over the caller's runtime view; with
 // no view at all nothing can be proved.
 func proveBoundary(in Inputs, prove func(runtimestatus.View) runtimestatus.Loaded) runtimestatus.Loaded {
@@ -477,61 +433,6 @@ func (r *Report) organization(path string) (baseline gateway.OrganizationPolicy,
 	return gw.OrganizationPolicy, gw.Providers
 }
 
-func mcpBoundary(ctx context.Context, path string, agent *policy.Policy, files *CurrentFiles) *MCPBoundary {
-	if path == "" {
-		return nil
-	}
-	f := &File{Path: path, Digest: fileDigest(path)}
-	files.ProxyConfig = f
-	b := &MCPBoundary{File: path, Tools: []mcp.ToolAccess{}}
-	cfg, err := mcp.LoadProxyConfig(ctx, path)
-	if err != nil {
-		f.Present = !errors.Is(err, os.ErrNotExist)
-		f.Error, b.Error = err.Error(), err.Error()
-		return b
-	}
-	f.Present = true
-	b.Proxy = cfg.Agent.Name
-	b.Scope = "calls made through this MCP proxy; tools reached any other way are not governed here"
-	engine, err := policy.NewProxyEngine(ctx, cfg)
-	if err != nil {
-		b.Error = err.Error()
-		return b
-	}
-	seen := map[string]bool{}
-	var tools []string
-	add := func(t string) {
-		if t != "" && !strings.HasSuffix(t, "*") && !seen[t] && len(tools) < maxTools {
-			seen[t] = true
-			tools = append(tools, t)
-		}
-	}
-	for _, t := range cfg.Proxy.AllowedTools {
-		add(t.Name)
-	}
-	for _, t := range cfg.Proxy.ForbiddenTools {
-		add(t)
-	}
-	if c := agent.Capabilities; c != nil {
-		for _, t := range c.AllowedTools {
-			add(t)
-		}
-		for _, t := range c.ForbiddenTools {
-			add(t)
-		}
-	}
-	sort.Strings(tools)
-	for _, t := range tools {
-		d, err := mcp.EvaluateToolAccess(ctx, cfg, engine, t)
-		if err != nil {
-			b.Error = err.Error()
-			return b
-		}
-		b.Tools = append(b.Tools, d)
-	}
-	return b
-}
-
 func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -539,13 +440,4 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func fileDigest(path string) string {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: a configuration path the operator gave the command
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }

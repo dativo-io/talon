@@ -139,6 +139,10 @@ const (
 	// no trustworthy answer exists (connect/send/deadline failure after the
 	// request was handed to the transport); automatic retry is blocked.
 	UpstreamOutcomeUnknown = "upstream_outcome_unknown"
+	// OperationPrepared: a governed MCP tools/call prepared (established)
+	// the operation and executed nothing; the client executes it with
+	// talon_execute_operation and the returned operation id (#431).
+	OperationPrepared = "operation_prepared"
 	// EvidenceCommitFailed: the mandatory signed record for a governed
 	// outcome could not be committed; Talon returns no evidence id,
 	// fabricates none, and performs zero dispatch.
@@ -209,6 +213,7 @@ var registry = []Spec{
 	{Code: UpstreamAuthUnavailable, Class: ClassFailed, Retryable: true, Explanation: "EXECUTION_FAILED", Producers: []string{ProducerMCP}, Summary: "The upstream credential could not be obtained before dispatch; zero upstream call."},
 	{Code: UpstreamToolFailed, Class: ClassFailed, Explanation: "EXECUTION_FAILED", Producers: []string{ProducerMCP}, Summary: "The tool failed, violated its contract, or the outbound request could not be built."},
 	{Code: UpstreamOutcomeUnknown, Class: ClassUnknown, Explanation: "EXECUTION_OUTCOME_UNKNOWN", Producers: []string{ProducerMCP}, Summary: "The request may have reached the upstream and no trustworthy answer exists; automatic retry is blocked."},
+	{Code: OperationPrepared, Class: ClassPending, Explanation: "ACTION_AUTHORIZED", Producers: []string{ProducerMCP}, Summary: "The operation was prepared and nothing was executed; execute it explicitly by its operation id."},
 	{Code: EvidenceCommitFailed, Class: ClassFailed, Retryable: true, Explanation: "EXECUTION_FAILED", Producers: []string{ProducerMCP}, Summary: "The mandatory signed record could not be committed; no evidence id, zero dispatch."},
 	{Code: ApprovalRequiresTasks, Class: ClassUnsupported, Explanation: "ACTION_APPROVAL_REQUIRED", Producers: []string{ProducerTarget}, Issue: "#431/#448", Summary: "Asynchronous approval needs the MCP Tasks extension in the current request; honest non-execution, zero dispatch."},
 	{Code: ApprovalCancelled, Class: ClassDenied, Explanation: "ACTION_APPROVAL_CANCELLED", Producers: []string{ProducerTarget}, Issue: "#426", Summary: "The pending approval request was withdrawn."},

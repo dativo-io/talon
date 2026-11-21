@@ -33,8 +33,7 @@ type Server struct {
 	router              *chi.Mux
 	runner              *agent.Runner
 	evidenceStore       *evidence.Store
-	mcpServer           http.Handler // native MCP at POST /mcp
-	mcpProxy            http.Handler // optional MCP proxy at POST /mcp/proxy
+	mcpServer           http.Handler // governed MCP at POST /mcp (#431)
 	gateway             http.Handler // optional LLM API gateway at /v1/proxy/*
 	actionServices      ActionServiceResolver
 	approvalOwners      ApprovalOwnerResolver
@@ -115,14 +114,9 @@ type DeclarationsLoader func(ctx context.Context) compliance.Declarations
 // Option configures the Server.
 type Option func(*Server)
 
-// WithMCPServer sets the native MCP handler.
+// WithMCPServer sets the governed MCP handler (POST /mcp, #431).
 func WithMCPServer(h http.Handler) Option {
 	return func(s *Server) { s.mcpServer = h }
-}
-
-// WithMCPProxy sets the MCP proxy handler (optional).
-func WithMCPProxy(h http.Handler) Option {
-	return func(s *Server) { s.mcpProxy = h }
 }
 
 // WithTenantManager sets the tenant manager for rate limiting and budgets.
@@ -352,6 +346,19 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/v1/action-operations/{operation_id}/attempts", s.handleActionAttempt)
 			r.Get("/v1/approvals/{approval_id}", s.handleApprovalGet)
 		})
+	}
+	// Governed MCP (#431): the same AI use case identity as the Action
+	// Gateway (its key, or a verified workload hop) — never the admin key,
+	// never a synthetic identity. Every tools/call is an Action Gateway
+	// operation of that use case.
+	if s.mcpServer != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(ActionIdentityMiddleware(s.agentKeys, s.adminKey, s.hopVerifier, s.hopBinder, maxActionBody))
+			r.Use(RateLimitMiddleware(s.tenantManager))
+			r.Post("/mcp", s.mcpServer.ServeHTTP)
+		})
+	}
+	if s.actionServices != nil {
 		r.Post("/v1/approvals/{approval_id}/decisions", s.handleApprovalDecision)
 		// Reviewer reads (#433): approver credential only, tenant- and
 		// group-scoped; what the reviewer sees before deciding.
@@ -398,12 +405,6 @@ func (s *Server) Routes() http.Handler {
 		// not mounted at all (#285).
 		if !s.quickstartEnabled {
 			r.Post("/v1/chat/completions", s.handleChatCompletions)
-		}
-		if s.mcpServer != nil {
-			r.Post("/mcp", s.mcpServer.ServeHTTP)
-		}
-		if s.mcpProxy != nil {
-			r.Post("/mcp/proxy", s.mcpProxy.ServeHTTP)
 		}
 		if s.graphEventsHandler != nil {
 			r.Post("/v1/graph/events", s.graphEventsHandler.ServeHTTP)

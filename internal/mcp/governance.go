@@ -3,9 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
-	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -146,28 +143,6 @@ func provenanceFor(ext govcode.Extension, preDispatch bool) string {
 	}
 }
 
-// withGovernanceMeta attaches the allowed-outcome extension (decision
-// allow, signed reason, evidence reference) to a result's _meta, keeping
-// every existing _meta key (serverInfo, upstreamServerInfo, vendor keys).
-// Results that are not JSON objects are returned unchanged.
-func withGovernanceMeta(result any, out *evidenceOutcome) any {
-	m, ok := result.(map[string]any)
-	if !ok {
-		return result
-	}
-	meta, _ := m["_meta"].(map[string]any)
-	if meta == nil {
-		meta = map[string]any{}
-	}
-	ext := govcode.Allowed(nil)
-	if out != nil {
-		ext = ext.WithEvidence(out.ref, out.reason)
-	}
-	meta[govcode.ExtensionID] = ext
-	m["_meta"] = meta
-	return m
-}
-
 // writeInvalidParams answers an in-method protocol failure — a tool Talon
 // cannot resolve, arguments that violate the trusted schema, malformed
 // arguments, an invalid cursor — exactly like the wire gate answers one:
@@ -268,123 +243,3 @@ func sanitizeDiagnostic(s string) string {
 // explanation trigger on the MCP routes is one of the structured tokens
 // below: a stable rule or failure identifier plus, at most, a validated
 // field name or a numeric policy limit. Raw text goes to logs and spans only.
-
-// opaquePolicyReason is recorded for a denial reason that is not one of
-// Talon's known policy-rule templates: free text of unknown provenance is
-// never stored, not even sanitized.
-const opaquePolicyReason = "policy_rule_denied"
-
-// policyReasonTemplates match Talon's own rego denial messages exactly
-// (tool_access.rego, proxy_tool_access.rego) and name the token each maps
-// to; a capture group extracts only a validated field name or a policy limit.
-var policyReasonTemplates = []struct {
-	re    *regexp.Regexp
-	token string // %s receives the validated capture when the template has one
-}{
-	{regexp.MustCompile(`^Tool '[^']*' not in allowed_tools( list)?$`), "tool_not_allowed"},
-	{regexp.MustCompile(`^Tool '[^']*' is forbidden by policy$`), "tool_forbidden"},
-	{regexp.MustCompile(`^Tool '[^']*' is in allowed_tools but overridden by forbidden_tools$`), "tool_forbidden_override"},
-	{regexp.MustCompile(`^Tool '[^']*' matches destructive pattern; requires explicit allowed_tools entry$`), "tool_destructive_pattern"},
-	{regexp.MustCompile(`^Admin operation '[^']*' requires explicit allow$`), "admin_operation_requires_allow"},
-	{regexp.MustCompile(`^File path matches a forbidden pattern \(capabilities\.forbidden_patterns\)$`), "forbidden_path_pattern"},
-	{regexp.MustCompile(`^estimated_row_count exceeds policy limit (\d{1,12}) for tool .+$`), "row_count_exceeded:limit=%s"},
-	{regexp.MustCompile(`^dry_run required for .+ when estimated_row_count > (\d{1,12})$`), "dry_run_required:threshold=%s"},
-	{regexp.MustCompile(`^argument ([A-Za-z0-9_.-]{1,64}) has a forbidden value for tool .+ \(tool_policies\.forbidden_argument_values\)$`), "forbidden_argument_value:field=%s"},
-}
-
-// policyReasonTokens projects policy-engine denial reasons onto structured
-// tokens for signed evidence. A reason matching one of Talon's templates
-// becomes its token (with the validated field name or limit); anything else
-// — including a reason that merely contains familiar words — becomes
-// opaquePolicyReason. The tool name is deliberately not repeated: the record
-// already carries it in Execution.ToolsCalled.
-func policyReasonTokens(reasons []string) []string {
-	if len(reasons) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(reasons))
-	for _, r := range reasons {
-		r = strings.TrimSpace(r)
-		if r == "" {
-			continue
-		}
-		token := opaquePolicyReason
-		for _, t := range policyReasonTemplates {
-			m := t.re.FindStringSubmatch(r)
-			if m == nil {
-				continue
-			}
-			token = t.token
-			if len(m) > 1 && strings.Contains(token, "%s") {
-				token = strings.Replace(token, "%s", m[1], 1)
-			}
-			break
-		}
-		out = append(out, token)
-	}
-	return out
-}
-
-// vendorErrorToken is what a signed record keeps of a vendor JSON-RPC error:
-// the numeric code and its JSON-RPC category. The vendor's message and data
-// are never stored (they are vendor-authored text of arbitrary content).
-func vendorErrorToken(prefix string, code int) string {
-	return wire.RPCErrorToken(prefix, code)
-}
-
-// upstreamFailureToken classifies a transport or decoding failure into a
-// stable kind without copying the error text (which can embed vendor
-// headers, addresses or body fragments).
-func upstreamFailureToken(prefix string, err error) string {
-	kind := "unclassified"
-	switch {
-	case errors.Is(err, wire.ErrResultTypeMissing):
-		kind = "result_type_missing"
-	case errors.Is(err, wire.ErrResultTypeUnsupported):
-		kind = "result_type_unsupported"
-	case errors.Is(err, wire.ErrRedirectRefused):
-		kind = "redirect_refused"
-	case errors.Is(err, wire.ErrUpstreamStatus):
-		kind = "http_status"
-	case errors.Is(err, wire.ErrUpstreamProtocol):
-		kind = "protocol_violation"
-	case errors.Is(err, wire.ErrListResultInvalid), errors.Is(err, wire.ErrDiscoverResultInvalid), errors.Is(err, wire.ErrListPagination):
-		kind = "list_result_invalid"
-	case errors.Is(err, context.DeadlineExceeded):
-		kind = "timeout"
-	case errors.Is(err, errSecretRetrieval):
-		kind = "secret_retrieval"
-	default:
-		var ne net.Error
-		if errors.As(err, &ne) {
-			kind = "transport"
-			if ne.Timeout() {
-				kind = "timeout"
-			}
-		} else if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			kind = "connection_closed"
-		}
-	}
-	return prefix + ": " + kind
-}
-
-// publicVendorError is the only message a vendor-reported JSON-RPC error
-// carries to the client: the vendor's numeric code and the request id are
-// preserved, the vendor's message and data are not relayed (they may carry
-// protected payload, credentials or topology); Talon's signed record keeps
-// only the code and its JSON-RPC category (vendorErrorToken).
-const publicVendorError = "Upstream tool returned an error; its code and category are recorded in Talon evidence"
-
-// vendorErrorResponse is the ONE boundary for a well-formed upstream
-// JSON-RPC error on tools/call and on the definition capture: a trustworthy,
-// vendor-reported failure (never relabelled unknown or policy denial),
-// answered with the vendor's code, the fixed public message and Talon's
-// governance extension. When the record did not commit, committed=false is
-// stated and the code stays upstream_tool_failed (the call already ran).
-func vendorErrorResponse(id json.RawMessage, vendorCode int, out *evidenceOutcome) *jsonrpcResponse {
-	resp := governedError(id, govcode.UpstreamToolFailed, publicVendorError, out, TalonCodeUpstreamError, false)
-	if vendorCode != 0 {
-		resp.Error.Code = vendorCode
-	}
-	return resp
-}

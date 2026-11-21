@@ -66,7 +66,7 @@ func TestActionGateway_ResolverIsGenerationBound(t *testing.T) {
 	store, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	ag, err := buildActionGateway(ctx, holder, store, filepath.Join(dir, "e.db"), gwVaultKey)
+	ag, err := buildActionGateway(ctx, holder, store, filepath.Join(dir, "e.db"), gwVaultKey, nil)
 	require.NoError(t, err)
 	require.NotNil(t, ag)
 	t.Cleanup(func() { _ = ag.approvers.Close() })

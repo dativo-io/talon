@@ -43,15 +43,6 @@ func ProveGateway(v View, readable bool, name, tenant, agentDigest, gatewayConfi
 	})
 }
 
-// ProveProxy proves the MCP proxy's tool decisions: every running process
-// with the MCP proxy role must have loaded the proxy config whose current
-// digest is proxyConfigDigest.
-func ProveProxy(v View, readable bool, proxyConfigDigest string) Loaded {
-	return prove(v, readable, RoleMCPProxy, "MCP proxy", func(p *Process) (bool, string) {
-		return configMatches(p.ProxyConfig, proxyConfigDigest, "proxy config")
-	})
-}
-
 // ProveGatewayConfig proves the installation-level gateway configuration:
 // every running gateway loaded the gateway config whose current digest is
 // gatewayConfigDigest. Per-use-case proof (agent file digests) is

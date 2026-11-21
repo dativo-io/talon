@@ -29,7 +29,7 @@ func (s *Service) EffectivePolicy(ctx context.Context, tenant, name string) (*Ef
 	}
 	src := s.cfg.ConfigSources
 	in := effective.Inputs{
-		AgentsDir: src.AgentsDir, DefaultPolicy: src.DefaultPolicy, GatewayConfig: src.GatewayConfig, ProxyConfig: src.ProxyConfig,
+		AgentsDir: src.AgentsDir, DefaultPolicy: src.DefaultPolicy, GatewayConfig: src.GatewayConfig,
 		Name: name, Tenant: tenant, Evidence: s.cfg.Evidence, Now: s.now(),
 	}
 	if s.cfg.DataDir != "" {
@@ -61,10 +61,6 @@ func (s *Service) EffectivePolicy(ctx context.Context, tenant, name string) (*Ef
 	if !r.Effective.ProvenActive {
 		out.Availability.Unavailable = append(out.Availability.Unavailable, "report.effective.proven_active")
 		notes = append(notes, "gateway policy compiled from the current files, not proven active: "+r.Effective.Proof.Reason)
-	}
-	if b := r.MCPBoundary; b != nil && !b.ProvenActive {
-		out.Availability.Unavailable = append(out.Availability.Unavailable, "report.mcp_boundary.proven_active")
-		notes = append(notes, "MCP proxy decisions computed from the current proxy config, not proven active: "+b.Proof.Reason)
 	}
 	if b := r.ActionBoundary; b != nil && !b.ProvenActive {
 		out.Availability.Unavailable = append(out.Availability.Unavailable, "report.action_boundary.proven_active")

@@ -36,8 +36,9 @@ func newSDKRefundSource(t *testing.T, behave func(*sdk.CallToolRequest) (*sdk.Ca
 	s := &sdkRefundSource{behave: behave}
 	srv := sdk.NewServer(&sdk.Implementation{Name: "refund-service", Version: "1.0.0"}, nil)
 	srv.AddTool(&sdk.Tool{
-		Name:        "refund.create",
-		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"ticket_id": map[string]any{"type": "string"}, "amount": map[string]any{"type": "string"}}},
+		Name: "refund.create",
+		// Permissive: Talon's catalog owns the schema; the source only counts.
+		InputSchema: map[string]any{"type": "object"},
 	}, func(_ context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		s.calls.Add(1)
 		s.lastMeta.Store(map[string]any(req.Params.Meta))
