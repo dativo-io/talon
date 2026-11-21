@@ -24,7 +24,7 @@ export interface Meta {
 export type RuntimeState = "running" | "stale" | "offline" | "not_configured" | "unknown";
 
 export interface RoleStatus {
-  role: string; // mcp_proxy | gateway | native
+  role: string; // gateway | native | mcp (governed MCP endpoint); records of an earlier release may name mcp_proxy
   expected: boolean;
   state: RuntimeState;
   reason: string;
@@ -64,7 +64,6 @@ export interface RuntimeProcess {
   // startup_failure: set on a "failed" record, a fixed cause, never raw error text.
   startup_failure?: { code: string; reason: string };
   catalog?: RuntimeCatalog;
-  proxy_config?: { path: string; digest: string; loaded_at: string };
   gateway_config?: { path: string; digest: string; loaded_at: string };
   assessed_state: RuntimeState;
   reason: string;
@@ -201,7 +200,7 @@ export type OverallReadiness = "operational" | "degraded" | "unverified" | "unkn
 export type Severity = "critical" | "warning" | "info";
 
 export interface ReadinessDimension {
-  key: string; // runtime.gateway | runtime.mcp_proxy | configuration.activation | authentication.agent_keys | data.evidence_store | data.session_store | data.runtime_records
+  key: string; // runtime.gateway | runtime.mcp | configuration.activation | authentication.agent_keys | data.evidence_store | data.session_store | data.runtime_records
   label: string;
   state: ReadyState;
   reason: string;
@@ -688,25 +687,12 @@ export interface UseCaseConfig {
   active: ActiveStatus;
 }
 
-export interface ProxyConfigView {
-  availability: Availability;
-  source_path?: string;
-  name?: string;
-  vendor?: string;
-  endpoint?: string;
-  region?: string;
-  auth_secret_name?: string;
-  allowed_tools?: string[];
-  forbidden_tools?: string[];
-  requests_per_minute?: number;
-}
 
 export interface Configuration {
   meta: Meta;
   read_at: string;
   organization: OrganizationConfig;
   use_cases: { availability: Availability; source?: string; items: UseCaseConfig[] };
-  mcp_proxy: ProxyConfigView;
   effective_policy: Availability;
   active_generation: Availability;
   active: ActiveProcessConfig[];
@@ -732,7 +718,6 @@ export interface ActiveProcessConfig {
   reload_rejected: boolean;
   rejected_at?: string;
   rejected_causes?: string[];
-  proxy_config?: ActiveFile;
   gateway_config?: ActiveFile;
 }
 
@@ -804,14 +789,6 @@ export interface EffectiveFile {
   error?: string;
 }
 
-export interface ToolAccess {
-  tool: string;
-  allowed: boolean;
-  stage: string; // forbidden_tools | policy
-  matched?: string;
-  reasons?: string[];
-  note?: string;
-}
 
 // Proof that a running process of one enforcement boundary runs exactly the
 // current files (#555 review): the gateway and the MCP proxy are proved apart.
@@ -867,7 +844,7 @@ export interface EffectiveReport {
   use_case: string;
   tenant_id: string;
   generated_at: string;
-  current_files: { agent_file: string; policy_digest: string; gateway_config?: EffectiveFile; proxy_config?: EffectiveFile };
+  current_files: { agent_file: string; policy_digest: string; gateway_config?: EffectiveFile };
   loaded: ActiveStatus;
   effective: {
     basis: string;
@@ -887,7 +864,6 @@ export interface EffectiveReport {
     rules: RuleProvenance[];
     providers?: { name: string; enabled: boolean; effective_digest: string; forbidden_tools?: string[]; allowed_models?: string[] }[];
   };
-  mcp_boundary?: { proxy: string; file: string; scope: string; tools: ToolAccess[]; error?: string; proven_active: boolean; proof: BoundaryProof };
   action_boundary?: ActionBoundary;
   // #472: configured state, observed authenticated traffic per boundary and
   // its policy comparison. Computed in Go (effective.Verification); the

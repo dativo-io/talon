@@ -24,9 +24,11 @@ type dataPlane struct {
 	log string
 }
 
-func startProxyServe(t *testing.T, dir string, port int, env map[string]string) *dataPlane {
+// startDataPlane starts a native `talon serve`: the governed MCP endpoint
+// and the Action Gateway, no LLM gateway.
+func startDataPlane(t *testing.T, dir string, port int, env map[string]string) *dataPlane {
 	t.Helper()
-	cmd := exec.CommandContext(context.Background(), binaryPath, "serve", "--port", fmt.Sprint(port), "--proxy-config", filepath.Join(dir, "proxy.talon.yaml"))
+	cmd := exec.CommandContext(context.Background(), binaryPath, "serve", "--port", fmt.Sprint(port))
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "TALON_DATA_DIR="+dir, "TALON_SECRETS_KEY="+testSecretsKey, "TALON_SIGNING_KEY="+testSigningKey, "TALON_AGENTS_RELOAD_INTERVAL=1s", "TALON_LOG_FORMAT=json")
 	for k, v := range env {
@@ -98,10 +100,11 @@ func waitRole(t *testing.T, c *consoleClient, role, want string, within time.Dur
 }
 
 // TestE2E_ConsoleRuntime_ProcessTruth (#538) runs the production binary: a
-// real `talon serve --proxy-config` publishes its runtime record and the
-// separate console reports it. Negative paths: the optional gateway is
-// absent; a failed reload keeps the last-known-good generation and is shown
-// as rejected; a SIGKILLed proxy goes stale (no fake running); a restart is a
+// real `talon serve` (governed MCP endpoint, no LLM gateway) publishes its
+// runtime record and the separate console reports it. Negative paths: the
+// optional gateway is absent; a failed reload keeps the last-known-good
+// generation and is shown as rejected; a SIGKILLed serve goes stale (no fake
+// running); a restart is a
 // new instance while history stays; a process of another installation (other
 // signing key, same directory) is rejected; an unreadable store is reported
 // as unavailable while runtime facts stay readable.
@@ -110,29 +113,25 @@ func TestE2E_ConsoleRuntime_ProcessTruth(t *testing.T) {
 	if _, stderr, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", consoleAgent); code != 0 {
 		t.Fatalf("init: %d %s", code, stderr)
 	}
-	proxy := "agent:\n  name: hr-mcp-proxy\n  type: mcp_proxy\nproxy:\n  upstream:\n    vendor: hr-backend\n    url: http://127.0.0.1:9/mcp\n  allowed_tools:\n    - name: hr_aggregate_sql\n  forbidden_tools: [hr_employee_export]\n"
-	if err := os.WriteFile(filepath.Join(dir, "proxy.talon.yaml"), []byte(proxy), 0o600); err != nil {
-		t.Fatal(err)
-	}
 
 	dpPort := freePort(t)
-	dp := startProxyServe(t, dir, dpPort, nil)
+	dp := startDataPlane(t, dir, dpPort, nil)
 	uiPort := freePort(t)
-	ui := startConsoleUI(t, dir, uiPort, "--proxy-config", filepath.Join(dir, "proxy.talon.yaml"))
+	ui := startConsoleUI(t, dir, uiPort)
 	c := newConsoleClient(t, ui.base)
 	if status, body := c.pair(ui.waitCodes(t, 1)[0]); status != http.StatusOK {
 		t.Fatalf("pair: %d %s", status, body)
 	}
 
-	// Running proxy, absent optional gateway.
-	s := waitRole(t, c, "mcp_proxy", "running", 15*time.Second)
+	// Running MCP endpoint, absent optional gateway.
+	s := waitRole(t, c, "mcp", "running", 15*time.Second)
 	if st, _ := roleState(s, "gateway"); st != "not_configured" {
 		t.Fatalf("gateway: %q, expected not_configured (optional and absent)", st)
 	}
 	if s.Runtime.ActiveGeneration == "" {
-		t.Fatalf("the running proxy must report its active generation: %+v", s.Runtime)
+		t.Fatalf("the running serve must report its active generation: %+v", s.Runtime)
 	}
-	_, firstInstance := roleState(s, "mcp_proxy")
+	_, firstInstance := roleState(s, "mcp")
 	gen := s.Runtime.ActiveGeneration
 
 	// Configuration: the current agent file is what the process loaded.
@@ -147,8 +146,8 @@ func TestE2E_ConsoleRuntime_ProcessTruth(t *testing.T) {
 	if len(cfg.UseCases.Items) == 0 || cfg.UseCases.Items[0].Active.State != "loaded_matches_file" {
 		t.Fatalf("use case active state: %+v", cfg.UseCases.Items)
 	}
-	if len(cfg.Active) == 0 || cfg.Active[0].Proxy == nil || cfg.Active[0].Proxy.Matches == nil || !*cfg.Active[0].Proxy.Matches {
-		t.Fatalf("proxy config must match the loaded digest: %+v", cfg.Active)
+	if len(cfg.Active) == 0 || cfg.Active[0].AgentFilesMatch == nil || !*cfg.Active[0].AgentFilesMatch {
+		t.Fatalf("the agent files must match what the process loaded: %+v", cfg.Active)
 	}
 
 	// Failed reload: break the agent file. Last-known-good keeps serving and
@@ -186,7 +185,7 @@ func TestE2E_ConsoleRuntime_ProcessTruth(t *testing.T) {
 	// Another installation (different signing key) in the same directory is
 	// never combined.
 	foreignPort := freePort(t)
-	foreign := startProxyServe(t, dir, foreignPort, map[string]string{"TALON_SIGNING_KEY": "another-installation-signing-key-0000000000"})
+	foreign := startDataPlane(t, dir, foreignPort, map[string]string{"TALON_SIGNING_KEY": "another-installation-signing-key-0000000000"})
 	deadline = time.Now().Add(15 * time.Second)
 	sawRejected := false
 	for time.Now().Before(deadline) && !sawRejected {
@@ -201,22 +200,22 @@ func TestE2E_ConsoleRuntime_ProcessTruth(t *testing.T) {
 	if !sawRejected {
 		t.Fatalf("a process with another signing key must be rejected: %+v", s.Runtime.Rejected)
 	}
-	if _, inst := roleState(s, "mcp_proxy"); inst != firstInstance {
-		t.Fatalf("the foreign process must not become this installation's proxy: %s vs %s", inst, firstInstance)
+	if _, inst := roleState(s, "mcp"); inst != firstInstance {
+		t.Fatalf("the foreign process must not become this installation's MCP endpoint: %s vs %s", inst, firstInstance)
 	}
 	_ = foreign.cmd.Process.Signal(syscall.SIGTERM)
 	_, _ = foreign.cmd.Process.Wait()
 
-	// SIGKILL: no shutdown record; the proxy becomes stale, never "running".
+	// SIGKILL: no shutdown record; the serve becomes stale, never "running".
 	_ = dp.cmd.Process.Kill()
 	_, _ = dp.cmd.Process.Wait()
-	waitRole(t, c, "mcp_proxy", "stale", 30*time.Second)
+	waitRole(t, c, "mcp", "stale", 30*time.Second)
 
 	// Restart: a new instance runs; the killed one stays as history.
-	startProxyServe(t, dir, dpPort, nil)
-	s = waitRole(t, c, "mcp_proxy", "running", 15*time.Second)
-	if _, inst := roleState(s, "mcp_proxy"); inst == firstInstance {
-		t.Fatalf("the restarted proxy must be a new instance")
+	startDataPlane(t, dir, dpPort, nil)
+	s = waitRole(t, c, "mcp", "running", 15*time.Second)
+	if _, inst := roleState(s, "mcp"); inst == firstInstance {
+		t.Fatalf("the restarted serve must be a new instance")
 	}
 	history := 0
 	for _, p := range s.Runtime.Processes {
@@ -243,7 +242,7 @@ func TestE2E_ConsoleRuntime_ProcessTruth(t *testing.T) {
 		if code == 0 || !strings.Contains(out+stderr, "evidence store") {
 			t.Fatalf("a console over an unreadable store must refuse to start naming the store; code=%d\n%s%s", code, out, stderr)
 		}
-		if st, _ := roleState(c.system(t), "mcp_proxy"); st != "running" {
+		if st, _ := roleState(c.system(t), "mcp"); st != "running" {
 			t.Fatalf("runtime facts do not depend on the store: %q", st)
 		}
 	}

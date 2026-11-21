@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # People Analytics over real processes (#545): TestE2E_PeopleAnalytics_CrossProcess
-# builds talon, starts an HR MCP backend with its own call counters, the
-# production `talon serve --proxy-config` and `talon ui serve`, drives an
-# allowed, a forbidden and a backend-rejected tool call in one session, and
+# builds talon, starts an HR MCP backend with its own call counters (the use
+# case's trusted MCP action source), the production `talon serve` (governed
+# MCP endpoint, #431) and `talon ui serve`, drives an allowed, a forbidden and
+# a backend-rejected (unknown) tool call in one session, and
 # proves the boundary by the backend's counters, then the console = CLI,
 # signatures, SIGKILL/restart, tamper detection and negative auth. With the
 # browser leg (this script) the Playwright spec tests/browser/live checks the

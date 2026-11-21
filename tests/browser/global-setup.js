@@ -65,7 +65,7 @@ module.exports = async () => {
   const uiLogPath = path.join(dir, "ui.log");
   const uiLog = fs.openSync(uiLogPath, "a");
   const ui = spawn(bin, ["ui", "serve", "--listen", `127.0.0.1:${uiPort}`, "--store-wait", "10s",
-    "--gateway-config", path.join(dir, "talon.config.yaml"), "--proxy-config", path.join(dir, "proxy.talon.yaml")],
+    "--gateway-config", path.join(dir, "talon.config.yaml")],
   { env, cwd: dir, stdio: ["ignore", uiLog, uiLog] });
   await waitHttp(`http://127.0.0.1:${uiPort}/healthz`, 30_000, ui, uiLogPath);
 

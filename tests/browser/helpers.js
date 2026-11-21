@@ -76,16 +76,16 @@ function runtimeRecord(extra) {
 }
 
 // caseGRecords: a broken runtime. The gateway failed to start on an
-// undecryptable agent key; an MCP proxy runs without a declared key. Since
-// #557's review fix a current proxy refuses to start on an undecryptable key
-// too (TestE2E_ConsoleReadiness_UndecryptableAgentKey), but a running process
-// without a declared key is still reachable: a plain serve whose key was never
-// minted, or a process from an earlier release. The console must flag both.
+// undecryptable agent key; a native serve runs the governed MCP endpoint
+// (#431) without a declared key. A current serve refuses to start on an
+// undecryptable key too (TestE2E_ConsoleReadiness_UndecryptableAgentKey), but
+// a running process without a declared key is still reachable: a plain serve
+// whose key was never minted. The console must flag both.
 function caseGRecords(useCase) {
   return [
     runtimeRecord({ instance_id: "startup-failure-gateway", roles: ["gateway"], state: "failed", stopped_at: new Date().toISOString(),
       startup_failure: { code: "agent_key_unavailable", reason: "a declared agent key cannot be decrypted with the configured secrets key (TALON_SECRETS_KEY changed since the key was stored?); agent authentication cannot work" } }),
-    runtimeRecord({ instance_id: "browser-mcp-1", roles: ["mcp_proxy"], agent_keys: { declared: 1, loaded: 0, unloaded: [useCase] } }),
+    runtimeRecord({ instance_id: "browser-mcp-1", roles: ["native", "mcp"], agent_keys: { declared: 1, loaded: 0, unloaded: [useCase] } }),
   ];
 }
 

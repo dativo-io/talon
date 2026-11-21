@@ -119,6 +119,19 @@ func main() {
 capabilities:
   allowed_tools: ["hr_aggregate_sql"]
   forbidden_tools: ["hr_employee_export"]
+actions:
+  sources:
+    hr:
+      type: mcp
+      url: "https://hr-upstream.example/mcp"
+  definitions:
+    hr_aggregate_sql:
+      source: hr
+      read_only: true
+      review: {fields: [sql]}
+    hr_employee_export:
+      source: hr
+      review: {fields: [department]}
 policies:
   cost_limits:
     daily: 5
@@ -199,17 +212,6 @@ policies:
       action_approvals:
         argument_rules:
           refund-too-large: {actions: [create_refund_request], argument: amount, type: decimal, operator: gt, value: "500.00", effect: deny}
-`)
-	write(filepath.Join(*dir, "proxy.talon.yaml"), `agent:
-  name: hr-mcp-proxy
-  type: mcp_proxy
-proxy:
-  upstream:
-    vendor: hr-backend
-    url: "http://hr-upstream:9000/mcp"
-  allowed_tools:
-    - name: hr_aggregate_sql
-  forbidden_tools: ["hr_employee_export"]
 `)
 
 	dbPath := filepath.Join(*dir, "evidence.db")

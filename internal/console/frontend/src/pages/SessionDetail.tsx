@@ -242,7 +242,7 @@ function Timeline({ records, tenant }: { records: EvidenceIndex[]; tenant: strin
               {r.correlation_id ? <span>· correlation <code>{r.correlation_id}</code></span> : null}
               {r.duration_ms ? <span>· {duration(r.duration_ms)}</span> : null}
               {r.cost ? <span>· cost {r.cost.toFixed(4)} {r.currency || "(no currency)"}</span> : null}
-              {/* MCP proxy denials store their deny reason in the error field (internal/mcp/proxy.go); the reason is shown above. */}
+              {/* Records of an earlier release's MCP proxy store their deny reason in the error field; the reason is shown above. */}
               {r.has_error && r.allowed ? <Badge tone="warn" plain>error recorded</Badge> : null}
             </div>
             {r.outcome ? <div className="small muted">Why this outcome: {r.outcome.basis}</div> : null}

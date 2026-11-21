@@ -15,7 +15,7 @@ test("Overview: configured runtimes that do not run read degraded, with findings
   await expect(r.getByText("Degraded", { exact: true }).first()).toBeVisible();
   await expect(r.getByText("Installation-wide", { exact: false })).toBeVisible();
   const findings = page.getByTestId("findings");
-  for (const title of ["LLM gateway is offline", "MCP proxy is offline"]) {
+  for (const title of ["LLM gateway is offline", "MCP endpoint is offline"]) {
     const item = findings.locator("li", { hasText: title });
     await expect(item).toBeVisible();
     await expect(item.getByText("Critical", { exact: true })).toBeVisible();
@@ -62,14 +62,14 @@ test("Tenant scope: a discoverable selector; it filters use cases and keeps the 
   await expect(page.getByRole("link", { name: f.use_case })).toBeVisible();
 });
 
-test("Case G: gateway failed to start on an undecryptable agent key, a running MCP proxy lacks a declared key — never an unqualified healthy installation", async ({ page }) => {
+test("Case G: gateway failed to start on an undecryptable agent key, a running MCP endpoint lacks a declared key — never an unqualified healthy installation", async ({ page }) => {
   const f = state().fixture;
   const cleanup = writeRecords(caseGRecords(f.use_case));
   try {
     await pair(page, "/overview");
     const r = page.getByTestId("readiness");
     await expect(r.getByText("Degraded", { exact: true }).first()).toBeVisible();
-    await expect(r.locator("[data-dimension='runtime.mcp_proxy']").getByText("OK", { exact: true })).toBeVisible();
+    await expect(r.locator("[data-dimension='runtime.mcp']").getByText("OK", { exact: true })).toBeVisible();
     await expect(r.locator("[data-dimension='authentication.agent_keys']").getByText("Degraded", { exact: true })).toBeVisible();
     await expect(r.locator("[data-dimension='data.evidence_store']").getByText("OK", { exact: true })).toBeVisible();
     const findings = page.getByTestId("findings");

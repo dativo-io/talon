@@ -21,8 +21,9 @@ import (
 //                                      + MCP-discovered action, one projection
 //   talon serve                        catalog compiled INTO the runtime
 //                                      generation; the Action Gateway serves it
-//   mcp-sourced action                 catalogued, NOT executable (execution_unsupported),
-//                                      zero upstream tools/call
+//   mcp-sourced action                 governed like any action (#431): establish
+//                                      binds it and waits for approval; zero
+//                                      upstream tools/call before a claim
 //   source refresh (ttl)               changed upstream schema → new generation
 //   source failure on refresh          rejected, last-known-good keeps serving
 //   source recovery                    same facts → the SAME generation id again
@@ -252,13 +253,14 @@ policies:
 	if st != 201 || dig(res, "operation", "verdict") != "ALLOW" {
 		t.Fatalf("declared action establish: %d %v", st, res)
 	}
-	// The mcp-sourced action is catalogued but has no executor before #431.
+	// The mcp-sourced action is executable through the MCP dispatcher
+	// (#431): establish binds it under the approval rule; nothing is sent.
 	st, res = c.do("POST", "/v1/action-operations", acAgentKey, `{"operation_id":"op-refund-1","action":"create_refund_request","arguments":{"ticket_id":"T-1","amount":50}}`)
-	if st != 501 || errCode(res) != "execution_unsupported" {
+	if st != 202 || dig(res, "operation", "verdict") != "REQUIRE_APPROVAL" {
 		t.Fatalf("mcp-sourced establish: %d %v", st, res)
 	}
-	if st, res = c.do("GET", "/v1/action-operations/op-refund-1", acAgentKey, ""); st != 404 {
-		t.Fatalf("nothing persisted for a refused establish: %d %v", st, res)
+	if st, res = c.do("POST", "/v1/action-operations/op-refund-1/attempts", acAgentKey, ""); st != 409 || errCode(res) != "approval_pending" {
+		t.Fatalf("an unapproved mcp-sourced operation is not claimable: %d %v", st, res)
 	}
 	if up.toolCalls.Load() != 0 {
 		t.Fatalf("zero upstream tools/call: %d", up.toolCalls.Load())

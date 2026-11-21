@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
-# MCP governance-contract smoke (#372): one deterministic, credential-free run
-# of the BUILT talon binary over real HTTP with a counting mock MCP upstream
-# and a temporary evidence DB. Proves, end to end:
-#   - both routes advertise exactly io.dativo.talon/governance v1, no Tasks;
-#   - an allowed call carries decision=allow + a committed evidence id in
-#     result._meta, one upstream effect, and the full signed record verifies
-#     (`talon audit verify`) with reasonCode == the signed explanation;
-#   - a forbidden call is policy_denied / deny / non-retryable with a
-#     committed evidence ref and the deprecated alias, zero dispatch;
-#   - protocol errors (-32020, -32022, -32602, -32700, -32601) carry no
-#     governance object and cause no effect;
-#   - an effect followed by a severed answer is upstream_outcome_unknown,
-#     non-retryable, exactly one effect, record status unknown;
-#   - a tampered record fails verification while an untouched one verifies;
-#   - the smoke's own assertion set rejects a missing id, an uncommitted
-#     reference, a retryable denial and a leaked signature.
-# Coverage boundary: pre-dispatch evidence-commit outages and injected
-# adversarial reasons are proven in-process (internal/mcp TestGovernance_*,
-# TestSafety_*),
-# because they cannot be injected into a running binary.
+# MCP governance-contract smoke (#372, #431): one deterministic,
+# credential-free run of the BUILT talon binary (or TALON_E2E_BINARY) over
+# real HTTP with a real MCP server (the official Go SDK) counting every
+# tools/call it receives, and a temporary evidence DB. Every governed
+# tools/call is an Action Gateway operation. Proves, end to end:
+#   - a forbidden tool called directly: policy_denied, zero calls;
+#   - a read-only action: one call;
+#   - a consequential action: prepare (zero calls), execute (one call),
+#     six concurrent executes and a repeat (still one);
+#   - a caller-provided operation id: changed arguments conflict, no call;
+#   - approval: pending, the use-case key cannot approve, the reviewer's
+#     decision dispatches nothing, the next execute dispatches once;
+#   - a tool error after dispatch: upstream_outcome_unknown, never retried,
+#     the vendor's text never relayed;
+#   - every operation's signed lifecycle verifies (`talon audit verify
+#     --operation`).
+# Coverage boundary: PII, recovery hold and evidence-commit faults are proven
+# in-process (internal/mcp TestGoverned_*, internal/action TestMCPAction_*).
 #
 # Independent of make test-smoke (no provider key, no Docker); also run as
 # smoke section 37 and as a named PR CI step.
