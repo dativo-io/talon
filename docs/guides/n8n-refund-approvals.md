@@ -6,7 +6,7 @@ The [importable n8n refund reference](../../examples/n8n-refund/README.md) conta
 
 ## The workflow
 
-\`\`\`text
+```text
 Authenticated caller → n8n webhook → validate inputs
   → Talon establishes an exact refund operation
     → ALLOW             → claim → Talon dispatches to the adapter
@@ -14,9 +14,9 @@ Authenticated caller → n8n webhook → validate inputs
     → DENY              → stop; no dispatch
 
 Talon's signed lifecycle: decision → review (if any) → attempt → outcome
-\`\`\`
+```
 
-For the reference policy, an amount **up to €50** is allowed; **above €50 through €500** requires approval from the \`support-leads\` group; **above €500** is denied by company policy. These are example rules, not baked-in Talon refund logic. The currency and decimal-string input shape are enforced by the action schema. n8n never independently decides the thresholds.
+For the reference policy, an amount **up to €50** is allowed; **above €50 through €500** requires approval from the `support-leads` group; **above €500** is denied by company policy. These are example rules, not baked-in Talon refund logic. The currency and decimal-string input shape are enforced by the action schema. n8n never independently decides the thresholds.
 
 The fixture is a counting refund service, **not a payment processor**. A real adapter must check business eligibility, credentials, idempotency and the actual downstream result.
 
@@ -24,66 +24,66 @@ The fixture is a counting refund service, **not a payment processor**. A real ad
 
 [Prepare a Talon installation](add-talon-to-existing-app.md#1-prepare-talon-once), with the company policy, Talon keys and provider configuration kept separately. From the installation directory:
 
-\`\`\`bash
+```bash
 talon agents add refund-bot --tenant acme --owner support-operations \
   --description "Support refunds requested from the n8n workflow"
-\`\`\`
+```
 
 Save the issued **use-case key** in n8n's credentials; it authorizes this use case's operations but cannot approve them.
 
 Copy or incorporate the reference's company policy and action definition:
 
-\`\`\`bash
+```bash
 # From the Talon repository root, with the documented installation layout:
 cat examples/n8n-refund/use-case-action.append.yaml >> agents/refund-bot/agent.talon.yaml
 # Set actions.definitions.create_refund_request.destination.url to your test adapter.
 talon validate
 talon serve --host 127.0.0.1 --port 8080 --gateway --gateway-config talon.config.yaml
-\`\`\`
+```
 
 Use the [full setup](../../examples/n8n-refund/README.md#set-up) for prerequisites and the specific file layout. If n8n runs elsewhere, expose Talon through a TLS-terminating reverse proxy—not unauthenticated remote HTTP.
 
 ## 2. Connect the existing n8n workflow
 
-Import [\`refund-approval.workflow.json\`](../../examples/n8n-refund/refund-approval.workflow.json) into n8n. Configure its two **Header Auth** credentials:
+Import [`refund-approval.workflow.json`](../../examples/n8n-refund/refund-approval.workflow.json) into n8n. Configure its two **Header Auth** credentials:
 
 - **Refund webhook caller:** a shared secret required to trigger the n8n webhook.
-- **Talon refund-bot key:** \`Authorization: Bearer <use-case-key>\`, used only on Talon requests.
+- **Talon refund-bot key:** `Authorization: Bearer <use-case-key>`, used only on Talon requests.
 
-Set \`talon_url\` in the workflow's Config node and publish it. The export contains **no secrets** and **no refund-adapter destination**; it is Talon that calls the adapter when a valid claim is made.
+Set `talon_url` in the workflow's Config node and publish it. The export contains **no secrets** and **no refund-adapter destination**; it is Talon that calls the adapter when a valid claim is made.
 
-Use one stable \`operation_id\` per business action. The reference derives it from the ticket and optional request ID. Do not retry a claim blindly if the network fails during dispatch: read the recorded operation first.
+Use one stable `operation_id` per business action. The reference derives it from the ticket and optional request ID. Do not retry a claim blindly if the network fails during dispatch: read the recorded operation first.
 
 ## 3. Add a reviewer, then try the three decisions
 
 Give a person separate authority to approve the held operations:
 
-\`\`\`bash
+```bash
 talon approver add --name lead-1 --tenant acme --groups support-leads
-\`\`\`
+```
 
 The reviewer uses their own credential—**not** the admin key or the use-case key:
 
-\`\`\`bash
+```bash
 export TALON_APPROVER_KEY=...   # load securely; do not put this key into the workflow
 talon approvals list
 talon approvals show <approval-id>
 talon approvals approve <approval-id> --reason "customer verified"
 # or: talon approvals reject <approval-id> --reason "duplicate"
-\`\`\`
+```
 
-Use the webhook body \`{"ticket_id":"T-1","amount":"30.00","currency":"EUR"}\` for **ALLOW**; \`"75.00"\` for **REQUIRE_APPROVAL**; and \`"900.00"\` for **DENY**. Include the separate webhook caller credential when posting. See the [runnable curl example](../../examples/n8n-refund/README.md#set-up).
+Use the webhook body `{"ticket_id":"T-1","amount":"30.00","currency":"EUR"}` for **ALLOW**; `"75.00"` for **REQUIRE_APPROVAL**; and `"900.00"` for **DENY**. Include the separate webhook caller credential when posting. See the [runnable curl example](../../examples/n8n-refund/README.md#set-up).
 
 **Approval is not execution.** The reviewer decision only authorizes the bound operation; n8n later claims it, and Talon dispatches. A denied, rejected or expired operation produces no dispatch.
 
 ## 4. Investigate and verify
 
-\`\`\`bash
+```bash
 talon agents                 # use cases, state and next steps
 talon agents show refund-bot
 talon audit verify --operation refund-T-1
 talon ui                     # read-only Operations Console
-\`\`\`
+```
 
 The [Operations Console](operations-console.md) shows the use case, readiness findings, effective policy, operations, approvals and evidence. Review decisions remain in the CLI or reviewer API; the console does not approve or execute actions.
 
