@@ -493,24 +493,19 @@ func (h *Handler) execute(ctx context.Context, w http.ResponseWriter, reqID json
 	}
 }
 
-// logUnknown keeps the source's own error text for the operator: in the
-// process log, sanitized and bounded, never in a signed record (which keeps
-// the outcome code and the JSON-RPC category only) and never relayed.
+// logUnknown tells the operator that an operation ended unknown, with the
+// typed outcome only: the attempt's outcome code (e.g. upstream_tool_error,
+// upstream_jsonrpc_error: code=<n> category=<c>, upstream_result_invalid)
+// and the digest of what the source answered. The source's own text — a
+// vendor error message, a tool's error content — is never logged, signed or
+// relayed: it is upstream-controlled and may carry personal data or secrets
+// that no generic sanitizer can be trusted to remove.
 func (h *Handler) logUnknown(op *action.Projection, res *action.ExecuteResult) {
-	code := ""
+	code, ref := "", ""
 	if res.Attempt != nil {
-		code = res.Attempt.OutcomeCode
+		code, ref = res.Attempt.OutcomeCode, res.Attempt.OutcomeRef
 	}
-	detail := ""
-	if len(res.Result) > 0 {
-		var e struct {
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(res.Result, &e) == nil && e.Message != "" {
-			detail = sanitizeDiagnostic(e.Message)
-		}
-	}
-	log.Warn().Str("operation_id", op.OperationID).Str("action", op.Action).Str("outcome_code", code).Str("detail", detail).Msg("mcp_action_outcome_unknown")
+	log.Warn().Str("operation_id", op.OperationID).Str("action", op.Action).Str("outcome_code", code).Str("result_ref", ref).Msg("mcp_action_outcome_unknown")
 }
 
 // actionFailure maps a service error to the wire: request faults the
@@ -584,6 +579,11 @@ func (h *Handler) relayResult(ctx context.Context, reqID json.RawMessage, uc *us
 		// The dispatcher only reports success for a validated object; an
 		// unreadable relay is reported, never invented.
 		return h.withSignedReason(ctx, actionResponse(reqID, govcode.UpstreamOutcomeUnknown, publicOutcomeUnknown, op, uc))
+	}
+	// Talon serves the answer: its identity, the upstream's kept by the
+	// dispatcher under io.dativo.talon/upstreamServerInfo.
+	if meta, ok := result["_meta"].(map[string]interface{}); ok {
+		meta[wire.MetaServerInfo] = nativeServer()
 	}
 	result, resp := h.applyResponsePII(ctx, span, reqID, uc, op, result)
 	if resp != nil {
@@ -783,6 +783,12 @@ func (h *Handler) applyRequestPII(ctx context.Context, span trace.Span, reqID js
 // result from the client and is reported with observed provenance; it
 // never relabels the operation.
 //
+// Everything that will be forwarded is scanned and redacted as one
+// document, _meta included: the dispatcher already reduced upstream
+// metadata to the allowlist (the upstream's serverInfo), but that, too, is
+// upstream-controlled, and nothing upstream-controlled reaches the client
+// unscanned.
+//
 //nolint:gocyclo // one decision per PII outcome, each evidenced
 func (h *Handler) applyResponsePII(ctx context.Context, span trace.Span, reqID json.RawMessage, uc *useCase, op *action.Projection, result map[string]interface{}) (map[string]interface{}, *jsonrpcResponse) {
 	mode, cls := uc.pii.Response, uc.pii.Classifier
@@ -792,14 +798,11 @@ func (h *Handler) applyResponsePII(ctx context.Context, span trace.Span, reqID j
 	hc := h.forCall(cls, uc.attr)
 	flow := &serverFlowState{}
 	subject := piiSubject{uc.svc.TenantID, uc.svc.AgentID, op.Action, uc.svc.Policy.Digest}
-	meta := result["_meta"]
-	delete(result, "_meta")
-	body, _ := json.Marshal(result)
-	restore := func(m map[string]interface{}) map[string]interface{} {
-		if meta != nil {
-			m["_meta"] = meta
-		}
-		return m
+	body, err := json.Marshal(result)
+	if err != nil {
+		flow.resultBlocked = true
+		return nil, hc.piiRefusal(ctx, span, reqID, subject, "output_unreadable", explanation.CodePolicyDeniedPIIOutput,
+			"Tool result withheld: it could not be scanned; the action itself was executed", flow, false).withOperation(op, uc)
 	}
 	blocked := func(trigger, msg string) (map[string]interface{}, *jsonrpcResponse) {
 		flow.resultBlocked = true
@@ -816,13 +819,13 @@ func (h *Handler) applyResponsePII(ctx context.Context, span trace.Span, reqID j
 	}
 	flow.resultTier = res.Tier
 	if !res.HasPII {
-		return restore(result), nil
+		return result, nil
 	}
 	flow.resultEntities = applyServerFlowFieldPath(classifier.MergeEntitySpans(string(body), res.Entities), "result")
 	switch mode {
 	case "warn":
 		log.Info().Str("tool", subject.toolName).Str("agent", subject.agentID).Msg("mcp_result_pii_warn")
-		return restore(result), nil
+		return result, nil
 	case "block":
 		return blocked("output_pii_blocked", "Tool result withheld: the AI use case's PII policy blocks recognized personal data; the action itself was executed")
 	}
@@ -846,7 +849,7 @@ func (h *Handler) applyResponsePII(ctx context.Context, span trace.Span, reqID j
 		Trigger: "output_pii_redacted", PolicyRef: explanation.PolicyRef(subject.policyVersion), VersionIdentity: subject.policyVersion,
 	}})
 	_ = commitEvidence(ctx, h.evidenceStore, span, ev) // post-effect: a failed commit is logged, never relabelled
-	return restore(out), nil
+	return out, nil
 }
 
 // piiSubject is who and what a PII record is about.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -329,39 +328,90 @@ func TestStripHeaderAnnotations(t *testing.T) {
 	require.Equal(t, json.RawMessage("not json"), StripHeaderAnnotations(json.RawMessage("not json")))
 }
 
-func TestValidateUpstreamResult_TruthTable(t *testing.T) {
-	srv := Implementation{Name: "talon-mcp-proxy", Version: "x"}
+func TestValidateCallToolResult_TruthTable(t *testing.T) {
+	srv := Implementation{Name: "talon", Version: "x"}
 	cases := []struct {
 		name string
 		raw  string
-		err  error
+		err  error // nil: valid
 	}{
+		{"complete, text", `{"resultType":"complete","content":[{"type":"text","text":"ok"}]}`, nil},
+		{"complete, empty content", `{"resultType":"complete","content":[]}`, nil},
+		{"complete, every block type", `{"resultType":"complete","content":[{"type":"text","text":"a","annotations":{"audience":["user"]}},{"type":"image","data":"AA==","mimeType":"image/png"},{"type":"audio","data":"AA==","mimeType":"audio/wav"},{"type":"resource_link","uri":"file:///a","name":"a"},{"type":"resource","resource":{"uri":"file:///b","text":"b"}},{"type":"resource","resource":{"uri":"file:///c","blob":"AA=="}}],"structuredContent":{"n":1},"isError":false}`, nil},
+		{"complete, isError true (valid; the caller decides)", `{"resultType":"complete","content":[{"type":"text","text":"no"}],"isError":true}`, nil},
+		{"input_required (the caller decides)", `{"resultType":"input_required","inputRequests":{"q":{"method":"elicitation/create","params":{}}},"requestState":"s"}`, nil},
+		{"not an object", `[1]`, ErrCallResultInvalid},
+		{"null", `null`, ErrCallResultInvalid},
 		{"missing resultType", `{"content":[]}`, ErrResultTypeMissing},
-		{"complete", `{"resultType":"complete","content":[]}`, nil},
-		{"input_required", `{"resultType":"input_required","inputRequests":{"q":{"method":"elicitation/create","params":{}}},"requestState":"s"}`, nil},
 		{"task", `{"resultType":"task","task":{"taskId":"t1"}}`, ErrResultTypeUnsupported},
-		{"unknown future value", `{"resultType":"partial"}`, ErrResultTypeUnsupported},
-		{"non-object", `[1]`, errors.New("x")},
+		{"unknown resultType", `{"resultType":"partial","content":[]}`, ErrResultTypeUnsupported},
+		{"resultType not a string", `{"resultType":1,"content":[]}`, ErrResultTypeUnsupported},
+		{"content missing", `{"resultType":"complete"}`, ErrCallResultInvalid},
+		{"content null", `{"resultType":"complete","content":null}`, ErrCallResultInvalid},
+		{"content an object", `{"resultType":"complete","content":{"type":"text","text":"x"}}`, ErrCallResultInvalid},
+		{"isError a string", `{"resultType":"complete","content":[],"isError":"false"}`, ErrCallResultInvalid},
+		{"isError a number", `{"resultType":"complete","content":[],"isError":0}`, ErrCallResultInvalid},
+		{"isError null", `{"resultType":"complete","content":[],"isError":null}`, ErrCallResultInvalid},
+		{"structuredContent an array", `{"resultType":"complete","content":[],"structuredContent":[1]}`, ErrCallResultInvalid},
+		{"structuredContent a string", `{"resultType":"complete","content":[],"structuredContent":"x"}`, ErrCallResultInvalid},
+		{"_meta not an object", `{"resultType":"complete","content":[],"_meta":"x"}`, ErrCallResultInvalid},
+		{"block without type", `{"resultType":"complete","content":[{"text":"x"}]}`, ErrCallResultInvalid},
+		{"unknown block type", `{"resultType":"complete","content":[{"type":"video","data":"x"}]}`, ErrCallResultInvalid},
+		{"text block, number text", `{"resultType":"complete","content":[{"type":"text","text":1}]}`, ErrCallResultInvalid},
+		{"image without mimeType", `{"resultType":"complete","content":[{"type":"image","data":"AA=="}]}`, ErrCallResultInvalid},
+		{"resource_link without name", `{"resultType":"complete","content":[{"type":"resource_link","uri":"file:///a"}]}`, ErrCallResultInvalid},
+		{"resource with both text and blob", `{"resultType":"complete","content":[{"type":"resource","resource":{"uri":"u","text":"a","blob":"AA=="}}]}`, ErrCallResultInvalid},
+		{"resource without uri", `{"resultType":"complete","content":[{"type":"resource","resource":{"text":"a"}}]}`, ErrCallResultInvalid},
+		{"block annotations not an object", `{"resultType":"complete","content":[{"type":"text","text":"a","annotations":[]}]}`, ErrCallResultInvalid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := ValidateUpstreamResult(json.RawMessage(tc.raw), srv)
+			out, err := ValidateCallToolResult(json.RawMessage(tc.raw), srv)
 			if tc.err != nil {
-				require.Error(t, err)
-				if errors.Is(tc.err, ErrResultTypeMissing) || errors.Is(tc.err, ErrResultTypeUnsupported) {
-					require.ErrorIs(t, err, tc.err)
-				}
+				require.ErrorIs(t, err, tc.err)
+				require.Nil(t, out)
 				return
 			}
 			require.NoError(t, err)
-			require.Equal(t, srv, out["_meta"].(map[string]any)[MetaServerInfo])
+			require.NotNil(t, out)
 		})
 	}
-	up, err := ValidateUpstreamResult(json.RawMessage(`{"resultType":"complete","content":[],"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"up","version":"9"},"x":1}}`), srv)
+}
+
+// Normalization: Talon serves the result; only the upstream's serverInfo
+// survives (under its own key); every other upstream metadata key — vendor
+// data, Talon-namespace spoofs — and every non-CallToolResult member is
+// dropped.
+func TestValidateCallToolResult_NormalizesIdentityAndMetadata(t *testing.T) {
+	srv := Implementation{Name: "talon", Version: "x"}
+	out, err := ValidateCallToolResult(json.RawMessage(`{
+	  "resultType":"complete",
+	  "content":[{"type":"text","text":"ok"}],
+	  "isError":false,
+	  "ttlMs":5,
+	  "com.example/extra":"jan@example.com",
+	  "_meta":{
+	    "io.modelcontextprotocol/serverInfo":{"name":"up","version":"9"},
+	    "io.dativo.talon/governance":{"code":"allowed","decision":"allow"},
+	    "io.dativo.talon/upstreamServerInfo":{"name":"spoof"},
+	    "com.vendor/contact":"jan@example.com"
+	  }}`), srv)
 	require.NoError(t, err)
-	meta := up["_meta"].(map[string]any)
-	require.NotNil(t, meta["io.dativo.talon/upstreamServerInfo"])
-	require.Equal(t, float64(1), meta["x"])
+	b, _ := json.Marshal(out)
+	require.NotContains(t, string(b), "jan@example.com")
+	require.NotContains(t, string(b), "spoof")
+	require.NotContains(t, string(b), "io.dativo.talon/governance")
+	require.NotContains(t, string(b), "ttlMs")
+	meta := out["_meta"].(map[string]any)
+	require.Equal(t, srv, meta[MetaServerInfo])
+	require.Equal(t, map[string]any{"name": "up", "version": "9"}, meta[MetaUpstreamServerInfo])
+	require.Len(t, meta, 2)
+	require.Equal(t, false, out["isError"])
+
+	bare, err := ValidateCallToolResult(json.RawMessage(`{"resultType":"complete","content":[]}`), srv)
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{MetaServerInfo: srv}, bare["_meta"], "no upstream identity: none is invented")
+	require.NotContains(t, bare, "isError", "an absent isError stays absent")
 }
 
 func TestParseListResult_Strict(t *testing.T) {

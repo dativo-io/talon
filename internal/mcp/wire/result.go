@@ -78,34 +78,191 @@ var (
 	ErrListResultInvalid     = errors.New("upstream tools/list result is not a 2026-07-28 ListToolsResult")
 )
 
-// ValidateUpstreamResult checks a result received from an upstream server
-// and prepares it for the client. Truth table:
+// ErrCallResultInvalid is a tools/call result whose structure is not the
+// current CallToolResult: after the request was written it proves nothing,
+// so the caller treats it as an unknown outcome, never a success.
+var ErrCallResultInvalid = errors.New("upstream tools/call result is not a valid 2026-07-28 CallToolResult")
+
+// MetaUpstreamServerInfo is where the upstream's own serverInfo is kept
+// when Talon stamps its identity on a relayed result.
+const MetaUpstreamServerInfo = "io.dativo.talon/upstreamServerInfo"
+
+// ValidateCallToolResult checks the result of a tools/call Talon sent to an
+// upstream and returns the normalized result the client may receive.
+// Truth table:
 //
-//	missing resultType → ErrResultTypeMissing (upstream protocol violation)
-//	complete           → validated and continued
-//	input_required     → preserved losslessly (MRTR continuation)
-//	task               → ErrResultTypeUnsupported (Tasks extension is not advertised, #448)
-//	anything else      → ErrResultTypeUnsupported
+//	not an object                → ErrCallResultInvalid
+//	missing resultType           → ErrResultTypeMissing
+//	task / any other value       → ErrResultTypeUnsupported (Tasks are #448)
+//	input_required               → returned unchanged (the caller decides; a
+//	                               governed action cannot continue through it)
+//	complete with a bad structure→ ErrCallResultInvalid: content must be an
+//	                               array of valid content blocks, isError a
+//	                               JSON boolean when present, structuredContent
+//	                               an object when present, _meta an object
+//	complete                     → normalized
 //
-// The result is kept verbatim apart from the identity stamp: this server's
-// serverInfo replaces the upstream's, which is kept under its own key so
-// nothing is silently dropped.
-func ValidateUpstreamResult(raw json.RawMessage, server Implementation) (map[string]any, error) {
-	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
-		return nil, fmt.Errorf("upstream result is not a JSON object")
+// Normalization keeps only the CallToolResult members (resultType, content,
+// structuredContent, isError) and a strict allowlist of metadata: Talon's
+// serverInfo, and the upstream's serverInfo under MetaUpstreamServerInfo.
+// Every other upstream _meta key — vendor keys and anything in Talon's own
+// namespace — is dropped, so upstream-controlled metadata cannot carry
+// unscanned data to a client or spoof a governance verdict.
+func ValidateCallToolResult(raw json.RawMessage, server Implementation) (map[string]any, error) {
+	var in map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &in); err != nil || in == nil {
+		return nil, fmt.Errorf("%w: not a JSON object", ErrCallResultInvalid)
 	}
-	rt, has := out["resultType"]
+	rtRaw, has := in["resultType"]
 	if !has {
 		return nil, ErrResultTypeMissing
 	}
-	switch rt {
-	case ResultTypeComplete, ResultTypeInputRequired:
-	default:
-		return nil, fmt.Errorf("%w: %v", ErrResultTypeUnsupported, rt)
+	var rt string
+	if json.Unmarshal(rtRaw, &rt) != nil {
+		return nil, fmt.Errorf("%w: %s", ErrResultTypeUnsupported, string(rtRaw))
 	}
-	out["_meta"] = mergeMeta(out["_meta"], server)
+	switch rt {
+	case ResultTypeInputRequired:
+		var out map[string]any
+		_ = json.Unmarshal(raw, &out)
+		return out, nil
+	case ResultTypeComplete:
+		return completeCallResult(in, server)
+	default:
+		return nil, fmt.Errorf("%w: %q", ErrResultTypeUnsupported, rt)
+	}
+}
+
+// completeCallResult validates and normalizes a resultType:"complete"
+// CallToolResult (see ValidateCallToolResult).
+func completeCallResult(in map[string]json.RawMessage, server Implementation) (map[string]any, error) {
+	content, err := callResultContent(in["content"])
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"resultType": ResultTypeComplete, "content": content}
+	if v, has := in["isError"]; has {
+		var isErr bool
+		if !isJSONBool(v) || json.Unmarshal(v, &isErr) != nil {
+			return nil, fmt.Errorf("%w: isError is not a boolean", ErrCallResultInvalid)
+		}
+		out["isError"] = isErr
+	}
+	if v, has := in["structuredContent"]; has {
+		var sc map[string]any
+		if err := json.Unmarshal(v, &sc); err != nil || sc == nil {
+			return nil, fmt.Errorf("%w: structuredContent is not an object", ErrCallResultInvalid)
+		}
+		out["structuredContent"] = sc
+	}
+	meta, err := callResultMeta(in["_meta"], server)
+	if err != nil {
+		return nil, err
+	}
+	out["_meta"] = meta
 	return out, nil
+}
+
+// callResultContent validates the required content array block by block.
+func callResultContent(raw json.RawMessage) ([]any, error) {
+	if raw == nil {
+		return nil, fmt.Errorf("%w: content is required", ErrCallResultInvalid)
+	}
+	var blocks []json.RawMessage
+	if err := json.Unmarshal(raw, &blocks); err != nil || blocks == nil {
+		return nil, fmt.Errorf("%w: content is not an array", ErrCallResultInvalid)
+	}
+	content := make([]any, 0, len(blocks))
+	for i, b := range blocks {
+		block, err := contentBlock(b)
+		if err != nil {
+			return nil, fmt.Errorf("%w: content[%d]: %v", ErrCallResultInvalid, i, err)
+		}
+		content = append(content, block)
+	}
+	return content, nil
+}
+
+// callResultMeta applies the metadata allowlist: Talon's serverInfo, and
+// the upstream's (an object) under MetaUpstreamServerInfo. Nothing else
+// from the upstream survives.
+func callResultMeta(raw json.RawMessage, server Implementation) (map[string]any, error) {
+	meta := map[string]any{MetaServerInfo: server}
+	if raw == nil {
+		return meta, nil
+	}
+	var um map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &um); err != nil || um == nil {
+		return nil, fmt.Errorf("%w: _meta is not an object", ErrCallResultInvalid)
+	}
+	var info map[string]any
+	if si, ok := um[MetaServerInfo]; ok && json.Unmarshal(si, &info) == nil && info != nil {
+		meta[MetaUpstreamServerInfo] = info
+	}
+	return meta, nil
+}
+
+// contentBlockFields are the string members each simple content block type
+// requires.
+var contentBlockFields = map[string][]string{
+	"text":          {"text"},
+	"image":         {"data", "mimeType"},
+	"audio":         {"data", "mimeType"},
+	"resource_link": {"uri", "name"},
+}
+
+// contentBlock validates one CallToolResult content block by its type.
+func contentBlock(raw json.RawMessage) (map[string]any, error) {
+	var b map[string]any
+	if err := json.Unmarshal(raw, &b); err != nil || b == nil {
+		return nil, errors.New("not an object")
+	}
+	typ, _ := b["type"].(string)
+	if fields, ok := contentBlockFields[typ]; ok {
+		for _, k := range fields {
+			if s, ok := b[k].(string); !ok || (k == "uri" && s == "") {
+				return nil, fmt.Errorf("%s block needs a string %s", typ, k)
+			}
+		}
+	} else if typ == "resource" {
+		if err := embeddedResource(b["resource"]); err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, fmt.Errorf("unsupported content type %q", typ)
+	}
+	for _, k := range []string{"annotations", "_meta"} {
+		if v, has := b[k]; has {
+			if _, ok := v.(map[string]any); !ok {
+				return nil, fmt.Errorf("%s is not an object", k)
+			}
+		}
+	}
+	return b, nil
+}
+
+// embeddedResource validates a resource block's resource: a uri and
+// exactly one of text or blob.
+func embeddedResource(v any) error {
+	r, ok := v.(map[string]any)
+	if !ok {
+		return errors.New("resource block without a resource object")
+	}
+	uri, _ := r["uri"].(string)
+	_, isText := r["text"].(string)
+	_, isBlob := r["blob"].(string)
+	if uri == "" || isText == isBlob {
+		return errors.New("embedded resource needs a uri and exactly one of text or blob")
+	}
+	return nil
+}
+
+// isJSONBool reports whether raw is literally true or false (json.Unmarshal
+// into a bool already refuses strings and numbers; this keeps the check
+// explicit and independent of decoder leniency).
+func isJSONBool(raw json.RawMessage) bool {
+	t := string(bytes.TrimSpace(raw))
+	return t == "true" || t == "false"
 }
 
 // ListResult is a validated upstream ListToolsResult.
@@ -241,7 +398,7 @@ func mergeMeta(existing any, server Implementation) map[string]any {
 		}
 	}
 	if prev, has := meta[MetaServerInfo]; has {
-		meta["io.dativo.talon/upstreamServerInfo"] = prev
+		meta[MetaUpstreamServerInfo] = prev
 	}
 	meta[MetaServerInfo] = server
 	return meta

@@ -40,11 +40,13 @@ const MCPClientName = "talon-action-gateway"
 // properties and its outcome truth table:
 //
 //	request never written                         → failed / not_dispatched
-//	written, JSON-RPC result, resultType complete,
-//	  isError absent or false                      → succeeded / observed
+//	written, a structurally valid CallToolResult
+//	  (wire.ValidateCallToolResult), resultType
+//	  complete, isError absent or false            → succeeded / observed
 //	written, anything else (isError true, a JSON-RPC
-//	  error, input_required, a task, a malformed or
-//	  lost answer, a timeout)                      → UNKNOWN / unknown
+//	  error, input_required, a task, a malformed
+//	  result — e.g. a non-boolean isError or invalid
+//	  content — or a lost answer, a timeout)       → UNKNOWN / unknown
 //
 // A tool-reported error after the request reached the source is UNKNOWN,
 // not failed: the source may have performed part of the effect, and only a
@@ -197,13 +199,14 @@ func (d *MCPDispatcher) observe(resp *http.Response, id json.RawMessage) Outcome
 	}
 	sum := sha256.Sum256(raw)
 	out := unknown("", true)
+	// The digest of exactly what the source answered; the answer itself is
+	// never stored, and only a validated success travels back (Result).
 	out.Ref = hex.EncodeToString(sum[:])
-	out.Result = append(json.RawMessage(nil), raw...)
 	if rpc.Error != nil {
 		out.Code = wire.RPCErrorToken("upstream_jsonrpc_error", rpc.Error.Code)
 		return out
 	}
-	res, err := wire.ValidateUpstreamResult(rpc.Result, wire.Implementation{Name: MCPClientName, Version: d.Version})
+	res, err := wire.ValidateCallToolResult(rpc.Result, wire.Implementation{Name: MCPClientName, Version: d.Version})
 	if err != nil {
 		out.Code = "upstream_result_invalid"
 		if errors.Is(err, wire.ErrResultTypeUnsupported) || errors.Is(err, wire.ErrResultTypeMissing) {
@@ -221,6 +224,15 @@ func (d *MCPDispatcher) observe(resp *http.Response, id json.RawMessage) Outcome
 		out.Code = "upstream_tool_error"
 		return out
 	}
+	normalized, err := json.Marshal(res)
+	if err != nil {
+		out.Code = "upstream_result_invalid"
+		return out
+	}
+	// The client receives the validated, normalized result (Talon's identity,
+	// the upstream's under its own key, no other upstream metadata), never
+	// the raw upstream bytes.
+	out.Result = normalized
 	out.Status, out.Provenance, out.Code = AttemptSucceeded, ResultProvenanceObserved, "mcp_result_complete"
 	return out
 }

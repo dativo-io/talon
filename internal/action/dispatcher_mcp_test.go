@@ -83,6 +83,11 @@ func TestMCPDispatcher_SuccessIsObservedAndCarriesTheIdempotencyIdentity(t *test
 	assert.NotEmpty(t, out.Ref)
 	assert.Contains(t, string(out.Result), "refund r-1 created")
 	assert.EqualValues(t, 1, src.calls.Load())
+	var relayed map[string]any
+	require.NoError(t, json.Unmarshal(out.Result, &relayed))
+	rmeta := relayed["_meta"].(map[string]any)
+	assert.Equal(t, MCPClientName, rmeta["io.modelcontextprotocol/serverInfo"].(map[string]any)["name"], "the relayed result is the normalized one, not the upstream bytes")
+	assert.NotNil(t, rmeta["io.dativo.talon/upstreamServerInfo"], "the upstream identity is kept under its own key")
 	meta, _ := src.lastMeta.Load().(map[string]any)
 	assert.Equal(t, "talon-op_ref_1", meta[MetaIdempotencyKey], "the operation-scoped idempotency identity travels in _meta")
 	assert.Equal(t, "att_1", meta[MetaAttemptID])
@@ -157,6 +162,26 @@ func TestMCPDispatcher_UnknownOutcomes(t *testing.T) {
 			conn, _, _ := w.(http.Hijacker).Hijack()
 			_ = conn.Close()
 		}, "dispatch_response_lost"},
+		// Malformed results after the request was written prove nothing
+		// either: never a success, never a safely retryable failure.
+		"isError a string": {func(w http.ResponseWriter, id json.RawMessage) {
+			writeJSON(w, id, `"result":{"resultType":"complete","content":[{"type":"text","text":"ok"}],"isError":"false"}`)
+		}, "upstream_result_invalid"},
+		"isError a number": {func(w http.ResponseWriter, id json.RawMessage) {
+			writeJSON(w, id, `"result":{"resultType":"complete","content":[{"type":"text","text":"ok"}],"isError":0}`)
+		}, "upstream_result_invalid"},
+		"content missing": {func(w http.ResponseWriter, id json.RawMessage) {
+			writeJSON(w, id, `"result":{"resultType":"complete","isError":false}`)
+		}, "upstream_result_invalid"},
+		"content block invalid": {func(w http.ResponseWriter, id json.RawMessage) {
+			writeJSON(w, id, `"result":{"resultType":"complete","content":[{"type":"text","text":42}]}`)
+		}, "upstream_result_invalid"},
+		"structuredContent not an object": {func(w http.ResponseWriter, id json.RawMessage) {
+			writeJSON(w, id, `"result":{"resultType":"complete","content":[],"structuredContent":["refund"]}`)
+		}, "upstream_result_invalid"},
+		"result not an object": {func(w http.ResponseWriter, id json.RawMessage) {
+			writeJSON(w, id, `"result":"done"`)
+		}, "upstream_result_invalid"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -168,6 +193,7 @@ func TestMCPDispatcher_UnknownOutcomes(t *testing.T) {
 			assert.Equal(t, tc.code, out.Code)
 			assert.EqualValues(t, 1, calls.Load(), "one request, never followed or repeated")
 			assert.NotContains(t, out.Code, "cust-77", "vendor text never becomes the outcome code")
+			assert.Empty(t, out.Result, "only a validated success travels back to an adapter")
 		})
 	}
 }

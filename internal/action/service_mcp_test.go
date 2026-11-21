@@ -2,7 +2,9 @@ package action
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -31,12 +33,17 @@ type mcpHarnessOpts struct {
 	approval bool
 	auth     *policy.UpstreamAuthConfig
 	secrets  SecretGetter
+	url      string // when set, the source is this server instead of the SDK one
 }
 
 func newMCPHarness(t *testing.T, behave func(*sdk.CallToolRequest) (*sdk.CallToolResult, error), o mcpHarnessOpts) (*harness, *sdkRefundSource) {
 	t.Helper()
 	src := newSDKRefundSource(t, behave)
-	srcCfg := policy.ActionSourceConfig{Type: "mcp", URL: src.srv.URL, Auth: o.auth}
+	url := src.srv.URL
+	if o.url != "" {
+		url = o.url
+	}
+	srcCfg := policy.ActionSourceConfig{Type: "mcp", URL: url, Auth: o.auth}
 	actions := &policy.ActionsConfig{
 		Sources: map[string]policy.ActionSourceConfig{"refunds": srcCfg},
 		Definitions: map[string]policy.ActionDefinitionConfig{
@@ -159,6 +166,34 @@ func TestMCPAction_UnknownBlocksEveryRetry(t *testing.T) {
 	f := h.verify(t, "op-mcp-u")
 	assert.Equal(t, LifecycleValid, f.Verdict, f.Details)
 	assert.Equal(t, OpUnknown, f.FinalStatus)
+}
+
+// A structurally malformed result after dispatch (here a string isError: a
+// lenient reader would take "false" for success) is UNKNOWN, relays nothing
+// and is never re-sent.
+func TestMCPAction_MalformedResultIsUnknownAndNeverRedispatched(t *testing.T) {
+	for name, member := range map[string]string{
+		"isError a string": `"result":{"resultType":"complete","content":[{"type":"text","text":"refund r-1 created"}],"isError":"false"}`,
+		"content missing":  `"result":{"resultType":"complete","isError":false}`,
+		"invalid block":    `"result":{"resultType":"complete","content":[{"type":"text"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, calls := rawSource(t, func(w http.ResponseWriter, id json.RawMessage) { writeJSON(w, id, member) })
+			h, _ := newMCPHarness(t, mcpOK, mcpHarnessOpts{url: srv.URL})
+			h.establish(t, "op-mcp-m", "create_refund_request", mcpRefundArgs)
+			out, err := h.svc.Execute(context.Background(), "op-mcp-m")
+			require.NoError(t, err)
+			assert.Equal(t, OpUnknown, out.Operation.Status)
+			assert.Equal(t, "upstream_result_invalid", out.Attempt.OutcomeCode)
+			assert.Empty(t, out.Result, "a malformed answer is never relayed as a result")
+			for i := 0; i < 3; i++ {
+				_, err = h.svc.Execute(context.Background(), "op-mcp-m")
+				assert.Equal(t, CodeOperationOutcomeUnknown, CodeOf(err))
+			}
+			assert.EqualValues(t, 1, calls.Load(), "one tools/call, never re-sent")
+			assert.Equal(t, LifecycleValid, h.verify(t, "op-mcp-m").Verdict)
+		})
+	}
 }
 
 // A request that never left Talon (the source credential was unavailable)

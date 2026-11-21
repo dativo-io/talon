@@ -60,9 +60,10 @@ type Outcome struct {
 	HTTPStatus       int
 	Code             string
 	Ref              string // sha256 of the response body when observed
-	// Result is the observed answer an adapter may relay to its caller (the
-	// MCP tools/call result or JSON-RPC error object). Transient: it is
-	// never persisted or signed; only Ref is.
+	// Result is the validated, normalized answer of a SUCCEEDED attempt that
+	// an adapter may relay to its caller (the MCP tools/call result).
+	// Transient: never persisted or signed (only Ref, the digest of what the
+	// source answered, is), and absent for any other outcome.
 	Result json.RawMessage
 }
 
