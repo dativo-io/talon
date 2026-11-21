@@ -76,7 +76,9 @@ The prepared answer is a normal tool result (text plus `structuredContent` with 
 | anything else after the request was written: `isError: true`, a JSON-RPC error, `input_required`, a task, a malformed or lost answer, a timeout | `upstream_outcome_unknown`, provenance `unknown`, not retryable | `unknown`: never re-sent; reconcile with the source |
 | any later execute of an unknown operation | `operation_outcome_unknown` | unchanged |
 
-A tool-reported error after dispatch is **unknown, not failed**: the source may have done part of the work. The source's error text is never relayed to the client and never signed; the record keeps the JSON-RPC code and category (`upstream_jsonrpc_error: code=<n> category=<c>`), and the process log keeps a sanitized message.
+A tool-reported error after dispatch is **unknown, not failed**: the source may have done part of the work. The source's error text is never relayed to the client and never signed; the record keeps the JSON-RPC code and category (`upstream_jsonrpc_error: code=<n> category=<c>`), and the operator log line `mcp_action_outcome_unknown` carries only the typed outcome and the digest of the answer — reconcile with the source's own logs.
+
+A result is a success only when it is a structurally valid `CallToolResult`: `resultType: "complete"`, a `content` array of valid blocks, `isError` a JSON boolean when present, `structuredContent` an object when present. Anything else after dispatch (a string `isError`, missing `content`, an unknown block type) is `unknown`. The client receives Talon's normalized copy: Talon's `serverInfo`, the source's under `io.dativo.talon/upstreamServerInfo`, and no other source `_meta` keys (vendor metadata and anything in Talon's namespace are dropped).
 
 Talon sends one operation-scoped idempotency identity with every attempt: `_meta["io.dativo.talon/idempotencyKey"]` and the `Idempotency-Key` header, plus `io.dativo.talon/operationRef` and `io.dativo.talon/attemptId`. A source that deduplicates on it turns a safe retry into a no-op; Talon does not rely on it.
 
@@ -85,7 +87,9 @@ Talon sends one operation-scoped idempotency identity with every attempt: `_meta
 The use case's effective company policy applies (the organization's `pii_action` / `response_pii_action`, which a use case can only tighten):
 
 - **arguments**, before anything is bound: `block` refuses with zero calls and signed evidence; `redact` binds the redacted arguments, so the approval covers and Talon sends exactly what was redacted; `warn` and `allow` pass them.
-- **results**: `redact` redacts the result returned to the client; `block` withholds it (the action itself was executed: provenance `observed`, the operation stays `succeeded`).
+- **results**: everything forwarded is scanned as one document, `_meta` included; `redact` redacts the result returned to the client; `block` withholds it (the action itself was executed: provenance `observed`, the operation stays `succeeded`).
+
+The company baseline is the `gateway.organization_policy` of the gateway config file (`--gateway-config`, `TALON_GATEWAY_CONFIG`, else `talon.config.yaml`), in every serve mode: a native `talon serve` with no LLM gateway applies it to `/mcp` exactly as a gateway serve does, and records which file it read so the console can prove it.
 
 A scanner failure fails closed.
 

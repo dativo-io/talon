@@ -97,16 +97,18 @@ func runtimeBase(cfg *config.Config) runtimestatus.Record {
 	if base.StartedAt.IsZero() {
 		base.StartedAt = time.Now().UTC()
 	}
-	if serveGateway {
-		base.GatewayConfig = loadedConfigRef(serveGatewayConfig, loadedGatewayConfigDigest)
+	if loadedGatewayConfigPath != "" {
+		base.GatewayConfig = loadedConfigRef(loadedGatewayConfigPath, loadedGatewayConfigDigest)
 	}
 	return base
 }
 
 // loadedGatewayConfigDigest is the SHA-256 of the bytes this process parsed
-// its gateway config from (gateway.LoadGatewayConfigWithDigest), set when
-// serve loads it. Empty until then.
-var loadedGatewayConfigDigest string
+// its gateway config from (gateway.LoadGatewayConfigWithDigest), and
+// loadedGatewayConfigPath the file, set when serve loads it — in gateway
+// mode, and in native mode when a company config file exists (#431).
+// Empty when the process read none.
+var loadedGatewayConfigDigest, loadedGatewayConfigPath string
 
 // loadedConfigRef records a configuration file with the digest of the bytes
 // the process parsed it from. The console compares that digest with the

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -123,7 +124,7 @@ func startMGSource(t *testing.T) *mgSource {
 	})
 	str := map[string]any{"type": "string"}
 	for name, props := range map[string]map[string]any{
-		"voucher.send":    {"ticket_id": str, "amount": map[string]any{"type": "number"}},
+		"voucher.send":    {"ticket_id": str, "amount": map[string]any{"type": "number"}, "note": str},
 		"refund.create":   {"ticket_id": str, "amount": map[string]any{"type": "number"}},
 		"ticket.lookup":   {"ticket_id": str},
 		"customer.delete": {"customer_id": str},
@@ -155,13 +156,18 @@ type mgFixture struct {
 }
 
 func startGovernedMCP(t *testing.T) *mgFixture {
-	t.Helper()
-	f := &mgFixture{dir: t.TempDir(), src: startMGSource(t)}
-	if _, stderr, code := RunTalon(t, f.dir, nil, "init", "--scaffold", "--name", mgAgent); code != 0 {
-		t.Fatalf("talon init: %d\n%s", code, stderr)
-	}
-	agentPath := filepath.Join(f.dir, "agent.talon.yaml")
-	yaml := `agent:
+	return startGovernedMCPWith(t, mgOpts{})
+}
+
+// mgOpts varies the governed fixture: extra serve environment and an extra
+// policies fragment of the use case.
+type mgOpts struct {
+	env      map[string]string
+	policies string // appended under the agent file's policies:
+}
+
+func mgAgentYAML(srcURL, policiesExtra, extraDefinitions string) string {
+	return `agent:
   name: ` + mgAgent + `
   version: "1.0.0"
   key:
@@ -172,12 +178,12 @@ actions:
   sources:
     crm:
       type: mcp
-      url: "` + f.src.srv.URL + `"
+      url: "` + srcURL + `"
   definitions:
     send_voucher:
       source: crm
       upstream_name: voucher.send
-      review: {fields: [ticket_id, amount]}
+      review: {fields: [ticket_id, amount], non_material: [note]}
     create_refund:
       source: crm
       upstream_name: refund.create
@@ -191,7 +197,7 @@ actions:
       source: crm
       upstream_name: customer.delete
       review: {fields: [customer_id]}
-
+` + extraDefinitions + `
 policies:
   cost_limits:
     daily: 10
@@ -202,7 +208,17 @@ policies:
       refunds:
         actions: [create_refund]
         approver_groups: [support-leads]
-`
+` + policiesExtra
+}
+
+func startGovernedMCPWith(t *testing.T, o mgOpts) *mgFixture {
+	t.Helper()
+	f := &mgFixture{dir: t.TempDir(), src: startMGSource(t)}
+	if _, stderr, code := RunTalon(t, f.dir, nil, "init", "--scaffold", "--name", mgAgent); code != 0 {
+		t.Fatalf("talon init: %d\n%s", code, stderr)
+	}
+	agentPath := filepath.Join(f.dir, "agent.talon.yaml")
+	yaml := mgAgentYAML(f.src.srv.URL, o.policies, "")
 	if err := os.WriteFile(agentPath, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +231,11 @@ policies:
 	}
 	f.leadKey = regexp.MustCompile(`talon_appr_cred_[0-9a-f]+\.[A-Za-z0-9_-]+`).FindString(out)
 	port := freePort(t)
-	stop := startServeWithEnv(t, f.dir, port, map[string]string{"TALON_ADMIN_KEY": mgAdminKey})
+	env := map[string]string{"TALON_ADMIN_KEY": mgAdminKey}
+	for k, v := range o.env {
+		env[k] = v
+	}
+	stop := startServeWithEnv(t, f.dir, port, env)
 	t.Cleanup(stop)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	f.mcp = &mcpClient{t: t, base: base, key: mgAgentKey}
@@ -379,6 +399,87 @@ func TestE2E_MCP_GovernanceContract(t *testing.T) {
 }
 
 // countRecords is the number of evidence records in a store.
+// P1-C: a native (MCP-only) talon serve applies the organization's PII
+// baseline from the gateway config file, exactly as a gateway serve does,
+// and a use case cannot weaken it — not with its own data_classification,
+// and not by changing that file while the server runs (hot reload). The
+// source's own counter proves nothing was sent.
+func TestE2E_MCP_OrganizationPIIBaseline_NativeServe(t *testing.T) {
+	const email = "jan.kowalski@example.com"
+	dir := t.TempDir()
+	company := filepath.Join(dir, "company.yaml")
+	if err := os.WriteFile(company, []byte("gateway:\n  organization_policy:\n    defaults:\n      pii_action: block\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The use case asks for the WEAKER redact (input scanning with
+	// redaction): under a company block it must still be blocked.
+	weaker := "  data_classification:\n    input_scan: true\n    redact_input: true\n"
+	f := startGovernedMCPWith(t, mgOpts{
+		env:      map[string]string{"TALON_GATEWAY_CONFIG": company, "TALON_AGENTS_RELOAD_INTERVAL": "1s"},
+		policies: weaker,
+	})
+	pii := func(id int, opID string) map[string]any {
+		_, out := f.mcp.call(id, "send_voucher", `{"ticket_id":"T-1","amount":10,"note":"contact `+email+`"}`,
+			`"io.dativo.talon/operationId":"`+opID+`"`)
+		return out
+	}
+	out := pii(1, "pii-1")
+	if x := govExt(out); x["code"] != "pii_policy_violation" {
+		t.Fatalf("native serve must apply the company PII block over the use case's redact: %v", out)
+	}
+	if n := f.src.count("voucher.send"); n != 0 {
+		t.Fatalf("a blocked call reached the source %d times", n)
+	}
+	// Without PII the same tool works: the baseline blocks personal data,
+	// not the route.
+	_, out = f.mcp.call(2, "send_voucher", `{"ticket_id":"T-2","amount":10,"note":"no personal data"}`,
+		`"io.dativo.talon/operationId":"clean-1"`)
+	if govExt(out)["code"] != "allowed" || f.src.count("voucher.send") != 1 {
+		t.Fatalf("a call without PII must execute once: %v (source %d)", out, f.src.count("voucher.send"))
+	}
+
+	// Hot reload: the use case rewrites its own file (still asking for
+	// redact); the new generation must be ACTIVE before the next call.
+	fleet := func() fleetReply {
+		req, _ := http.NewRequest(http.MethodGet, f.mcp.base+"/v1/agents/fleet", nil)
+		req.Header.Set("X-Talon-Admin-Key", mgAdminKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var fr fleetReply
+		if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("fleet: %d %v", resp.StatusCode, err)
+		}
+		return fr
+	}
+	gen0 := fleet().Generation
+	if err := os.WriteFile(filepath.Join(f.dir, "agent.talon.yaml"), []byte(mgAgentYAML(f.src.srv.URL, weaker+"  # reloaded: still asks for redact\n", "")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var fr fleetReply
+	for i := 0; i < 80; i++ {
+		if fr = fleet(); fr.Generation != gen0 || (fr.Reload != nil && fr.Reload.Rejected) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if fr.Reload != nil && fr.Reload.Rejected {
+		t.Fatalf("the reload was rejected: %v", fr.Reload.RejectedCauses)
+	}
+	if fr.Generation == gen0 {
+		t.Fatal("the reloaded generation never became active")
+	}
+	out = pii(3, "pii-2")
+	if x := govExt(out); x["code"] != "pii_policy_violation" {
+		t.Fatalf("after a reload the company PII block must still apply: %v", out)
+	}
+	if n := f.src.count("voucher.send"); n != 1 {
+		t.Fatalf("after the reload a blocked call reached the source (count %d, want 1 from the clean call)", n)
+	}
+}
+
 func countRecords(t *testing.T, dbPath string) int {
 	t.Helper()
 	db, err := sql.Open("sqlite3", dbPath)

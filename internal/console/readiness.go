@@ -116,9 +116,12 @@ type readinessInputs struct {
 	// GatewayConfigDigest: sha256 of the gateway config file the console
 	// reads now ("" when not configured or unreadable).
 	GatewayConfigDigest string
-	Evidence            StoreFacts
-	Sessions            StoreFacts
-	Now                 time.Time
+	// MCPUseCases: the use cases that declare an MCP action source, with
+	// their agent files' digests as the console reads them now.
+	MCPUseCases []mcpUseCase
+	Evidence    StoreFacts
+	Sessions    StoreFacts
+	Now         time.Time
 }
 
 // StoreFacts is what the console established about one store just now.
@@ -129,7 +132,7 @@ type StoreFacts struct {
 }
 
 func (s *Service) readiness(ctx context.Context, rt Runtime) Readiness {
-	in := readinessInputs{Runtime: rt, Now: s.now()}
+	in := readinessInputs{Runtime: rt, Now: s.now(), MCPUseCases: s.mcpUseCases()}
 	src := s.cfg.ConfigSources
 	if src.GatewayConfig != "" {
 		in.GatewayConfigDigest = fileDigest(src.GatewayConfig)
@@ -307,6 +310,15 @@ func activationDimension(in readinessInputs, readable bool) (ReadinessDimension,
 	var proofs []configProof
 	if roleExpected(in.Runtime, runtimestatus.RoleGateway) {
 		proofs = append(proofs, configProof{"gateway config", runtimestatus.ProveGatewayConfig(view, true, in.GatewayConfigDigest)})
+	}
+	// The governed MCP endpoint is the Action Gateway over MCP (#431): what
+	// it runs is each MCP-sourcing use case's agent file in the active
+	// generation plus the company policy read at start — the Action
+	// Gateway's own proof, never inferred from a heartbeat or evidence.
+	if roleExpected(in.Runtime, runtimestatus.RoleMCP) {
+		for _, uc := range in.MCPUseCases {
+			proofs = append(proofs, configProof{"MCP endpoint (" + uc.Name + ")", runtimestatus.ProveActionPolicy(view, true, uc.Name, uc.Tenant, uc.Digest, in.GatewayConfigDigest)})
+		}
 	}
 	if len(proofs) == 0 {
 		d.State, d.Reason = ReadyNotConfigured, "no gateway or MCP endpoint is configured for this installation"

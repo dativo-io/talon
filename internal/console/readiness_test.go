@@ -47,8 +47,19 @@ func putProc(t *testing.T, f *fixture, svc *Service, id string, roles []string, 
 		Version: "v-test", StartedAt: f.now.Add(-time.Hour), WrittenAt: f.now.Add(-2 * time.Second), State: runtimestatus.StateRunning, Sequence: 1,
 	}
 	for _, r := range roles {
-		if r == runtimestatus.RoleGateway {
+		switch r {
+		case runtimestatus.RoleGateway:
 			rec.GatewayConfig = &runtimestatus.ConfigRef{Path: svc.cfg.ConfigSources.GatewayConfig, Digest: fileDigest(svc.cfg.ConfigSources.GatewayConfig)}
+		case runtimestatus.RoleMCP:
+			// A serve reports its active generation's agents and, in every
+			// mode, the company config it read (none when none exists).
+			rec.Catalog = &runtimestatus.Catalog{ActiveGeneration: "g1"}
+			for _, uc := range svc.mcpUseCases() {
+				rec.Catalog.Agents = append(rec.Catalog.Agents, runtimestatus.Agent{Name: uc.Name, TenantID: uc.Tenant, Enabled: true, PolicyDigest: uc.Digest})
+			}
+			if p := svc.cfg.ConfigSources.GatewayConfig; p != "" && fileDigest(p) != "" {
+				rec.GatewayConfig = &runtimestatus.ConfigRef{Path: p, Digest: fileDigest(p)}
+			}
 		}
 	}
 	for _, o := range opts {
@@ -383,7 +394,85 @@ func TestReadiness_MCPOnlyInstallationIsOperational(t *testing.T) {
 	assert.Equal(t, ReadyOK, dim(r, DimMCP).State, dim(r, DimMCP).Reason)
 	assert.Equal(t, ReadyNotConfigured, dim(r, DimGateway).State)
 	assert.Equal(t, ReadyOK, dim(r, DimAgentKeys).State, "the MCP endpoint reports holding the keys")
+	assert.Equal(t, ReadyOK, dim(r, DimActivation).State, "activation agrees with an operational MCP-only installation: %s", dim(r, DimActivation).Reason)
 	assert.Empty(t, r.Findings)
+}
+
+// P2-E: configuration activation of an MCP-only installation is proved
+// from what the running serve reports — its active generation's agent files
+// and the company config it read — and agrees with the MCP endpoint's own
+// state: operational, edited-since-start, unreported (unverified), stale,
+// offline and unconfigured are told apart, never inferred from evidence.
+func TestReadiness_MCPOnlyActivation(t *testing.T) {
+	native := []string{runtimestatus.RoleNative, runtimestatus.RoleMCP}
+	company := func(t *testing.T, f *fixture, svc *Service) {
+		p := filepath.Join(f.dir, "company.yaml")
+		require.NoError(t, os.WriteFile(p, []byte("gateway:\n  organization_policy:\n    defaults:\n      pii_action: block\n"), 0o600))
+		svc.cfg.ConfigSources.GatewayConfig = p
+	}
+	t.Run("company config read and current: OK", func(t *testing.T) {
+		f := seed(t)
+		withMCPSource(t, f)
+		svc := readinessService(t, f, false)
+		company(t, f, svc)
+		putProc(t, f, svc, "serve1", native, withKeys(1, 1))
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyOK, dim(r, DimActivation).State, dim(r, DimActivation).Reason)
+		assert.Equal(t, ReadyNotConfigured, dim(r, DimGateway).State, "a company config without an enabled gateway is not a gateway")
+		assert.Equal(t, OverallOperational, r.Overall, r.Summary)
+	})
+	t.Run("company config edited since the serve started: degraded", func(t *testing.T) {
+		f := seed(t)
+		withMCPSource(t, f)
+		svc := readinessService(t, f, false)
+		company(t, f, svc)
+		putProc(t, f, svc, "serve1", native, withKeys(1, 1))
+		require.NoError(t, os.WriteFile(svc.cfg.ConfigSources.GatewayConfig, []byte("gateway:\n  organization_policy:\n    defaults:\n      pii_action: warn\n"), 0o600))
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyDegraded, dim(r, DimActivation).State, dim(r, DimActivation).Reason)
+		assert.Contains(t, codes(r.Findings), "config_not_active")
+		assert.NotEqual(t, OverallOperational, r.Overall)
+	})
+	t.Run("agent file edited since the active generation: degraded", func(t *testing.T) {
+		f := seed(t)
+		withMCPSource(t, f)
+		svc := readinessService(t, f, false)
+		putProc(t, f, svc, "serve1", native, withKeys(1, 1), func(r *runtimestatus.Record) { r.Catalog.Agents[0].PolicyDigest = "older" })
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyDegraded, dim(r, DimActivation).State, dim(r, DimActivation).Reason)
+	})
+	t.Run("a serve that does not report the company config it read: unverified", func(t *testing.T) {
+		f := seed(t)
+		withMCPSource(t, f)
+		svc := readinessService(t, f, false)
+		company(t, f, svc)
+		putProc(t, f, svc, "serve1", native, withKeys(1, 1), func(r *runtimestatus.Record) { r.GatewayConfig = nil })
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyUnverified, dim(r, DimActivation).State, dim(r, DimActivation).Reason)
+		assert.NotEqual(t, OverallOperational, r.Overall, "unverified activation is never an operational claim")
+	})
+	t.Run("stale serve: unknown, as the endpoint is degraded", func(t *testing.T) {
+		f := seed(t)
+		withMCPSource(t, f)
+		svc := readinessService(t, f, false)
+		putProc(t, f, svc, "serve1", native, withKeys(1, 1), written(30*time.Second))
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyUnknown, dim(r, DimActivation).State, dim(r, DimActivation).Reason)
+		assert.Equal(t, ReadyDegraded, dim(r, DimMCP).State)
+	})
+	t.Run("offline: unknown, never proven from evidence", func(t *testing.T) {
+		f := seed(t)
+		withMCPSource(t, f)
+		svc := readinessService(t, f, false)
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyUnknown, dim(r, DimActivation).State, dim(r, DimActivation).Reason)
+	})
+	t.Run("nothing configured: not configured", func(t *testing.T) {
+		f := seed(t)
+		svc := readinessService(t, f, false)
+		r := svc.Overview(context.Background(), "").Readiness
+		assert.Equal(t, ReadyNotConfigured, dim(r, DimActivation).State)
+	})
 }
 
 // Reachable, unhealthy and unconfigured are told apart.

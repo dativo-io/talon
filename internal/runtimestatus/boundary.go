@@ -92,11 +92,8 @@ func ProveActionPolicy(v View, readable bool, name, tenant, agentDigest, gateway
 		if !found {
 			return fail(BoundaryDiffers, "does not have this use case in its active generation")
 		}
-		if p.GatewayConfig == nil || p.GatewayConfig.Digest == "" {
-			return fail(BoundaryUnknown, "serves the Action Gateway but does not report which gateway config it read, so its company action policy cannot be compared")
-		}
-		if ok, why := configMatches(p.GatewayConfig, gatewayConfigDigest, "gateway config"); !ok {
-			return fail(BoundaryDiffers, why+"; the company action policy is read at process start")
+		if state, why := companyConfigProof(p, gatewayConfigDigest); state != "" {
+			return fail(state, why)
 		}
 	}
 	if len(ids) == 0 {
@@ -108,6 +105,25 @@ func ProveActionPolicy(v View, readable bool, name, tenant, agentDigest, gateway
 // errUnreported marks a running process that did not report what it loaded:
 // nothing can be compared, so the proof is unknown rather than different.
 const errUnreported = "did not report the digest of the "
+
+// companyConfigProof compares the company config a serve process read at
+// start with the one on disk now: "" when they agree, else the boundary
+// state and why.
+func companyConfigProof(p *Process, current string) (state, why string) {
+	if p.GatewayConfig == nil || p.GatewayConfig.Digest == "" {
+		// A process that reports the governed MCP role (#431) records the
+		// company config whenever it read one: reporting none while none
+		// exists on disk proves "no company policy".
+		if p.GatewayConfig == nil && current == "" && hasRole(p.Roles, RoleMCP) {
+			return "", ""
+		}
+		return BoundaryUnknown, "serves the Action Gateway but does not report which gateway config it read, so its company action policy cannot be compared"
+	}
+	if ok, why := configMatches(p.GatewayConfig, current, "gateway config"); !ok {
+		return BoundaryDiffers, why + "; the company action policy is read at process start"
+	}
+	return "", ""
+}
 
 func configMatches(ref *ConfigRef, current, label string) (ok bool, why string) {
 	switch {

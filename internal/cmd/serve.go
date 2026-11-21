@@ -173,10 +173,15 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 	// The company action policy (#425) is loaded ONCE here and frozen into
 	// every generation this process builds (startup and reloads); a changed
 	// company policy activates at the next restart.
-	companyPolicy, err := serveCompanyActionPolicy(serveGateway, serveProxyQuickstart, serveGatewayConfig, preloadedGatewayCfg)
+	org, err := serveOrganizationPolicy(serveGateway, serveProxyQuickstart, serveGatewayConfig, preloadedGatewayCfg, loadedGatewayConfigDigest)
 	if err != nil {
 		return err
 	}
+	// The runtime record names the company config this process read, in
+	// every serve mode (#431): a native (MCP-only) serve applies its
+	// organization policy too, so its activation must be provable.
+	loadedGatewayConfigPath, loadedGatewayConfigDigest = org.Path, org.Digest
+	companyPolicy := org.companyActionPolicy()
 	if companyPolicy != nil {
 		log.Info().Str("source", companyPolicy.Source).Str("digest", shortGeneration(companyPolicy.Digest())).Int("forbidden", len(companyPolicy.ForbiddenActions)).Int("approval_rules", len(companyPolicy.Rules)).Msg("company_action_policy_active")
 	}
@@ -646,9 +651,15 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 
 	// Governed MCP (#431): every tools/call is an operation of the
 	// authenticated use case's Action Gateway service; PII follows the use
-	// case's effective policy (the organization baseline is set below once
-	// the gateway configuration is loaded, before the server starts).
-	mcpCfg := mcp.Config{Evidence: evidenceStore, Classifier: cls, PII: mcpPIIResolver(runtimeHolder, &mcpOrgPolicy)}
+	// case's effective policy over the company baseline resolved above for
+	// THIS serve mode (native or gateway), passed by value: frozen for the
+	// process like the company action policy, while each use case's own
+	// override is read from the current generation at every call.
+	var mcpOrg gateway.OrganizationPolicy
+	if org.Policy != nil {
+		mcpOrg = *org.Policy
+	}
+	mcpCfg := mcp.Config{Evidence: evidenceStore, Classifier: cls, PII: mcpPIIResolver(runtimeHolder, mcpOrg)}
 	if actionGW != nil {
 		mcpCfg.Services = mcp.ServiceResolver(actionGW.resolver())
 	}
@@ -785,7 +796,6 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 			// effective-policy computation enforcement uses (#266), against
 			// the CURRENT registry snapshot (#289).
 			opts = append(opts, server.WithAgentCapsLookup(agentCapsLookupFor(runtimeHolder, gatewayCfg.OrganizationPolicy)))
-			mcpOrgPolicy = gatewayCfg.OrganizationPolicy
 			// The fleet endpoint resolves caps + deny-all from its captured
 			// snapshot against this org baseline + configured providers (#270
 			// review round 3), so an empty provider-allowlist intersection is
@@ -1135,20 +1145,15 @@ func errProxyConfigRemoved(flag string) error {
 		"see docs/guides/mcp-governed-tools.md", flag)
 }
 
-// mcpOrgPolicy is the organization baseline the governed MCP route's PII
-// handling starts from: zero in native serve, the gateway's baseline in
-// gateway serve (set before the server starts).
-var mcpOrgPolicy gateway.OrganizationPolicy
-
 // mcpPIIResolver resolves a use case's effective PII handling for governed
 // MCP calls through the same path the LLM gateway uses: the organization
 // baseline and the use case's override, merged monotonically (a use case
 // can only tighten). The scanner is the use case's policy-aware one.
-func mcpPIIResolver(holder *agentcatalog.RuntimeHolder, org *gateway.OrganizationPolicy) mcp.PIIResolver {
+func mcpPIIResolver(holder *agentcatalog.RuntimeHolder, org gateway.OrganizationPolicy) mcp.PIIResolver {
 	return func(id requestctx.AgentIdentity) mcp.UseCasePII {
 		snap := holder.Current()
 		override, _ := runtimeAgentOverride(snap, id.TenantID, id.AgentID)
-		eff := gateway.ResolveEffectivePolicy(*org, gateway.ProviderConfig{}, override)
+		eff := gateway.ResolveEffectivePolicy(org, gateway.ProviderConfig{}, override)
 		out := mcp.UseCasePII{Request: eff.PIIAction, Response: eff.ResponsePIIAction}
 		if ra, ok := snap.Get(id.AgentID); ok {
 			out.Classifier = ra.Classifier

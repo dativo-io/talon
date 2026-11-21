@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"sort"
 
 	"github.com/dativo-io/talon/internal/fleetview"
 	"github.com/dativo-io/talon/internal/gateway"
@@ -95,7 +96,7 @@ func (s *Service) expectedRoles() (exp map[string]bool, configErrs map[string]st
 			exp[runtimestatus.RoleGateway] = true
 		}
 	}
-	if s.mcpSourcesConfigured() {
+	if len(s.mcpUseCases()) > 0 {
 		exp[runtimestatus.RoleMCP] = true
 	}
 	return exp, configErrs
@@ -111,27 +112,36 @@ func fileDigest(path string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// mcpSourcesConfigured reports whether an AI use case of this installation
-// declares an MCP action source: then the governed MCP endpoint is expected
-// to run.
-func (s *Service) mcpSourcesConfigured() bool {
+// mcpUseCases lists the AI use cases of this installation that declare an
+// MCP action source: when there is one, the governed MCP endpoint is
+// expected to run, and each one's activation is proved.
+func (s *Service) mcpUseCases() []mcpUseCase {
 	src := s.cfg.ConfigSources
 	if src.AgentsDir == "" && src.DefaultPolicy == "" {
-		return false
+		return nil
 	}
 	scan, err := fleetview.Scan(context.Background(), src.AgentsDir, src.DefaultPolicy)
 	if err != nil || scan == nil {
-		return false
+		return nil
 	}
+	var out []mcpUseCase
 	for _, a := range scan.Agents {
 		if a.Policy == nil || a.Policy.Actions == nil {
 			continue
 		}
 		for _, srcCfg := range a.Policy.Actions.Sources {
 			if srcCfg.Type == "mcp" {
-				return true
+				out = append(out, mcpUseCase{Name: a.Name, Tenant: a.TenantID, Digest: a.PolicyDigest})
+				break
 			}
 		}
 	}
-	return false
+	sort.Slice(out, func(i, j int) bool { return out[i].Tenant+"/"+out[i].Name < out[j].Tenant+"/"+out[j].Name })
+	return out
+}
+
+// mcpUseCase is an AI use case that declares an MCP action source, with the
+// digest of its agent file as the console reads it now.
+type mcpUseCase struct {
+	Name, Tenant, Digest string
 }
