@@ -255,11 +255,11 @@ func (s *Service) prepareEstablish(req EstablishRequest) (*establishPlan, error)
 	if !ok {
 		return nil, newErr(CodeActionNotFound, "action is not in this AI use case's trusted catalog")
 	}
-	if def.Destination.Type != DestinationTypeHTTP {
-		// Fail closed before any binding: an mcp-sourced definition is
-		// catalogued and inspectable, but no executor for it exists on
-		// this adapter until #431 routes MCP tools/call through here.
-		return nil, newErr(CodeExecutionUnsupported, "this adapter cannot execute an action sourced from an MCP source (destination type "+def.Destination.Type+"); MCP execution convergence is not shipped")
+	if !s.executes(def.Destination.Type) {
+		// Fail closed before any binding: a definition is catalogued and
+		// inspectable, but nothing is bound for a destination no wired
+		// dispatcher executes.
+		return nil, newErr(CodeExecutionUnsupported, "no dispatcher for destination type "+def.Destination.Type+" is configured on this installation; nothing was bound")
 	}
 	args := req.Arguments
 	if len(args) == 0 {
@@ -648,6 +648,9 @@ func (s *Service) closeApproval(ctx context.Context, tx *sql.Tx, w *evidence.TxW
 type ExecuteResult struct {
 	Operation *Projection
 	Attempt   *AttemptProjection
+	// Result is the observed answer of this dispatch for the adapter to
+	// relay (an MCP tools/call result). Transient: never persisted.
+	Result json.RawMessage
 }
 
 // Execute is the runtime/controller resumption:
@@ -681,6 +684,12 @@ func (s *Service) Execute(ctx context.Context, operationID string) (*ExecuteResu
 	if s.hookAfterClaim != nil {
 		s.hookAfterClaim()
 	}
+	// The claim is committed: from here the attempt must reach a recorded
+	// outcome whatever the caller does. A caller that disconnects (an HTTP
+	// client, an MCP client) must not cancel the arm, the dispatch or the
+	// completion; otherwise the operation stays `executing` until restart
+	// recovery. The dispatcher's own timeout still bounds the dispatch.
+	ctx = context.WithoutCancel(ctx)
 	if err := s.armAttempt(ctx, op, at); err != nil {
 		// The marker did not commit: nothing was sent. The attempt stays
 		// `started`/unarmed for recovery (→ failed/not_dispatched).
@@ -689,7 +698,7 @@ func (s *Service) Execute(ctx context.Context, operationID string) (*ExecuteResu
 	if s.hookAfterArm != nil {
 		s.hookAfterArm()
 	}
-	outcome := s.dispatcher.Dispatch(ctx, DispatchRequest{Definition: def, Payload: payload, OperationRef: op.Ref, AttemptID: at.ID, IdempotencyKey: at.IdempotencyKey})
+	outcome := s.dispatcher.Dispatch(ctx, DispatchRequest{Definition: def, Payload: payload, OperationRef: op.Ref, AttemptID: at.ID, IdempotencyKey: at.IdempotencyKey, TenantID: s.TenantID, AgentID: s.AgentID})
 	if s.hookBeforeComplete != nil {
 		s.hookBeforeComplete(outcome)
 	}
@@ -922,7 +931,7 @@ func (s *Service) complete(ctx context.Context, op *Operation, at *Attempt, outc
 		if err != nil {
 			return err
 		}
-		out = &ExecuteResult{Operation: proj, Attempt: proj.LatestAttempt}
+		out = &ExecuteResult{Operation: proj, Attempt: proj.LatestAttempt, Result: outcome.Result}
 		return nil
 	})
 	if err != nil {
@@ -1090,4 +1099,14 @@ func attachWorkloadFacts(ctx context.Context, op *Operation, rec *evidence.Evide
 		DecisionAuthority: evidence.BoundaryTalon, Provenance: evidence.ProvenanceTalonEnforced,
 		Runtime: &evidence.ExternalRuntimeRef{Type: f.Runtime, ID: f.RuntimeIssuer, Reference: f.SandboxRef, RequestID: f.RequestID},
 	}
+}
+
+// executes reports whether the wired dispatcher executes a destination
+// type. A dispatcher that cannot say executes http only (the contract
+// before #431).
+func (s *Service) executes(destinationType string) bool {
+	if ds, ok := s.dispatcher.(destinationSupporter); ok {
+		return ds.Supports(destinationType)
+	}
+	return destinationType == DestinationTypeHTTP
 }

@@ -944,6 +944,12 @@ type ActionDefinitionConfig struct {
 	// definition. Forbidden for discovered definitions (their destination
 	// is the source).
 	Destination ActionDestinationConfig `yaml:"destination,omitempty" json:"destination,omitempty"`
+	// ReadOnly declares that the action has no business side effect (#431).
+	// Over MCP an ALLOWed read-only call executes in one tools/call; every
+	// other action is prepared first and executed by a second call. Policy
+	// still decides: a read-only action can be denied or need approval. A
+	// source's readOnlyHint never sets this.
+	ReadOnly bool `yaml:"read_only,omitempty" json:"read_only,omitempty"`
 }
 
 // ActionReviewConfig is the reviewer projection definition (#427/#433).

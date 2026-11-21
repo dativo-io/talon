@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -330,22 +329,7 @@ func policyReasonTokens(reasons []string) []string {
 // the numeric code and its JSON-RPC category. The vendor's message and data
 // are never stored (they are vendor-authored text of arbitrary content).
 func vendorErrorToken(prefix string, code int) string {
-	category := "vendor_defined"
-	switch {
-	case code == -32700:
-		category = "parse_error"
-	case code == -32600:
-		category = "invalid_request"
-	case code == -32601:
-		category = "method_not_found"
-	case code == -32602:
-		category = "invalid_params"
-	case code == -32603:
-		category = "internal_error"
-	case code >= -32099 && code <= -32000:
-		category = "server_error"
-	}
-	return fmt.Sprintf("%s: code=%d category=%s", prefix, code, category)
+	return wire.RPCErrorToken(prefix, code)
 }
 
 // upstreamFailureToken classifies a transport or decoding failure into a

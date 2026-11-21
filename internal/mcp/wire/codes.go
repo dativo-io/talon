@@ -14,6 +14,8 @@
 // server/discover, server/tools, server/utilities/caching, basic/patterns/mrtr).
 package wire
 
+import "fmt"
+
 // ProtocolVersion is the only protocol revision this surface speaks. There
 // is no negotiation, no fallback and no defaulting of an absent version.
 const ProtocolVersion = "2026-07-28"
@@ -114,3 +116,30 @@ const (
 	// -32602, no governance object, no evidence.
 	ReasonParamsInvalid = "params_invalid"
 )
+
+// RPCErrorCategory is the JSON-RPC category of an error code a vendor
+// answered with: the only classification Talon keeps of a vendor error
+// (its message and data are vendor-authored text and never stored).
+func RPCErrorCategory(code int) string {
+	switch {
+	case code == -32700:
+		return "parse_error"
+	case code == -32600:
+		return "invalid_request"
+	case code == -32601:
+		return "method_not_found"
+	case code == -32602:
+		return "invalid_params"
+	case code == -32603:
+		return "internal_error"
+	case code >= -32099 && code <= -32000:
+		return "server_error"
+	}
+	return "vendor_defined"
+}
+
+// RPCErrorToken renders a vendor JSON-RPC error as the structured token a
+// signed record keeps: "<prefix>: code=<n> category=<category>".
+func RPCErrorToken(prefix string, code int) string {
+	return fmt.Sprintf("%s: code=%d category=%s", prefix, code, RPCErrorCategory(code))
+}

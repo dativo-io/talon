@@ -118,6 +118,12 @@ type Definition struct {
 	DestinationID    string
 	ExecutionProfile string
 	BindingProfile   string
+	// ReadOnly is the trusted Talon overlay (`read_only: true`) saying the
+	// action has no business side effect. The MCP adapter then executes an
+	// ALLOWed call in one tools/call instead of preparing it first. It is
+	// authority, so it is bound into DefinitionDigest; a source's
+	// readOnlyHint never sets it.
+	ReadOnly bool
 	// DefinitionDigest covers everything a reviewer or a claim relies on:
 	// canonical name, source identity and configuration, upstream name,
 	// schema, projection, destination incl. success contract, profiles. A
@@ -250,6 +256,9 @@ func (c *Catalog) compileDeclaredAndPlanDiscovered(cfg *policy.ActionsConfig) ([
 		if dc.Source == "" {
 			if dc.UpstreamName != "" {
 				return nil, fmt.Errorf("actions.definitions.%s: upstream_name requires source", name)
+			}
+			if dc.ReadOnly {
+				return nil, fmt.Errorf("actions.definitions.%s: read_only applies to an MCP-sourced definition (with source); an http destination is always prepared and claimed explicitly", name)
 			}
 			def, err := compileDefinition(name, dc)
 			if err != nil {
@@ -428,8 +437,9 @@ func compileDiscoveredDefinition(name string, cfg policy.ActionDefinitionConfig,
 		Description: description,
 		Source: Source{
 			Type: SourceTypeMCP, ID: snap.ID, URL: src.URL, ConfigDigest: snap.ConfigDigest,
-			Generation: snap.Generation, ServerInfo: snap.ServerInfo,
+			Generation: snap.Generation, ServerInfo: snap.ServerInfo, Auth: cloneUpstreamAuth(src.Auth),
 		},
+		ReadOnly:         cfg.ReadOnly,
 		UpstreamName:     upstream,
 		Schema:           canonSchema,
 		SchemaDigest:     Digest(canonSchema),
@@ -583,12 +593,21 @@ func definitionIdentity(def *Definition) string {
 	for i, c := range def.Destination.SuccessStatusCodes {
 		successStr[i] = fmt.Sprint(c)
 	}
-	return Digest([]byte(strings.Join([]string{
+	lines := []string{
 		"name=" + def.Name, "source=" + def.Source.Type + ":" + def.Source.ID, "source_config=" + def.Source.ConfigDigest,
 		"upstream=" + def.UpstreamName, "schema=" + def.SchemaDigest, "projection=" + def.ProjectionDigest,
 		"destination=" + def.DestinationID, "success=" + strings.Join(successStr, ","),
 		"profile=" + def.ExecutionProfile, "binding=" + def.BindingProfile,
-	}, "\n")))
+	}
+	// Appended only where they apply, so the identity of every http
+	// definition (and of an approval bound to it) is unchanged by #431.
+	if def.Destination.Type == DestinationTypeMCP {
+		lines = append(lines, "success_contract="+MCPSuccessContract)
+	}
+	if def.ReadOnly {
+		lines = append(lines, "read_only=true")
+	}
+	return Digest([]byte(strings.Join(lines, "\n")))
 }
 
 // schemaDialect2020 is the only dialect a governed action may declare.
@@ -806,4 +825,21 @@ func (d *Definition) ReviewProjection(canonical []byte) map[string]json.RawMessa
 		}
 	}
 	return out
+}
+
+// MCPSuccessContract names the outcome contract of an mcp destination: only
+// a JSON-RPC result with resultType "complete" and no tool error is an
+// observed success (see MCPDispatcher).
+const MCPSuccessContract = "mcp/tools-call-complete-not-error/v1"
+
+func cloneUpstreamAuth(a *policy.UpstreamAuthConfig) *policy.UpstreamAuthConfig {
+	if a == nil {
+		return nil
+	}
+	c := *a
+	if a.Scheme != nil {
+		s := *a.Scheme
+		c.Scheme = &s
+	}
+	return &c
 }
