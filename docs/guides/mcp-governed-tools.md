@@ -52,6 +52,15 @@ actions:
 
 `tools/list` returns the use case's governed tools under their canonical names, plus **`talon_execute_operation`**. A forbidden tool is not listed; listing authorizes nothing.
 
+No Talon SDK is needed: the official MCP Go SDK client connects unmodified with the key as its `Authorization` header ([runnable example](../../examples/mcp-governed/)), and Claude Code 2.1.329 connects and lists the tools over 2026-07-28:
+
+```bash
+claude mcp add --transport http --scope user talon http://127.0.0.1:8080/mcp --header "Authorization: Bearer <use case key>"
+claude mcp list        # talon: … (HTTP) - ✔ Connected
+```
+
+(A Claude Code tool call needs a model turn; Talon's own verification runs no paid model, so that step is yours to try.)
+
 ## 3. What a `tools/call` does
 
 | Tool | First call | Then |
@@ -126,7 +135,8 @@ Behaviour that changes: a consequential tool is prepared and then executed by `t
 ## Verify
 
 ```bash
+./examples/mcp-governed/run.sh                # the whole journey with a synthetic CRM and the standard SDK client
 go test ./internal/action/ -run 'TestMCP'
 go test ./internal/mcp/
-make test-mcp-smoke test-mcp-governance-smoke
+make test-mcp-smoke test-mcp-governance-smoke  # includes TestE2E_MCP_StandardSDKClient and the example
 ```

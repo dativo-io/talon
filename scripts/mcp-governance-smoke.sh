@@ -15,11 +15,20 @@
 #     the vendor's text never relayed;
 #   - every operation's signed lifecycle verifies (`talon audit verify
 #     --operation`).
-# Coverage boundary: PII, recovery hold and evidence-commit faults are proven
-# in-process (internal/mcp TestGoverned_*, internal/action TestMCPAction_*).
+# Also: the official Go SDK client, unmodified, through the same flows plus
+# two identical prepared operations, an expired approval and the recovery
+# hold after a real backup restore (TestE2E_MCP_StandardSDKClient); the
+# company PII baseline in a native (MCP-only) serve across a hot reload
+# (TestE2E_MCP_OrganizationPIIBaseline_NativeServe); and the runnable
+# adoption example examples/mcp-governed/run.sh against the same binary.
+# Coverage boundary: PII redaction details and evidence-commit faults are
+# proven in-process (internal/mcp TestGoverned_*, internal/action
+# TestMCPAction_*).
 #
 # Independent of make test-smoke (no provider key, no Docker); also run as
 # smoke section 37 and as a named PR CI step.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-exec go test -tags=e2e ./tests/e2e -run 'TestE2E_MCP_GovernanceContract' -count=1 -v "$@"
+go test -tags=e2e ./tests/e2e -run 'TestE2E_MCP_GovernanceContract|TestE2E_MCP_StandardSDKClient|TestE2E_MCP_OrganizationPIIBaseline_NativeServe' -count=1 -v "$@"
+# The adoption example uses the binary under test when one is given.
+TALON_BIN="${TALON_E2E_BINARY:-}" bash examples/mcp-governed/run.sh

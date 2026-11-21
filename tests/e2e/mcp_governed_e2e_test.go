@@ -153,6 +153,16 @@ type mgFixture struct {
 	mcp     *mcpClient
 	gw      *agClient
 	leadKey string
+	port    int
+	env     map[string]string
+	stop    func()
+}
+
+// restart stops the serve and starts it again on the same port.
+func (f *mgFixture) restart(t *testing.T) {
+	t.Helper()
+	f.stop()
+	f.stop = startServeWithEnv(t, f.dir, f.port, f.env)
 }
 
 func startGovernedMCP(t *testing.T) *mgFixture {
@@ -164,6 +174,7 @@ func startGovernedMCP(t *testing.T) *mgFixture {
 type mgOpts struct {
 	env      map[string]string
 	policies string // appended under the agent file's policies:
+	expiry   string // approval lifetime (default 30m)
 }
 
 func mgAgentYAML(srcURL, policiesExtra, extraDefinitions string) string {
@@ -219,6 +230,9 @@ func startGovernedMCPWith(t *testing.T, o mgOpts) *mgFixture {
 	}
 	agentPath := filepath.Join(f.dir, "agent.talon.yaml")
 	yaml := mgAgentYAML(f.src.srv.URL, o.policies, "")
+	if o.expiry != "" {
+		yaml = strings.Replace(yaml, "expires_after: 30m", "expires_after: "+o.expiry, 1)
+	}
 	if err := os.WriteFile(agentPath, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -235,8 +249,9 @@ func startGovernedMCPWith(t *testing.T, o mgOpts) *mgFixture {
 	for k, v := range o.env {
 		env[k] = v
 	}
-	stop := startServeWithEnv(t, f.dir, port, env)
-	t.Cleanup(stop)
+	f.port, f.env = port, env
+	f.stop = startServeWithEnv(t, f.dir, port, env)
+	t.Cleanup(func() { f.stop() })
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	f.mcp = &mcpClient{t: t, base: base, key: mgAgentKey}
 	f.gw = &agClient{t: t, base: base}

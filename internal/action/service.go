@@ -886,6 +886,19 @@ func (s *Service) armAttempt(ctx context.Context, op *Operation, at *Attempt) er
 	})
 }
 
+// unknownReason is the signed reason of an attempt that ended unknown, in
+// the vocabulary of its destination type. The outcome code is Talon's typed
+// classification, never source text.
+func (s *Service) unknownReason(op *Operation, outcome Outcome) string {
+	if !outcome.ResponseObserved {
+		return "the request may or did reach the destination and no trustworthy outcome exists; automatic retry is blocked"
+	}
+	if def, ok := s.Catalog.Lookup(op.Action); ok && def.Destination.Type == DestinationTypeMCP {
+		return fmt.Sprintf("the MCP source answered, but not with a valid complete result without a tool error (%s); the business effect may have happened; automatic retry is blocked", outcome.Code)
+	}
+	return fmt.Sprintf("the destination answered HTTP %d, which the trusted success contract does not declare as success; the business effect may have happened; automatic retry is blocked", outcome.HTTPStatus)
+}
+
 func (s *Service) complete(ctx context.Context, op *Operation, at *Attempt, outcome Outcome) (*ExecuteResult, error) {
 	var out *ExecuteResult
 	err := s.repo.withTx(ctx, s.evidence, func(tx *sql.Tx, w *evidence.TxWriter) error {
@@ -907,15 +920,7 @@ func (s *Service) complete(ctx context.Context, op *Operation, at *Attempt, outc
 		case AttemptUnknown:
 			op.Status, op.TerminalAt, terminal = OpUnknown, utcPtr(now), true
 			code, allowed = "ACTION_ATTEMPT_UNKNOWN", false
-			reason = "the request may or did reach the destination and no trustworthy outcome exists; automatic retry is blocked"
-			if outcome.ResponseObserved {
-				reason = fmt.Sprintf("the destination answered HTTP %d, which the trusted success contract does not declare as success; the business effect may have happened; automatic retry is blocked", outcome.HTTPStatus)
-				if def, ok := s.Catalog.Lookup(op.Action); ok && def.Destination.Type == DestinationTypeMCP {
-					// The outcome code is Talon's typed classification, never
-					// source text.
-					reason = fmt.Sprintf("the MCP source answered, but not with a valid complete result without a tool error (%s); the business effect may have happened; automatic retry is blocked", outcome.Code)
-				}
-			}
+			reason = s.unknownReason(op, outcome)
 		default:
 			op.Status = OpFailed
 			code, allowed = "ACTION_ATTEMPT_FAILED", false

@@ -1,12 +1,18 @@
 # A governed MCP use case (#431): the CRM's MCP server is a trusted action
-# source; an MCP client (Claude Code, an agent framework) connects to Talon's
-# POST /mcp with this use case's key. Every tools/call is an Action Gateway
-# operation: policy, approval, at most one dispatch, signed evidence.
+# source; an MCP client (Claude Code, an agent framework, the example's
+# standard SDK client) connects to Talon's POST /mcp with this use case's
+# key. Every tools/call is an Action Gateway operation: policy, approval, at
+# most one dispatch, signed evidence.
+#
+# Runnable as is with the example's synthetic CRM (crm-mcp-server/, on
+# 127.0.0.1:9180): ./run.sh does every step below with local random keys.
+# For your own MCP server, change the source url (https, or http on
+# loopback only) and the definitions to its tools.
 #
 #   talon secrets set support-assistant-talon-key "$(openssl rand -hex 24)"
 #   talon secrets set crm-mcp-token "<the CRM MCP server's token>" \
 #     --tenant default --agent support-assistant
-#   talon serve            # POST /mcp on :8080
+#   talon serve --host 127.0.0.1 --port 8080   # POST /mcp
 agent:
   name: support-assistant
   version: "1.0.0"
@@ -22,7 +28,7 @@ actions:
   sources:
     crm:
       type: mcp
-      url: "https://crm.example.com/mcp"   # https, or http on loopback only
+      url: "http://127.0.0.1:9180/mcp"      # the synthetic CRM; https, or http on loopback only
       auth:
         secret_name: crm-mcp-token          # vault entry, read per attempt
   definitions:

@@ -320,8 +320,8 @@ func TestBuildSessionSummary_GovernedActionsAreNeverRelabelledAsDenials(t *testi
 	lc := func(sec int, allowed bool, reason string, al ActionLifecycle) *Evidence {
 		return &Evidence{
 			SessionID: "pa-1", TenantID: "default", AgentID: "hr-analytics-assistant", Timestamp: ts(sec),
-			InvocationType: InvocationTypeActionLifecycle,
-			PolicyDecision: PolicyDecision{Allowed: allowed, Action: al.Event, Reasons: []string{reason}},
+			InvocationType:  InvocationTypeActionLifecycle,
+			PolicyDecision:  PolicyDecision{Allowed: allowed, Action: al.Event, Reasons: []string{reason}},
 			ActionLifecycle: &al,
 		}
 	}

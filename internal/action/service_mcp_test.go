@@ -176,6 +176,37 @@ func TestMCPAction_UnknownBlocksEveryRetry(t *testing.T) {
 	assert.NotContains(t, last.PolicyDecision.Reasons[0], "ledger timeout", "never source text")
 }
 
+// A failed evidence commit before the effect dispatches nothing: the
+// attempt's signed record and the claim share one transaction, so when the
+// record cannot be written (here the store rejects it) the claim rolls back,
+// the MCP source receives nothing, and the unchanged operation executes
+// exactly once after the store recovers. Counted at the source.
+func TestMCPAction_EvidenceCommitFailureBeforeDispatchSendsNothing(t *testing.T) {
+	h, src := newMCPHarness(t, mcpOK, mcpHarnessOpts{})
+	h.establish(t, "op-mcp-ev", "create_refund_request", mcpRefundArgs)
+	_, err := h.store.DB().ExecContext(context.Background(), `CREATE TRIGGER fail_attempt_record BEFORE INSERT ON evidence
+		WHEN NEW.evidence_json LIKE '%"event":"attempt_claimed"%'
+		BEGIN SELECT RAISE(ABORT, 'evidence store unavailable'); END`)
+	require.NoError(t, err)
+
+	_, err = h.svc.Execute(context.Background(), "op-mcp-ev")
+	require.Error(t, err)
+	assert.Equal(t, CodeStoreUnavailable, CodeOf(err))
+	assert.Zero(t, src.calls.Load(), "no signed attempt record, no dispatch")
+	op, err := h.svc.Get(context.Background(), "op-mcp-ev")
+	require.NoError(t, err)
+	assert.Equal(t, OpAuthorized, op.Status, "the claim rolled back with its record")
+	assert.Nil(t, op.LatestAttempt)
+
+	_, err = h.store.DB().ExecContext(context.Background(), `DROP TRIGGER fail_attempt_record`)
+	require.NoError(t, err)
+	out, err := h.svc.Execute(context.Background(), "op-mcp-ev")
+	require.NoError(t, err)
+	assert.Equal(t, OpSucceeded, out.Operation.Status)
+	assert.EqualValues(t, 1, src.calls.Load(), "the recovered store executes the unchanged operation once")
+	assert.Equal(t, LifecycleValid, h.verify(t, "op-mcp-ev").Verdict)
+}
+
 // A structurally malformed result after dispatch (here a string isError: a
 // lenient reader would take "false" for success) is UNKNOWN, relays nothing
 // and is never re-sent.
