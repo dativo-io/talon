@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -26,6 +27,10 @@ type DispatchRequest struct {
 	OperationRef   string
 	AttemptID      string
 	IdempotencyKey string
+	// TenantID and AgentID are the AI use case the attempt belongs to: the
+	// ACL identity a destination credential is read under.
+	TenantID string
+	AgentID  string
 }
 
 // Outcome is what Talon can truthfully say after one dispatch (#458 B3/B4).
@@ -55,6 +60,11 @@ type Outcome struct {
 	HTTPStatus       int
 	Code             string
 	Ref              string // sha256 of the response body when observed
+	// Result is the validated, normalized answer of a SUCCEEDED attempt that
+	// an adapter may relay to its caller (the MCP tools/call result).
+	// Transient: never persisted or signed (only Ref, the digest of what the
+	// source answered, is), and absent for any other outcome.
+	Result json.RawMessage
 }
 
 // HTTPDispatcher forwards the canonical payload to the definition's

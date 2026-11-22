@@ -159,11 +159,11 @@ func renderAgentsOverview(w io.Writer, rows []fleet.AgentRow, issues []agentcata
 // buildUseCaseReport builds the effective report of one use case from the
 // local files, stores and runtime records: the projection `--effective`
 // prints and the console shows.
-func buildUseCaseReport(ctx context.Context, cfg *config.Config, name, tenant, proxyConfig string) (*effective.Report, error) {
+func buildUseCaseReport(ctx context.Context, cfg *config.Config, name, tenant string) (*effective.Report, error) {
 	in := effective.Inputs{
 		AgentsDir: cfg.AgentsDir, DefaultPolicy: cfg.DefaultPolicy,
-		GatewayConfig: offlineGatewayConfigPath(), ProxyConfig: strings.TrimSpace(proxyConfig),
-		Name: name, Tenant: tenant, Now: time.Now().UTC(),
+		GatewayConfig: offlineGatewayConfigPath(),
+		Name:          name, Tenant: tenant, Now: time.Now().UTC(),
 		// Vault METADATA only (read-only, no key): the version record of the
 		// use case's credential.
 		SecretsDB: cfg.SecretsDBPath(),

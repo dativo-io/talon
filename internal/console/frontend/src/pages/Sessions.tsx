@@ -119,7 +119,7 @@ export function Sessions() {
               <SourceFreshness a={d.observed_availability} />
             </div>
             <div className="card-body small muted">
-              Session ids that appear on evidence records with no session-store row, for example asserted by a client on the MCP proxy path. Talon does not track a lifecycle for them; nothing here is inferred.
+              Session ids that appear on evidence records with no session-store row, for example asserted by an MCP client on the governed MCP endpoint. Talon does not track a lifecycle for them; nothing here is inferred.
             </div>
             <AvailabilityNotice a={d.observed_availability} what="Observed sessions" />
             {isMeasurement(d.observed_availability) && (d.observed ?? []).length === 0 ? <EmptyState title="No evidence-only sessions in this scope" /> : null}

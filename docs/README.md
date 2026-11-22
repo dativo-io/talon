@@ -60,7 +60,7 @@ Choose the shortest path for your situation:
    - The big picture: [Talon as a control plane](explanation/control-plane.md) · architecture: [Control-plane boundaries](reference/control-plane-boundaries.md)
 3. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
    - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
-   - Third-party vendor: [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md), then [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md)
+   - Tools of an MCP server: [Governed MCP tools](guides/mcp-governed-tools.md)
 4. **"I need to prove what happened — to a customer, auditor, or my own board."**
    - Start: [Sample auditor pack](../examples/auditor-pack/README.md)
    - Learn the flow: [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) — init with EU policy packs to a downloaded RoPA in ~15 minutes
@@ -106,6 +106,7 @@ Choose the shortest path for your situation:
 | [Plan Review E2E test case](guides/plan-review-e2e-testcase.md) | Policy | Feature inventory (F1–F30) and phased testcase TC-PR-001–012 with pass criteria. |
 | [How to choose your integration path](guides/choosing-integration-path.md) | Integrate | Choose between model gateway, MCP, exact HTTP actions, native and OpenShell delegated boundaries. |
 | [Migrate to MCP 2026-07-28 and enforced policy](guides/mcp-2026-migration.md) | Integrate | Breaking protocol, config and governance error-contract migration checklist. |
+| [Governed MCP tools](guides/mcp-governed-tools.md) | Integrate | Declare an MCP server as a trusted action source; every `tools/call` on `POST /mcp` is an Action Gateway operation. Migration from the removed MCP proxy. |
 | [Add Talon to your existing app](guides/add-talon-to-existing-app.md) | Integrate | Register an AI use case, connect an existing SDK app, and verify effective policy and traffic. |
 | [Govern n8n refunds with human approval](guides/n8n-refund-approvals.md) | Actions | Import an n8n workflow, apply company and use-case argument rules, route allowed/approved actions through Talon and verify signed outcomes. |
 | [Operate AI use cases](guides/operate-ai-use-cases.md) | Operate | Inspect fleet state and next steps, investigate denials, replace credentials and stop a use case safely. |
@@ -120,7 +121,7 @@ Choose the shortest path for your situation:
 
 ### Reference (technical description)
 
-**Protocol and enforcement compatibility:** `/mcp` and `/mcp/proxy` implement **MCP `2026-07-28` only** (#447). No older protocol, `initialize` or protocol-level session is accepted. The HTTP Action Gateway already ships bound actions and approvals; MCP/native execution convergence (#431/#430), Tasks and external action execution are targets. Global shadow/log-only/passthrough policy postures were removed (#442): active policy is always enforced.
+**Protocol and enforcement compatibility:** the one governed MCP endpoint, `POST /mcp`, implements **MCP `2026-07-28` only** (#447). No older protocol, `initialize` or protocol-level session is accepted. The HTTP Action Gateway and governed MCP `tools/call` (#431) share one action spine; native execution convergence (#430), Tasks and external action execution are targets. Global shadow/log-only/passthrough policy postures were removed (#442): active policy is always enforced.
 
 | Doc | Description |
 |-----|-------------|
@@ -133,7 +134,7 @@ Choose the shortest path for your situation:
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Normative signed-record spec: fields, canonical serialization, HMAC-SHA256 signing, and the independent verification procedure. |
 | [Presidio compatibility matrix](reference/presidio-compatibility-matrix.md) | Scanner boundary contract: Presidio-shaped result ingress, canonical mapping, and byte-offset normalization rules. |
 | [Threat model](reference/threat-model.md) | STRIDE-style attack surface, trust boundaries, threats/mitigations, and key-management assumptions for the gateway path. |
-| [Governance control matrix](reference/governance-control-matrix.md) | Which controls run on each entry path (runner, gateway, MCP server/proxy, graph adapter), by-design limitations, and the parity contract that prevents posture drift. |
+| [Governance control matrix](reference/governance-control-matrix.md) | Which controls run on each entry path (runner, gateway, governed MCP endpoint, graph adapter), by-design limitations, and the parity contract that prevents posture drift. |
 | [Conformance suite & count](reference/conformance.md) | What counts as a conformance test for the evidence + policy paths, and how to reproduce the published count with `make conformance`. |
 | [Reproducible benchmarks](reference/benchmarks.md) | Gateway pipeline overhead, PII scan latency, and evidence write throughput (`make benchmarks`). |
 | [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs metrics). |
@@ -158,8 +159,6 @@ Choose the shortest path for your situation:
 | [Evidence store](explanation/evidence-store.md) | Evidence record structure, session_id, HMAC signing (TALON_SIGNING_KEY), progressive disclosure, storage, and export (CSV/JSON columns). |
 | [Roadmap & focus](../ROADMAP.md) | Shipped-vs-target status by pillar, the active MVP roadmap, and public anti-goals. |
 | [Persona guides](PERSONA_GUIDES.md) | Who uses Talon (DevOps, Compliance, CTO, SecOps, FinOps) and what they do. |
-| [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md) | Why vendor compliance matters; MCP proxy and patterns. |
-| [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md) | How the MCP proxy fits in; related LLM API gateway. |
 | [Memory governance](MEMORY_GOVERNANCE.md) | Governed agent memory, categories, and retention. |
 | [Agent planning](AGENT_PLANNING.md) | Execution plans and plan review gate. |
 | [Observability](OBSERVABILITY.md) | Logging, tracing, and metrics. |
@@ -217,7 +216,7 @@ Talon's evidence layer supports these control objectives; it is not a compliance
 |---------|-------------|
 | [Docker Compose demo](../examples/docker-compose/README.md) | Full demo stack with mock provider — no API key needed. |
 | [Gateway minimal](../examples/gateway-minimal/README.md) | Smallest working LLM gateway config. |
-| [MCP proxy minimal](../examples/mcp-proxy-minimal/README.md) | Smallest working MCP proxy config. |
+| [Governed MCP](../examples/mcp-governed/README.md) | One AI use case whose MCP server is a trusted action source, governed through `POST /mcp`. |
 | [Plan review](../examples/plan-review/README.md) | Human-in-the-loop demo (EU AI Act Art. 14). |
 | [Starter policies](../examples/policies/README.md) | Reference OPA/Rego policies for common governance scenarios (not auto-loaded; v2 surface). |
 | [Observability stack](../examples/observability/README.md) | Local OTel Collector + Prometheus + Grafana with pre-built Talon dashboard. |

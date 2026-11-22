@@ -97,7 +97,12 @@ type Operation struct {
 	// lifecycle record — a reviewer's decision, an expiry, a sweep — still
 	// names the sandbox, runtime reference and session that originated the
 	// operation. Empty for agent-key operations. Never a token.
-	OriginJSON        []byte
+	OriginJSON []byte
+	// AttributionJSON is the client-asserted attribution an adapter
+	// recorded when the operation was established (the MCP session and
+	// correlation ids, #431): untrusted metadata linked to the operation,
+	// never authority and never part of the digest. Empty when none.
+	AttributionJSON   []byte
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	TerminalAt        *time.Time

@@ -147,12 +147,10 @@ metadata: { owner: "demo-operator", tags: [synthetic] }
 	ss, err := talonsession.OpenReadOnly(dbPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ss.Close() })
-	proxyPath := filepath.Join(dir, "proxy.talon.yaml")
-	require.NoError(t, os.WriteFile(proxyPath, []byte("agent:\n  name: hr-mcp-proxy\n  type: mcp_proxy\nproxy:\n  upstream:\n    vendor: hr-backend\n    url: http://hr:9000/mcp\n  allowed_tools:\n    - name: hr_aggregate_sql\n  forbidden_tools: [hr_employee_export]\n"), 0o600))
 	fleetSrc := console.OfflineFleetSource(agentsDir, "", gwPath, "USD", ro, ss, nil)
 	svc, err := console.New(console.Config{
 		Evidence: ro, Sessions: ss, StorePath: dbPath, Currency: "USD", Fleet: fleetSrc, Budgets: console.FleetCapsBudgets{Fleet: fleetSrc}, Version: "test",
-		ConfigSources: console.ConfigSources{AgentsDir: agentsDir, GatewayConfig: gwPath, ProxyConfig: proxyPath},
+		ConfigSources: console.ConfigSources{AgentsDir: agentsDir, GatewayConfig: gwPath},
 		DataDir:       dir, InstallationFingerprint: runtimestatus.Fingerprint(sessTestSigningKey),
 	})
 	require.NoError(t, err)
@@ -173,7 +171,7 @@ func (f *parityFixture) cli(t *testing.T, args ...string) []byte {
 	auditLimit, auditOffset, auditReport, auditJSON = 20, 0, false, false
 	sessTenant, sessStatus, sessListJSON, sessListLimit, sessListObs = "default", "", false, 0, false
 	sessShowAgent = ""
-	agentsShowEffective, agentsShowProxyConfig = false, ""
+	agentsShowEffective, agentsShowProxyConfig = false, "" // a stale removed flag would refuse the command
 	buf := new(bytes.Buffer)
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
@@ -502,24 +500,23 @@ func TestConsoleParity_SessionCurrencyFlag(t *testing.T) {
 // TestConsoleParity_EffectivePolicy (#305): `talon agents show <name>
 // --effective --json` and /console/v1/use-cases/{name}/effective-policy print
 // the same report — current files, loaded proof (from the same runtime
-// record), effective rules with provenance, MCP tool decisions and the last
-// recorded decision.
+// record), effective rules with provenance, the action boundary and the
+// last recorded decision.
 func TestConsoleParity_EffectivePolicy(t *testing.T) {
 	f := newParityFixture(t)
-	proxyPath := filepath.Join(f.dir, "proxy.talon.yaml")
 
-	// A running process serving the gateway and the MCP proxy reports the
-	// current agent file's policy digest and the digests of the gateway and
-	// proxy configs it loaded, as talon serve does.
+	// A running gateway (which also serves governed MCP, #431) reports the
+	// current agent file's policy digest and the digest of the gateway
+	// config it loaded, as talon serve does.
 	var probe effective.Report
-	require.NoError(t, json.Unmarshal(f.cli(t, "agents", "show", "hr-analytics-assistant", "--effective", "--json", "--proxy-config", proxyPath), &probe))
+	require.NoError(t, json.Unmarshal(f.cli(t, "agents", "show", "hr-analytics-assistant", "--effective", "--json"), &probe))
 	rd := filepath.Join(f.dir, runtimestatus.DirName)
 	require.NoError(t, os.MkdirAll(rd, 0o750))
 	rec := runtimestatus.Record{
 		Schema: runtimestatus.SchemaVersion, InstanceID: "gw1", IntervalSeconds: 5,
-		Installation: runtimestatus.Installation{KeyFingerprint: runtimestatus.Fingerprint(sessTestSigningKey)}, Roles: []string{runtimestatus.RoleGateway, runtimestatus.RoleMCPProxy},
-		GatewayConfig: &runtimestatus.ConfigRef{Digest: probe.CurrentFiles.GatewayConfig.Digest}, ProxyConfig: &runtimestatus.ConfigRef{Digest: probe.CurrentFiles.ProxyConfig.Digest},
-		StartedAt: time.Now().UTC().Add(-time.Minute), WrittenAt: time.Now().UTC(), State: runtimestatus.StateRunning,
+		Installation: runtimestatus.Installation{KeyFingerprint: runtimestatus.Fingerprint(sessTestSigningKey)}, Roles: []string{runtimestatus.RoleGateway},
+		GatewayConfig: &runtimestatus.ConfigRef{Digest: probe.CurrentFiles.GatewayConfig.Digest},
+		StartedAt:     time.Now().UTC().Add(-time.Minute), WrittenAt: time.Now().UTC(), State: runtimestatus.StateRunning,
 		Catalog: &runtimestatus.Catalog{ActiveGeneration: "g", Agents: []runtimestatus.Agent{{Name: "hr-analytics-assistant", PolicyDigest: probe.CurrentFiles.PolicyDigest}}},
 	}
 	raw, err := json.Marshal(rec)
@@ -527,7 +524,7 @@ func TestConsoleParity_EffectivePolicy(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(rd, "gw1.json"), raw, 0o600))
 
 	var cli effective.Report
-	require.NoError(t, json.Unmarshal(f.cli(t, "agents", "show", "hr-analytics-assistant", "--effective", "--json", "--proxy-config", proxyPath), &cli))
+	require.NoError(t, json.Unmarshal(f.cli(t, "agents", "show", "hr-analytics-assistant", "--effective", "--json"), &cli))
 	var dto console.EffectivePolicyDTO
 	require.Equal(t, http.StatusOK, f.api(t, "/console/v1/use-cases/hr-analytics-assistant/effective-policy", &dto))
 	require.NotNil(t, dto.Report)
@@ -536,8 +533,6 @@ func TestConsoleParity_EffectivePolicy(t *testing.T) {
 	assert.Equal(t, cli, api, "CLI and console print one effective-policy report")
 	assert.Equal(t, runtimestatus.LoadedMatchesFile, api.Loaded.State)
 	assert.True(t, api.Effective.ProvenActive)
-	require.NotNil(t, api.MCPBoundary)
-	assert.True(t, api.MCPBoundary.ProvenActive)
 	assert.Equal(t, console.StateOK, dto.Availability.State)
 
 	assert.Equal(t, http.StatusNotFound, f.api(t, "/console/v1/use-cases/nope/effective-policy", nil), "unknown use case")

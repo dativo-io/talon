@@ -54,10 +54,10 @@ func TestVerification_AnEarlierKeyIsNeverReportedAsCurrent(t *testing.T) {
 		w1 := k.issue("key-A", t1)
 		gateway1 := process("gateway-1", w1.Add(time.Second), w1.Add(time.Second), true) // read key A when it started
 		w2 := k.replace("key-B", t1.Add(time.Hour))                                      // gateway-1 is not restarted
-		// Another Talon process of the installation, MCP proxy role only,
-		// starts after the replacement and keeps running.
-		mcp := process("mcp-1", w2.Add(time.Minute), w2.Add(time.Minute), true)
-		mcp.Roles = []string{runtimestatus.RoleMCPProxy}
+		// Another Talon process of the installation without the gateway role
+		// (a native serve) starts after the replacement and keeps running.
+		mcp := process("native-1", w2.Add(time.Minute), w2.Add(time.Minute), true)
+		mcp.Roles = []string{runtimestatus.RoleNative}
 		ts := w2.Add(10 * time.Minute)
 		k.request("req-with-key-A", ts) // the application still presents key A; gateway-1 accepts it
 
@@ -187,7 +187,7 @@ func TestVerification_NothingToDoNeedsAServingProcessAndTheCredentialFacts(t *te
 		k.request("req-1", w.Add(time.Minute))
 		first, err := Build(ctx, k.inputs())
 		require.NoError(t, err)
-		px := runningRecord("px", []string{runtimestatus.RoleMCPProxy}, first.CurrentFiles.PolicyDigest, "", first.CurrentFiles.ProxyConfig.Digest)
+		px := runningRecord("px", []string{runtimestatus.RoleNative}, first.CurrentFiles.PolicyDigest, "")
 		px.StartedAt = t1.Add(time.Hour)
 		r, err := Build(ctx, withRuntime(k.inputs(), px))
 		require.NoError(t, err)

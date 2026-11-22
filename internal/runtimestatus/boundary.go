@@ -43,15 +43,6 @@ func ProveGateway(v View, readable bool, name, tenant, agentDigest, gatewayConfi
 	})
 }
 
-// ProveProxy proves the MCP proxy's tool decisions: every running process
-// with the MCP proxy role must have loaded the proxy config whose current
-// digest is proxyConfigDigest.
-func ProveProxy(v View, readable bool, proxyConfigDigest string) Loaded {
-	return prove(v, readable, RoleMCPProxy, "MCP proxy", func(p *Process) (bool, string) {
-		return configMatches(p.ProxyConfig, proxyConfigDigest, "proxy config")
-	})
-}
-
 // ProveGatewayConfig proves the installation-level gateway configuration:
 // every running gateway loaded the gateway config whose current digest is
 // gatewayConfigDigest. Per-use-case proof (agent file digests) is
@@ -69,10 +60,10 @@ func ProveGatewayConfig(v View, readable bool, gatewayConfigDigest string) Loade
 // gateway config it read at start. So every running serve process (a process
 // that reports an agent catalog) must report the use case with agentDigest
 // AND the digest of the gateway config it loaded, equal to
-// gatewayConfigDigest. A process that serves the Action Gateway but does not
-// report which gateway config it read (a serve without --gateway reads the
-// company policy from the file without reporting its digest) leaves the proof
-// unknown: its company action policy cannot be compared, and is never assumed.
+// gatewayConfigDigest. Every serve of this release reports it, in native mode
+// too (#431); a process that serves the Action Gateway but does not report
+// which gateway config it read (an older release) leaves the proof unknown:
+// its company action policy cannot be compared, and is never assumed.
 func ProveActionPolicy(v View, readable bool, name, tenant, agentDigest, gatewayConfigDigest string) Loaded {
 	const label = "talon serve"
 	if !readable {
@@ -81,7 +72,17 @@ func ProveActionPolicy(v View, readable bool, name, tenant, agentDigest, gateway
 	var ids []string
 	for i := range v.Processes {
 		p := &v.Processes[i]
-		if p.Assessed != Running || p.Catalog == nil {
+		if p.Assessed != Running {
+			continue
+		}
+		if p.Catalog == nil {
+			// A process reporting the governed MCP role is a talon serve
+			// (#431): one that does not report its active generation is
+			// unverifiable, never "not running".
+			if hasRole(p.Roles, RoleMCP) {
+				ids = append(ids, p.InstanceID)
+				return Loaded{State: BoundaryUnknown, Reason: fmt.Sprintf("the running %s %s does not report its active generation, so which agent files it enforces cannot be compared", label, p.InstanceID), InstanceIDs: ids}
+			}
 			continue
 		}
 		ids = append(ids, p.InstanceID)
@@ -101,11 +102,8 @@ func ProveActionPolicy(v View, readable bool, name, tenant, agentDigest, gateway
 		if !found {
 			return fail(BoundaryDiffers, "does not have this use case in its active generation")
 		}
-		if p.GatewayConfig == nil || p.GatewayConfig.Digest == "" {
-			return fail(BoundaryUnknown, "serves the Action Gateway but does not report which gateway config it read, so its company action policy cannot be compared")
-		}
-		if ok, why := configMatches(p.GatewayConfig, gatewayConfigDigest, "gateway config"); !ok {
-			return fail(BoundaryDiffers, why+"; the company action policy is read at process start")
+		if state, why := companyConfigProof(p, gatewayConfigDigest); state != "" {
+			return fail(state, why)
 		}
 	}
 	if len(ids) == 0 {
@@ -117,6 +115,25 @@ func ProveActionPolicy(v View, readable bool, name, tenant, agentDigest, gateway
 // errUnreported marks a running process that did not report what it loaded:
 // nothing can be compared, so the proof is unknown rather than different.
 const errUnreported = "did not report the digest of the "
+
+// companyConfigProof compares the company config a serve process read at
+// start with the one on disk now: "" when they agree, else the boundary
+// state and why.
+func companyConfigProof(p *Process, current string) (state, why string) {
+	if p.GatewayConfig == nil || p.GatewayConfig.Digest == "" {
+		// A process that reports the governed MCP role (#431) records the
+		// company config whenever it read one: reporting none while none
+		// exists on disk proves "no company policy".
+		if p.GatewayConfig == nil && current == "" && hasRole(p.Roles, RoleMCP) {
+			return "", ""
+		}
+		return BoundaryUnknown, "serves the Action Gateway but does not report which gateway config it read, so its company action policy cannot be compared"
+	}
+	if ok, why := configMatches(p.GatewayConfig, current, "gateway config"); !ok {
+		return BoundaryDiffers, why + "; the company action policy is read at process start"
+	}
+	return "", ""
+}
 
 func configMatches(ref *ConfigRef, current, label string) (ok bool, why string) {
 	switch {

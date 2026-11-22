@@ -64,7 +64,7 @@ func loadedView(f fixture, t *testing.T) *runtimestatus.View {
 	first, err := Build(context.Background(), f.inputs())
 	require.NoError(t, err)
 	return &runtimestatus.View{Processes: []runtimestatus.Process{
-		runningRecord("gw1", []string{runtimestatus.RoleGateway}, first.CurrentFiles.PolicyDigest, first.CurrentFiles.GatewayConfig.Digest, ""),
+		runningRecord("gw1", []string{runtimestatus.RoleGateway}, first.CurrentFiles.PolicyDigest, first.CurrentFiles.GatewayConfig.Digest),
 	}}
 }
 
@@ -124,7 +124,7 @@ func TestVerification_OperatorAndOtherRecordsAreNotTraffic(t *testing.T) {
 	in.RuntimeReadable = true
 
 	// Running, but another version of the file: registered, not loaded.
-	in.Runtime = &runtimestatus.View{Processes: []runtimestatus.Process{runningRecord("gw1", []string{runtimestatus.RoleGateway}, "another-digest", "x", "")}}
+	in.Runtime = &runtimestatus.View{Processes: []runtimestatus.Process{runningRecord("gw1", []string{runtimestatus.RoleGateway}, "another-digest", "x")}}
 	r, err = Build(ctx, in)
 	require.NoError(t, err)
 	assert.Equal(t, ReadingNotLoaded, r.Verification.Reading.Code)

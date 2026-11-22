@@ -1,6 +1,6 @@
 # Governance Control Matrix
 
-Every request that passes through Talon enters through one of five entry
+Every request that passes through Talon enters through one of four entry
 paths. This matrix is the single source of truth for which governance
 controls run on each path, which limitations are **by design** (and why),
 and how parity across paths is enforced so the posture cannot silently
@@ -15,25 +15,26 @@ and reviewers assessing claims made in RoPA / Annex IV exports.
 |---|------|-------------------|-----------------|
 | 1 | **Agent runner** | `talon run`, cron triggers, webhooks | Full prompt, attachments, tool calls, response |
 | 2 | **LLM gateway** | `talon serve --gateway` (OpenAI-compatible HTTP proxy) | Full request/response bodies in transit |
-| 3 | **MCP server** | `talon serve` → `POST /mcp` (embedded tools) | Full tool arguments and results; tools execute in-process |
-| 4 | **MCP proxy** | `talon serve --proxy-config` (upstream MCP vendors) | Full tool arguments and results in transit |
-| 5 | **Graph adapter** | `POST /v1/graph/events` (LangGraph, LangChain, SDKs) | **Governance events only** — content never transits Talon |
+| 3 | **Governed MCP endpoint** | `talon serve` → `POST /mcp` with the use case's key; tools of an MCP server declared as the use case's action source ([guide](../guides/mcp-governed-tools.md)) | Full tool arguments and results in transit to and from the trusted source |
+| 4 | **Graph adapter** | `POST /v1/graph/events` (LangGraph, LangChain, SDKs) | **Governance events only** — content never transits Talon |
+
+Tools a client reaches without going through `POST /mcp` are not on any of these paths and are not governed.
 
 ## Control × path matrix
 
 Legend: ✅ enforced · ⚠️ limited by design (see notes) · — not applicable
 
-| Control | Agent runner | LLM gateway | MCP server | MCP proxy | Graph adapter |
-|---|---|---|---|---|---|
-| Policy evaluation (OPA) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| PII classification — input | ✅ prompt + attachments | ✅ request body | ✅ tool args | ✅ tool args | ⚠️ N/A (1) |
-| PII classification — output | ✅ response | ✅ response body | ✅ tool result | ✅ tool result | ⚠️ N/A (1) |
-| Data-flow evidence (`data_flow`) | ✅ every egress | ✅ every egress | ✅ every tools/call | ✅ every proxied call | ⚠️ orchestrator-reported (2) |
-| Destination region resolution | ✅ provider registry | ✅ provider registry | ✅ `LOCAL` (in-process) | ✅ declared upstream region, else `unknown` | ⚠️ always `unknown` (3) |
-| Cost tracking / budgets | ✅ | ✅ | — no LLM call | — no LLM call | ⚠️ self-reported cost (4) |
-| Signed evidence (HMAC) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Explanations on every record | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Blocked traffic also recorded | ✅ `blocked` disposition | ✅ | ✅ | ✅ | ✅ denied run/step records |
+| Control | Agent runner | LLM gateway | Governed MCP endpoint | Graph adapter |
+|---|---|---|---|---|
+| Policy evaluation (OPA) | ✅ | ✅ | ⚠️ Action Gateway policy (6) | ✅ |
+| PII classification — input | ✅ prompt + attachments | ✅ request body | ✅ tool args, before binding | ⚠️ N/A (1) |
+| PII classification — output | ✅ response | ✅ response body | ✅ tool result | ⚠️ N/A (1) |
+| Data-flow evidence (`data_flow`) | ✅ every egress | ✅ every egress | ⚠️ lifecycle evidence instead (7) | ⚠️ orchestrator-reported (2) |
+| Destination region resolution | ✅ provider registry | ✅ provider registry | ⚠️ not recorded (7) | ⚠️ always `unknown` (3) |
+| Cost tracking / budgets | ✅ | ✅ | — no LLM call | ⚠️ self-reported cost (4) |
+| Signed evidence (HMAC) | ✅ | ✅ | ✅ | ✅ |
+| Explanations on every record | ✅ | ✅ | ✅ | ✅ |
+| Blocked traffic also recorded | ✅ `blocked` disposition | ✅ | ✅ | ✅ denied run/step records |
 
 ### By-design notes
 
@@ -57,9 +58,19 @@ Legend: ✅ enforced · ⚠️ limited by design (see notes) · — not applicab
 4. **Graph adapter — self-reported cost.** Cost arrives in run events from
    the orchestrator. Talon signs what was reported; it cannot independently
    meter calls it does not proxy.
-5. **MCP server / proxy — no cost tracking.** Tool calls involve no LLM
+5. **Governed MCP endpoint — no cost tracking.** Tool calls involve no LLM
    spend on Talon's side; cost controls are exercised on the runner and
    gateway paths.
+6. **Governed MCP endpoint — action policy, not an OPA tool path.** Every
+   `tools/call` is an Action Gateway operation: the company action policy
+   and the use case's own rules, `capabilities.forbidden_tools`, approvals
+   and at most one dispatch, the same as on `/v1/action-operations`.
+7. **Governed MCP endpoint — lifecycle evidence.** A governed call is
+   recorded as signed `action_lifecycle` records of its operation
+   (`talon audit verify --operation <id>`); the trusted source's endpoint
+   is part of the action definition, and no region is recorded for it. A
+   `data_flow` section is written only on the endpoint's PII records
+   (arguments redacted or refused, results redacted or withheld).
 
 ## The parity contract
 

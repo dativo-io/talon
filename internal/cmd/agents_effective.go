@@ -22,8 +22,9 @@ var (
 )
 
 func init() {
-	agentsShowCmd.Flags().BoolVar(&agentsShowEffective, "effective", false, "Show the effective policy: current files, whether a running process loaded them, the compiled policy with rule provenance, the MCP proxy's tool decisions and the last recorded decision (#305)")
-	agentsShowCmd.Flags().StringVar(&agentsShowProxyConfig, "proxy-config", "", "MCP proxy config to include in --effective (the file talon serve --proxy-config uses)")
+	agentsShowCmd.Flags().BoolVar(&agentsShowEffective, "effective", false, "Show the effective policy: current files, whether a running process loaded them, the compiled policy with rule provenance, the action boundary (including governed MCP tools) and the last recorded decision (#305)")
+	agentsShowCmd.Flags().StringVar(&agentsShowProxyConfig, "proxy-config", "", "removed (#431)")
+	_ = agentsShowCmd.Flags().MarkHidden("proxy-config")
 }
 
 // runAgentShowEffective prints effective.Build for one use case: the same
@@ -31,7 +32,10 @@ func init() {
 // It reads the files, the installation's runtime records and the evidence
 // store read-only; it never contacts a server.
 func runAgentShowEffective(ctx context.Context, cmd *cobra.Command, cfg *config.Config, name string) error {
-	r, err := buildUseCaseReport(ctx, cfg, name, agentsQueueTenant, agentsShowProxyConfig)
+	if agentsShowProxyConfig != "" {
+		return errProxyConfigRemoved("talon agents show --proxy-config")
+	}
+	r, err := buildUseCaseReport(ctx, cfg, name, agentsQueueTenant)
 	if err != nil {
 		return err
 	}
@@ -56,30 +60,12 @@ func renderEffective(w io.Writer, r *effective.Report) {
 	fmt.Fprintln(w, "1. Current files")
 	fmt.Fprintf(w, "   agent file:     %s (policy digest %s)\n", r.CurrentFiles.AgentFile, short(r.CurrentFiles.PolicyDigest))
 	printFile(w, "gateway config", r.CurrentFiles.GatewayConfig)
-	printFile(w, "MCP proxy config", r.CurrentFiles.ProxyConfig)
 	fmt.Fprintln(w, "\n2. Loaded by a running process")
 	fmt.Fprintf(w, "   %s — %s\n", r.Loaded.State, r.Loaded.Reason)
 	fmt.Fprintln(w, "\n3. Effective policy")
 	fmt.Fprintf(w, "   gateway boundary: %s — %s\n", r.Effective.Proof.State, r.Effective.Proof.Reason)
 	fmt.Fprintf(w, "   basis: %s\n", r.Effective.Basis)
 	renderEffectiveRules(w, r, "   ")
-	if b := r.MCPBoundary; b != nil {
-		fmt.Fprintf(w, "\n   MCP proxy %s (%s)\n", b.Proxy, b.Scope)
-		fmt.Fprintf(w, "   MCP boundary: %s — %s\n", b.Proof.State, b.Proof.Reason)
-		if b.Error != "" {
-			fmt.Fprintf(w, "   unavailable: %s\n", b.Error)
-		}
-		for _, d := range b.Tools {
-			verdict := "allowed"
-			if !d.Allowed {
-				verdict = "denied before dispatch at " + d.Stage
-				if d.Matched != "" {
-					verdict += " (" + d.Matched + ")"
-				}
-			}
-			fmt.Fprintf(w, "   tool %-24s %s\n", d.Tool, verdict)
-		}
-	}
 	renderActionBoundary(w, r.ActionBoundary)
 	fmt.Fprintln(w, "\n4. Last recorded decision (the newest request decision recorded for this use case at any boundary)")
 	if d := r.LastDecision; d != nil {

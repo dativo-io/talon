@@ -22,7 +22,7 @@ export interface ProofLists {
 }
 
 const OUTSIDE = [
-  "Actions the application took without going through Talon's LLM gateway or MCP proxy (local commands, file edits, direct API calls).",
+  "Actions the application took without going through Talon's LLM gateway, MCP endpoint or Action Gateway (local commands, file edits, direct API calls).",
   "Whether a business operation outside Talon completed (for example a refund executed or a reply delivered).",
   "Application-internal steps Talon did not intercept.",
 ];

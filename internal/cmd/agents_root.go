@@ -156,7 +156,7 @@ func showUseCase(ctx context.Context, cmd *cobra.Command, cfg *config.Config, na
 		// not hold (whether a running process loaded the use case, the
 		// newest request, the next step), all from its own files, evidence
 		// and runtime records.
-		report, rerr := buildUseCaseReport(ctx, cfg, name, agentsQueueTenant, agentsShowProxyConfig)
+		report, rerr := buildUseCaseReport(ctx, cfg, name, agentsQueueTenant)
 		renderUseCase(cmd.OutOrStdout(), &rows[i], report, rerr, now)
 		return nil
 	}

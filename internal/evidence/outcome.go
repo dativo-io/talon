@@ -125,6 +125,15 @@ func OutcomeOf(ev *Evidence) Outcome {
 
 func actionOutcome(ev *Evidence, out *Outcome) {
 	al := ev.ActionLifecycle
+	if al != nil && out.Tool == "" {
+		out.Tool = al.Action
+	}
+	if al != nil && al.ResultProvenance != "" {
+		// An attempt result exists only for an authorized operation: the
+		// decision was allow, whatever the attempt's outcome. An unknown or
+		// failed attempt is never a policy denial (#431).
+		out.Decision = "allowed"
+	}
 	switch {
 	case al == nil:
 		out.Basis = "action_lifecycle record without lifecycle facts"

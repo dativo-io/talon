@@ -1,12 +1,15 @@
 package console
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
+	"sort"
 
+	"github.com/dativo-io/talon/internal/fleetview"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/runtimestatus"
 )
@@ -75,16 +78,14 @@ func (s *Service) runtime() Runtime {
 }
 
 // expectedRoles are the roles this installation's configuration (as given
-// to the console) says should run: the MCP proxy when a proxy config is set,
-// the gateway when the gateway config enables it. configErrs names roles
+// to the console) says should run: the gateway when the gateway config
+// enables it, the governed MCP endpoint when an AI use case declares an MCP
+// action source (#431). configErrs names roles
 // whose configuration exists but cannot be used, so the caller never reports
 // them as intentionally absent. A gateway config path that does not exist is
 // no gateway.
 func (s *Service) expectedRoles() (exp map[string]bool, configErrs map[string]string) {
 	exp, configErrs = map[string]bool{}, map[string]string{}
-	if s.cfg.ConfigSources.ProxyConfig != "" {
-		exp[runtimestatus.RoleMCPProxy] = true
-	}
 	if p := s.cfg.ConfigSources.GatewayConfig; p != "" {
 		gw, err := gateway.LoadGatewayConfig(p)
 		switch {
@@ -94,6 +95,9 @@ func (s *Service) expectedRoles() (exp map[string]bool, configErrs map[string]st
 		case gw.Enabled:
 			exp[runtimestatus.RoleGateway] = true
 		}
+	}
+	if len(s.mcpUseCases()) > 0 {
+		exp[runtimestatus.RoleMCP] = true
 	}
 	return exp, configErrs
 }
@@ -106,4 +110,38 @@ func fileDigest(path string) string {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// mcpUseCases lists the AI use cases of this installation that declare an
+// MCP action source: when there is one, the governed MCP endpoint is
+// expected to run, and each one's activation is proved.
+func (s *Service) mcpUseCases() []mcpUseCase {
+	src := s.cfg.ConfigSources
+	if src.AgentsDir == "" && src.DefaultPolicy == "" {
+		return nil
+	}
+	scan, err := fleetview.Scan(context.Background(), src.AgentsDir, src.DefaultPolicy)
+	if err != nil || scan == nil {
+		return nil
+	}
+	var out []mcpUseCase
+	for _, a := range scan.Agents {
+		if a.Policy == nil || a.Policy.Actions == nil {
+			continue
+		}
+		for _, srcCfg := range a.Policy.Actions.Sources {
+			if srcCfg.Type == "mcp" {
+				out = append(out, mcpUseCase{Name: a.Name, Tenant: a.TenantID, Digest: a.PolicyDigest})
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Tenant+"/"+out[i].Name < out[j].Tenant+"/"+out[j].Name })
+	return out
+}
+
+// mcpUseCase is an AI use case that declares an MCP action source, with the
+// digest of its agent file as the console reads it now.
+type mcpUseCase struct {
+	Name, Tenant, Digest string
 }

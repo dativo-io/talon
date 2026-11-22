@@ -602,8 +602,19 @@ func TestDefinitionIdentity_AuthorityFactsOnly(t *testing.T) {
 		"upstream=" + def.UpstreamName, "schema=" + def.SchemaDigest, "projection=" + def.ProjectionDigest,
 		"destination=" + def.DestinationID, "success=",
 		"profile=" + def.ExecutionProfile, "binding=" + def.BindingProfile,
+		"success_contract=" + MCPSuccessContract,
 	}, "\n")))
 	assert.Equal(t, want, def.DefinitionDigest)
+
+	// read_only is authority (it decides whether a call executes in one
+	// step): declaring it changes the definition identity.
+	cfg := discoveredCfg()
+	dc := cfg.Definitions["create_refund_request"]
+	dc.ReadOnly = true
+	cfg.Definitions["create_refund_request"] = dc
+	ro, _ := compileDiscovered(t, cfg).Lookup("create_refund_request")
+	assert.True(t, ro.ReadOnly)
+	assert.NotEqual(t, def.DefinitionDigest, ro.DefinitionDigest)
 }
 
 func mustSnapshot(s *SourceSnapshot) *SourceSnapshot {

@@ -20,7 +20,6 @@ import (
 
 	"github.com/dativo-io/talon/internal/action/mcpsource"
 	"github.com/dativo-io/talon/internal/agent"
-	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/cache"
@@ -36,6 +35,7 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/pricing"
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
+	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/scanner"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/server"
@@ -64,7 +64,8 @@ var serveCmd = &cobra.Command{
 func init() {
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "HTTP server port")
 	serveCmd.Flags().StringVar(&serveHost, "host", "", "HTTP server host (empty means default bind behavior)")
-	serveCmd.Flags().StringVar(&serveProxyConfig, "proxy-config", "", "Path to MCP proxy config YAML (optional)")
+	serveCmd.Flags().StringVar(&serveProxyConfig, "proxy-config", "", "removed (#431): declare the upstream MCP server under actions.sources and its tools under actions.definitions")
+	_ = serveCmd.Flags().MarkHidden("proxy-config")
 	serveCmd.Flags().BoolVar(&serveGateway, "gateway", false, "Enable LLM API gateway at /v1/proxy/*")
 	serveCmd.Flags().StringVar(&serveGatewayConfig, "gateway-config", "talon.config.yaml", "Path to config file with gateway block (used when --gateway is set)")
 	serveCmd.Flags().BoolVar(&serveProxyQuickstart, "proxy-quickstart", false, "Enable local/dev OpenAI-compatible quickstart proxy at host-root /v1/*")
@@ -74,6 +75,9 @@ func init() {
 
 //nolint:gocyclo // orchestration flow is inherently branched
 func runServe(cmd *cobra.Command, args []string) (err error) {
+	if serveProxyConfig != "" {
+		return errProxyConfigRemoved("talon serve --proxy-config")
+	}
 	serveStartedAt = time.Time{} // stamped below, once the vault is open
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -169,10 +173,15 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 	// The company action policy (#425) is loaded ONCE here and frozen into
 	// every generation this process builds (startup and reloads); a changed
 	// company policy activates at the next restart.
-	companyPolicy, err := serveCompanyActionPolicy(serveGateway, serveProxyQuickstart, serveGatewayConfig, preloadedGatewayCfg)
+	org, err := serveOrganizationPolicy(serveGateway, serveProxyQuickstart, serveGatewayConfig, preloadedGatewayCfg, loadedGatewayConfigDigest)
 	if err != nil {
 		return err
 	}
+	// The runtime record names the company config this process read, in
+	// every serve mode (#431): a native (MCP-only) serve applies its
+	// organization policy too, so its activation must be provable.
+	loadedGatewayConfigPath, loadedGatewayConfigDigest = org.Path, org.Digest
+	companyPolicy := org.companyActionPolicy()
 	if companyPolicy != nil {
 		log.Info().Str("source", companyPolicy.Source).Str("digest", shortGeneration(companyPolicy.Digest())).Int("forbidden", len(companyPolicy.ForbiddenActions)).Int("approval_rules", len(companyPolicy.Rules)).Msg("company_action_policy_active")
 	}
@@ -399,7 +408,6 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 
 	toolFailureTracker := agent.NewToolFailureTracker(0, 0)
 
-	toolRegistry := tools.NewRegistry()
 	var serveCacheStore *cache.Store
 	var serveCacheEmbedder *cache.BM25
 	var serveCacheScrubber *cache.PIIScrubber
@@ -434,7 +442,6 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 		SessionStore:     sessionStore,
 		PromptStore:      promptStore,
 		PlanReview:       planReviewStore,
-		ToolRegistry:     toolRegistry,
 		ActiveRunTracker: activeRunTracker,
 		RunRegistry:      runRegistry,
 		Overrides:        overrideStore,
@@ -606,7 +613,7 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 
 	// Action Gateway (#458): services resolve from the CURRENT runtime
 	// generation's compiled catalog (#427), so a reload reaches it.
-	actionGW, err := buildActionGateway(ctx, runtimeHolder, evidenceStore, cfg.EvidenceDBPath(), cfg.SecretsKey)
+	actionGW, err := buildActionGateway(ctx, runtimeHolder, evidenceStore, cfg.EvidenceDBPath(), cfg.SecretsKey, secretsStore)
 	if err != nil {
 		return fmt.Errorf("initializing action gateway: %w", err)
 	}
@@ -642,28 +649,26 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 		}),
 	}...)
 
-	mcpHandler := mcp.NewHandler(toolRegistry, policyEngine, evidenceStore, cls)
+	// Governed MCP (#431): every tools/call is an operation of the
+	// authenticated use case's Action Gateway service; PII follows the use
+	// case's effective policy over the company baseline resolved above for
+	// THIS serve mode (native or gateway), passed by value: frozen for the
+	// process like the company action policy, while each use case's own
+	// override is read from the current generation at every call.
+	var mcpOrg gateway.OrganizationPolicy
+	if org.Policy != nil {
+		mcpOrg = *org.Policy
+	}
+	mcpCfg := mcp.Config{Evidence: evidenceStore, Classifier: cls, PII: mcpPIIResolver(runtimeHolder, mcpOrg)}
+	if actionGW != nil {
+		mcpCfg.Services = mcp.ServiceResolver(actionGW.resolver())
+	}
+	mcpHandler := mcp.NewHandler(mcpCfg)
 	// MCP Origin validation (DNS rebinding): loopback and same-origin are
 	// always accepted; explicitly configured origins are added. There is no
 	// wildcard — the server's "*" CORS default does not apply to MCP.
 	mcpHandler.Transport.AllowedOrigins = serveMCPOrigins()
 	opts = append(opts, server.WithMCPServer(mcpHandler))
-
-	var proxyHandler http.Handler
-	if serveProxyConfig != "" {
-		proxyCfg, err := mcp.LoadProxyConfig(ctx, serveProxyConfig)
-		if err != nil {
-			return fmt.Errorf("loading proxy config: %w", err)
-		}
-		proxyEngine, err := policy.NewProxyEngine(ctx, proxyCfg)
-		if err != nil {
-			return fmt.Errorf("proxy policy engine: %w", err)
-		}
-		ph := mcp.NewProxyHandler(proxyCfg, proxyEngine, evidenceStore, cls, secretsStore)
-		ph.Transport.AllowedOrigins = serveMCPOrigins()
-		proxyHandler = ph
-		opts = append(opts, server.WithMCPProxy(proxyHandler))
-	}
 
 	var gatewayHandler http.Handler
 	var gatewayCfgForMode *gateway.GatewayConfig
@@ -990,7 +995,7 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 		Int("cron_entries", scheduler.Entries()).
 		Str("agent", pol.Agent.Name).
 		Bool("metrics_api", metricsCollector != nil).
-		Bool("mcp_proxy", proxyHandler != nil).
+		Bool("mcp_governed", actionGW != nil).
 		Bool("gateway", gatewayHandler != nil).
 		Bool("openshell_middleware", openshellServer != nil).
 		Msg("talon_serve_started")
@@ -1130,4 +1135,29 @@ func serveMCPOrigins() []string {
 		}
 	}
 	return out
+}
+
+// errProxyConfigRemoved is the migration message for the removed
+// --proxy-config flag (#431).
+func errProxyConfigRemoved(flag string) error {
+	return fmt.Errorf("%s was removed: the MCP proxy (/mcp/proxy) is folded into the governed POST /mcp (#431). "+
+		"Declare the upstream MCP server under actions.sources and each tool under actions.definitions in the AI use case's agent.talon.yaml; "+
+		"see docs/guides/mcp-governed-tools.md", flag)
+}
+
+// mcpPIIResolver resolves a use case's effective PII handling for governed
+// MCP calls through the same path the LLM gateway uses: the organization
+// baseline and the use case's override, merged monotonically (a use case
+// can only tighten). The scanner is the use case's policy-aware one.
+func mcpPIIResolver(holder *agentcatalog.RuntimeHolder, org gateway.OrganizationPolicy) mcp.PIIResolver {
+	return func(id requestctx.AgentIdentity) mcp.UseCasePII {
+		snap := holder.Current()
+		override, _ := runtimeAgentOverride(snap, id.TenantID, id.AgentID)
+		eff := gateway.ResolveEffectivePolicy(org, gateway.ProviderConfig{}, override)
+		out := mcp.UseCasePII{Request: eff.PIIAction, Response: eff.ResponsePIIAction}
+		if ra, ok := snap.Get(id.AgentID); ok {
+			out.Classifier = ra.Classifier
+		}
+		return out
+	}
 }

@@ -37,7 +37,6 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
           <dt>Agent file</dt><dd><code>{r.current_files.agent_file}</code></dd>
           <dt>Policy digest</dt><dd>{r.current_files.policy_digest ? <CopyableIdentifier value={r.current_files.policy_digest} label="policy digest" /> : "—"}</dd>
           <FileRow label="Gateway config" f={r.current_files.gateway_config} />
-          <FileRow label="MCP proxy config" f={r.current_files.proxy_config} />
         </dl>
       </section>
 
@@ -84,34 +83,6 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
             {e.providers.map((p) => <span key={p.name}>{p.name} <code>{p.effective_digest.slice(0, 12)}</code>{p.enabled ? "" : " (disabled)"} </span>)}
           </p>
         ) : null}
-        {r.mcp_boundary ? (
-          <div className="stack">
-            <h4>MCP proxy {r.mcp_boundary.proxy} <span className="small muted">({r.mcp_boundary.scope})</span></h4>
-            <p>
-              <strong className="small">MCP proxy: </strong>
-              {r.mcp_boundary.proven_active ? <Badge tone="ok">Proven active</Badge> : <Badge tone="info">Computed from the current proxy config, not proven active</Badge>}{" "}
-              <span className="small muted">{r.mcp_boundary.proof.reason}</span>
-            </p>
-            {r.mcp_boundary.error ? <div className="notice warn" role="status"><div>MCP proxy config unusable: {r.mcp_boundary.error}</div></div> : null}
-            {r.mcp_boundary.tools.length ? (
-              <table>
-                <thead><tr><th>Tool</th><th>Decision before dispatch</th></tr></thead>
-                <tbody>
-                  {r.mcp_boundary.tools.map((t) => (
-                    <tr key={t.tool}>
-                      <td><code>{t.tool}</code></td>
-                      <td>
-                        {t.allowed ? <Badge tone="ok" plain>allowed</Badge> : <Badge tone="error">denied at {humanize(t.stage)}{t.matched ? ` (${t.matched})` : ""}</Badge>}
-                        {t.reasons?.length ? <div className="small muted">{t.reasons.join("; ")}</div> : null}
-                        {t.note ? <div className="small muted">{t.note}</div> : null}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : null}
-          </div>
-        ) : null}
         {r.action_boundary ? <ActionBoundarySection b={r.action_boundary} /> : null}
       </section>
 
@@ -138,7 +109,7 @@ function Layers({ r, tenant }: { r: EffectiveReport; tenant: string }) {
   );
 }
 
-const BOUNDARY: Record<string, string> = { llm_gateway: "LLM gateway", mcp_proxy: "MCP proxy", action_gateway: "Action Gateway" };
+const BOUNDARY: Record<string, string> = { llm_gateway: "LLM gateway", mcp_proxy: "MCP proxy (earlier release)", action_gateway: "Action Gateway" };
 
 const POLICY: Record<string, { label: string; tone: "ok" | "warn" | "error" | "info" }> = {
   matches_current: { label: "Policy matches the current files", tone: "ok" },

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -11,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -76,36 +74,4 @@ func TestRun_PolicyDeny_ZeroProviderDispatch(t *testing.T) {
 		assert.False(t, ev.ObservationModeOverride, "new evidence must not carry the legacy override flag")
 		assert.Empty(t, ev.ShadowViolations)
 	}
-}
-
-// TestToolCall_SchemaInvalidArgs_ZeroExecution pins #442 for tool argument
-// schema validation: it is always enforced now that schema_validation:
-// shadow|disabled are gone, so schema-invalid arguments never execute.
-func TestToolCall_SchemaInvalidArgs_ZeroExecution(t *testing.T) {
-	var executed atomic.Int64
-	reg := tools.NewRegistry()
-	reg.Register(&mockTool{
-		name:        "strict_tool",
-		description: "requires a string id",
-		schema:      json.RawMessage(`{"type":"object","required":["id"],"properties":{"id":{"type":"string"}},"additionalProperties":false}`),
-		handler: func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
-			executed.Add(1)
-			return json.RawMessage(`{"ok":true}`), nil
-		},
-	})
-	pol := &policy.Policy{Agent: policy.AgentConfig{Name: "schema-agent", Version: "1.0.0"}, Capabilities: &policy.CapabilitiesConfig{AllowedTools: []string{"strict_tool"}}}
-	engine, err := policy.NewEngine(context.Background(), pol)
-	require.NoError(t, err)
-	r := NewRunner(RunnerConfig{ToolRegistry: reg})
-
-	invalid := llm.ToolCall{ID: "tc1", Name: "strict_tool", Arguments: map[string]interface{}{"id": 42}}
-	res := r.executeToolCallFull(context.Background(), engine, pol, invalid, nil, "schema-agent", "corr-1", "", nil)
-	assert.False(t, res.Executed)
-	assert.Contains(t, res.Content, "schema validation failed")
-	assert.Equal(t, int64(0), executed.Load(), "schema-invalid arguments must never execute")
-
-	valid := llm.ToolCall{ID: "tc2", Name: "strict_tool", Arguments: map[string]interface{}{"id": "abc"}}
-	res = r.executeToolCallFull(context.Background(), engine, pol, valid, nil, "schema-agent", "corr-2", "", nil)
-	assert.True(t, res.Executed)
-	assert.Equal(t, int64(1), executed.Load())
 }

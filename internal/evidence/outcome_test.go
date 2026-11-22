@@ -66,3 +66,48 @@ func TestOutcomeOf_SeparatesDecisionDispatchAndDownstream(t *testing.T) {
 		assert.Equal(t, DispatchNotDispatched, idx.Outcome.Dispatch)
 	}
 }
+
+// An attempt result exists only for an authorized operation. The action
+// service signs an attempt that ended unknown or was not dispatched with
+// PolicyDecision.Allowed=false (the attempt did not succeed), which the
+// projection used to read as a policy denial: a governed MCP call whose
+// source answered isError showed "denied" in the console (#431).
+func TestOutcomeOf_ActionAttemptIsNeverAPolicyDenial(t *testing.T) {
+	attempt := func(prov, status string) Evidence {
+		return Evidence{
+			InvocationType: InvocationTypeActionLifecycle,
+			PolicyDecision: PolicyDecision{Allowed: false, Action: ActionEventAttemptCompleted},
+			ActionLifecycle: &ActionLifecycle{
+				Event: ActionEventAttemptCompleted, Action: "create_refund",
+				ResultProvenance: prov, AttemptStatus: status, OperationStatus: status,
+			},
+		}
+	}
+	cases := []struct {
+		name       string
+		ev         Evidence
+		dispatch   string
+		downstream string
+	}{
+		{"unknown after the request was written", attempt(ResultProvenanceUnknown, "unknown"), DispatchUnknown, DownstreamUnknown},
+		{"not dispatched (credential unavailable)", attempt(ResultProvenanceNotDispatched, "failed"), DispatchNotDispatched, DownstreamNone},
+		{"observed, downstream failed", attempt(ResultProvenanceObserved, "failed"), DispatchDispatched, DownstreamFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := OutcomeOf(&tc.ev)
+			assert.Equal(t, "allowed", got.Decision)
+			assert.Equal(t, tc.dispatch, got.Dispatch)
+			assert.Equal(t, tc.downstream, got.Downstream)
+			assert.Equal(t, "create_refund", got.Tool, "the action is the tool of a lifecycle record")
+		})
+	}
+	refused := Evidence{
+		InvocationType: InvocationTypeActionLifecycle,
+		PolicyDecision: PolicyDecision{Allowed: false, Action: ActionEventOperationEstablished},
+		ActionLifecycle: &ActionLifecycle{
+			Event: ActionEventOperationEstablished, Action: "delete_customer", Verdict: "DENY", OperationStatus: "denied",
+		},
+	}
+	assert.Equal(t, "denied", OutcomeOf(&refused).Decision, "a denial without an attempt stays a denial")
+}

@@ -166,6 +166,11 @@ const InvocationTypeActionLifecycle = "action_lifecycle"
 // ActionLifecycle is the per-transition fact set of one governed operation.
 type ActionLifecycle struct {
 	Event string `json:"event"`
+	// ClientCorrelationID is the correlation id the calling client asserted
+	// when the operation was established (#431, MCP X-Correlation-ID):
+	// untrusted attribution, never authority. The record's correlation_id
+	// stays the operation reference.
+	ClientCorrelationID string `json:"client_correlation_id,omitempty"`
 	// Sequence is the operation-local monotonic transition number (1 = the
 	// establishing record). The verifier requires a gap-free sequence.
 	Sequence int `json:"sequence"`

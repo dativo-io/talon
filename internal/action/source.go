@@ -63,6 +63,10 @@ type Source struct {
 	// ServerInfo is the upstream's self-declared identity. Informational
 	// only; it is never a trusted identity and enters no digest.
 	ServerInfo SourceServerInfo
+	// Auth is the credential REFERENCE the dispatcher uses for an mcp
+	// source (vault entry, header, scheme): already covered by
+	// ConfigDigest, never the secret itself.
+	Auth *policy.UpstreamAuthConfig
 }
 
 // SourceServerInfo is the informational identity an MCP source reports.

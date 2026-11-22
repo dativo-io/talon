@@ -2,11 +2,13 @@
 
 > The narrative companion to this guide — the full experiment, what one signed session record answers, and exactly where the boundary ends — is the [Copilot CLI case study](../explanation/copilot-cli-case-study.md).
 
+> **Status after #431.** The action plane of this walkthrough was verified on releases that shipped the MCP proxy (`talon serve --proxy-config`, `/mcp/proxy`, `proxy_tool_call` records). The MCP proxy is removed: current releases refuse `--proxy-config`, and MCP tool calls are governed only through the one governed endpoint `POST /mcp`, with the release MCP server declared as an action source of the use case and Copilot's MCP URL pointing at `/mcp` with the use case's key. A consequential tool is then first prepared and executed with `talon_execute_operation`, and each call is recorded as `action_lifecycle` operation records. The proxy steps below describe that earlier verification; for a current release follow [Governed MCP tools](mcp-governed-tools.md), whose migration table maps a proxy config. The model-plane steps are unchanged.
+
 This guide explains the verified GitHub Copilot CLI integration implemented in [`dativo-io/talon-full-demo`](https://github.com/dativo-io/talon-full-demo). It shows how a real Copilot CLI session can use Talon for both model traffic and MCP tool calls, while keeping one operational identity, one lifecycle session, attributable spend, data-handling evidence, and signed records.
 
 The tested case is intentionally bounded:
 
-- Copilot calls `release_status` and `release_prepare` through Talon's MCP proxy.
+- Copilot calls `release_status` and `release_prepare` through Talon's MCP proxy (the verified release; see the status note above).
 - `release_publish` does not reach the synthetic release service.
 - model traffic uses Talon's OpenAI-compatible gateway path;
 - personal data detected in prompt traffic is recorded, and configured input redaction is evidenced;
@@ -47,7 +49,7 @@ The normal Copilot case proves the allowed path and the bounded upstream effect.
 Talon governs only traffic routed through its interception points:
 
 - LLM requests routed through the Talon gateway;
-- MCP discovery and tool calls routed through the Talon MCP proxy;
+- MCP discovery and tool calls routed through Talon (the MCP proxy in the verified run; the governed `POST /mcp` on current releases);
 - tool schemas carried in model requests that pass through Talon.
 
 This case does **not** prove Talon controls:
@@ -552,7 +554,7 @@ make real-stop
 ## Related documentation
 
 - [How to govern coding agents](governing-coding-agents.md)
-- [MCP proxy architecture](../ARCHITECTURE_MCP_PROXY.md)
+- [Governed MCP tools](mcp-governed-tools.md)
 - [Authentication and key scopes](../reference/authentication-and-key-scopes.md)
 - [What Talon does to your request](../explanation/what-talon-does-to-your-request.md)
 - [Evidence store](../explanation/evidence-store.md)

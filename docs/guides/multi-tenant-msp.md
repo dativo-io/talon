@@ -107,8 +107,6 @@ An unscoped `talon secrets set` prints a notice reminding you of the allow-all d
 | Per-customer policy | Each agent file carries its one override (`policies.cost_limits`, `policies.models`, …) over the organization baseline |
 | Exports | Use tenant-scoped export (API with the customer's agent key, or a tenant filter) for each customer |
 
-For deeper context on architecture see [Architecture: MCP proxy](../ARCHITECTURE_MCP_PROXY.md).
-
 ---
 
 ## You're done
@@ -121,5 +119,5 @@ You now have tenant isolation with one keyed agent per customer. Talon derives t
 |------------|-----|
 | Cap cost per tenant or agent | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Export evidence for one tenant | [How to export evidence for auditors](compliance-export-runbook.md) |
-| Wrap a vendor (Zendesk, Intercom) per tenant | [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md) |
+| Govern the tools of a customer's MCP server (declared in that customer's agent file) | [Governed MCP tools](mcp-governed-tools.md) |
 | Understand the gateway pipeline | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

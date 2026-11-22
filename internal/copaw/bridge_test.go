@@ -9,8 +9,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/dativo-io/talon/internal/agent/tools"
 )
 
 func TestNewBridge(t *testing.T) {
@@ -78,48 +76,4 @@ func TestListSkills_InvalidJSON(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, skills)
 	assert.Contains(t, err.Error(), "decode")
-}
-
-func TestRegisterAsTools(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
-			{"name": "enabled_skill", "content": "Desc", "enabled": true},
-			{"name": "disabled_skill", "content": "X", "enabled": false},
-		})
-	}))
-	defer server.Close()
-
-	b := NewBridge(BridgeConfig{BaseURL: server.URL, HTTPClient: server.Client()})
-	reg := tools.NewRegistry()
-	err := b.RegisterAsTools(context.Background(), reg)
-	require.NoError(t, err)
-	// Only enabled skill registered
-	tool, ok := reg.Get("copaw_skill_enabled_skill")
-	require.True(t, ok)
-	assert.Equal(t, "copaw_skill_enabled_skill", tool.Name())
-	assert.Equal(t, "Desc", tool.Description())
-	_, ok = reg.Get("copaw_skill_disabled_skill")
-	assert.False(t, ok)
-}
-
-func TestCopawSkillTool_Execute(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
-			{"name": "test_skill", "content": "Test", "enabled": true},
-		})
-	}))
-	defer server.Close()
-
-	b := NewBridge(BridgeConfig{BaseURL: server.URL, HTTPClient: server.Client()})
-	reg := tools.NewRegistry()
-	err := b.RegisterAsTools(context.Background(), reg)
-	require.NoError(t, err)
-	tool, _ := reg.Get("copaw_skill_test_skill")
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
-	require.Error(t, err)
-	assert.Nil(t, out)
-	assert.Contains(t, err.Error(), "not yet supported")
-	assert.Contains(t, err.Error(), "test_skill")
 }

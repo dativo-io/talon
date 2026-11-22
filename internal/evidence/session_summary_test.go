@@ -310,3 +310,50 @@ func TestBuildSessionSummary_ClientFromEarliestRecord(t *testing.T) {
 		t.Fatalf("client selection must be input-order independent")
 	}
 }
+
+// A governed session (#431): every lifecycle record joins the client's
+// session. A denial at establishment is the only policy denial; an attempt
+// that ended unknown, not dispatched or failed downstream is an outcome
+// after authorization — counted as such, never as a denial — and each
+// governed action counts once as a tool call under its action name.
+func TestBuildSessionSummary_GovernedActionsAreNeverRelabelledAsDenials(t *testing.T) {
+	lc := func(sec int, allowed bool, reason string, al ActionLifecycle) *Evidence {
+		return &Evidence{
+			SessionID: "pa-1", TenantID: "default", AgentID: "hr-analytics-assistant", Timestamp: ts(sec),
+			InvocationType:  InvocationTypeActionLifecycle,
+			PolicyDecision:  PolicyDecision{Allowed: allowed, Action: al.Event, Reasons: []string{reason}},
+			ActionLifecycle: &al,
+		}
+	}
+	records := []*Evidence{
+		// forbidden export: denied at establishment
+		lc(1, false, "use_case:forbidden_actions", ActionLifecycle{Event: ActionEventOperationEstablished, Action: "hr_employee_export", Verdict: "DENY", OperationStatus: "denied"}),
+		// read-only aggregate: established, claimed, armed, observed success
+		lc(2, true, "allowed", ActionLifecycle{Event: ActionEventOperationEstablished, Action: "hr_headcount_summary", OperationStatus: "authorized"}),
+		lc(3, true, "claimed", ActionLifecycle{Event: ActionEventAttemptClaimed, Action: "hr_headcount_summary"}),
+		lc(4, true, "armed", ActionLifecycle{Event: ActionEventAttemptArmed, Action: "hr_headcount_summary"}),
+		lc(5, true, "succeeded", ActionLifecycle{Event: ActionEventAttemptCompleted, Action: "hr_headcount_summary", ResultProvenance: ResultProvenanceObserved, AttemptStatus: "succeeded", OperationStatus: "succeeded"}),
+		// aggregate the HR SQL validator rejected after dispatch: unknown
+		lc(6, true, "allowed", ActionLifecycle{Event: ActionEventOperationEstablished, Action: "hr_aggregate_sql", OperationStatus: "authorized"}),
+		lc(7, false, "the MCP source answered, but not with a valid complete result without a tool error (upstream_tool_error)", ActionLifecycle{Event: ActionEventAttemptCompleted, Action: "hr_aggregate_sql", ResultProvenance: ResultProvenanceUnknown, AttemptStatus: "unknown", OperationStatus: "unknown"}),
+		// credential unavailable: never dispatched
+		lc(8, false, "the request never left Talon", ActionLifecycle{Event: ActionEventAttemptCompleted, Action: "hr_tenure_summary", ResultProvenance: ResultProvenanceNotDispatched, AttemptStatus: "failed", OperationStatus: "failed"}),
+	}
+	s := BuildSessionSummary("pa-1", records)
+	assert.Equal(t, 1, s.Denied, "only the establishment denial is a policy denial")
+	assert.Equal(t, 7, s.Allowed)
+	assert.Equal(t, map[string]int{DenyReasonCode([]string{"use_case:forbidden_actions"}): 1}, s.DeniedByReason)
+	assert.NotContains(t, s.DeniedByReason, "policy_deny")
+	assert.Equal(t, 4, s.ToolCalls, "one per governed action: denied, succeeded, unknown, not dispatched")
+	assert.Equal(t, 1, s.ToolCallsDenied)
+	assert.Equal(t, 1, s.ToolCallsUnknown)
+	assert.Equal(t, 1, s.ToolCallsFailed)
+	assert.ElementsMatch(t, []string{"hr_employee_export", "hr_headcount_summary", "hr_aggregate_sql", "hr_tenure_summary"}, s.ToolNames)
+	if assert.NotNil(t, s.LastFailure) {
+		assert.Equal(t, "action_not_dispatched", s.LastFailure.Code, "the newest failure, by its recorded outcome")
+	}
+	unknownOnly := BuildSessionSummary("pa-1", records[:7])
+	if assert.NotNil(t, unknownOnly.LastFailure) {
+		assert.Equal(t, "action_outcome_unknown", unknownOnly.LastFailure.Code, "an unknown outcome is never reported as policy_deny")
+	}
+}

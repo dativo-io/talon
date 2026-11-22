@@ -81,6 +81,11 @@ type ReviewerPrincipal struct {
 
 // EstablishRequest is the adapter-neutral first call.
 type EstablishRequest struct {
+	// Attribution is optional, client-asserted metadata an adapter links to
+	// a NEW operation (the MCP session and correlation ids, #431). It is
+	// never authority, never part of the digest, and a later request for the
+	// same operation id cannot change it.
+	Attribution    *Attribution
 	OperationID    string
 	Action         string
 	Arguments      json.RawMessage
@@ -167,6 +172,7 @@ func (s *Service) commit(ctx context.Context, tx *sql.Tx, w *evidence.TxWriter, 
 	ev.Sequence = op.Sequence
 	rec := s.lifecycleRecord(op, ev, allowed, reasons, code)
 	attachWorkloadFacts(ctx, op, rec)
+	attachAttribution(op, rec)
 	if err := w.Store(ctx, tx, rec); err != nil {
 		return &Error{Code: CodeStoreUnavailable, Message: "committing lifecycle evidence", Err: err}
 	}
@@ -241,6 +247,7 @@ type establishPlan struct {
 	verdict        Verdict
 	reviewJSON     []byte
 	identitySource string
+	attribution    []byte
 }
 
 func (s *Service) prepareEstablish(req EstablishRequest) (*establishPlan, error) {
@@ -255,11 +262,11 @@ func (s *Service) prepareEstablish(req EstablishRequest) (*establishPlan, error)
 	if !ok {
 		return nil, newErr(CodeActionNotFound, "action is not in this AI use case's trusted catalog")
 	}
-	if def.Destination.Type != DestinationTypeHTTP {
-		// Fail closed before any binding: an mcp-sourced definition is
-		// catalogued and inspectable, but no executor for it exists on
-		// this adapter until #431 routes MCP tools/call through here.
-		return nil, newErr(CodeExecutionUnsupported, "this adapter cannot execute an action sourced from an MCP source (destination type "+def.Destination.Type+"); MCP execution convergence is not shipped")
+	if !s.executes(def.Destination.Type) {
+		// Fail closed before any binding: a definition is catalogued and
+		// inspectable, but nothing is bound for a destination no wired
+		// dispatcher executes.
+		return nil, newErr(CodeExecutionUnsupported, "no dispatcher for destination type "+def.Destination.Type+" is configured on this installation; nothing was bound")
 	}
 	args := req.Arguments
 	if len(args) == 0 {
@@ -280,6 +287,7 @@ func (s *Service) prepareEstablish(req EstablishRequest) (*establishPlan, error)
 	return &establishPlan{
 		opID: opID, def: def, canonical: canonical, digest: s.operationDigest(def, canonical),
 		verdict: s.Policy.EvaluateArguments(def.Name, canonical), reviewJSON: reviewJSON, identitySource: identitySource,
+		attribution: req.Attribution.encode(),
 	}, nil
 }
 
@@ -316,7 +324,7 @@ func (s *Service) insertNewOperation(ctx context.Context, tx *sql.Tx, w *evidenc
 		PolicyDigest: s.Policy.Digest, CatalogDigest: s.Catalog.Digest,
 		ExecutionProfile: def.ExecutionProfile, BindingProfile: def.BindingProfile, DestinationID: def.DestinationID,
 		IdentitySource: plan.identitySource, Verdict: verdict.Outcome, RuleID: verdict.RuleID, Version: 1, ReviewJSON: plan.reviewJSON,
-		OriginJSON: originFacts(ctx), CreatedAt: now, UpdatedAt: now,
+		OriginJSON: originFacts(ctx), AttributionJSON: plan.attribution, CreatedAt: now, UpdatedAt: now,
 	}
 	op.IdempotencyKey = "talon-" + op.Ref
 	code, allowed := "ACTION_AUTHORIZED", true
@@ -648,6 +656,9 @@ func (s *Service) closeApproval(ctx context.Context, tx *sql.Tx, w *evidence.TxW
 type ExecuteResult struct {
 	Operation *Projection
 	Attempt   *AttemptProjection
+	// Result is the observed answer of this dispatch for the adapter to
+	// relay (an MCP tools/call result). Transient: never persisted.
+	Result json.RawMessage
 }
 
 // Execute is the runtime/controller resumption:
@@ -681,6 +692,12 @@ func (s *Service) Execute(ctx context.Context, operationID string) (*ExecuteResu
 	if s.hookAfterClaim != nil {
 		s.hookAfterClaim()
 	}
+	// The claim is committed: from here the attempt must reach a recorded
+	// outcome whatever the caller does. A caller that disconnects (an HTTP
+	// client, an MCP client) must not cancel the arm, the dispatch or the
+	// completion; otherwise the operation stays `executing` until restart
+	// recovery. The dispatcher's own timeout still bounds the dispatch.
+	ctx = context.WithoutCancel(ctx)
 	if err := s.armAttempt(ctx, op, at); err != nil {
 		// The marker did not commit: nothing was sent. The attempt stays
 		// `started`/unarmed for recovery (→ failed/not_dispatched).
@@ -689,7 +706,7 @@ func (s *Service) Execute(ctx context.Context, operationID string) (*ExecuteResu
 	if s.hookAfterArm != nil {
 		s.hookAfterArm()
 	}
-	outcome := s.dispatcher.Dispatch(ctx, DispatchRequest{Definition: def, Payload: payload, OperationRef: op.Ref, AttemptID: at.ID, IdempotencyKey: at.IdempotencyKey})
+	outcome := s.dispatcher.Dispatch(ctx, DispatchRequest{Definition: def, Payload: payload, OperationRef: op.Ref, AttemptID: at.ID, IdempotencyKey: at.IdempotencyKey, TenantID: s.TenantID, AgentID: s.AgentID})
 	if s.hookBeforeComplete != nil {
 		s.hookBeforeComplete(outcome)
 	}
@@ -869,6 +886,19 @@ func (s *Service) armAttempt(ctx context.Context, op *Operation, at *Attempt) er
 	})
 }
 
+// unknownReason is the signed reason of an attempt that ended unknown, in
+// the vocabulary of its destination type. The outcome code is Talon's typed
+// classification, never source text.
+func (s *Service) unknownReason(op *Operation, outcome Outcome) string {
+	if !outcome.ResponseObserved {
+		return "the request may or did reach the destination and no trustworthy outcome exists; automatic retry is blocked"
+	}
+	if def, ok := s.Catalog.Lookup(op.Action); ok && def.Destination.Type == DestinationTypeMCP {
+		return fmt.Sprintf("the MCP source answered, but not with a valid complete result without a tool error (%s); the business effect may have happened; automatic retry is blocked", outcome.Code)
+	}
+	return fmt.Sprintf("the destination answered HTTP %d, which the trusted success contract does not declare as success; the business effect may have happened; automatic retry is blocked", outcome.HTTPStatus)
+}
+
 func (s *Service) complete(ctx context.Context, op *Operation, at *Attempt, outcome Outcome) (*ExecuteResult, error) {
 	var out *ExecuteResult
 	err := s.repo.withTx(ctx, s.evidence, func(tx *sql.Tx, w *evidence.TxWriter) error {
@@ -890,10 +920,7 @@ func (s *Service) complete(ctx context.Context, op *Operation, at *Attempt, outc
 		case AttemptUnknown:
 			op.Status, op.TerminalAt, terminal = OpUnknown, utcPtr(now), true
 			code, allowed = "ACTION_ATTEMPT_UNKNOWN", false
-			reason = "the request may or did reach the destination and no trustworthy outcome exists; automatic retry is blocked"
-			if outcome.ResponseObserved {
-				reason = fmt.Sprintf("the destination answered HTTP %d, which the trusted success contract does not declare as success; the business effect may have happened; automatic retry is blocked", outcome.HTTPStatus)
-			}
+			reason = s.unknownReason(op, outcome)
 		default:
 			op.Status = OpFailed
 			code, allowed = "ACTION_ATTEMPT_FAILED", false
@@ -922,7 +949,7 @@ func (s *Service) complete(ctx context.Context, op *Operation, at *Attempt, outc
 		if err != nil {
 			return err
 		}
-		out = &ExecuteResult{Operation: proj, Attempt: proj.LatestAttempt}
+		out = &ExecuteResult{Operation: proj, Attempt: proj.LatestAttempt, Result: outcome.Result}
 		return nil
 	})
 	if err != nil {
@@ -1090,4 +1117,14 @@ func attachWorkloadFacts(ctx context.Context, op *Operation, rec *evidence.Evide
 		DecisionAuthority: evidence.BoundaryTalon, Provenance: evidence.ProvenanceTalonEnforced,
 		Runtime: &evidence.ExternalRuntimeRef{Type: f.Runtime, ID: f.RuntimeIssuer, Reference: f.SandboxRef, RequestID: f.RequestID},
 	}
+}
+
+// executes reports whether the wired dispatcher executes a destination
+// type. A dispatcher that cannot say executes http only (the contract
+// before #431).
+func (s *Service) executes(destinationType string) bool {
+	if ds, ok := s.dispatcher.(destinationSupporter); ok {
+		return ds.Supports(destinationType)
+	}
+	return destinationType == DestinationTypeHTTP
 }

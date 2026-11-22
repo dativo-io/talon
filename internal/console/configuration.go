@@ -12,7 +12,6 @@ import (
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/fleetview"
 	"github.com/dativo-io/talon/internal/gateway"
-	"github.com/dativo-io/talon/internal/mcp"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/runtimestatus"
 )
@@ -24,7 +23,6 @@ type ConfigSources struct {
 	AgentsDir     string
 	DefaultPolicy string
 	GatewayConfig string
-	ProxyConfig   string // optional; "" means not configured for this console
 }
 
 // Configuration is the Configuration page: semantic summaries of the
@@ -39,7 +37,6 @@ type Configuration struct {
 	ReadAt           time.Time          `json:"read_at"`
 	Organization     OrganizationConfig `json:"organization"`
 	UseCases         UseCaseConfigList  `json:"use_cases"`
-	MCPProxy         ProxyConfigView    `json:"mcp_proxy"`
 	EffectivePolicy  Availability       `json:"effective_policy"`
 	ActiveGeneration Availability       `json:"active_generation"`
 	// Active is what each current data-plane process reports it loaded
@@ -65,7 +62,6 @@ type ActiveProcessConfig struct {
 	ReloadRejected  bool        `json:"reload_rejected"`
 	RejectedAt      *time.Time  `json:"rejected_at,omitempty"`
 	RejectedCauses  []string    `json:"rejected_causes,omitempty"`
-	Proxy           *ActiveFile `json:"proxy_config,omitempty"`
 	Gateway         *ActiveFile `json:"gateway_config,omitempty"`
 }
 
@@ -256,20 +252,6 @@ type TierRoute struct {
 	Location      string   `json:"location,omitempty"`
 }
 
-// ProxyConfigView summarises the MCP proxy file.
-type ProxyConfigView struct {
-	Availability      Availability `json:"availability"`
-	SourcePath        string       `json:"source_path,omitempty"`
-	Name              string       `json:"name,omitempty"`
-	Vendor            string       `json:"vendor,omitempty"`
-	Endpoint          string       `json:"endpoint,omitempty"` // scheme://host only
-	Region            string       `json:"region,omitempty"`
-	AuthSecretName    string       `json:"auth_secret_name,omitempty"`
-	AllowedTools      []string     `json:"allowed_tools,omitempty"`
-	ForbiddenTools    []string     `json:"forbidden_tools,omitempty"`
-	RequestsPerMinute int          `json:"requests_per_minute,omitempty"`
-}
-
 const configNote = "contents of the configuration files as they read now; not proof that a running process loaded them"
 
 // Configuration builds the Configuration page. tenant "" lists every use case.
@@ -288,7 +270,6 @@ func (s *Service) Configuration(ctx context.Context, tenant string) *Configurati
 	out.Organization = organizationView(src.GatewayConfig, now)
 	var scanDigest string
 	out.UseCases, out.Issues, scanDigest = useCaseConfigs(ctx, src, tenant, now)
-	out.MCPProxy = proxyView(ctx, src.ProxyConfig, now)
 	rt := s.runtime()
 	out.ActiveGeneration, out.Active = activeConfig(rt, src, scanDigest)
 	for i := range out.UseCases.Items {
@@ -320,9 +301,6 @@ func activeConfig(rt Runtime, src ConfigSources, scanDigest string) (Availabilit
 				m := scanDigest == c.ScanDigest
 				a.AgentFilesMatch = &m
 			}
-		}
-		if p.ProxyConfig != nil {
-			a.Proxy = compareFile(p.ProxyConfig.Path, p.ProxyConfig.Digest, p.ProxyConfig.LoadedAt, src.ProxyConfig)
 		}
 		if p.GatewayConfig != nil {
 			a.Gateway = compareFile(p.GatewayConfig.Path, p.GatewayConfig.Digest, p.GatewayConfig.LoadedAt, src.GatewayConfig)
@@ -531,32 +509,6 @@ func limitsView(p *policy.Policy, v *UseCaseConfig) {
 		v.AuditLogLevel, v.AuditRetentionDays = a.LogLevel, a.RetentionDays
 		v.AuditIncludePrompts, v.AuditIncludeResponses = a.IncludePrompts, a.IncludeResponses
 	}
-}
-
-func proxyView(ctx context.Context, path string, now time.Time) ProxyConfigView {
-	out := ProxyConfigView{SourcePath: path}
-	if path == "" {
-		out.Availability = Availability{State: StateUnknown, Source: SourceNone, Note: "no MCP proxy config is configured for this console (talon ui serve --proxy-config)"}
-		return out
-	}
-	cfg, err := mcp.LoadProxyConfig(ctx, path)
-	if err != nil {
-		out.Availability = Availability{State: StateUnavailable, Source: SourceConfigFiles, AsOf: now, Error: err.Error()}
-		return out
-	}
-	px := cfg.Proxy
-	out.Name, out.Vendor, out.Region = cfg.Agent.Name, px.Upstream.Vendor, px.Upstream.Region
-	out.Endpoint = endpointOnly(px.Upstream.URL)
-	if px.Upstream.Auth != nil {
-		out.AuthSecretName = px.Upstream.Auth.SecretName
-	}
-	for _, t := range px.AllowedTools {
-		out.AllowedTools = append(out.AllowedTools, t.Name)
-	}
-	out.ForbiddenTools = px.ForbiddenTools
-	out.RequestsPerMinute = px.RateLimits.RequestsPerMinute
-	out.Availability = Availability{State: StateOK, Source: SourceConfigFiles, AsOf: now, Note: configNote}
-	return out
 }
 
 // endpointOnly reduces a configured URL to scheme://host[:port]: user-info,

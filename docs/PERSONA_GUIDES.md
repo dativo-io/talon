@@ -219,5 +219,5 @@ talon report --tenant acme
 ## See also
 
 - [QUICKSTART.md](QUICKSTART.md) — Install, init, first run, audit, secrets, memory.
-- [VENDOR_INTEGRATION_GUIDE.md](VENDOR_INTEGRATION_GUIDE.md) — MCP proxy and vendor compliance.
+- [Governed MCP tools](guides/mcp-governed-tools.md) — Tools of an MCP server governed through `POST /mcp`.
 - [MEMORY_GOVERNANCE.md](MEMORY_GOVERNANCE.md) — Agent memory, categories, and rollback.

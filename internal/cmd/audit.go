@@ -694,13 +694,16 @@ func renderSessionToolCalls(w io.Writer, sum evidence.SessionSummary) {
 	if sum.ToolCalls == 0 {
 		return
 	}
-	allowed := sum.ToolCalls - sum.ToolCallsDenied - sum.ToolCallsFailed
+	allowed := sum.ToolCalls - sum.ToolCallsDenied - sum.ToolCallsFailed - sum.ToolCallsUnknown
 	line := fmt.Sprintf("  Tool calls: %d intercepted (%d allowed", sum.ToolCalls, allowed)
 	if sum.ToolCallsDenied > 0 {
 		line += fmt.Sprintf(", %d denied", sum.ToolCallsDenied)
 	}
 	if sum.ToolCallsFailed > 0 {
 		line += fmt.Sprintf(", %d failed upstream", sum.ToolCallsFailed)
+	}
+	if sum.ToolCallsUnknown > 0 {
+		line += fmt.Sprintf(", %d outcome unknown", sum.ToolCallsUnknown)
 	}
 	line += ")"
 	if len(sum.ToolNames) > 0 {

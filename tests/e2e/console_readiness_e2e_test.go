@@ -25,7 +25,8 @@ const otherSecretsKey = "abcdefghijklmnopqrstuvwxyz123456"
 // TestE2E_ConsoleReadiness_UndecryptableAgentKey (#533 PR 1, Case G) is the
 // failure met in the People Analytics demo, over real processes: the agent
 // key was stored under one TALON_SECRETS_KEY and the data plane starts with
-// another. Both `serve --gateway` and `serve --proxy-config` refuse to start
+// another. Both `serve --gateway` and a native `serve` (the governed MCP
+// endpoint, #431) refuse to start
 // (a declared key that no longer decrypts is never open access, #557 review
 // P0) and nothing reaches the HR backend. Evidence stays readable and there
 // is no traffic. The console must not report a healthy installation, in any
@@ -45,22 +46,11 @@ func TestE2E_ConsoleReadiness_UndecryptableAgentKey(t *testing.T) {
 	if err := os.WriteFile(cfgPath, append(cfg, []byte(gw)...), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(paAgentFile(up.srv.URL+"/mcp")), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", paAgent+"-talon-key", paKey); code != 0 {
 		t.Fatalf("secrets set: %d %s", code, stderr)
-	}
-	proxyCfg := filepath.Join(dir, "proxy.talon.yaml")
-	if err := os.WriteFile(proxyCfg, []byte(`agent:
-  name: hr-mcp-proxy
-  type: mcp_proxy
-proxy:
-  upstream:
-    vendor: hr-backend
-    url: "`+up.srv.URL+`/mcp"
-  allowed_tools:
-    - name: hr_aggregate_sql
-  forbidden_tools: ["hr_employee_export"]
-`), 0o600); err != nil {
-		t.Fatal(err)
 	}
 	// TALON_ADMIN_KEY is cleared explicitly: CI runs without one, and that
 	// is the shape in which a degraded identity registry used to leave the
@@ -69,9 +59,9 @@ proxy:
 	rightKey := map[string]string{"TALON_ADMIN_KEY": ""}
 
 	// The installation ran before the secrets key changed (as the demo did):
-	// one clean proxy start initialises the stores, then stops.
+	// one clean serve start initialises the stores, then stops.
 	dpPort := freePort(t)
-	first := startProxyServe(t, dir, dpPort, rightKey)
+	first := startDataPlane(t, dir, dpPort, rightKey)
 	_ = first.cmd.Process.Signal(syscall.SIGTERM) // graceful: its record reads stopped
 	_, _ = first.cmd.Process.Wait()
 
@@ -83,24 +73,25 @@ proxy:
 	if !strings.Contains(stderr, "decrypt") {
 		t.Fatalf("the gateway's own error should name the decryption failure:\n%s", stderr)
 	}
-	// Neither can the MCP proxy: a declared agent key that no longer
-	// decrypts is a failed configured identity, never open access.
-	pcode, pout := runServeExpectExit(t, dir, wrongKey, 30*time.Second, "serve", "--port", fmt.Sprint(dpPort), "--proxy-config", proxyCfg)
+	// Neither can the native serve that runs the governed MCP endpoint: a
+	// declared agent key that no longer decrypts is a failed configured
+	// identity, never open access.
+	pcode, pout := runServeExpectExit(t, dir, wrongKey, 30*time.Second, "serve", "--port", fmt.Sprint(dpPort))
 	if pcode == 0 || !strings.Contains(pout, "decrypt") {
-		t.Fatalf("serve --proxy-config with an undecryptable agent key: exit %d, want a refusal naming decryption:\n%s", pcode, pout)
+		t.Fatalf("serve with an undecryptable agent key: exit %d, want a refusal naming decryption:\n%s", pcode, pout)
 	}
 	// Nothing listens, so neither the formerly correct key nor a wrong key
 	// can reach the HR backend.
 	for _, key := range []string{paKey, "talon-wrong-key"} {
 		if st, ok := tryPACall(fmt.Sprintf("http://127.0.0.1:%d", dpPort), key); ok {
-			t.Fatalf("a proxy answered (HTTP %d) after refusing to start", st)
+			t.Fatalf("a data plane answered (HTTP %d) after refusing to start", st)
 		}
 	}
 	if up.total() != 0 {
 		t.Fatalf("backend calls after the vault-key mismatch: %v", up.calls)
 	}
 
-	ui := startConsoleUI(t, dir, freePort(t), "--proxy-config", proxyCfg, "--gateway-config", cfgPath)
+	ui := startConsoleUI(t, dir, freePort(t), "--gateway-config", cfgPath)
 	c := newConsoleClient(t, ui.base)
 	if status, body := c.pair(ui.waitCodes(t, 1)[0]); status != http.StatusOK {
 		t.Fatalf("pair: %d %s", status, body)
@@ -119,7 +110,7 @@ proxy:
 		for _, d := range r.Dimensions {
 			dims[d.Key] = d
 		}
-		for _, k := range []string{console.DimGateway, console.DimMCPProxy} {
+		for _, k := range []string{console.DimGateway, console.DimMCP} {
 			if d := dims[k]; d.State != console.ReadyDegraded || !strings.Contains(d.Reason, "failed to start") || !strings.Contains(d.Reason, "decrypted") {
 				t.Fatalf("tenant %q: %s dimension %+v, want degraded: failed to start, key not decryptable", tenant, k, d)
 			}
@@ -157,11 +148,11 @@ proxy:
 	}
 
 	// Control: with the secrets key the agent key was stored under (still no
-	// admin key), the proxy starts, clears its failure record, authenticates
+	// admin key), the serve starts, clears its failure record, authenticates
 	// the right key and refuses a wrong one. The refusal above was the key
 	// mismatch, not a broken fixture.
-	startProxyServe(t, dir, dpPort, rightKey)
-	waitRole(t, c, "mcp_proxy", "running", 20*time.Second)
+	startDataPlane(t, dir, dpPort, rightKey)
+	waitRole(t, c, "mcp", "running", 20*time.Second)
 	base := fmt.Sprintf("http://127.0.0.1:%d", dpPort)
 	if st, out := paCall(t, base, "talon-wrong-key", "hr_aggregate_sql", paValidSQL, "corr-ready-wrong"); st != http.StatusUnauthorized || up.total() != 0 {
 		t.Fatalf("wrong key: HTTP %d %v, backend calls %d; want 401 and 0", st, out, up.total())
@@ -201,7 +192,7 @@ func runServeExpectExit(t *testing.T, dir string, env map[string]string, within 
 // tryPACall reports whether anything answered an MCP tool call at base.
 func tryPACall(base, key string) (int, bool) {
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hr_aggregate_sql","arguments":{"sql":"SELECT 1"}}}`
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/mcp/proxy", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/mcp", strings.NewReader(body))
 	if err != nil {
 		return 0, false
 	}

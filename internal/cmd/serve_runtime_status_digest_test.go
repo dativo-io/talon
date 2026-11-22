@@ -42,12 +42,25 @@ func TestRuntimeRecord_GatewayConfigDigestIsOfTheLoadedBytes(t *testing.T) {
 
 	// What serve publishes: runtimeBase reads the digest serve recorded at
 	// load, whatever the file holds when the record is written.
-	oldGateway, oldPath, oldDigest := serveGateway, serveGatewayConfig, loadedGatewayConfigDigest
-	t.Cleanup(func() { serveGateway, serveGatewayConfig, loadedGatewayConfigDigest = oldGateway, oldPath, oldDigest })
-	serveGateway, serveGatewayConfig, loadedGatewayConfigDigest = true, path, digest
+	oldGateway, oldPath, oldDigest, oldLoaded := serveGateway, serveGatewayConfig, loadedGatewayConfigDigest, loadedGatewayConfigPath
+	t.Cleanup(func() {
+		serveGateway, serveGatewayConfig, loadedGatewayConfigDigest, loadedGatewayConfigPath = oldGateway, oldPath, oldDigest, oldLoaded
+	})
+	serveGateway, serveGatewayConfig, loadedGatewayConfigDigest, loadedGatewayConfigPath = true, path, digest, path
 	base := runtimeBase(&config.Config{DataDir: t.TempDir(), SigningKey: "runtime-record-digest-test-key-0001"})
 	require.NotNil(t, base.GatewayConfig)
 	require.Equal(t, sha(loaded), base.GatewayConfig.Digest)
+
+	// A native (MCP-only) serve that read a company config records it too
+	// (#431): its organization policy applies, so it must be provable.
+	serveGateway = false
+	base = runtimeBase(&config.Config{DataDir: t.TempDir(), SigningKey: "runtime-record-digest-test-key-0001"})
+	require.NotNil(t, base.GatewayConfig, "native serve names the company config it read")
+	require.Equal(t, sha(loaded), base.GatewayConfig.Digest)
+	// One that read none records none.
+	loadedGatewayConfigPath, loadedGatewayConfigDigest = "", ""
+	base = runtimeBase(&config.Config{DataDir: t.TempDir(), SigningKey: "runtime-record-digest-test-key-0001"})
+	require.Nil(t, base.GatewayConfig)
 
 	// A start-up that failed before the load: nothing was parsed, the file
 	// as found is recorded.

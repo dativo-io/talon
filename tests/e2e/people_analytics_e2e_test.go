@@ -61,8 +61,10 @@ func startHRUpstream(t *testing.T) *hrUpstream {
 		_ = json.Unmarshal(raw, &req)
 		w.Header().Set("Content-Type", "application/json")
 		switch req.Method {
+		case "server/discover":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":600000,"cacheScope":"public","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"hr-backend","version":"1"}}}}`, req.ID)
 		case "tools/list":
-			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"hr_aggregate_sql","inputSchema":{"type":"object"}},{"name":"hr_employee_export","inputSchema":{"type":"object"}}],"ttlMs":30000,"cacheScope":"public"}}`, req.ID)
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","tools":[{"name":"hr_aggregate_sql","inputSchema":{"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]}},{"name":"hr_employee_export","inputSchema":{"type":"object","properties":{"department":{"type":"string"}}}}],"ttlMs":600000,"cacheScope":"public"}}`, req.ID)
 		case "tools/call":
 			u.mu.Lock()
 			u.calls[req.Params.Name]++
@@ -119,14 +121,50 @@ const (
 	paInvalidSQL = "SELECT name, salary FROM employees WHERE department = 'Sales'"
 )
 
-// paCall sends one tools/call through the MCP proxy in the People Analytics
-// session, with a correlation id the test chose.
+// paAgentFile is the People Analytics use case: the HR backend is its
+// trusted MCP action source; the aggregate query is a read-only action (one
+// call); the export is forbidden by the use case.
+func paAgentFile(hrURL string) string {
+	return `agent:
+  name: ` + paAgent + `
+  version: "1.0.0"
+  key:
+    secret_name: "` + paAgent + `-talon-key"
+capabilities:
+  forbidden_tools: [hr_employee_export]
+actions:
+  sources:
+    hr:
+      type: mcp
+      url: "` + hrURL + `"
+  definitions:
+    hr_aggregate_sql:
+      source: hr
+      read_only: true
+      review: {fields: [sql]}
+    hr_employee_export:
+      source: hr
+      review: {fields: [department]}
+policies:
+  cost_limits:
+    daily: 10
+    monthly: 100
+`
+}
+
+// paCall sends one tools/call to the governed MCP endpoint in the People
+// Analytics session, with a correlation id the test chose (client-asserted
+// attribution, #431).
 func paCall(t *testing.T, base, key, tool, sql, corr string) (int, map[string]any) {
 	t.Helper()
 	c := &mcpClient{t: t, base: base, key: key}
-	args, _ := json.Marshal(map[string]string{"sql": sql})
-	body := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{` + mcpMeta + `,"name":"` + tool + `","arguments":` + string(args) + `}}`
-	st, _, out := c.post("/mcp/proxy", "tools/call", tool, body, map[string]string{"X-Talon-Session-ID": paSession, "X-Correlation-ID": corr})
+	args := "{}"
+	if sql != "" {
+		b, _ := json.Marshal(map[string]string{"sql": sql})
+		args = string(b)
+	}
+	body := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{` + mcpMeta + `,"name":"` + tool + `","arguments":` + args + `}}`
+	st, _, out := c.post("/mcp", "tools/call", tool, body, map[string]string{"X-Talon-Session-ID": paSession, "X-Correlation-ID": corr})
 	return st, out
 }
 
@@ -154,24 +192,23 @@ func talonJSON(t *testing.T, dir string, out any, args ...string) {
 
 // TestE2E_PeopleAnalytics_CrossProcess (#545) is the People Analytics
 // acceptance run over real processes: a separate HR MCP backend with its own
-// call counters, the production `talon serve --proxy-config` and the
-// production `talon ui serve`, all on loopback. No provider key is used and
-// no LLM call is made: the proof is the MCP boundary.
+// call counters is the use case's trusted MCP action source; the production
+// `talon serve` (governed MCP endpoint, no LLM gateway) and the production
+// `talon ui serve` run on loopback. No provider key is used and no LLM call
+// is made: the proof is the MCP boundary and the Action Gateway (#431).
 //
 // It proves, in order: unauthenticated console reads and a wrong workload key
-// reach nothing; a valid hr_aggregate_sql query is dispatched (backend
-// counter +1) and recorded as completed; hr_employee_export is denied before
-// dispatch (its backend counter stays 0); an hr_aggregate_sql query with
-// invalid SQL is allowed by Talon, reaches the backend (counter +1) and is
-// rejected by the backend's own validation, shown as dispatched and rejected
-// by the destination, not as a Talon denial; the MCP decisions are proven
-// active by the running proxy while the gateway policy is not (no gateway
-// runs); the last decision's signature is verified;
-// session and correlation ids are the ones the client asserted; every record
-// verifies; the console's session, evidence, search, effective-policy and
-// runtime answers equal the CLI's; readiness is operational for this
-// MCP-only installation; spend stays zero; a SIGKILLed data plane
-// goes stale, nothing more reaches the backend, the evidence stays
+// reach nothing; a valid hr_aggregate_sql query (a read-only action) is
+// executed in one call (backend counter +1) and recorded as completed;
+// hr_employee_export is denied by the use case's policy before dispatch (its
+// backend counter stays 0); a query the HR backend rejects after Talon
+// dispatched it is recorded as unknown — never as a Talon denial; the
+// client's session and correlation ids are attribution on every lifecycle
+// record of each operation; every record verifies and every operation's
+// lifecycle verifies; the console's session, evidence, search,
+// effective-policy and runtime answers equal the CLI's; readiness is
+// operational for this MCP-only installation; spend stays zero; a SIGKILLed
+// data plane goes stale, nothing more reaches the backend, the evidence stays
 // readable, and a restart is a new instance that serves the same session; a
 // record changed in the database after signing reads as invalid in the
 // console and fails `talon audit verify`.
@@ -184,29 +221,18 @@ func TestE2E_PeopleAnalytics_CrossProcess(t *testing.T) {
 	if _, stderr, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", paAgent); code != 0 {
 		t.Fatalf("init: %d %s", code, stderr)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(paAgentFile(up.srv.URL+"/mcp")), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", paAgent+"-talon-key", paKey); code != 0 {
 		t.Fatalf("secrets set: %d %s", code, stderr)
-	}
-	proxyCfg := filepath.Join(dir, "proxy.talon.yaml")
-	if err := os.WriteFile(proxyCfg, []byte(`agent:
-  name: hr-mcp-proxy
-  type: mcp_proxy
-proxy:
-  upstream:
-    vendor: hr-backend
-    url: "`+up.srv.URL+`/mcp"
-  allowed_tools:
-    - name: hr_aggregate_sql
-  forbidden_tools: ["hr_employee_export"]
-`), 0o600); err != nil {
-		t.Fatal(err)
 	}
 	dbPath := filepath.Join(dir, "evidence.db")
 
 	dpPort := freePort(t)
-	dp := startProxyServe(t, dir, dpPort, nil)
+	dp := startDataPlane(t, dir, dpPort, nil)
 	base := fmt.Sprintf("http://127.0.0.1:%d", dpPort)
-	ui := startConsoleUI(t, dir, freePort(t), "--proxy-config", proxyCfg)
+	ui := startConsoleUI(t, dir, freePort(t))
 
 	// --- Negative auth: no console session, wrong workload key.
 	anon := newConsoleClient(t, ui.base)
@@ -215,8 +241,8 @@ proxy:
 			t.Fatalf("unpaired GET %s: %d, want 401", p, status)
 		}
 	}
-	if st, _ := paCall(t, base, "talon-not-a-real-key-0000", "hr_aggregate_sql", paValidSQL, "corr-pa-badkey"); st < 400 {
-		t.Fatalf("wrong workload key: HTTP %d, want a 4xx", st)
+	if st, _ := paCall(t, base, "talon-not-a-real-key-0000", "hr_aggregate_sql", paValidSQL, "corr-pa-badkey"); st != http.StatusUnauthorized {
+		t.Fatalf("wrong workload key: HTTP %d, want 401", st)
 	}
 	if up.total() != 0 {
 		t.Fatalf("a request with a wrong key reached the HR backend: %v", up.calls)
@@ -229,36 +255,45 @@ proxy:
 
 	// --- Traffic in one asserted session: a valid aggregate, the forbidden
 	// export, and an aggregate the HR backend rejects as invalid SQL.
+	refs := map[string]string{} // client correlation id -> operation reference
 	st, out := paCall(t, base, paKey, "hr_aggregate_sql", paValidSQL, "corr-pa-allowed")
 	if st != http.StatusOK || out["result"] == nil {
 		t.Fatalf("allowed call: %d %v", st, out)
 	}
+	refs["corr-pa-allowed"] = fmt.Sprint(govExt(out)["operationRef"])
 	if n := up.count("hr_aggregate_sql"); n != 1 {
 		t.Fatalf("allowed call: backend saw %d calls, want 1", n)
 	}
 	_, out = paCall(t, base, paKey, "hr_employee_export", "", "corr-pa-forbidden")
-	if out["error"] == nil {
-		t.Fatalf("forbidden call must be an error: %v", out)
+	if x := govExt(out); x["code"] != "policy_denied" || x["provenance"] != "not_dispatched" {
+		t.Fatalf("forbidden call must be denied before dispatch: %v", out)
 	}
+	refs["corr-pa-forbidden"] = fmt.Sprint(govExt(out)["operationRef"])
 	if n := up.count("hr_employee_export"); n != 0 {
 		t.Fatalf("forbidden call reached the HR backend %d times", n)
 	}
 	_, out = paCall(t, base, paKey, "hr_aggregate_sql", paInvalidSQL, "corr-pa-invalid-sql")
-	if out["error"] == nil {
-		t.Fatalf("an invalid query must surface the backend's error: %v", out)
+	if x := govExt(out); x["code"] != "upstream_outcome_unknown" || x["decision"] != "unknown" {
+		t.Fatalf("a query the backend rejected after dispatch is unknown, not a denial: %v", out)
 	}
+	if strings.Contains(fmt.Sprint(out), "invalid SQL or query shape") {
+		t.Fatalf("the backend's own error text must not be relayed: %v", out)
+	}
+	refs["corr-pa-invalid-sql"] = fmt.Sprint(govExt(out)["operationRef"])
 	if n, rej := up.count("hr_aggregate_sql"), up.rejections(); n != 2 || rej != 1 {
 		t.Fatalf("invalid query: backend saw %d aggregate calls and rejected %d, want 2 and 1 (Talon allowed and dispatched it; the backend refused it)", n, rej)
 	}
 
-	// --- Console session = CLI session, with three distinct outcomes.
+	// --- Console session = CLI session. Every lifecycle record of the three
+	// operations joins the client's session; the final record of each says
+	// what happened.
 	var sd console.SessionDetail
 	consoleGet(t, c, "/console/v1/sessions/"+paSession+"?agent="+paAgent, &sd)
 	if sd.Timeline == nil || sd.Detail == nil {
 		t.Fatalf("session detail: %+v", sd.Availability)
 	}
-	// Keyed by the client's correlation id: two records share a tool.
-	byCorr := map[string]evidence.Index{}
+	final := map[string]evidence.Index{} // client correlation id -> the operation's newest record
+	perOp := map[string]int{}
 	for _, r := range sd.Timeline.Records {
 		if r.SessionID != paSession || r.AgentID != paAgent {
 			t.Fatalf("record %s: session %q agent %q, want the asserted session and the key's use case", r.ID, r.SessionID, r.AgentID)
@@ -266,109 +301,107 @@ proxy:
 		if r.Outcome == nil {
 			t.Fatalf("record %s has no outcome", r.ID)
 		}
-		byCorr[r.CorrelationID] = r
+		perOp[r.CorrelationID]++
+		for corr, ref := range refs {
+			if r.CorrelationID == ref && (final[corr].ID == "" || !r.Timestamp.Before(final[corr].Timestamp)) {
+				final[corr] = r
+			}
+		}
 	}
 	want := map[string]struct {
-		tool    string
+		records int
 		outcome [3]string
 	}{
-		"corr-pa-allowed":     {"hr_aggregate_sql", [3]string{"allowed", evidence.DispatchDispatched, evidence.DownstreamCompleted}},
-		"corr-pa-forbidden":   {"hr_employee_export", [3]string{"denied", evidence.DispatchNotDispatched, evidence.DownstreamNone}},
-		"corr-pa-invalid-sql": {"hr_aggregate_sql", [3]string{"allowed", evidence.DispatchDispatched, evidence.DownstreamRejected}},
+		"corr-pa-allowed":     {4, [3]string{"allowed", evidence.DispatchDispatched, evidence.DownstreamCompleted}},
+		"corr-pa-forbidden":   {1, [3]string{"denied", evidence.DispatchNotDispatched, evidence.DownstreamNone}},
+		"corr-pa-invalid-sql": {4, [3]string{"allowed", evidence.DispatchUnknown, evidence.DownstreamUnknown}},
 	}
 	for corr, w := range want {
-		r, ok := byCorr[corr]
+		r, ok := final[corr]
 		if !ok {
-			t.Fatalf("no record with the client's correlation id %s: %+v", corr, sd.Timeline.Records)
+			t.Fatalf("no record of operation %s (%s) in the session: %+v", refs[corr], corr, sd.Timeline.Records)
 		}
-		if r.Outcome.Tool != w.tool {
-			t.Fatalf("%s: tool %q, want %q", corr, r.Outcome.Tool, w.tool)
+		if perOp[refs[corr]] != w.records {
+			t.Fatalf("%s: %d lifecycle records in the session, want %d", corr, perOp[refs[corr]], w.records)
 		}
 		if got := [3]string{r.Outcome.Decision, r.Outcome.Dispatch, r.Outcome.Downstream}; got != w.outcome {
 			t.Fatalf("%s: outcome %v, want %v (basis %q)", corr, got, w.outcome, r.Outcome.Basis)
 		}
 	}
-	if len(sd.Timeline.Records) != 3 {
-		t.Fatalf("session has %d records, want 3 (the wrong-key call is not this session's): %+v", len(sd.Timeline.Records), sd.Timeline.Records)
+	if len(sd.Timeline.Records) != 9 {
+		t.Fatalf("session has %d records, want 9 (the wrong-key call is not this session's): %+v", len(sd.Timeline.Records), sd.Timeline.Records)
 	}
 	var cliTimeline session.Timeline
 	talonJSON(t, dir, &cliTimeline, "audit", "list", "--json", "--session", paSession)
-	if len(cliTimeline.Records) != 3 {
-		t.Fatalf("CLI timeline has %d records", len(cliTimeline.Records))
+	if len(cliTimeline.Records) != len(sd.Timeline.Records) {
+		t.Fatalf("CLI timeline has %d records, console %d", len(cliTimeline.Records), len(sd.Timeline.Records))
+	}
+	apiByID := map[string]evidence.Index{}
+	for _, r := range sd.Timeline.Records {
+		apiByID[r.ID] = r
 	}
 	for _, r := range cliTimeline.Records {
-		a := byCorr[r.CorrelationID]
-		if r.ID != a.ID || *r.Outcome != *a.Outcome {
-			t.Fatalf("CLI and console differ for %s:\nCLI %+v %+v\nAPI %+v %+v", r.CorrelationID, r, r.Outcome, a, a.Outcome)
+		a, ok := apiByID[r.ID]
+		if !ok || *r.Outcome != *a.Outcome {
+			t.Fatalf("CLI and console differ for %s:\nCLI %+v\nAPI %+v", r.ID, r.Outcome, a.Outcome)
 		}
 	}
 	var cliDetail session.Detail
 	talonJSON(t, dir, &cliDetail, "session", "show", paSession, "--json")
-	if cliDetail.Summary.RecordCount != 3 || sd.Detail.Summary.RecordCount != 3 || cliDetail.Summary.ToolCallsDenied != sd.Detail.Summary.ToolCallsDenied {
+	if cliDetail.Summary.RecordCount != sd.Detail.Summary.RecordCount || cliDetail.Summary.RecordCount != 9 {
 		t.Fatalf("session summaries differ: CLI %+v API %+v", cliDetail.Summary, sd.Detail.Summary)
 	}
 
-	// --- Every record verifies, in the console and with the CLI.
-	for tool := range byCorr {
-		r := byCorr[tool]
+	// --- Every record verifies, in the console and with the CLI; every
+	// operation's signed lifecycle verifies.
+	for _, r := range sd.Timeline.Records {
 		var ed console.EvidenceDetail
 		consoleGet(t, c, "/console/v1/evidence/"+r.ID, &ed)
 		if ed.Detail == nil || ed.Detail.Verification.State != "valid" {
-			t.Fatalf("%s: console verification %+v", tool, ed.Detail)
+			t.Fatalf("%s: console verification %+v", r.ID, ed.Detail)
 		}
 		var cliEd evidence.RecordDetail
 		talonJSON(t, dir, &cliEd, "audit", "show", r.ID, "--json")
 		if cliEd.Outcome != ed.Detail.Outcome || cliEd.Verification.State != "valid" {
-			t.Fatalf("%s: CLI %+v vs API %+v", tool, cliEd.Outcome, ed.Detail.Outcome)
+			t.Fatalf("%s: CLI %+v vs API %+v", r.ID, cliEd.Outcome, ed.Detail.Outcome)
 		}
 		if _, stderr, code := RunTalon(t, dir, nil, "audit", "verify", r.ID); code != 0 {
-			t.Fatalf("%s: talon audit verify: %d %s", tool, code, stderr)
+			t.Fatalf("%s: talon audit verify: %d %s", r.ID, code, stderr)
 		}
 	}
 
-	// --- Search by the client's correlation id finds exactly that record.
+	// --- Search by the forbidden operation's reference finds its record.
 	var sr console.SearchResults
-	consoleGet(t, c, "/console/v1/search?q=corr-pa-forbidden&tenant=default", &sr)
-	if len(sr.Evidence) != 1 || sr.Evidence[0].ID != byCorr["corr-pa-forbidden"].ID {
+	consoleGet(t, c, "/console/v1/search?q="+refs["corr-pa-forbidden"]+"&tenant=default", &sr)
+	if len(sr.Evidence) != 1 || sr.Evidence[0].ID != final["corr-pa-forbidden"].ID {
 		t.Fatalf("correlation search: %+v", sr.Evidence)
 	}
 
-	// --- Effective policy: each boundary proved on its own. The running MCP
-	// proxy proves its tool decisions; no gateway runs, so the gateway
-	// policy is compiled from the files and not proven active. CLI = API.
+	// --- Effective policy: the running serve loaded the current agent file;
+	// no gateway runs, so the gateway policy is compiled from the files and
+	// not proven active. CLI = API.
 	var ep console.EffectivePolicyDTO
 	consoleGet(t, c, "/console/v1/use-cases/"+paAgent+"/effective-policy", &ep)
 	if ep.Report == nil || ep.Report.Loaded.State != "loaded_matches_file" {
-		t.Fatalf("the agent file must be proven loaded by the running proxy: %+v", ep.Report)
-	}
-	if !ep.Report.MCPBoundary.ProvenActive {
-		t.Fatalf("the running proxy loaded the current proxy config, its decisions are proven: %+v", ep.Report.MCPBoundary.Proof)
+		t.Fatalf("the agent file must be proven loaded by the running serve: %+v", ep.Report)
 	}
 	if ep.Report.Effective.ProvenActive || ep.Report.Effective.Proof.State != "no_running_process" {
 		t.Fatalf("no gateway runs: the gateway policy must not be proven active: %+v", ep.Report.Effective.Proof)
 	}
-	denied := false
-	for _, d := range ep.Report.MCPBoundary.Tools {
-		if d.Tool == "hr_employee_export" && !d.Allowed && d.Stage == "forbidden_tools" {
-			denied = true
-		}
-	}
-	if !denied {
-		t.Fatalf("hr_employee_export must be denied at forbidden_tools: %+v", ep.Report.MCPBoundary)
-	}
-	if ep.Report.LastDecision == nil || ep.Report.LastDecision.EvidenceID != byCorr["corr-pa-invalid-sql"].ID || ep.Report.LastDecision.Verification != "valid" {
-		t.Fatalf("last decision must be the newest record, verified: %+v", ep.Report.LastDecision)
+	if ep.Report.LastDecision == nil || ep.Report.LastDecision.Verification != "valid" {
+		t.Fatalf("last decision must be recorded and verified: %+v", ep.Report.LastDecision)
 	}
 	var cliEp effective.Report
-	talonJSON(t, dir, &cliEp, "agents", "show", paAgent, "--effective", "--json", "--proxy-config", proxyCfg)
+	talonJSON(t, dir, &cliEp, "agents", "show", paAgent, "--effective", "--json")
 	if cliEp.Loaded.State != ep.Report.Loaded.State || cliEp.CurrentFiles.PolicyDigest != ep.Report.CurrentFiles.PolicyDigest ||
 		cliEp.LastDecision == nil || cliEp.LastDecision.EvidenceID != ep.Report.LastDecision.EvidenceID || len(cliEp.Effective.Rules) != len(ep.Report.Effective.Rules) ||
-		cliEp.Effective.Proof.State != ep.Report.Effective.Proof.State || cliEp.MCPBoundary.Proof.State != ep.Report.MCPBoundary.Proof.State {
+		cliEp.Effective.Proof.State != ep.Report.Effective.Proof.State {
 		t.Fatalf("CLI and console effective policy differ:\nCLI %+v\nAPI %+v", cliEp, *ep.Report)
 	}
 
-	// --- Runtime and spend: the proxy runs, no gateway is configured, no money was spent.
-	s := waitRole(t, c, "mcp_proxy", "running", 15*time.Second)
+	// --- Runtime and spend: the MCP endpoint runs, no gateway is configured,
+	// no money was spent.
+	s := waitRole(t, c, "mcp", "running", 15*time.Second)
 	if st, _ := roleState(s, "gateway"); st != "not_configured" {
 		t.Fatalf("gateway role: %q, want not_configured (no provider is involved)", st)
 	}
@@ -380,13 +413,14 @@ proxy:
 
 	// --- Browser: the same installation in Chromium (CLI = API = browser).
 	if os.Getenv("TALON_PA_BROWSER") == "1" {
-		runLiveBrowser(t, dir, ui, proxyCfg, byCorr)
+		runLiveBrowser(t, dir, ui, final)
 	}
 
-	// --- Operational readiness (#533): an MCP-only installation whose proxy
-	// runs, loaded the current proxy config and holds the use case's key is
-	// operational. The absent gateway is not an incident, and the recorded
-	// denial of hr_employee_export is evidence, not a runtime finding.
+	// --- Operational readiness (#533, #431): an MCP-only installation whose
+	// serve runs the governed MCP endpoint, loaded the current files and
+	// holds the use case's key is operational. The absent gateway is not an
+	// incident, and the recorded denial of hr_employee_export is evidence,
+	// not a runtime finding.
 	var ready console.Overview
 	consoleGet(t, c, "/console/v1/overview", &ready)
 	if ready.Readiness.Overall != console.OverallOperational {
@@ -396,46 +430,51 @@ proxy:
 		t.Fatalf("installation findings on a ready MCP-only installation: %+v", ready.Readiness.Findings)
 	}
 	for _, d := range ready.Readiness.Dimensions {
-		if d.Key == console.DimGateway && d.State != console.ReadyNotConfigured {
-			t.Fatalf("gateway dimension %+v, want not_configured", d)
-		}
-		if d.Key == console.DimAgentKeys && d.State != console.ReadyOK {
-			t.Fatalf("agent keys %+v, want ok: the proxy reports holding the use case's key", d)
+		switch d.Key {
+		case console.DimGateway:
+			if d.State != console.ReadyNotConfigured {
+				t.Fatalf("gateway dimension %+v, want not_configured", d)
+			}
+		case console.DimMCP:
+			if d.State != console.ReadyOK {
+				t.Fatalf("MCP endpoint dimension %+v, want ok", d)
+			}
+		case console.DimAgentKeys:
+			if d.State != console.ReadyOK {
+				t.Fatalf("agent keys %+v, want ok: the serve reports holding the use case's key", d)
+			}
 		}
 	}
 
 	// --- SIGKILL the data plane: stale, nothing reaches the backend, evidence stays readable.
-	_, firstInstance := roleState(s, "mcp_proxy")
+	_, firstInstance := roleState(s, "mcp")
 	if err := dp.cmd.Process.Signal(syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = dp.cmd.Process.Wait()
 	before := up.total()
-	downReq, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/mcp/proxy", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"hr_aggregate_sql"}}`))
-	downReq.Header.Set("Authorization", "Bearer "+paKey)
-	if resp, err := http.DefaultClient.Do(downReq); err == nil {
-		_ = resp.Body.Close()
-		t.Fatalf("a killed data plane answered HTTP %d", resp.StatusCode)
+	if st, ok := tryPACall(base, paKey); ok {
+		t.Fatalf("a killed data plane answered HTTP %d", st)
 	}
 	if up.total() != before {
 		t.Fatal("a call reached the HR backend while the data plane was down")
 	}
-	waitRole(t, c, "mcp_proxy", "stale", 30*time.Second)
-	// The killed proxy: readiness degraded with a stale-runtime finding, and
+	waitRole(t, c, "mcp", "stale", 30*time.Second)
+	// The killed serve: readiness degraded with a stale-runtime finding, and
 	// its keys are no longer evidence of anything.
 	consoleGet(t, c, "/console/v1/overview", &ready)
 	if ready.Readiness.Overall != console.OverallDegraded || len(ready.Readiness.Findings) == 0 || ready.Readiness.Findings[0].Code != "runtime_stale" {
 		t.Fatalf("after SIGKILL: readiness %q findings %+v, want degraded with runtime_stale first", ready.Readiness.Overall, ready.Readiness.Findings)
 	}
 	consoleGet(t, c, "/console/v1/sessions/"+paSession+"?agent="+paAgent, &sd)
-	if sd.Timeline == nil || len(sd.Timeline.Records) != 3 {
+	if sd.Timeline == nil || len(sd.Timeline.Records) != 9 {
 		t.Fatalf("evidence must stay readable while the data plane is down: %+v", sd.Availability)
 	}
 
 	// --- Restart: a new instance continues the same session.
-	dp = startProxyServe(t, dir, dpPort, nil)
-	s = waitRole(t, c, "mcp_proxy", "running", 20*time.Second)
-	if _, inst := roleState(s, "mcp_proxy"); inst == firstInstance || inst == "" {
+	dp = startDataPlane(t, dir, dpPort, nil)
+	s = waitRole(t, c, "mcp", "running", 20*time.Second)
+	if _, inst := roleState(s, "mcp"); inst == firstInstance || inst == "" {
 		t.Fatalf("a restart must be a new instance (was %s, now %s)", firstInstance, inst)
 	}
 	if st, _ := paCall(t, base, paKey, "hr_aggregate_sql", paValidSQL, "corr-pa-after-restart"); st != http.StatusOK {
@@ -445,14 +484,14 @@ proxy:
 		t.Fatalf("after restart: backend saw %d aggregate calls, want 3", n)
 	}
 	consoleGet(t, c, "/console/v1/sessions/"+paSession+"?agent="+paAgent, &sd)
-	if len(sd.Timeline.Records) != 4 {
+	if len(sd.Timeline.Records) != 13 {
 		t.Fatalf("the restarted data plane must extend the same session: %d records", len(sd.Timeline.Records))
 	}
 
 	// --- Tamper: make the forbidden call look allowed in the database.
 	_ = dp.cmd.Process.Signal(syscall.SIGTERM)
 	_, _ = dp.cmd.Process.Wait()
-	id := byCorr["corr-pa-forbidden"].ID
+	id := final["corr-pa-forbidden"].ID
 	tamperRecord(t, dbPath, id)
 	var ed console.EvidenceDetail
 	consoleGet(t, c, "/console/v1/evidence/"+id, &ed)
@@ -493,15 +532,15 @@ func tamperRecord(t *testing.T, dbPath, id string) {
 
 // runLiveBrowser runs the People Analytics live spec against this
 // installation.
-func runLiveBrowser(t *testing.T, dir string, ui *uiProcess, proxyCfg string, byCorr map[string]evidence.Index) {
+func runLiveBrowser(t *testing.T, dir string, ui *uiProcess, final map[string]evidence.Index) {
 	t.Helper()
 	ids := map[string]string{
-		"allowed":     byCorr["corr-pa-allowed"].ID,
-		"forbidden":   byCorr["corr-pa-forbidden"].ID,
-		"invalid_sql": byCorr["corr-pa-invalid-sql"].ID,
+		"allowed":     final["corr-pa-allowed"].ID,
+		"forbidden":   final["corr-pa-forbidden"].ID,
+		"invalid_sql": final["corr-pa-invalid-sql"].ID,
 	}
 	runLiveBrowserSpec(t, dir, ui, "live/people-analytics.spec.js", nil,
-		map[string]any{"use_case": paAgent, "session": paSession, "evidence": ids, "proxy_config": proxyCfg})
+		map[string]any{"use_case": paAgent, "session": paSession, "evidence": ids})
 }
 
 // runLiveBrowserSpec runs one spec of tests/browser/live in Chromium against

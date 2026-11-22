@@ -32,8 +32,7 @@ test("Overview: readiness first, canonical health kept, disabled is not a failur
 
 test("Use case detail: identity, costs with caps, effective policy in four layers matching talon agents show --effective, deep link survives refresh", async ({ page }) => {
   const f = state().fixture;
-  const st = state();
-  const report = cli(["agents", "show", f.use_case, "--effective", "--json", "--proxy-config", `${st.dir}/proxy.talon.yaml`]);
+  const report = cli(["agents", "show", f.use_case, "--effective", "--json"]);
   await pair(page, `/use-cases/${f.use_case}`);
   await expect(page.getByRole("heading", { name: f.use_case, level: 1 })).toBeVisible();
   const eff = page.getByRole("region", { name: "Effective policy" });
@@ -42,7 +41,9 @@ test("Use case detail: identity, costs with caps, effective policy in four layer
   }
   // No talon serve runs in this suite: compiled, never claimed active.
   expect(report.effective.proven_active).toBe(false);
-  await expect(eff.getByText("Compiled from current files, not proven active")).toBeVisible();
+  await expect(eff.locator("p", { hasText: "LLM gateway:" }).getByText("Compiled from current files, not proven active")).toBeVisible();
+  // The use case declares an MCP action source (#431): its Action Gateway policy is compiled as well, and is not claimed active without a running serve.
+  await expect(eff.getByTestId("action-boundary").getByText("Compiled from current files, not proven active")).toBeVisible();
   await expect(eff.getByText("Not proven", { exact: true })).toBeVisible();
   // The forbidden-tools rule: the union of the organization and use-case lists, as the CLI prints it.
   const ft = report.effective.rules.find((r) => r.rule === "forbidden_tools");
@@ -50,9 +51,6 @@ test("Use case detail: identity, costs with caps, effective policy in four layer
   await expect(ftRow.getByRole("cell").nth(1)).toHaveText(ft.effective);
   expect(ft.effective).toContain("hr_employee_export");
   expect(ft.effective).toContain("admin_*");
-  // The MCP proxy denies hr_employee_export before dispatch.
-  const tool = eff.getByRole("row").filter({ has: page.getByText("hr_employee_export", { exact: true }) });
-  await expect(tool.getByText("denied at forbidden tools (hr_employee_export)")).toBeVisible();
   // The last decision is the same evidence record the CLI names.
   await expect(eff.getByRole("region", { name: "4. Last recorded decision" }).getByRole("link", { name: report.last_decision.evidence_id })).toBeVisible();
   // ... and it is one of the observed records of section 5 (#472).
@@ -138,11 +136,9 @@ test("Costs: figures, unavailability and currency match talon costs --json", asy
   await expect(byUseCase.getByRole("link", { name: f.use_case })).toBeVisible();
 });
 
-test("Configuration: MCP proxy forbids hr_employee_export; file contents are not claimed active; links to effective policy", async ({ page }) => {
+test("Configuration: no MCP proxy section (#431); file contents are not claimed active; links to effective policy", async ({ page }) => {
   await pair(page, "/configuration");
-  const proxy = page.getByRole("region", { name: "MCP proxy" });
-  await expect(proxy.getByText("hr_employee_export")).toBeVisible();
-  await expect(proxy.getByText("http://hr-upstream:9000")).toBeVisible();
+  await expect(page.getByRole("region", { name: "MCP proxy (shared)" })).toHaveCount(0);
   await expect(page.getByText("The effective policy with rule provenance is on each AI use case's page.")).toBeVisible();
   await expect(page.getByRole("link", { name: "Effective policy and provenance" }).first()).toBeVisible();
   await expect(page.getByText("Active configuration not proven.")).toBeVisible();
@@ -155,7 +151,7 @@ test("System: console responding, store readable with the fixture's record count
   await expect(page.locator(".stat", { hasText: "Evidence store" }).getByText("Readable", { exact: true })).toBeVisible();
   // The fixture runs no data-plane process: both configured runtimes are
   // offline with the reason, never running and never inferred from the store.
-  for (const label of ["MCP proxy", "LLM gateway"]) {
+  for (const label of ["MCP endpoint", "LLM gateway"]) {
     await expect(page.locator(".stat", { hasText: label }).getByText("Offline", { exact: true })).toBeVisible();
   }
   await expect(page.getByText("configured for this installation, but no process has reported this role").first()).toBeVisible();

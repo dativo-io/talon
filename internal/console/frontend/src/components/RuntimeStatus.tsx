@@ -3,7 +3,7 @@ import { Badge, CopyableIdentifier } from "./ui";
 import type { Tone } from "../lib/availability";
 import { relative, utc } from "../lib/format";
 
-const ROLE_LABEL: Record<string, string> = { mcp_proxy: "MCP proxy", gateway: "LLM gateway", native: "Native agent runtime" };
+const ROLE_LABEL: Record<string, string> = { mcp: "MCP endpoint", gateway: "LLM gateway", native: "Native agent runtime", mcp_proxy: "MCP proxy (earlier release)" };
 const STATE: Record<RuntimeState, { label: string; tone: Tone | "ok" }> = {
   running: { label: "Running", tone: "ok" },
   stale: { label: "Stale", tone: "warn" },

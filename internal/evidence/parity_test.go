@@ -42,19 +42,21 @@ func TestGovernanceParity_EntryPathContract(t *testing.T) {
 			},
 		},
 		{
-			name: "mcp_server_embedded_tool",
+			// The governed MCP endpoint's own PII record (#431).
+			name: "mcp_endpoint_pii_record",
 			ev: Evidence{
-				TenantID: "default", CorrelationID: "mcp_1", AgentID: "mcp-client",
+				TenantID: "acme", CorrelationID: "mcp_1", AgentID: "support-bot",
 				InvocationType: "mcp",
-				Execution:      Execution{ToolsCalled: []string{"echo"}},
+				Execution:      Execution{ToolsCalled: []string{"lookup_ticket"}},
 				DataFlow: &DataFlow{Detector: "talon-regex", Items: []DataFlowItem{{
-					Source: FlowSourceToolArgs, Disposition: FlowDispositionForwarded,
-					Destination: FlowDestination{Kind: FlowDestMCPTool, Name: "echo", Region: "LOCAL"},
+					Source: FlowSourceToolArgs, Disposition: FlowDispositionRedacted,
+					Destination: FlowDestination{Kind: FlowDestMCPTool, Name: "lookup_ticket"},
 				}}},
 			},
 		},
 		{
-			name: "mcp_proxy_upstream_tool",
+			// A record an earlier release's MCP proxy wrote: still readable.
+			name: "earlier_release_mcp_proxy_record",
 			ev: Evidence{
 				TenantID: "acme", CorrelationID: "mcp_proxy_1", AgentID: "mcp-proxy",
 				InvocationType: "proxy_tool_call",

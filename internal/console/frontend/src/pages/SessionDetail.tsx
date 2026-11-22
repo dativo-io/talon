@@ -194,7 +194,7 @@ function Summary({ s }: { s: SessionSummary }) {
           <dt>Failed closed</dt><dd>{integer(s.fail_closed ?? 0)}</dd>
         </dl>
         <dl className="facts">
-          <dt>Tool calls</dt><dd>{integer(s.tool_calls ?? 0)} ({integer(s.tool_calls_denied ?? 0)} denied, {integer(s.tool_calls_failed ?? 0)} failed)</dd>
+          <dt>Tool calls</dt><dd>{integer(s.tool_calls ?? 0)} ({integer(s.tool_calls_denied ?? 0)} denied, {integer(s.tool_calls_failed ?? 0)} failed{s.tool_calls_unknown ? `, ${integer(s.tool_calls_unknown)} outcome unknown` : ""})</dd>
           <dt>Tools</dt><dd><Chips items={s.tool_names} /></dd>
           <dt>Tools filtered</dt><dd><Chips items={s.tools_filtered} /></dd>
           <dt>PII redactions</dt><dd>{integer(s.pii_redactions ?? 0)} {s.pii_types?.length ? <Chips items={s.pii_types} /> : null}</dd>
@@ -242,7 +242,7 @@ function Timeline({ records, tenant }: { records: EvidenceIndex[]; tenant: strin
               {r.correlation_id ? <span>· correlation <code>{r.correlation_id}</code></span> : null}
               {r.duration_ms ? <span>· {duration(r.duration_ms)}</span> : null}
               {r.cost ? <span>· cost {r.cost.toFixed(4)} {r.currency || "(no currency)"}</span> : null}
-              {/* MCP proxy denials store their deny reason in the error field (internal/mcp/proxy.go); the reason is shown above. */}
+              {/* Records of an earlier release's MCP proxy store their deny reason in the error field; the reason is shown above. */}
               {r.has_error && r.allowed ? <Badge tone="warn" plain>error recorded</Badge> : null}
             </div>
             {r.outcome ? <div className="small muted">Why this outcome: {r.outcome.basis}</div> : null}

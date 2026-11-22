@@ -126,7 +126,7 @@ It also notes when this installation's configuration files differ from those in 
 
 **What a restore is.** It returns the installation to the moment of the backup. Everything Talon did after that moment is gone from its records: operations established later do not exist, and operations that were *executed* later look unexecuted again (authorized, or awaiting an approval that had in fact been given). **Talon's restored ledger therefore cannot tell you whether an action already happened.** A restored installation must not be allowed to dispatch on that basis.
 
-**What the hold covers.** The hold stops the **dispatch of governed actions through the Action Gateway**: every claim is refused, so Talon calls no business system. It is enforced in the store itself (the store refuses the attempt record every dispatch starts with), so it binds any Talon binary that serves the restored store, including an older release. It does **not** stop model traffic through the LLM gateway or tool calls through the MCP proxy: those are not operations of the ledger, and they are served. `talon doctor` shows the hold as `recovery_hold`, with the backup it came from.
+**What the hold covers.** The hold stops the **dispatch of governed actions through the Action Gateway**: every claim is refused, so Talon calls no business system. It is enforced in the store itself (the store refuses the attempt record every dispatch starts with), so it binds any Talon binary that serves the restored store, including an older release. Governed MCP tool calls on `POST /mcp` are Action Gateway operations, so the hold refuses their dispatch too (#431). It does **not** stop model traffic through the LLM gateway: that is not an operation of the ledger, and it is served. `talon doctor` shows the hold as `recovery_hold`, with the backup it came from.
 
 **The recovery hold.** Every backup's evidence snapshot carries a hold. An installation started on restored stores refuses **every** claim of a governed action (`503 recovery_hold`, nothing dispatched) until an operator resumes it. The hold is in the snapshot itself, so it applies however the files were copied back. Model traffic, policy decisions, establishing operations and approvals keep working; only dispatch is held.
 
@@ -189,7 +189,7 @@ These run against a binary built from source, with processes started by the test
 | Ambiguous outcome after dispatch (no response) | operation `unknown`; no automatic retry |
 | The installation runs on a restored backup and was not resumed | every claim refused `recovery_hold` (503), nothing dispatched |
 | Invalid agent-file edit while serving | last-known-good keeps serving; the rejection is logged and recorded |
-| Gateway or MCP proxy stopped | the console reads it *offline* or *stale*, never healthy |
+| Gateway or MCP endpoint (`talon serve`) stopped | the console reads it *offline* or *stale*, never healthy |
 
 ## Upgrade and rollback
 
@@ -239,6 +239,6 @@ An older release does not know the recovery hold. Started on a restored store be
 - **One node.** SQLite with one writer process per data directory. Two `talon serve` processes on one data directory are not supported. The in-flight budget ledger is process-local.
 - **No HA and no automatic failover.** Recovery time is how long a restore takes. Recovery point is the time since the last backup.
 - **Only a cold backup is a coherent recovery point** (see [Back up](#back-up)). An online backup is a set of per-store snapshots.
-- **A restore loses everything after the backup,** including which actions were dispatched. Dispatch stays held until an operator reconciles and resumes (see [Restore](#restore)). The hold covers the Action Gateway; MCP proxy tool calls and model traffic are not consequential-action dispatch in this sense and are not held.
+- **A restore loses everything after the backup,** including which actions were dispatched. Dispatch stays held until an operator reconciles and resumes (see [Restore](#restore)). The hold covers the Action Gateway, including governed MCP tool calls on `POST /mcp`; model traffic is not consequential-action dispatch in this sense and is not held.
 - **Capacity is not benchmarked for this profile.** Size the host on your own load test. Evidence grows with every request; plan disk and retention (`audit.retention_days`).
 - **Keys are your responsibility.** Losing `TALON_SECRETS_KEY` makes the vault unrecoverable. Losing `TALON_SIGNING_KEY` makes existing evidence unverifiable, though still readable.

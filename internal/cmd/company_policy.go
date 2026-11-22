@@ -31,32 +31,57 @@ func gatewayConfigPath(fallback string) string {
 	return fallback
 }
 
-// serveCompanyActionPolicy resolves the company action policy for a serve
-// mode. Gateway mode uses the gateway config it already loaded. Native-only
-// serve reads the gateway config file when one exists so the company policy
-// is authoritative on that path too; a PRESENT but invalid file is a startup
-// error — a failed company-policy load is never treated as "no company
-// policy". Quickstart serves no company policy (it accepts no gateway
-// config). nil means no company action policy is configured.
-func serveCompanyActionPolicy(gatewayMode, quickstart bool, path string, preloaded *gateway.GatewayConfig) (*action.CompanyActionPolicy, error) {
+// serveOrganizationPolicy resolves the company baseline
+// (gateway.organization_policy) a serve process applies, in EVERY serve
+// mode: the company action policy (#425) and the PII baseline of the
+// governed MCP route (#431) both come from it, so a native (MCP-only) serve
+// cannot run with a weaker company policy than a gateway serve of the same
+// installation. Gateway mode uses the gateway config it already loaded.
+// Native-only serve reads the gateway config file when one exists; a
+// PRESENT but invalid file is a startup error — a failed company-policy load
+// is never treated as "no company policy". Absent file: nil (no company
+// baseline). Quickstart serves no company policy (it accepts no gateway
+// config). The source names the file for evidence and logs.
+func serveOrganizationPolicy(gatewayMode, quickstart bool, path string, preloaded *gateway.GatewayConfig, preloadedDigest string) (servedOrgPolicy, error) {
 	if quickstart {
-		return nil, nil
+		return servedOrgPolicy{}, nil
 	}
 	if gatewayMode {
 		if preloaded == nil {
-			return nil, errors.New("company action policy: gateway mode without a loaded gateway config")
+			return servedOrgPolicy{}, errors.New("company policy: gateway mode without a loaded gateway config")
 		}
-		return preloaded.OrganizationPolicy.CompanyActionPolicy(path + ":gateway.organization_policy"), nil
+		o := preloaded.OrganizationPolicy
+		return servedOrgPolicy{Policy: &o, Path: path, Digest: preloadedDigest}, nil
 	}
 	path = gatewayConfigPath(path)
-	cfg, err := gateway.LoadGatewayConfig(path)
+	cfg, digest, err := gateway.LoadGatewayConfigWithDigest(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return servedOrgPolicy{}, nil
 		}
-		return nil, fmt.Errorf("company action policy: gateway config %s is present but invalid (a company policy that fails to load is never ignored): %w", path, err)
+		return servedOrgPolicy{}, fmt.Errorf("company policy: gateway config %s is present but invalid (a company policy that fails to load is never ignored): %w", path, err)
 	}
-	return cfg.OrganizationPolicy.CompanyActionPolicy(path + ":gateway.organization_policy"), nil
+	o := cfg.OrganizationPolicy
+	return servedOrgPolicy{Policy: &o, Path: path, Digest: digest}, nil
+}
+
+// servedOrgPolicy is the company baseline a serve process read: the policy
+// (nil without one), the file and the digest of the exact bytes parsed —
+// what the process's runtime record publishes, so the console can prove
+// which company policy a running process applies in every serve mode.
+type servedOrgPolicy struct {
+	Policy *gateway.OrganizationPolicy
+	Path   string
+	Digest string
+}
+
+// companyActionPolicy is the company action policy of the baseline (nil
+// without one).
+func (o servedOrgPolicy) companyActionPolicy() *action.CompanyActionPolicy {
+	if o.Policy == nil {
+		return nil
+	}
+	return o.Policy.CompanyActionPolicy(o.Path + ":gateway.organization_policy")
 }
 
 // offlineServeContext is what the offline commands learn from the gateway

@@ -14,7 +14,7 @@ const OVERALL: Record<OverallReadiness, { label: string; tone: Tone | "ok"; lede
   degraded: { label: "Degraded", tone: "error", lede: "At least one fact established now is wrong." },
   unverified: { label: "Unverified", tone: "info", lede: "Nothing is known to be wrong, but a running process does not report what would prove readiness." },
   unknown: { label: "Unknown", tone: "info", lede: "Part of the runtime cannot be assessed, so it is not reported healthy." },
-  not_configured: { label: "No runtime configured", tone: "neutral", lede: "This console has no gateway or MCP proxy to watch; only recorded history is shown." },
+  not_configured: { label: "No runtime configured", tone: "neutral", lede: "This console has no gateway or MCP endpoint to watch; only recorded history is shown." },
 };
 
 const STATE: Record<ReadyState, { label: string; tone: Tone | "ok" }> = {

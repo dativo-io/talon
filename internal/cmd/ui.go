@@ -98,7 +98,8 @@ func init() {
 		c.Flags().DurationVar(&uiStoreWait, "store-wait", 30*time.Second, "how long to wait for the evidence store to appear (a data plane that is still starting)")
 		c.Flags().StringVar(&uiPidFile, "pid-file", "", "pid file for 'talon ui pair' (default <data_dir>/"+uiPidFileName+")")
 		c.Flags().StringVar(&uiGatewayConfig, "gateway-config", "", "gateway config for effective caps and the Configuration page (default $TALON_GATEWAY_CONFIG or talon.config.yaml)")
-		c.Flags().StringVar(&uiProxyConfig, "proxy-config", "", "MCP proxy config shown read-only on the Configuration page (optional; the same file talon serve --proxy-config uses)")
+		c.Flags().StringVar(&uiProxyConfig, "proxy-config", "", "removed (#431)")
+		_ = c.Flags().MarkHidden("proxy-config")
 	}
 	uiCmd.Flags().BoolVar(&uiNoBrowser, "no-browser", false, "do not open the browser")
 	uiPairCmd.Flags().StringVar(&uiPidFile, "pid-file", "", "pid file of the console process (default <data_dir>/"+uiPidFileName+")")
@@ -107,6 +108,9 @@ func init() {
 }
 
 func runUIServe(cmd *cobra.Command, openBrowser bool) error {
+	if uiProxyConfig != "" {
+		return errProxyConfigRemoved("talon ui serve --proxy-config")
+	}
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -226,7 +230,7 @@ func resolveConsoleInstallation(ctx context.Context, cfg *config.Config, storeWa
 	currency := loadPricingTable(cfg, "").CurrencyCode()
 	return &consoleInstallation{
 		storePath: storePath, currency: currency, evidence: ev, sessions: ss,
-		sources: console.ConfigSources{AgentsDir: cfg.AgentsDir, DefaultPolicy: cfg.DefaultPolicy, GatewayConfig: gatewayCfg, ProxyConfig: strings.TrimSpace(uiProxyConfig)},
+		sources: console.ConfigSources{AgentsDir: cfg.AgentsDir, DefaultPolicy: cfg.DefaultPolicy, GatewayConfig: gatewayCfg},
 		fleet:   console.OfflineFleetSource(cfg.AgentsDir, cfg.DefaultPolicy, gatewayCfg, currency, ev, ss, nil),
 	}, nil
 }

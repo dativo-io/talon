@@ -91,7 +91,7 @@ function SummarySection({ d, tenant }: { d: DetailDTO; tenant: string }) {
   const row = d.row!;
   const uc = row.use_case;
   const r = d.readiness;
-  const dims = (r?.dimensions ?? []).filter((x) => ["runtime.gateway", "runtime.mcp_proxy", "authentication.agent_keys"].includes(x.key));
+  const dims = (r?.dimensions ?? []).filter((x) => ["runtime.gateway", "runtime.mcp", "authentication.agent_keys"].includes(x.key));
   const report = d.costs.report;
   const top = (d.findings ?? [])[0];
   return (

@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestProveGatewayAndProxy(t *testing.T) {
+func TestProveGateway(t *testing.T) {
 	gw := func(id, state, agentDigest, cfgDigest string) Process {
 		p := Process{Record: Record{InstanceID: id, Roles: []string{RoleGateway}, Catalog: &Catalog{Agents: []Agent{{Name: "hr", PolicyDigest: agentDigest}}}}, Assessed: state, Current: true}
 		if cfgDigest != "" {
@@ -14,8 +14,10 @@ func TestProveGatewayAndProxy(t *testing.T) {
 		}
 		return p
 	}
-	px := func(id, state, cfgDigest string) Process {
-		return Process{Record: Record{InstanceID: id, Roles: []string{RoleMCPProxy}, ProxyConfig: &ConfigRef{Digest: cfgDigest}}, Assessed: state, Current: true}
+	// A record written by an earlier release with the removed MCP proxy
+	// role (#431) proves nothing about the gateway.
+	px := func(id, state string) Process {
+		return Process{Record: Record{InstanceID: id, Roles: []string{"mcp_proxy"}}, Assessed: state, Current: true}
 	}
 	gwCases := []struct {
 		name     string
@@ -25,7 +27,7 @@ func TestProveGatewayAndProxy(t *testing.T) {
 		want     string
 	}{
 		{"records unreadable", nil, false, "g1", BoundaryUnknown},
-		{"no gateway runs (proxy only)", []Process{px("p", Running, "x")}, true, "g1", BoundaryNotRunning},
+		{"no gateway runs (an earlier release's proxy record only)", []Process{px("p", Running)}, true, "g1", BoundaryNotRunning},
 		{"stale gateway proves nothing", []Process{gw("a", Stale, "d1", "g1")}, true, "g1", BoundaryNotRunning},
 		{"agent and gateway config match", []Process{gw("a", Running, "d1", "g1")}, true, "g1", BoundaryProven},
 		{"gateway config edited, not restarted", []Process{gw("a", Running, "d1", "g0")}, true, "g1", BoundaryDiffers},
@@ -39,21 +41,6 @@ func TestProveGatewayAndProxy(t *testing.T) {
 			got := ProveGateway(View{Processes: tc.procs}, tc.readable, "hr", "", "d1", tc.cfg)
 			assert.Equal(t, tc.want, got.State, got.Reason)
 			assert.NotEmpty(t, got.Reason)
-		})
-	}
-	pxCases := []struct {
-		name  string
-		procs []Process
-		want  string
-	}{
-		{"no proxy runs (gateway only)", []Process{gw("a", Running, "d1", "g1")}, BoundaryNotRunning},
-		{"proxy loaded the current file", []Process{px("p", Running, "p1")}, BoundaryProven},
-		{"proxy config edited, not restarted", []Process{px("p", Running, "p0")}, BoundaryDiffers},
-	}
-	for _, tc := range pxCases {
-		t.Run("proxy/"+tc.name, func(t *testing.T) {
-			got := ProveProxy(View{Processes: tc.procs}, true, "p1")
-			assert.Equal(t, tc.want, got.State, got.Reason)
 		})
 	}
 }
@@ -70,7 +57,7 @@ func TestProveActionPolicy(t *testing.T) {
 		}
 		return p
 	}
-	console := Process{Record: Record{InstanceID: "ui", Roles: []string{RoleMCPProxy}, ProxyConfig: &ConfigRef{Digest: "p1"}}, Assessed: Running}
+	console := Process{Record: Record{InstanceID: "ui", Roles: []string{"mcp_proxy"}}, Assessed: Running}
 	for _, tc := range []struct {
 		name     string
 		procs    []Process
@@ -85,7 +72,7 @@ func TestProveActionPolicy(t *testing.T) {
 		{"agent file edited, not reloaded", []Process{serve("a", RoleGateway, Running, "d0", "g1")}, true, BoundaryDiffers},
 		{"a native serve does not report the config it read", []Process{serve("n", RoleNative, Running, "d1", "")}, true, BoundaryUnknown},
 		{"a proven gateway beside an unreported native serve is not proven", []Process{serve("a", RoleGateway, Running, "d1", "g1"), serve("n", RoleNative, Running, "d1", "")}, true, BoundaryUnknown},
-		{"a proven gateway beside a serve on an older company policy", []Process{serve("a", RoleGateway, Running, "d1", "g1"), serve("b", RoleMCPProxy, Running, "d1", "g0")}, true, BoundaryDiffers},
+		{"a proven gateway beside a serve on an older company policy", []Process{serve("a", RoleGateway, Running, "d1", "g1"), serve("b", RoleNative, Running, "d1", "g0")}, true, BoundaryDiffers},
 		{"use case missing from a serve's generation", []Process{{Record: Record{InstanceID: "a", Roles: []string{RoleGateway}, Catalog: &Catalog{}, GatewayConfig: &ConfigRef{Digest: "g1"}}, Assessed: Running}}, true, BoundaryDiffers},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

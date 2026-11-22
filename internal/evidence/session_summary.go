@@ -77,10 +77,14 @@ type SessionSummary struct {
 	// Tool actions visible to Talon: intercepted MCP calls with their
 	// decisions. Local actions that bypass Talon are invisible and are not
 	// represented here — this is not a complete account of agent activity.
-	ToolCalls       int      `json:"tool_calls,omitempty"`
-	ToolCallsDenied int      `json:"tool_calls_denied,omitempty"`
-	ToolCallsFailed int      `json:"tool_calls_failed,omitempty"`
-	ToolNames       []string `json:"tool_names,omitempty"`
+	ToolCalls       int `json:"tool_calls,omitempty"`
+	ToolCallsDenied int `json:"tool_calls_denied,omitempty"`
+	ToolCallsFailed int `json:"tool_calls_failed,omitempty"`
+	// ToolCallsUnknown counts governed actions whose outcome is unknown: the
+	// request may have reached the business system and no trustworthy
+	// answer exists (#431). Never a denial, never a failure.
+	ToolCallsUnknown int      `json:"tool_calls_unknown,omitempty"`
+	ToolNames        []string `json:"tool_names,omitempty"`
 
 	// Policy interventions on LLM requests.
 	ToolsFiltered    []string `json:"tools_filtered,omitempty"`
@@ -238,11 +242,24 @@ func (a *sessionAgg) addMetadata(ev *Evidence) {
 	}
 }
 
+// policyDenied reports whether a record is a policy DENIAL. An action
+// lifecycle record with an attempt result exists only for an authorized
+// operation: the action service signs an unknown, not-dispatched or failed
+// attempt with Allowed=false (the attempt did not succeed), which is an
+// outcome after authorization, never a denial (#431) — the rule OutcomeOf
+// applies to the same records.
+func policyDenied(ev *Evidence) bool {
+	if al := ev.ActionLifecycle; al != nil && al.ResultProvenance != "" {
+		return false
+	}
+	return !ev.PolicyDecision.Allowed
+}
+
 func (a *sessionAgg) addOutcome(ev *Evidence) {
-	if ev.PolicyDecision.Allowed {
-		a.sum.Allowed++
-	} else {
+	if policyDenied(ev) {
 		a.sum.Denied++
+	} else {
+		a.sum.Allowed++
 	}
 	if ev.Execution.Error != "" {
 		a.sum.Errors++
@@ -282,7 +299,7 @@ func (a *sessionAgg) addClassCounts(ev *Evidence) {
 	if IsRequestClass(ev.InvocationType) && !IsToolActionType(ev.InvocationType) {
 		a.sum.Requests++
 	}
-	if !ev.PolicyDecision.Allowed {
+	if policyDenied(ev) {
 		if a.sum.DeniedByReason == nil {
 			a.sum.DeniedByReason = map[string]int{}
 		}
@@ -310,6 +327,10 @@ func (a *sessionAgg) addReliability(ev *Evidence) {
 // addToolAction rolls up intercepted MCP calls: total, denied, failed
 // upstream, and the distinct tool names Talon saw.
 func (a *sessionAgg) addToolAction(ev *Evidence) {
+	if ev.InvocationType == InvocationTypeActionLifecycle {
+		a.addGovernedAction(ev)
+		return
+	}
 	if !IsToolActionType(ev.InvocationType) {
 		return
 	}
@@ -323,6 +344,36 @@ func (a *sessionAgg) addToolAction(ev *Evidence) {
 		if name != "" {
 			a.toolNames[name] = struct{}{}
 		}
+	}
+}
+
+// addGovernedAction counts a governed action (Action Gateway operation, over
+// HTTP or MCP, #431) once: as denied at establishment, or as one executed
+// call at attempt completion — succeeded, failed downstream or before
+// dispatch, or unknown. Preparing, approving and claiming are not calls.
+func (a *sessionAgg) addGovernedAction(ev *Evidence) {
+	al := ev.ActionLifecycle
+	if al == nil {
+		return
+	}
+	switch {
+	case al.Event == ActionEventOperationEstablished && !ev.PolicyDecision.Allowed:
+		a.sum.ToolCalls++
+		a.sum.ToolCallsDenied++
+	case al.Event == ActionEventAttemptCompleted:
+		a.sum.ToolCalls++
+		switch {
+		case al.ResultProvenance == ResultProvenanceUnknown:
+			a.sum.ToolCallsUnknown++
+		case al.ResultProvenance == ResultProvenanceObserved && al.AttemptStatus == "succeeded":
+		default:
+			a.sum.ToolCallsFailed++
+		}
+	default:
+		return
+	}
+	if al.Action != "" {
+		a.toolNames[al.Action] = struct{}{}
 	}
 }
 
@@ -396,8 +447,11 @@ func (a *sessionAgg) addFailure(ev *Evidence) {
 const maxFailureDetail = 200
 
 func failureOf(ev *Evidence) *SessionFailure {
+	if al := ev.ActionLifecycle; al != nil && al.Event == ActionEventAttemptCompleted {
+		return actionAttemptFailure(ev)
+	}
 	switch {
-	case !ev.PolicyDecision.Allowed:
+	case policyDenied(ev):
 		detail := ""
 		if len(ev.PolicyDecision.Reasons) > 0 {
 			detail = ev.PolicyDecision.Reasons[0]
@@ -412,6 +466,29 @@ func failureOf(ev *Evidence) *SessionFailure {
 	default:
 		return nil
 	}
+}
+
+// actionAttemptFailure explains an attempt that did not succeed by its
+// recorded outcome (the detail is Talon's own signed reason, never source
+// text); nil for a success.
+func actionAttemptFailure(ev *Evidence) *SessionFailure {
+	al := ev.ActionLifecycle
+	code := ""
+	switch {
+	case al.ResultProvenance == ResultProvenanceUnknown:
+		code = "action_outcome_unknown"
+	case al.ResultProvenance == ResultProvenanceNotDispatched:
+		code = "action_not_dispatched"
+	case al.AttemptStatus != "succeeded":
+		code = "action_downstream_failed"
+	default:
+		return nil
+	}
+	detail := ""
+	if len(ev.PolicyDecision.Reasons) > 0 {
+		detail = ev.PolicyDecision.Reasons[0]
+	}
+	return &SessionFailure{At: ev.Timestamp, Code: code, Detail: truncateDetail(detail)}
 }
 
 func truncateDetail(s string) string {

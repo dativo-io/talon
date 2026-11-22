@@ -43,7 +43,7 @@ export function Configuration() {
               <Badge tone="neutral">Shared by every tenant</Badge>
             </div>
             <p className="small muted">
-              The organization baseline, the gateway and providers, and the MCP proxy are installation-wide{tenant ? `; they apply to tenant ${tenant} as to every other` : ""}.
+              The organization baseline and the gateway and providers are installation-wide{tenant ? `; they apply to tenant ${tenant} as to every other` : ""}. MCP action sources belong to the AI use cases that declare them.
             </p>
             <Active c={c} />
             {c.issues && c.issues.length > 0 ? (
@@ -55,7 +55,6 @@ export function Configuration() {
               </div>
             ) : null}
             <Organization c={c} />
-            <Proxy c={c} />
           </section>
           <section className="stack" aria-labelledby="cfg-tenant">
             <div className="section-head">
@@ -64,7 +63,7 @@ export function Configuration() {
             </div>
             <p className="small muted">
               Talon has no tenant-wide policy layer. Each AI use case's effective policy is the shared organization baseline, its own agent file's
-              override and the hard constraints, enforced separately at the LLM gateway and the MCP proxy. Open a use case's effective policy for the
+              override and the hard constraints, enforced at the LLM gateway and, for actions, at the Action Gateway (also behind the governed MCP endpoint). Open a use case's effective policy for the
               winning rule of each field.
             </p>
             <section className="card" aria-labelledby="cfg-usecases">
@@ -204,26 +203,6 @@ function UseCaseCard({ u }: { u: UseCaseConfig }) {
   );
 }
 
-function Proxy({ c }: { c: ConfigDTO }) {
-  const p = c.mcp_proxy;
-  return (
-    <DetailSection title="MCP proxy (shared)" id="cfg-proxy" actions={<SourceFreshness a={p.availability} />}>
-      <AvailabilityNotice a={p.availability} what="MCP proxy configuration" />
-      {p.availability.state === "ok" ? (
-        <dl className="facts">
-          <dt>Source</dt><dd><code>{p.source_path}</code></dd>
-          <dt>Proxy</dt><dd>{p.name}</dd>
-          <dt>Upstream</dt><dd>{p.vendor} · <code>{p.endpoint}</code>{p.region ? ` · ${p.region}` : ""}</dd>
-          <dt>Upstream credential</dt><dd>{p.auth_secret_name ? <>vault secret <code>{p.auth_secret_name}</code></> : "none"}</dd>
-          <dt>Allowed tools</dt><dd><Chips items={p.allowed_tools} /></dd>
-          <dt>Forbidden tools</dt><dd><Chips items={p.forbidden_tools} /></dd>
-          <dt>Rate limit</dt><dd>{p.requests_per_minute ? `${p.requests_per_minute}/min` : "—"}</dd>
-        </dl>
-      ) : null}
-    </DetailSection>
-  );
-}
-
 function FileMatch({ label, f }: { label: string; f: ActiveFile | undefined }) {
   if (!f) return null;
   return (
@@ -254,7 +233,6 @@ function Active({ c }: { c: ConfigDTO }) {
               <dt>Active generation</dt><dd>{a.active_generation ? <code className="small">{a.active_generation.slice(0, 16)}</code> : <span className="muted">not reported</span>}{a.activated_at ? <span className="small muted"> · activated {utc(a.activated_at)}</span> : null}</dd>
               <dt>Agent files</dt><dd>{a.agent_files_match === null ? <span className="muted">not comparable</span> : a.agent_files_match ? <Badge tone="ok" plain>match the active generation</Badge> : <Badge tone="warn" plain>differ from the active generation</Badge>}</dd>
               <dt>Last reload</dt><dd>{!a.reload_enabled ? "reload off" : a.reload_rejected ? <><Badge tone="warn">Rejected</Badge> <span className="small">last-known-good keeps serving{a.rejected_at ? ` since ${utc(a.rejected_at)}` : ""}</span>{(a.rejected_causes ?? []).map((x) => <div key={x} className="small muted">{x}</div>)}</> : "accepted"}</dd>
-              <FileMatch label="MCP proxy config" f={a.proxy_config} />
               <FileMatch label="Gateway config" f={a.gateway_config} />
             </dl>
           </article>

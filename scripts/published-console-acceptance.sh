@@ -7,10 +7,12 @@
 #   1. the packaged console in Chromium (pairing, session expiry, the six
 #      pages, read-only boundary, evidence verification, tamper detection,
 #      tenant scoping, no secret in the page) — scripts/console-browser-smoke.sh
-#   2. People Analytics over real processes (#545): HR MCP backend with its
-#      own counters, `talon serve --proxy-config`, `talon ui serve`; allowed
-#      call dispatched, forbidden export never reaches the backend, backend
-#      rejection is not a Talon denial, console = CLI = browser, signatures,
+#   2. People Analytics over real processes (#545, #431): HR MCP backend with
+#      its own counters as the use case's MCP action source, `talon serve`
+#      (governed MCP endpoint), `talon ui serve`; allowed read-only call
+#      executed once, forbidden export never reaches the backend, a backend
+#      rejection after dispatch is unknown (not a Talon denial), console = CLI
+#      = browser, signatures,
 #      restart, negative auth — scripts/people-analytics-live.sh
 #   3. the console read-contract and readiness e2e (CLI/API parity on a live
 #      store, undecryptable agent key, runtime truth) — TestE2E_Console*

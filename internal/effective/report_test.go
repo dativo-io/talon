@@ -25,17 +25,17 @@ import (
 const signingKey = "effective-test-signing-key-0000000001"
 
 type fixture struct {
-	dir, agents, gw, proxy string
-	store                  *evidence.Store
+	dir, agents, gw string
+	store           *evidence.Store
 }
 
 // peopleAnalytics writes the People Analytics shape: an organization
-// baseline, the hr-analytics-assistant agent file, and an MCP proxy that
-// forbids hr_employee_export.
+// baseline and the hr-analytics-assistant agent file that forbids
+// hr_employee_export.
 func peopleAnalytics(t *testing.T) fixture {
 	t.Helper()
 	dir := t.TempDir()
-	f := fixture{dir: dir, agents: filepath.Join(dir, "agents"), gw: filepath.Join(dir, "talon.config.yaml"), proxy: filepath.Join(dir, "proxy.talon.yaml")}
+	f := fixture{dir: dir, agents: filepath.Join(dir, "agents"), gw: filepath.Join(dir, "talon.config.yaml")}
 	a := filepath.Join(f.agents, "hr-analytics-assistant")
 	require.NoError(t, os.MkdirAll(a, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(a, "agent.talon.yaml"), []byte(`agent:
@@ -64,17 +64,6 @@ policies:
     constraints:
       forbidden_tools: ["admin_*"]
 `), 0o600))
-	require.NoError(t, os.WriteFile(f.proxy, []byte(`agent:
-  name: hr-mcp-proxy
-  type: mcp_proxy
-proxy:
-  upstream:
-    vendor: hr-backend
-    url: "http://hr-upstream:9000/mcp"
-  allowed_tools:
-    - name: hr_aggregate_sql
-  forbidden_tools: ["hr_employee_export"]
-`), 0o600))
 	s, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), signingKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
@@ -83,7 +72,7 @@ proxy:
 }
 
 func (f fixture) inputs() Inputs {
-	return Inputs{AgentsDir: f.agents, GatewayConfig: f.gw, ProxyConfig: f.proxy, Name: "hr-analytics-assistant", Evidence: f.store}
+	return Inputs{AgentsDir: f.agents, GatewayConfig: f.gw, Name: "hr-analytics-assistant", Evidence: f.store}
 }
 
 func rule(r *Report, name string) gateway.RuleProvenance {
@@ -115,20 +104,7 @@ func TestBuild_PeopleAnalyticsLayers(t *testing.T) {
 	assert.ElementsMatch(t, []string{"admin_*", "hr_employee_export"}, r.Effective.ForbiddenTools, "union of organization and use-case lists")
 	require.Len(t, r.Effective.Providers, 1)
 	assert.Equal(t, "openai", r.Effective.Providers[0].Name)
-
-	// MCP boundary: the proxy's own checks.
-	require.NotNil(t, r.MCPBoundary)
-	assert.Equal(t, "hr-mcp-proxy", r.MCPBoundary.Proxy)
-	decisions := map[string]string{}
-	for _, d := range r.MCPBoundary.Tools {
-		s := "deny:" + d.Stage
-		if d.Allowed {
-			s = "allow"
-		}
-		decisions[d.Tool] = s
-	}
-	assert.Equal(t, "deny:forbidden_tools", decisions["hr_employee_export"], "forbidden at the MCP boundary before dispatch")
-	assert.Equal(t, "allow", decisions["hr_aggregate_sql"])
+	assert.Empty(t, r.CurrentFiles.GatewayConfig.Error)
 
 	// Without runtime records nothing is proven active.
 	assert.Equal(t, runtimestatus.LoadedUnknown, r.Loaded.State)
@@ -150,7 +126,7 @@ func TestBuild_LoadedProofAndHistoricalDecision(t *testing.T) {
 	// current gateway config's digest: proven active.
 	now := time.Now().UTC()
 	view := runtimestatus.View{Processes: []runtimestatus.Process{
-		runningRecord("gw1", []string{runtimestatus.RoleGateway}, digest, first.CurrentFiles.GatewayConfig.Digest, ""),
+		runningRecord("gw1", []string{runtimestatus.RoleGateway}, digest, first.CurrentFiles.GatewayConfig.Digest),
 	}}
 	in.Runtime, in.RuntimeReadable = &view, true
 	r, err := Build(ctx, in)
@@ -225,54 +201,41 @@ func TestBuild_FailClosed(t *testing.T) {
 	assert.NotEmpty(t, r.CurrentFiles.GatewayConfig.Error)
 	assert.Contains(t, r.Notes[0], "no organization baseline")
 	assert.InDelta(t, 5, r.Effective.DailyCap, 1e-9, "the use case's own cap still compiles")
-
-	require.NoError(t, os.WriteFile(f.proxy, []byte("proxy: ["), 0o600))
-	r, err = Build(ctx, f.inputs())
-	require.NoError(t, err)
-	require.NotNil(t, r.MCPBoundary)
-	assert.NotEmpty(t, r.MCPBoundary.Error)
-	assert.Empty(t, r.MCPBoundary.Tools, "no decision is shown from a config that cannot be loaded")
 }
 
 // runningRecord is a running process of this installation as Assess shows it.
-func runningRecord(id string, roles []string, agentDigest, gwDigest, proxyDigest string) runtimestatus.Process {
+func runningRecord(id string, roles []string, agentDigest, gwDigest string) runtimestatus.Process {
 	r := runtimestatus.Record{InstanceID: id, Roles: roles, Catalog: &runtimestatus.Catalog{Agents: []runtimestatus.Agent{{Name: "hr-analytics-assistant", PolicyDigest: agentDigest}}}}
 	if gwDigest != "" {
 		r.GatewayConfig = &runtimestatus.ConfigRef{Digest: gwDigest}
-	}
-	if proxyDigest != "" {
-		r.ProxyConfig = &runtimestatus.ConfigRef{Digest: proxyDigest}
 	}
 	return runtimestatus.Process{Record: r, Assessed: runtimestatus.Running, Current: true}
 }
 
 // TestBuild_ProofIsPerEnforcementBoundary (#555 review): the gateway policy is
 // proven active only when a running gateway loaded the current agent file AND
-// the current gateway config; the MCP decisions only when a running proxy
-// loaded the current proxy config. Neither proves the other.
+// the current gateway config. A process without the gateway role (a native
+// serve) does not prove it.
 func TestBuild_ProofIsPerEnforcementBoundary(t *testing.T) {
 	f := peopleAnalytics(t)
 	ctx := context.Background()
 	in := f.inputs()
 	first, err := Build(ctx, in)
 	require.NoError(t, err)
-	agent, gw, px := first.CurrentFiles.PolicyDigest, first.CurrentFiles.GatewayConfig.Digest, first.CurrentFiles.ProxyConfig.Digest
+	agent, gw := first.CurrentFiles.PolicyDigest, first.CurrentFiles.GatewayConfig.Digest
 
-	// Only the MCP proxy runs: its tool decisions are proven, the gateway
-	// policy is not (no gateway enforces it).
-	view := runtimestatus.View{Processes: []runtimestatus.Process{runningRecord("px", []string{runtimestatus.RoleMCPProxy}, agent, "", px)}}
+	// Only a native serve runs: the gateway policy is not proven (no
+	// gateway enforces it).
+	view := runtimestatus.View{Processes: []runtimestatus.Process{runningRecord("native", []string{runtimestatus.RoleNative}, agent, "")}}
 	in.Runtime, in.RuntimeReadable = &view, true
 	r, err := Build(ctx, in)
 	require.NoError(t, err)
-	assert.Equal(t, runtimestatus.LoadedMatchesFile, r.Loaded.State, "the agent file itself is loaded by the proxy")
-	assert.False(t, r.Effective.ProvenActive, "a proxy does not enforce the gateway policy")
+	assert.Equal(t, runtimestatus.LoadedMatchesFile, r.Loaded.State, "the agent file itself is loaded by the native serve")
+	assert.False(t, r.Effective.ProvenActive, "a native serve does not enforce the gateway policy")
 	assert.Equal(t, runtimestatus.BoundaryNotRunning, r.Effective.Proof.State)
-	require.NotNil(t, r.MCPBoundary)
-	assert.True(t, r.MCPBoundary.ProvenActive)
-	assert.Equal(t, runtimestatus.BoundaryProven, r.MCPBoundary.Proof.State)
 
 	// A gateway runs with the current files: proven.
-	view.Processes = append(view.Processes, runningRecord("gw", []string{runtimestatus.RoleGateway}, agent, gw, ""))
+	view.Processes = append(view.Processes, runningRecord("gw", []string{runtimestatus.RoleGateway}, agent, gw))
 	r, err = Build(ctx, in)
 	require.NoError(t, err)
 	assert.True(t, r.Effective.ProvenActive)
@@ -288,15 +251,6 @@ func TestBuild_ProofIsPerEnforcementBoundary(t *testing.T) {
 	assert.False(t, r.Effective.ProvenActive, "the running gateway loaded an older gateway config")
 	assert.Equal(t, runtimestatus.BoundaryDiffers, r.Effective.Proof.State)
 	assert.Contains(t, r.Effective.Basis, "not proven")
-
-	// The proxy config edited without a restart: MCP decisions not proven.
-	praw, err := os.ReadFile(f.proxy)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(f.proxy, append(praw, []byte("# edited\n")...), 0o600))
-	r, err = Build(ctx, in)
-	require.NoError(t, err)
-	assert.False(t, r.MCPBoundary.ProvenActive)
-	assert.Equal(t, runtimestatus.BoundaryDiffers, r.MCPBoundary.Proof.State)
 }
 
 // TestBuild_LastDecisionIsVerified (#555 review): the last decision is shown

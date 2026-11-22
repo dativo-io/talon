@@ -44,7 +44,7 @@ const (
 // Dimension keys.
 const (
 	DimGateway        = "runtime.gateway"
-	DimMCPProxy       = "runtime.mcp_proxy"
+	DimMCP            = "runtime.mcp"
 	DimActivation     = "configuration.activation"
 	DimAgentKeys      = "authentication.agent_keys"
 	DimEvidenceStore  = "data.evidence_store"
@@ -113,14 +113,15 @@ type Finding struct {
 // is a pure function of them.
 type readinessInputs struct {
 	Runtime Runtime
-	// ProxyConfigDigest / GatewayConfigDigest: sha256 of the config files the
-	// console reads now ("" when not configured or unreadable).
-	ProxyConfigured     bool
-	ProxyConfigDigest   string
+	// GatewayConfigDigest: sha256 of the gateway config file the console
+	// reads now ("" when not configured or unreadable).
 	GatewayConfigDigest string
-	Evidence            StoreFacts
-	Sessions            StoreFacts
-	Now                 time.Time
+	// MCPUseCases: the use cases that declare an MCP action source, with
+	// their agent files' digests as the console reads them now.
+	MCPUseCases []mcpUseCase
+	Evidence    StoreFacts
+	Sessions    StoreFacts
+	Now         time.Time
 }
 
 // StoreFacts is what the console established about one store just now.
@@ -131,12 +132,8 @@ type StoreFacts struct {
 }
 
 func (s *Service) readiness(ctx context.Context, rt Runtime) Readiness {
-	in := readinessInputs{Runtime: rt, Now: s.now()}
+	in := readinessInputs{Runtime: rt, Now: s.now(), MCPUseCases: s.mcpUseCases()}
 	src := s.cfg.ConfigSources
-	if src.ProxyConfig != "" {
-		in.ProxyConfigured = true
-		in.ProxyConfigDigest = fileDigest(src.ProxyConfig)
-	}
 	if src.GatewayConfig != "" {
 		in.GatewayConfigDigest = fileDigest(src.GatewayConfig)
 	}
@@ -192,7 +189,7 @@ func assessReadiness(in readinessInputs) Readiness {
 	readable := rt.Availability.State == StateOK
 	gw := roleDimension(rt, runtimestatus.RoleGateway, DimGateway, "LLM gateway")
 	add(gw.dim, gw.finding)
-	mp := roleDimension(rt, runtimestatus.RoleMCPProxy, DimMCPProxy, "MCP proxy")
+	mp := roleDimension(rt, runtimestatus.RoleMCP, DimMCP, "MCP endpoint")
 	add(mp.dim, mp.finding)
 	d, f := activationDimension(in, readable)
 	add(d, f)
@@ -272,8 +269,8 @@ func currentProcess(rt Runtime, id string) *runtimestatus.Process {
 	return nil
 }
 
-// runningDataPlane lists the running processes that serve the gateway or the
-// MCP proxy.
+// runningDataPlane lists the running processes that serve the gateway or
+// the governed MCP endpoint.
 func runningDataPlane(rt Runtime) []*runtimestatus.Process {
 	var out []*runtimestatus.Process
 	for i := range rt.Processes {
@@ -282,7 +279,7 @@ func runningDataPlane(rt Runtime) []*runtimestatus.Process {
 			continue
 		}
 		for _, r := range p.Roles {
-			if r == runtimestatus.RoleGateway || r == runtimestatus.RoleMCPProxy {
+			if r == runtimestatus.RoleGateway || r == runtimestatus.RoleMCP {
 				out = append(out, p)
 				break
 			}
@@ -311,14 +308,20 @@ func activationDimension(in readinessInputs, readable bool) (ReadinessDimension,
 	}
 	view := runtimestatus.View{Processes: in.Runtime.Processes}
 	var proofs []configProof
-	if in.ProxyConfigured {
-		proofs = append(proofs, configProof{"MCP proxy config", runtimestatus.ProveProxy(view, true, in.ProxyConfigDigest)})
-	}
 	if roleExpected(in.Runtime, runtimestatus.RoleGateway) {
 		proofs = append(proofs, configProof{"gateway config", runtimestatus.ProveGatewayConfig(view, true, in.GatewayConfigDigest)})
 	}
+	// The governed MCP endpoint is the Action Gateway over MCP (#431): what
+	// it runs is each MCP-sourcing use case's agent file in the active
+	// generation plus the company policy read at start — the Action
+	// Gateway's own proof, never inferred from a heartbeat or evidence.
+	if roleExpected(in.Runtime, runtimestatus.RoleMCP) {
+		for _, uc := range in.MCPUseCases {
+			proofs = append(proofs, configProof{"MCP endpoint (" + uc.Name + ")", runtimestatus.ProveActionPolicy(view, true, uc.Name, uc.Tenant, uc.Digest, in.GatewayConfigDigest)})
+		}
+	}
 	if len(proofs) == 0 {
-		d.State, d.Reason = ReadyNotConfigured, "no gateway or MCP proxy is configured for this installation"
+		d.State, d.Reason = ReadyNotConfigured, "no gateway or MCP endpoint is configured for this installation"
 		return d, nil
 	}
 	d.State, d.Reason = worstProof(proofs)
@@ -413,10 +416,10 @@ func agentKeysDimension(rt Runtime, readable bool) (ReadinessDimension, *Finding
 	}
 	switch {
 	case len(procs) == 0 && anyExpected(rt):
-		d.State, d.Reason = ReadyUnknown, "no gateway or MCP proxy process is running, so no process reports which agent keys it holds"
+		d.State, d.Reason = ReadyUnknown, "no gateway or MCP endpoint process is running, so no process reports which agent keys it holds"
 		return d, nil
 	case len(procs) == 0:
-		d.State, d.Reason = ReadyNotConfigured, "no gateway or MCP proxy is configured for this installation"
+		d.State, d.Reason = ReadyNotConfigured, "no gateway or MCP endpoint is configured for this installation"
 		return d, nil
 	case unreported > 0:
 		d.State = ReadyUnverified
@@ -428,7 +431,7 @@ func agentKeysDimension(rt Runtime, readable bool) (ReadinessDimension, *Finding
 		return d, nil
 	}
 	d.State = ReadyOK
-	d.Reason = "every running gateway and MCP proxy reports holding the keys of all use cases that declare one; the console did not attempt to authenticate"
+	d.Reason = "every running gateway and MCP endpoint reports holding the keys of all use cases that declare one; the console did not attempt to authenticate"
 	return d, nil
 }
 
@@ -495,8 +498,8 @@ func roleName(role string) string {
 	switch role {
 	case runtimestatus.RoleGateway:
 		return "LLM gateway"
-	case runtimestatus.RoleMCPProxy:
-		return "MCP proxy"
+	case runtimestatus.RoleMCP:
+		return "MCP endpoint"
 	}
 	return role
 }
@@ -565,7 +568,7 @@ func overall(dims []ReadinessDimension) string {
 	runtimeConfigured := false
 	for _, d := range dims {
 		has[d.State] = true
-		if (d.Key == DimGateway || d.Key == DimMCPProxy) && d.State != ReadyNotConfigured {
+		if (d.Key == DimGateway || d.Key == DimMCP) && d.State != ReadyNotConfigured {
 			runtimeConfigured = true
 		}
 	}
@@ -590,7 +593,7 @@ func summary(r Readiness) string {
 		}
 		return "At least one operational dimension is degraded."
 	case OverallNotConfigured:
-		return "No gateway or MCP proxy is configured for this console; only recorded history can be shown."
+		return "No gateway or MCP endpoint is configured for this console; only recorded history can be shown."
 	case OverallUnknown:
 		return "Nothing is known to be broken, but part of the runtime cannot be assessed."
 	case OverallUnverified:

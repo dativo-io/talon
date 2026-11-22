@@ -16,7 +16,7 @@ import (
 )
 
 // configService is the fixture service with every configuration source set,
-// including a proxy file, and with secrets planted wherever a config file
+// and with secrets planted wherever a config file
 // could carry one.
 func configService(t *testing.T) (*Service, *fixture) {
 	t.Helper()
@@ -56,23 +56,8 @@ func configService(t *testing.T) (*Service, *fixture) {
     cost_webhook_url: "https://hooks.example/T0K3N-SUPERSECRET-WEBHOOK"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(f.dir, "talon.config.yaml"), []byte(gw), 0o600))
-	px := `agent:
-  name: hr-mcp-proxy
-  type: mcp_proxy
-proxy:
-  upstream:
-    vendor: hr-backend
-    url: "http://svc:SUPERSECRET-PROXYURL@hr-upstream:9000/mcp?token=SUPERSECRET-PROXYQUERY"
-    auth:
-      secret_name: hr-upstream-token
-  allowed_tools:
-    - name: hr_aggregate_sql
-  forbidden_tools: ["hr_employee_export"]
-`
-	pxPath := filepath.Join(f.dir, "proxy.talon.yaml")
-	require.NoError(t, os.WriteFile(pxPath, []byte(px), 0o600))
 	svc := f.service(t)
-	svc.cfg.ConfigSources = ConfigSources{AgentsDir: filepath.Join(f.dir, "agents"), GatewayConfig: filepath.Join(f.dir, "talon.config.yaml"), ProxyConfig: pxPath}
+	svc.cfg.ConfigSources = ConfigSources{AgentsDir: filepath.Join(f.dir, "agents"), GatewayConfig: filepath.Join(f.dir, "talon.config.yaml")}
 	return svc, f
 }
 
@@ -113,14 +98,6 @@ func TestConfiguration_SemanticSummaryFromTheFiles(t *testing.T) {
 	assert.InDelta(t, 10, c.UseCases.Items[0].CostDaily, 1e-9)
 	assert.NotEmpty(t, c.UseCases.Items[0].SourcePath)
 
-	px := c.MCPProxy
-	require.Equal(t, StateOK, px.Availability.State, px.Availability.Error)
-	assert.Equal(t, "hr-backend", px.Vendor)
-	assert.Equal(t, "http://hr-upstream:9000", px.Endpoint)
-	assert.Equal(t, []string{"hr_aggregate_sql"}, px.AllowedTools)
-	assert.Equal(t, []string{"hr_employee_export"}, px.ForbiddenTools)
-	assert.Equal(t, "hr-upstream-token", px.AuthSecretName)
-
 	assert.Contains(t, c.EffectivePolicy.Note, "talon agents show <name> --effective", "provenance comes from the canonical resolver per use case (#305), not from a merge on this page")
 	assert.Equal(t, StateUnknown, c.ActiveGeneration.State, "file contents are not proof of the running generation (#538)")
 
@@ -153,15 +130,13 @@ func TestConfiguration_MissingAndInvalidSources(t *testing.T) {
 	c := svc.Configuration(context.Background(), "")
 	assert.Equal(t, StateUnknown, c.Organization.Availability.State, "no sources configured: unknown, not empty")
 	assert.Equal(t, StateUnknown, c.UseCases.Availability.State)
-	assert.Equal(t, StateUnknown, c.MCPProxy.Availability.State)
 
 	bad := filepath.Join(f.dir, "bad.yaml")
 	require.NoError(t, os.WriteFile(bad, []byte("gateway: [not a map"), 0o600))
-	svc.cfg.ConfigSources = ConfigSources{GatewayConfig: bad, ProxyConfig: filepath.Join(f.dir, "missing-proxy.yaml"), AgentsDir: filepath.Join(f.dir, "agents")}
+	svc.cfg.ConfigSources = ConfigSources{GatewayConfig: bad, AgentsDir: filepath.Join(f.dir, "agents")}
 	c = svc.Configuration(context.Background(), "")
 	assert.Equal(t, StateUnavailable, c.Organization.Availability.State)
 	assert.NotEmpty(t, c.Organization.Availability.Error)
-	assert.Equal(t, StateUnavailable, c.MCPProxy.Availability.State)
 
 	leaky := filepath.Join(f.dir, "leaky.yaml")
 	require.NoError(t, os.WriteFile(leaky, []byte("gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      base_url: \"https://u:SUPERSECRET-ERR@api.openai.com\"\n      secret_name: k\n      fallback:\n        - provider: nowhere\n"), 0o600))

@@ -81,12 +81,11 @@ func runtimeBase(cfg *config.Config) runtimestatus.Record {
 	if serveGateway {
 		roles = append(roles, runtimestatus.RoleGateway)
 	}
-	if serveProxyConfig != "" {
-		roles = append(roles, runtimestatus.RoleMCPProxy)
-	}
 	if len(roles) == 0 {
 		roles = append(roles, runtimestatus.RoleNative)
 	}
+	// Every serve mounts the governed MCP endpoint (#431).
+	roles = append(roles, runtimestatus.RoleMCP)
 	store, _ := filepath.Abs(cfg.EvidenceDBPath())
 	base := runtimestatus.Record{
 		Installation: runtimestatus.Installation{KeyFingerprint: runtimestatus.Fingerprint(cfg.SigningKey), StorePath: store},
@@ -98,19 +97,18 @@ func runtimeBase(cfg *config.Config) runtimestatus.Record {
 	if base.StartedAt.IsZero() {
 		base.StartedAt = time.Now().UTC()
 	}
-	if serveProxyConfig != "" {
-		base.ProxyConfig = configRef(serveProxyConfig)
-	}
-	if serveGateway {
-		base.GatewayConfig = loadedConfigRef(serveGatewayConfig, loadedGatewayConfigDigest)
+	if loadedGatewayConfigPath != "" {
+		base.GatewayConfig = loadedConfigRef(loadedGatewayConfigPath, loadedGatewayConfigDigest)
 	}
 	return base
 }
 
 // loadedGatewayConfigDigest is the SHA-256 of the bytes this process parsed
-// its gateway config from (gateway.LoadGatewayConfigWithDigest), set when
-// serve loads it. Empty until then.
-var loadedGatewayConfigDigest string
+// its gateway config from (gateway.LoadGatewayConfigWithDigest), and
+// loadedGatewayConfigPath the file, set when serve loads it — in gateway
+// mode, and in native mode when a company config file exists (#431).
+// Empty when the process read none.
+var loadedGatewayConfigDigest, loadedGatewayConfigPath string
 
 // loadedConfigRef records a configuration file with the digest of the bytes
 // the process parsed it from. The console compares that digest with the

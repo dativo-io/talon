@@ -25,10 +25,15 @@ import (
 const SchemaVersion = 1
 
 // Roles a process can serve.
+// A record written by an earlier release may still name the removed
+// "mcp_proxy" role (#431); readers show it as written.
 const (
-	RoleMCPProxy = "mcp_proxy"
-	RoleGateway  = "gateway"
-	RoleNative   = "native" // native agent execution routes (talon serve without --gateway)
+	RoleGateway = "gateway"
+	RoleNative  = "native" // native agent execution routes (talon serve without --gateway)
+	// RoleMCP is the governed MCP endpoint (POST /mcp, #431): every talon
+	// serve serves it, with or without the LLM gateway, as an adapter of
+	// the Action Gateway.
+	RoleMCP = "mcp"
 )
 
 // Record states written by the process.
@@ -64,7 +69,6 @@ type Record struct {
 	StoppedAt       *time.Time `json:"stopped_at,omitempty"`
 
 	Catalog       *Catalog   `json:"catalog,omitempty"`
-	ProxyConfig   *ConfigRef `json:"proxy_config,omitempty"`
 	GatewayConfig *ConfigRef `json:"gateway_config,omitempty"`
 
 	// AgentKeys is what the process holds for agent-key authentication in

@@ -216,7 +216,7 @@ res = client.chat.completions.create(
 
 A request Talon denies surfaces in the SDK as an API error: for example HTTP 400 with code `pii_policy_violation` when the company policy blocks personal data. A request with an unknown key is HTTP 401 and is never forwarded.
 
-Coding agents, the MCP proxy, the HTTP Action Gateway, n8n and OpenShell connect the same use case in other ways: [choosing an integration path](choosing-integration-path.md). Their guarantees differ; that page says how.
+Coding agents, the governed MCP endpoint (`POST /mcp`), the HTTP Action Gateway, n8n and OpenShell connect the same use case in other ways: [choosing an integration path](choosing-integration-path.md). Their guarantees differ; that page says how.
 
 ## 5. Verify
 
@@ -293,7 +293,7 @@ To tighten the policy for one application, edit its `agent.talon.yaml` (for exam
 
 ## Limits
 
-- Talon governs the supported interception boundaries: the LLM gateway, the MCP proxy, the HTTP Action Gateway, native runs and OpenShell-delegated decisions. Their guarantees differ; see [choosing an integration path](choosing-integration-path.md) and [LIMITATIONS](../../LIMITATIONS.md).
+- Talon governs the supported interception boundaries: the LLM gateway, the governed MCP endpoint (tools of declared MCP action sources), the HTTP Action Gateway, native runs and OpenShell-delegated decisions. Their guarantees differ; see [choosing an integration path](choosing-integration-path.md) and [LIMITATIONS](../../LIMITATIONS.md).
 - "Loaded" and "traffic observed" are statements about a moment. A use case can be loaded with no traffic, and old traffic does not show that it is loaded now.
 - Registration is local: the `talon` CLI on the installation's host (Linux or macOS). There is no remote registration API and the Operations Console is read-only.
 - A use-case key is replaced, not rotated with overlap. Dedicated key lifecycle commands do not exist yet.

@@ -25,7 +25,7 @@
 #     verification, the paired Operations Console (use case listed, evidence
 #     verified as the CLI does), backup, restore with the recovery hold,
 #     resume, a second use case under the same policy;
-#   - the action-gateway, registration, recovery and quickstart e2e suites;
+#   - the action-gateway, governed MCP (#431), registration, recovery and quickstart e2e suites;
 #   - the gateway streaming warn/allow/redact e2e proofs on the released
 #     binary: early first chunk, post-delivery observation and prevention;
 #   - with TALON_PREVIOUS_STABLE_BINARY: the in-place upgrade from it and the
@@ -113,6 +113,7 @@ journey() {
 run "customer journey (registration, company policy, SDK traffic, allow/approval/deny with counted dispatch, reviewer boundaries, console, evidence, restart, cold backup, restore with the hold, resume, second use case, key replacement)" journey
 [ -n "$sdk_dir" ] || missing "application client check with the OpenAI Node SDK (node and npm are needed)"
 run "exact action governance and argument rules" e2e '^TestE2E_ActionGateway'
+run "governed MCP over the Action Gateway (real MCP server with counted calls: deny zero, execute once, approval, unknown never retried, signed lifecycles; the unmodified official SDK client; the company PII baseline in an MCP-only serve)" e2e '^TestE2E_MCP_GovernanceContract$|^TestE2E_MCP_Protocol2026_07_28$|^TestE2E_MCP_StandardSDKClient$|^TestE2E_MCP_OrganizationPIIBaseline_NativeServe$'
 # #476: run the existing real-gateway streaming contract on the DISTRIBUTED
 # executable, not a Talon built from source. Each anchored pattern must execute
 # and pass; a missing or skipped test fails release acceptance.

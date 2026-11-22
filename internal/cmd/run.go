@@ -16,7 +16,6 @@ import (
 
 	"github.com/dativo-io/talon/internal/action/mcpsource"
 	"github.com/dativo-io/talon/internal/agent"
-	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/config"
@@ -196,7 +195,6 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		PlanReview:       planReviewStore,
 		SessionStore:     sessionStore,
 		PromptStore:      promptStore,
-		ToolRegistry:     tools.NewRegistry(),
 		ActiveRunTracker: runActiveRunTracker,
 		Memory:           memStore,
 		Pricing:          pricingTable,

@@ -8,7 +8,8 @@
 // Extension points:
 //   - Hooks: register pre/post callbacks at any pipeline stage (see HookRegistry).
 //   - Plan review: gate LLM calls behind human approval (see PlanReviewStore).
-//   - Tools: register MCP-compatible tools via agent/tools.ToolRegistry.
+//   - Tools: business actions are not executed in-process; they run in upstream
+//     MCP servers or external runtimes through the Action Gateway (#431).
 package agent
 
 import (
@@ -33,7 +34,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/cache"
@@ -181,7 +181,6 @@ type Runner struct {
 	evidence          *evidence.Generator
 	evidenceStore     *evidence.Store
 	planReview        *PlanReviewStore
-	toolRegistry      *tools.ToolRegistry
 	activeRuns        *ActiveRunTracker   // optional; when set, used for rate-limit policy concurrent_executions
 	runRegistry       *RunRegistry        // optional; when set, tracks run lifecycle states for observability and control
 	overrides         *OverrideStore      // optional; when set, runtime overrides (lockdown, tool disable, cost caps) are checked
@@ -228,7 +227,6 @@ type RunnerConfig struct {
 	Secrets           *secrets.SecretStore
 	Evidence          *evidence.Store
 	PlanReview        *PlanReviewStore
-	ToolRegistry      *tools.ToolRegistry
 	ActiveRunTracker  *ActiveRunTracker     // optional; when set, rate-limit policy receives concurrent_executions
 	RunRegistry       *RunRegistry          // optional; when set, tracks run lifecycle states for observability and control
 	Overrides         *OverrideStore        // optional; when set, runtime overrides (lockdown, tool disable, cost caps) are checked
@@ -271,7 +269,6 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		evidence:          evidence.NewGenerator(cfg.Evidence),
 		evidenceStore:     cfg.Evidence,
 		planReview:        cfg.PlanReview,
-		toolRegistry:      cfg.ToolRegistry,
 		activeRuns:        cfg.ActiveRunTracker,
 		runRegistry:       cfg.RunRegistry,
 		overrides:         cfg.Overrides,
@@ -1317,13 +1314,6 @@ func (r *Runner) setRunState(correlationID string, status RunStatus, reason Fail
 	}
 }
 
-// updateRunMetrics updates step/cost/tool counters in the RunRegistry.
-func (r *Runner) updateRunMetrics(correlationID string, steps, toolCalls int, cost float64) {
-	if r.runRegistry != nil {
-		r.runRegistry.UpdateMetrics(correlationID, steps, toolCalls, cost)
-	}
-}
-
 // recordEarlyTermination records evidence for early termination paths (circuit breaker,
 // hook deny, policy load error, etc.) that would otherwise leave no audit trail.
 // Scanner-failure paths use recordEarlyTerminationScanner so the evidence
@@ -1457,19 +1447,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	policyDec := evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: pol.VersionTag}
 
 	// Agentic loop: max_iterations from policy (0 or 1 = single call); tools from registry filtered by allowed_tools
-	maxIterations := 1
-	if pol.Policies.ResourceLimits != nil && pol.Policies.ResourceLimits.MaxIterations > 0 {
-		maxIterations = pol.Policies.ResourceLimits.MaxIterations
-		if maxIterations > 50 {
-			maxIterations = 50
-		}
-	}
-	llmTools := r.buildLLMTools(pol, req.TenantID)
-	// Only OpenAI supports tool calls in the API; other providers would ignore or error on tool messages
-	useAgenticLoop := len(llmTools) > 0 && maxIterations >= 2 && provider.Name() == "openai"
-
 	var cacheAllowLookup, cacheAllowStore bool
-	if !useAgenticLoop && r.cacheStore != nil && r.cacheConfig != nil && r.cacheConfig.Enabled && r.cachePolicy != nil && r.cacheEmbedder != nil {
+	if r.cacheStore != nil && r.cacheConfig != nil && r.cacheConfig.Enabled && r.cachePolicy != nil && r.cacheEmbedder != nil {
 		dataTierStr := cache.TierLabel(tier)
 		piiSev := "none"
 		if len(piiNames) > 0 {
@@ -1683,7 +1662,6 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		}
 	}
 
-	var messages []llm.Message
 	var llmResp *llm.Response
 	var cost float64
 	var totalInputTokens, totalOutputTokens int
@@ -1697,341 +1675,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	if sandboxToken != "" {
 		sandboxSystemMsg = []llm.Message{{Role: "system", Content: attachment.BuildSandboxSystemPrompt(sandboxToken) +
 			"\n" + toolResultInstruction}}
-	} else if useAgenticLoop {
-		sandboxSystemMsg = []llm.Message{{Role: "system", Content: toolResultInstruction}}
 	}
 	stepInputSummary := ""
 	if pol.Audit != nil && pol.Audit.IncludePrompts {
 		stepInputSummary = evidence.TruncateForSummary(prompt, 500)
 	}
 
-	if useAgenticLoop {
-		messages = make([]llm.Message, 0, len(sandboxSystemMsg)+1)
-		messages = append(messages, sandboxSystemMsg...)
-		messages = append(messages, llm.Message{Role: "user", Content: prompt})
-		perRequest := 0.0
-		if pol.Policies.CostLimits != nil && pol.Policies.CostLimits.PerRequest > 0 {
-			perRequest = pol.Policies.CostLimits.PerRequest
-		}
-		stepIndex := 0
-		var toolHistory []map[string]interface{} // passed to OPA for future tool-chain risk scoring
-		const maxConsecutiveToolFailures = 3
-		runToolFailures := make(map[string]int) // per-tool consecutive failure count within this run
-		disabledTools := make(map[string]bool)  // tools auto-disabled after maxConsecutiveToolFailures
-		requireApproval := make(map[string]bool)
-		if pol.Policies.ResourceLimits != nil {
-			for _, t := range pol.Policies.ResourceLimits.RequireApproval {
-				requireApproval[t] = true
-			}
-		}
-	agentLoop:
-		for iteration := 1; ; iteration++ {
-			// Pause/resume check: if an operator paused this run, block until resumed or killed.
-			if r.runRegistry != nil {
-				if paused, resumeCh := r.runRegistry.IsPausedWithCh(correlationID); paused && resumeCh != nil {
-					log.Info().Str("correlation_id", correlationID).Msg("agent_run_paused")
-					span.AddEvent("run_paused")
-					select {
-					case <-resumeCh:
-						log.Info().Str("correlation_id", correlationID).Msg("agent_run_resumed")
-						span.AddEvent("run_resumed")
-					case <-ctx.Done():
-						r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
-						break agentLoop
-					}
-				}
-			}
-			if ctx.Err() != nil {
-				r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
-				break
-			}
-			llmReq := &llm.Request{
-				Model:       model,
-				Messages:    messages,
-				Temperature: 0.7,
-				MaxTokens:   2000,
-				Tools:       llmTools,
-			}
-			iterStart := time.Now()
-			resp, usedProvider, usedModel, err := fo.generate(ctx, provider, model, llmReq)
-			provider, model = usedProvider, usedModel
-			if err != nil {
-				span.RecordError(err)
-				llmFailReason := FailureLLMError
-				if ctx.Err() != nil {
-					llmFailReason = FailureLLMTimeout
-				}
-				r.setRunState(correlationID, RunStatusFailed, llmFailReason)
-				duration := time.Since(startTime)
-				if _, evErr := r.evidence.Generate(ctx, evidence.GenerateParams{
-					CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
-					InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
-					PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
-					AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
-					ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
-					SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
-					ToolsCalled: toolsCalled, Cost: cost,
-					Tokens:          evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
-					RoutingDecision: evRouting,
-					DataFlow: buildRunDataFlow(runFlowInputs{
-						TenantID: req.TenantID, InvocationType: req.InvocationType,
-						Provider: provider.Name(), Model: model,
-						InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
-						Detector: piiScanner.Detector(),
-					}),
-					Status:        string(RunStatusFailed),
-					FailureReason: string(llmFailReason),
-				}); evErr != nil {
-					log.Error().Err(evErr).
-						Str("correlation_id", correlationID).
-						Str("tenant_id", req.TenantID).
-						Str("agent_id", req.AgentName).
-						Msg("evidence_write_failed_agentic_llm_error")
-				}
-				return nil, fmt.Errorf("calling LLM: %w", err)
-			}
-			iterDuration := time.Since(iterStart).Milliseconds()
-			iterCost := provider.EstimateCost(model, resp.InputTokens, resp.OutputTokens)
-			cost += iterCost
-			totalInputTokens += resp.InputTokens
-			totalOutputTokens += resp.OutputTokens
-			llm.RecordCostMetrics(ctx, iterCost, req.AgentName, model, degraded)
-			_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
-				"model": model, "cost_estimate": iterCost, "input_tokens": resp.InputTokens, "output_tokens": resp.OutputTokens,
-			})
-
-			// Step-level evidence: one record per LLM call in the loop
-			if _, stepErr := r.evidence.GenerateStep(ctx, evidence.StepParams{
-				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
-				StepIndex: stepIndex, Type: "llm_call",
-				InputSummary:  stepInputSummary,
-				OutputSummary: evidence.TruncateForSummary(resp.Content, 500),
-				DurationMS:    iterDuration, Cost: iterCost,
-			}); stepErr != nil {
-				log.Error().Err(stepErr).
-					Str("correlation_id", correlationID).
-					Str("tenant_id", req.TenantID).
-					Str("agent_id", req.AgentName).
-					Msg("evidence_step_write_failed_agentic_llm")
-			}
-			stepIndex++
-
-			llmResp = resp
-			r.updateRunMetrics(correlationID, iteration, len(toolsCalled), cost)
-			if perRequest > 0 && cost > perRequest {
-				log.Warn().Float64("total_cost", cost).Float64("per_request", perRequest).Msg("agent_loop_stopped_per_request_budget")
-				r.setRunState(correlationID, RunStatusBlocked, FailureCostExceeded)
-				break
-			}
-			rl := pol.Policies.ResourceLimits
-			maxToolCalls := 0
-			maxCostPerRun := 0.0
-			if rl != nil {
-				maxToolCalls = rl.MaxToolCallsPerRun
-				maxCostPerRun = rl.MaxCostPerRun
-			}
-			if ov := r.effectiveOverride(req.TenantID); ov != nil {
-				if ov.MaxToolCalls != nil && (maxToolCalls == 0 || *ov.MaxToolCalls < maxToolCalls) {
-					maxToolCalls = *ov.MaxToolCalls
-				}
-				if ov.MaxCostPerRun != nil && (maxCostPerRun == 0 || *ov.MaxCostPerRun < maxCostPerRun) {
-					maxCostPerRun = *ov.MaxCostPerRun
-				}
-			}
-			if maxToolCalls > 0 && len(toolsCalled) >= maxToolCalls {
-				log.Warn().Int("tool_calls", len(toolsCalled)).Int("max", maxToolCalls).Msg("agent_loop_stopped_max_tool_calls")
-				r.setRunState(correlationID, RunStatusBlocked, FailureMaxToolCallsExceeded)
-				break
-			}
-			if maxCostPerRun > 0 && cost >= maxCostPerRun {
-				log.Warn().Float64("cost", cost).Float64("max", maxCostPerRun).Msg("agent_loop_stopped_max_cost_per_run")
-				r.setRunState(correlationID, RunStatusBlocked, FailureCostExceeded)
-				break
-			}
-			if policyEngine, ok := policyEval.(*policy.Engine); ok {
-				dec, lcErr := policyEngine.EvaluateLoopContainment(ctx, iteration, len(toolsCalled), cost)
-				if lcErr != nil {
-					log.Error().Err(lcErr).Msg("loop containment evaluation failed, stopping loop (fail-closed)")
-					r.setRunState(correlationID, RunStatusBlocked, FailureContainmentDeny)
-					break
-				}
-				if dec != nil && !dec.Allowed {
-					log.Warn().Strs("reasons", dec.Reasons).Msg("agent_loop_stopped_loop_containment")
-					r.setRunState(correlationID, RunStatusBlocked, FailureContainmentDeny)
-					break
-				}
-			}
-			if len(resp.ToolCalls) == 0 || iteration >= maxIterations {
-				break
-			}
-			// Append assistant message with tool calls, then execute each and append tool results.
-			// Enforce max_tool_calls_per_run inside this loop so a single LLM response with many
-			// tool calls cannot exceed the limit before the next iteration check.
-			assistantMsg := llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls}
-			messages = append(messages, assistantMsg)
-			for _, tc := range resp.ToolCalls {
-				atLimit := maxToolCalls > 0 && len(toolsCalled) >= maxToolCalls
-				var resultContent string
-				var executed bool
-				var toolName string
-				switch {
-				case disabledTools[tc.Name]:
-					resultContent = fmt.Sprintf(`{"error":"tool %q auto-disabled after %d consecutive failures"}`, tc.Name, maxConsecutiveToolFailures)
-					toolName = tc.Name
-					log.Warn().Str("tool", tc.Name).Msg("tool_call_skipped_auto_disabled")
-				case atLimit:
-					resultContent = `{"error":"max_tool_calls_per_run limit reached"}`
-					toolName = tc.Name
-				default:
-					_, _ = r.fireHook(ctx, HookPreTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
-						"tool": tc.Name, "tool_call_id": tc.ID,
-					})
-
-					// Pre-tool approval gate: if this tool requires human approval, block and wait.
-					if requireApproval[tc.Name] && r.toolApprovals != nil {
-						r.setRunState(correlationID, RunStatusAwaitingApproval, FailureNone)
-						approval := r.toolApprovals.RequestApproval(ctx, correlationID, req.TenantID, req.AgentName, tc.Name, tc.ID, tc.Arguments)
-						r.setRunState(correlationID, RunStatusRunning, FailureNone)
-						if approval != ToolApprovalApproved {
-							log.Warn().Str("tool", tc.Name).Str("status", string(approval)).Msg("tool_approval_not_granted")
-							b, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("tool execution not approved: %s", approval)})
-							resultContent = string(b)
-							toolHistory = append(toolHistory, map[string]interface{}{
-								"name":           tc.Name,
-								"params":         tc.Arguments,
-								"result_summary": "approval denied or timed out",
-							})
-							messages = append(messages, llm.Message{Role: "tool", Content: fmt.Sprintf("[TOOL-RESULT:%s]\n%s\n[/TOOL-RESULT]", tc.Name, resultContent), ToolCallID: tc.ID})
-							continue
-						}
-						if remediatedArgs, ok := r.toolApprovals.RemediatedArguments(correlationID, tc.ID); ok {
-							tc.Arguments = remediatedArgs
-						}
-					}
-
-					// Pre-execution evidence: write a "pending" record so a kill/crash
-					// never creates an unaudited action.
-					pendingStep, pendingErr := r.evidence.GeneratePendingStep(ctx, evidence.StepParams{
-						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
-						StepIndex: stepIndex, Type: "tool_call", ToolName: tc.Name,
-					})
-					if pendingErr != nil {
-						log.Warn().Err(pendingErr).Str("correlation_id", correlationID).
-							Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).
-							Str("tool", tc.Name).Msg("evidence_pending_step_failed_fallback_will_record_after_execution")
-						pendingStep = nil
-					}
-
-					toolStart := time.Now()
-					tcResult := r.executeToolCallFull(ctx, policyEval, pol, tc, toolHistory, req.AgentName, correlationID, req.SessionID, piiScanner)
-					resultContent = tcResult.Content
-					executed = tcResult.Executed
-					toolName = tcResult.ToolName
-					toolDuration := time.Since(toolStart).Milliseconds()
-					if executed {
-						toolsCalled = append(toolsCalled, toolName)
-					}
-
-					// Track tool execution failures separately from policy denials
-					// (Gap T4), under THIS agent's thresholds (#267).
-					if tcResult.ExecutionError != "" && r.toolFailures != nil {
-						r.toolFailures.RecordToolFailureAgent(req.TenantID, req.AgentName, toolName, tcResult.ExecutionError, toolFailureThresholds(pol))
-					}
-
-					// Per-run tool failure escalation: auto-disable after N consecutive failures.
-					if tcResult.ExecutionError != "" {
-						runToolFailures[toolName]++
-						if runToolFailures[toolName] >= maxConsecutiveToolFailures && !disabledTools[toolName] {
-							disabledTools[toolName] = true
-							var filtered []llm.Tool
-							for _, t := range llmTools {
-								if t.Name != toolName {
-									filtered = append(filtered, t)
-								}
-							}
-							llmTools = filtered
-							log.Warn().Str("tool", toolName).Int("failures", runToolFailures[toolName]).
-								Msg("tool_auto_disabled_consecutive_failures")
-						}
-					} else if executed {
-						runToolFailures[toolName] = 0
-					}
-
-					// Update the pending record to completed or failed; if we never had a pending
-					// record (e.g. transient store failure), write a single step now so the tool
-					// call is still audited (no unaudited-action gap).
-					if pendingStep != nil {
-						pendingStep.ToolName = toolName
-						if executed {
-							if stepErr := r.evidence.CompleteStep(ctx, pendingStep,
-								evidence.TruncateForSummary(resultContent, 500), toolDuration, 0); stepErr != nil {
-								log.Error().Err(stepErr).
-									Str("correlation_id", correlationID).
-									Str("tenant_id", req.TenantID).
-									Str("agent_id", req.AgentName).
-									Msg("evidence_pending_step_complete_failed")
-							}
-						} else {
-							if stepErr := r.evidence.FailStep(ctx, pendingStep, resultContent, toolDuration); stepErr != nil {
-								log.Error().Err(stepErr).
-									Str("correlation_id", correlationID).
-									Str("tenant_id", req.TenantID).
-									Str("agent_id", req.AgentName).
-									Msg("evidence_pending_step_fail_failed")
-							}
-						}
-					} else {
-						// Fallback: pending step write failed; ensure one record for this tool call.
-						stepStatus := "completed"
-						stepError := ""
-						if !executed {
-							stepStatus = "failed"
-							stepError = resultContent
-						}
-						if _, stepErr := r.evidence.GenerateStep(ctx, evidence.StepParams{
-							CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
-							StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
-							OutputSummary: evidence.TruncateForSummary(resultContent, 500),
-							DurationMS:    toolDuration, Cost: 0, Status: stepStatus, Error: stepError,
-						}); stepErr != nil {
-							log.Error().Err(stepErr).
-								Str("correlation_id", correlationID).
-								Str("tenant_id", req.TenantID).
-								Str("agent_id", req.AgentName).
-								Msg("evidence_step_write_failed_tool_fallback")
-						}
-					}
-					stepIndex++
-					_, _ = r.fireHook(ctx, HookPostTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
-						"tool": tc.Name, "executed": executed,
-					})
-				}
-				// Append to tool_history for next tool's policy evaluation (tool-chain risk scoring)
-				toolHistory = append(toolHistory, map[string]interface{}{
-					"name":           toolName,
-					"params":         tc.Arguments,
-					"result_summary": evidence.TruncateForSummary(resultContent, 200),
-				})
-				if atLimit {
-					if _, stepErr := r.evidence.GenerateStep(ctx, evidence.StepParams{
-						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
-						StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
-						OutputSummary: "max_tool_calls_per_run limit reached",
-						DurationMS:    0, Cost: 0,
-					}); stepErr != nil {
-						log.Error().Err(stepErr).
-							Str("correlation_id", correlationID).
-							Str("tenant_id", req.TenantID).
-							Str("agent_id", req.AgentName).
-							Msg("evidence_step_write_failed_tool_limit")
-					}
-					stepIndex++
-				}
-				sandboxedResult := fmt.Sprintf("[TOOL-RESULT:%s]\n%s\n[/TOOL-RESULT]", tc.Name, resultContent)
-				messages = append(messages, llm.Message{Role: "tool", Content: sandboxedResult, ToolCallID: tc.ID})
-			}
-		}
-	} else {
+	{
 		// Single LLM call (no agentic loop)
 		singleCallMsgs := make([]llm.Message, 0, len(sandboxSystemMsg)+1)
 		singleCallMsgs = append(singleCallMsgs, sandboxSystemMsg...)
@@ -2173,8 +1823,6 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				}
 			}
 		}
-		// Step 7.5: Pre-specified tool invocations (legacy path)
-		toolsCalled = r.executeToolInvocations(ctx, span, req, policyEval, pol, piiScanner)
 	}
 
 	// Step 8: Classify output and enforce output PII policy. A scanner
@@ -2392,125 +2040,12 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	return resp, nil
 }
 
-// executeToolInvocations runs each requested tool through policy and the registry, and returns the list of tool names actually executed (for evidence).
-//
-//nolint:gocyclo // policy check, PII scan, registry lookup, execute; splitting would obscure the flow
-func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, req *RunRequest, policyEval memory.PolicyEvaluator, pol *policy.Policy, piiScanner classifier.Facade) []string {
-	if len(req.ToolInvocations) == 0 || r.toolRegistry == nil {
-		return nil
-	}
-	policyEngine, _ := policyEval.(*policy.Engine)
-	var called []string
-	for _, inv := range req.ToolInvocations {
-		if policyEngine != nil {
-			var paramsMap map[string]interface{}
-			_ = json.Unmarshal(inv.Params, &paramsMap)
-			if paramsMap == nil {
-				paramsMap = make(map[string]interface{})
-			}
-			dec, err := policyEngine.EvaluateToolAccess(ctx, inv.Name, paramsMap, nil)
-			if err != nil {
-				log.Warn().Err(err).Str("tool", inv.Name).Msg("tool access policy evaluation failed")
-				continue
-			}
-			if dec != nil && !dec.Allowed {
-				log.Warn().Str("tool", inv.Name).Strs("reasons", dec.Reasons).Msg("tool access denied by policy")
-				continue
-			}
-		}
-		// Tool-aware PII scanning on arguments (same as executeToolCallFull)
-		paramsToUse := inv.Params
-		if piiScanner != nil && pol != nil && len(pol.ToolPolicies) > 0 {
-			piiResult := applyToolArgumentPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), piiScanner, inv.Name, inv.Params, pol)
-			if piiResult != nil {
-				if piiResult.Blocked {
-					log.Warn().Str("tool", inv.Name).Str("reason", piiResult.BlockReason).Msg("tool invocation blocked by PII policy")
-					continue
-				}
-				if piiResult.ModifiedArgs != nil {
-					paramsToUse = piiResult.ModifiedArgs
-				}
-			}
-		}
-
-		tool, ok := r.toolRegistry.Get(inv.Name)
-		if !ok {
-			log.Warn().Str("tool", inv.Name).Msg("tool not in registry")
-			continue
-		}
-		_, err := tool.Execute(ctx, paramsToUse)
-		if err != nil {
-			log.Warn().Err(err).Str("tool", inv.Name).Msg("tool execution failed")
-			continue
-		}
-		called = append(called, inv.Name)
-	}
-	if len(called) > 0 {
-		span.SetAttributes(attribute.StringSlice("tool.called", called))
-	}
-	return called
-}
-
 // effectiveOverride returns the tenant override if available, or nil.
 func (r *Runner) effectiveOverride(tenantID string) *TenantOverride {
 	if r.overrides == nil || tenantID == "" {
 		return nil
 	}
 	return r.overrides.Get(tenantID)
-}
-
-// overrideDisabledSet returns the set of operator-disabled tools for a tenant, or nil if none.
-func (r *Runner) overrideDisabledSet(tenantID ...string) map[string]bool {
-	if r.overrides == nil || len(tenantID) == 0 || tenantID[0] == "" {
-		return nil
-	}
-	disabled := r.overrides.DisabledToolsFor(tenantID[0])
-	if len(disabled) == 0 {
-		return nil
-	}
-	s := make(map[string]bool, len(disabled))
-	for _, d := range disabled {
-		s[d] = true
-	}
-	return s
-}
-
-// buildLLMTools returns LLM tool definitions from the registry, filtered by policy allowed_tools
-// and operator override disabled_tools. Empty allowed_tools means no tools are passed to the LLM.
-func (r *Runner) buildLLMTools(pol *policy.Policy, tenantID ...string) []llm.Tool {
-	if r.toolRegistry == nil || pol.Capabilities == nil {
-		return nil
-	}
-	allowed := pol.Capabilities.AllowedTools
-	list := r.toolRegistry.List()
-	if len(allowed) == 0 || len(list) == 0 {
-		return nil
-	}
-	allowedSet := make(map[string]bool, len(allowed))
-	for _, n := range allowed {
-		allowedSet[n] = true
-	}
-	disabledByOverride := r.overrideDisabledSet(tenantID...)
-	var out []llm.Tool
-	for _, t := range list {
-		if !allowedSet[t.Name()] || disabledByOverride[t.Name()] {
-			continue
-		}
-		schema := t.InputSchema()
-		var params map[string]interface{}
-		if len(schema) > 0 {
-			_ = json.Unmarshal(schema, &params)
-		}
-		if params == nil {
-			params = make(map[string]interface{})
-		}
-		out = append(out, llm.Tool{
-			Name:        t.Name(),
-			Description: t.Description(),
-			Parameters:  params,
-		})
-	}
-	return out
 }
 
 // ToolCallResult extends the basic return values with PII findings for evidence.
@@ -2520,216 +2055,6 @@ type ToolCallResult struct {
 	ToolName       string
 	PIIFindings    []ToolPIIFinding
 	ExecutionError string // non-empty when tool.Execute() returned an error (distinct from policy denial)
-}
-
-// executeToolCallFull runs policy check, idempotency dedup, tool-aware PII scanning,
-// argument validation, registry lookup, per-tool timeout, and execution for a single LLM tool call.
-// toolHistory is the sequence of tool calls in this run so far (for OPA tool-chain risk scoring).
-// agentID, correlationID, and sessionID are used for idempotency key derivation when tool_governance is set (Gap T8).
-//
-//nolint:gocyclo // tool execution pipeline: policy, idempotency, PII, validation, timeout, execute, result PII
-func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}, agentID, correlationID, sessionID string, piiScanner classifier.Facade) ToolCallResult {
-	result := ToolCallResult{ToolName: tc.Name}
-	if r.toolRegistry == nil {
-		result.Content = `{"error":"tool registry not available"}`
-		return result
-	}
-
-	// Step 1: Reject tool calls with malformed arguments (fail-closed on JSON parse errors from provider).
-	// This must run before OPA evaluation to avoid sending corrupted args to Rego rules.
-	if parseErr, ok := tc.Arguments["_parse_error"]; ok {
-		log.Warn().Str("tool", tc.Name).Interface("parse_error", parseErr).Msg("tool call arguments could not be parsed")
-		b, _ := json.Marshal(map[string]string{"error": "tool call arguments are malformed JSON: " + fmt.Sprint(parseErr)})
-		result.Content = string(b)
-		return result
-	}
-
-	// Step 1.1: OPA policy check
-	policyEngine, _ := policyEval.(*policy.Engine)
-	if policyEngine != nil {
-		dec, err := policyEngine.EvaluateToolAccess(ctx, tc.Name, tc.Arguments, toolHistory)
-		if err != nil {
-			log.Warn().Err(err).Str("tool", tc.Name).Msg("tool access policy evaluation failed")
-			b, _ := json.Marshal(map[string]string{"error": "policy evaluation failed: " + err.Error()})
-			result.Content = string(b)
-			return result
-		}
-		if dec != nil && !dec.Allowed {
-			log.Warn().Str("tool", tc.Name).Strs("reasons", dec.Reasons).Msg("tool access denied by policy")
-			reasonsJSON, _ := json.Marshal(dec.Reasons)
-			result.Content = fmt.Sprintf(`{"error":"denied by policy","reasons":%s}`, string(reasonsJSON))
-			return result
-		}
-	}
-
-	// Step 1.5: Idempotency check (Gap T8) — only for tools listed in tool_governance.
-	params, _ := json.Marshal(tc.Arguments)
-	if len(params) == 0 {
-		params = []byte("{}")
-	}
-	var idemKey IdempotencyKey
-	var idemRecordCompleted bool
-	if r.idempotency != nil && pol != nil && pol.ToolGovernance != nil {
-		if cfg, ok := pol.ToolGovernance[tc.Name]; ok {
-			idemRecordCompleted = true
-			scopeID := correlationID
-			if cfg.IdempotencyKey == "session_id" && sessionID != "" {
-				scopeID = sessionID
-			}
-			idemKey = DeriveIdempotencyKey(agentID, scopeID, tc.Name, params)
-			var maxAge time.Duration
-			if cfg.CacheTTL != "" {
-				var parseErr error
-				maxAge, parseErr = time.ParseDuration(cfg.CacheTTL)
-				if parseErr != nil {
-					log.Warn().Err(parseErr).Str("tool", tc.Name).Str("cache_ttl", cfg.CacheTTL).Msg("invalid cache_ttl in tool_governance")
-					b, _ := json.Marshal(map[string]string{"error": "invalid cache_ttl in tool_governance: " + parseErr.Error() + " (use e.g. 24h, 1h)"})
-					result.Content = string(b)
-					return result
-				}
-			}
-			idemResult, idemErr := r.idempotency.Check(ctx, idemKey, maxAge)
-			if idemErr != nil && cfg.StrictMode {
-				log.Warn().Err(idemErr).Str("tool", tc.Name).Msg("idempotency check failed strict_mode")
-				b, _ := json.Marshal(map[string]string{"error": "idempotency check failed: " + idemErr.Error()})
-				result.Content = string(b)
-				return result
-			}
-			if idemErr == nil && idemResult.Found && idemResult.Status == "completed" {
-				if cfg.OnDuplicate == "fail" {
-					b, _ := json.Marshal(map[string]string{"error": "duplicate tool call not allowed (on_duplicate: fail)"})
-					result.Content = string(b)
-					return result
-				}
-				log.Info().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_cache_hit")
-				result.Content = string(idemResult.Result)
-				result.Executed = true
-				return result
-			}
-			if idemErr == nil && idemResult.Found && idemResult.Status == "pending" {
-				log.Warn().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_pending_duplicate")
-				b, _ := json.Marshal(map[string]string{"error": "tool call already in progress"})
-				result.Content = string(b)
-				return result
-			}
-			if idemErr == nil && !idemResult.Found {
-				// Atomically claim the slot (insert new or transition TTL-expired completed to pending).
-				// If we don't claim, another request has the slot — don't execute to avoid duplicate side effects.
-				claimed, claimErr := r.idempotency.ClaimPending(ctx, idemKey, maxAge)
-				if claimErr != nil && cfg.StrictMode {
-					log.Warn().Err(claimErr).Str("tool", tc.Name).Msg("idempotency claim failed strict_mode")
-					b, _ := json.Marshal(map[string]string{"error": "idempotency claim failed: " + claimErr.Error()})
-					result.Content = string(b)
-					return result
-				}
-				if !claimed {
-					log.Warn().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_slot_not_claimed")
-					b, _ := json.Marshal(map[string]string{"error": "tool call already in progress"})
-					result.Content = string(b)
-					return result
-				}
-			}
-		}
-	}
-
-	// Step 2: Tool-aware PII scanning on arguments
-
-	if piiScanner != nil && pol != nil && len(pol.ToolPolicies) > 0 {
-		piiResult := applyToolArgumentPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), piiScanner, tc.Name, params, pol)
-		if piiResult != nil {
-			result.PIIFindings = append(result.PIIFindings, piiResult.Findings...)
-			if piiResult.Blocked {
-				log.Warn().Str("tool", tc.Name).Str("reason", piiResult.BlockReason).Msg("tool call blocked by PII policy")
-				b, _ := json.Marshal(map[string]string{"error": piiResult.BlockReason})
-				result.Content = string(b)
-				return result
-			}
-			if piiResult.ModifiedArgs != nil {
-				params = piiResult.ModifiedArgs
-			}
-		}
-	}
-
-	// Step 3: Registry lookup and execution
-	tool, ok := r.toolRegistry.Get(tc.Name)
-	if !ok {
-		result.Content = `{"error":"tool not in registry"}`
-		return result
-	}
-
-	// Row count guard (Gap T7): enforce max_row_count and require_dry_run from policy before execution.
-	if tp := resolveToolPolicy(tc.Name, pol); tp != nil {
-		if valErr := validateRowCountGuard(tp, tc.Arguments); valErr != nil {
-			log.Warn().Err(valErr).Str("tool", tc.Name).Msg("tool row count guard failed")
-			b, _ := json.Marshal(map[string]string{"error": valErr.Error()})
-			result.Content = string(b)
-			return result
-		}
-	}
-
-	// Automatic JSON Schema validation: validate params against the tool's InputSchema.
-	// Always enforced (#442): the removed schema_validation: shadow|disabled
-	// knobs let schema-invalid arguments execute.
-	if schema := tool.InputSchema(); len(schema) > 0 && string(schema) != "null" {
-		if valErr := tools.ValidateAgainstSchema(schema, params); valErr != nil {
-			log.Warn().Err(valErr).Str("tool", tc.Name).Msg("schema validation failed")
-			b, _ := json.Marshal(map[string]string{"error": "schema validation failed: " + valErr.Error()})
-			result.Content = string(b)
-			return result
-		}
-	}
-
-	// Argument validation (Gap T6): if the tool implements ArgumentValidator, check before execution.
-	if validator, ok := tool.(tools.ArgumentValidator); ok {
-		if valErr := validator.ValidateArguments(params); valErr != nil {
-			log.Warn().Err(valErr).Str("tool", tc.Name).Msg("tool argument validation failed")
-			b, _ := json.Marshal(map[string]string{"error": "argument validation failed: " + valErr.Error()})
-			result.Content = string(b)
-			return result
-		}
-	}
-
-	// Per-tool timeout (Gap T5): wrap context if the tool has a configured timeout.
-	execCtx := ctx
-	if pol != nil {
-		if tp := resolveToolPolicy(tc.Name, pol); tp != nil && tp.Timeout != "" {
-			if d, parseErr := time.ParseDuration(tp.Timeout); parseErr == nil && d > 0 {
-				var cancel context.CancelFunc
-				execCtx, cancel = context.WithTimeout(ctx, d)
-				defer cancel()
-			}
-		}
-	}
-
-	out, err := tool.Execute(execCtx, params)
-	if err != nil {
-		log.Warn().Err(err).Str("tool", tc.Name).Msg("tool execution failed")
-		b, _ := json.Marshal(map[string]string{"error": err.Error()})
-		result.Content = string(b)
-		result.ExecutionError = err.Error()
-		return result
-	}
-	result.Executed = true
-
-	resultStr := string(out)
-	if len(out) == 0 {
-		resultStr = "{}"
-	}
-
-	// Step 4: Tool-aware PII scanning on result
-	if piiScanner != nil && pol != nil && len(pol.ToolPolicies) > 0 {
-		redacted, findings := applyToolResultPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), piiScanner, tc.Name, resultStr, pol)
-		result.PIIFindings = append(result.PIIFindings, findings...)
-		resultStr = redacted
-	}
-
-	// Idempotency: record successful completion after PII scanning so cached results are already redacted.
-	if r.idempotency != nil && idemRecordCompleted {
-		_ = r.idempotency.RecordCompleted(ctx, idemKey, []byte(resultStr))
-	}
-
-	result.Content = resultStr
-	return result
 }
 
 const (
@@ -3096,7 +2421,7 @@ func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy,
 			planCfg = planReviewConfigFromPolicy(pol.Compliance.PlanReview)
 		}
 	}
-	hasTools := r.toolRegistry != nil && len(r.toolRegistry.List()) > 0
+	hasTools := false // no in-process tools exist (#431)
 	if !RequiresReview(humanOversight, dataTier, costEstimate, hasTools, planCfg) {
 		return nil, false, nil
 	}

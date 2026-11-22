@@ -59,6 +59,10 @@ type ActionServiceError struct {
 
 func (e *ActionServiceError) Error() string { return e.Code + ": " + e.Message }
 
+// GovernanceCode returns the registered governance code (the MCP adapter
+// reads it without importing this package).
+func (e *ActionServiceError) GovernanceCode() string { return e.Code }
+
 // ApprovalOwnerResolver returns the service owning an approval id within
 // the authenticated reviewer's trusted tenant scope. An approval outside
 // that scope is "not found": approval ids are opaque across tenants, and
