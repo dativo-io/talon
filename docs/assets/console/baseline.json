@@ -192,7 +192,7 @@
     "internal/pricing/default_models.yaml": "40f6ccc98df11451e434d586c6d4087b73eb498f",
     "internal/pricing/loader.go": "eafe86236452832b0065a8e876a80a761cdb2a9e",
     "internal/runtimestatus/assess.go": "e2c98b127119e4a6bc504bc0848b18c342bb7f9c",
-    "internal/runtimestatus/boundary.go": "f9c2b9da0e3c15fa8fc751bf91a7bf2cc3b80475",
+    "internal/runtimestatus/boundary.go": "869e04ec1177499ccd3546c99783d474ea2e69b7",
     "internal/runtimestatus/loaded.go": "e255a7d1db6d8e71f05cf2c37d29b0edbde0564a",
     "internal/runtimestatus/publish.go": "e1a8fb3eca128cd458eb17dc16f9d2e957dc05bb",
     "internal/runtimestatus/record.go": "5d2efe62a3dcaa1dfd0497d8b4402e991e801297",
@@ -214,19 +214,19 @@
     "tests/browser/seed/main.go": "269abfd67b1f007d78a9c02dfa6e2a40bb139196"
   },
   "assets": {
-    "action-evidence.webp": "f1d5c640574f150903b5f507df5a4bfe72cffddf",
+    "action-evidence.webp": "4d7690522244b531cd14c9f890db8e17580ecc49",
     "action-policy.webp": "b1d927b8dd8b8e1d9824c9b17360323c8cdd250c",
-    "approval-detail.webp": "b3db61009bd3c641c218471276368bc4b7680ae4",
-    "approvals.webp": "370a76373fdd4a43dbf42617b8c1858a1ab0160d",
-    "configuration.webp": "f34fbc5d223bd873e6d359904ee3f85f1a8461dd",
+    "approval-detail.webp": "e6dc233e63d473eb4050943443db4c01cf8d3efc",
+    "approvals.webp": "72d5c77aa866ea3755a680367c78874837e3cbf1",
+    "configuration.webp": "db3310cdf1a01df4daef4179580eb8b96c9c195f",
     "costs.webp": "dd4c24907fe5e7159ccb0f8ea978d2f763159612",
-    "evidence-verification.webp": "ef2d2389fa1ee4d33d3dda165f91fdf6fd49d8e0",
-    "overview-attention.webp": "a92d3a53c8e5e0bbc4edf80980942b81a4e2d6c6",
+    "evidence-verification.webp": "276c35e120129fe037adeddfff19660de6244c8c",
+    "overview-attention.webp": "00add38a862ed54b71f0317acb697d3ae72923c5",
     "overview-mobile.webp": "f0c79df23bd78dc15f3664d778e62dbe55e0e4fe",
-    "session-investigation.webp": "e974482c4e3fffa61a511c7fad28d6cfe105e11d",
-    "showcase.webp": "257234470eb8add82bf7b4875231c77dd337a804",
-    "system-diagnostics.webp": "7e66cdacfac58bbc8eed9399e327a34d13470288",
-    "tamper-detection.webp": "c6031ced85b3cf05028e0f995f96379dc3416132",
-    "use-case-summary.webp": "825ca7fbe506d633215408f23325228f2bbe7338"
+    "session-investigation.webp": "4286bae0429488ce6aeb8b8c70ce62ed56d76a13",
+    "showcase.webp": "1923c0dafdac74cab8d6343de472d930973b74e3",
+    "system-diagnostics.webp": "afb82ffbdd2880691ccddeb7dad91768f99fd3ee",
+    "tamper-detection.webp": "fff5cf51b940785e84daf0b82109b9e0ddedf7f6",
+    "use-case-summary.webp": "d003e2bf61d9b3375505e28110fe46cd50416748"
   }
 }

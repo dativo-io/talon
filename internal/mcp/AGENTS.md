@@ -29,3 +29,6 @@ Since #431 there is one governed route, `POST /mcp`, and it is an adapter over t
 - a preparing call dispatches nothing; `read_only` comes from Talon's configuration, never from a source's hints;
 - attribution headers are untrusted metadata linked to the operation, never authority;
 - no in-process tool execution exists; do not add a tool registry back.
+- a source's tools/call result reaches a client only as `wire.ValidateCallToolResult`'s normalized copy (strict CallToolResult, Talon's serverInfo, the source's under `io.dativo.talon/upstreamServerInfo`, no other upstream `_meta`); never relay raw upstream bytes, and PII-scan everything forwarded, `_meta` included;
+- a malformed or unsupported result after dispatch is `unknown`, never success or a retryable failure; the source's own text is never logged, signed or relayed;
+- the company PII baseline comes from `serveOrganizationPolicy` in every serve mode and is passed to the handler by value; no package-level policy state.
