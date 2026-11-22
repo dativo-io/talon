@@ -100,11 +100,12 @@ test("Effective policy: the Action Gateway block equals talon agents show --effe
     await expect(row.getByText(humanize(rule.source), { exact: true })).toBeVisible();
   }
   // The running `talon serve` was started without --gateway: it enforces the
-  // company action policy it read from the file but does not report that
-  // file's digest, so the policy must NOT read as proven active.
-  expect(b.proven_active).toBe(false);
-  expect(b.proof.state).toBe("unknown");
-  await expect(block.getByText("Compiled from current files, not proven active")).toBeVisible();
+  // company action policy it read from the file AND reports that file's
+  // digest in its runtime record (#431), so the policy reads as proven active
+  // exactly when the bytes it read are the bytes on disk — as the CLI says.
+  expect(b.proven_active).toBe(true);
+  expect(b.proof.state).toBe("proven_active");
+  await expect(block.getByText("Proven active", { exact: true })).toBeVisible();
   await expect(block.getByText(b.proof.reason, { exact: true })).toBeVisible();
-  await expect(block.getByText("Proven active", { exact: true })).toHaveCount(0);
+  await expect(block.getByText("Compiled from current files, not proven active")).toHaveCount(0);
 });

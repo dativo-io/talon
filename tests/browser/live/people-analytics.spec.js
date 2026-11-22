@@ -57,11 +57,13 @@ test("Effective policy: the running serve loaded the file, gateway policy not pr
   const eff = page.getByRole("region", { name: "Effective policy" });
   await expect(eff.locator("p", { hasText: "LLM gateway:" }).getByText("Compiled from current files, not proven active")).toBeVisible();
   await expect(eff.locator("p", { hasText: "LLM gateway:" }).getByText(report.effective.proof.reason)).toBeVisible();
-  // The Action Gateway's own proof, as the CLI states it (it needs the gateway
-  // config the company action policy was read from; this serve has none).
-  expect(report.action_boundary.proven_active).toBe(false);
+  // The Action Gateway's own proof, as the CLI states it: the native serve
+  // reports the agent file in its active generation and the company config
+  // it read (#431), so the governed MCP policy is proven active while the LLM
+  // gateway's is not (no gateway runs).
+  expect(report.action_boundary.proven_active).toBe(true);
   const boundary = eff.getByTestId("action-boundary");
-  await expect(boundary.getByText("Compiled from current files, not proven active")).toBeVisible();
+  await expect(boundary.getByText("Proven active", { exact: true })).toBeVisible();
   await expect(boundary.getByText(report.action_boundary.proof.reason, { exact: true })).toBeVisible();
   const last = eff.getByRole("region", { name: "4. Last recorded decision" });
   await expect(last.getByText("Signature valid")).toBeVisible();

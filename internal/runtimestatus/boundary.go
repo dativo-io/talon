@@ -60,10 +60,10 @@ func ProveGatewayConfig(v View, readable bool, gatewayConfigDigest string) Loade
 // gateway config it read at start. So every running serve process (a process
 // that reports an agent catalog) must report the use case with agentDigest
 // AND the digest of the gateway config it loaded, equal to
-// gatewayConfigDigest. A process that serves the Action Gateway but does not
-// report which gateway config it read (a serve without --gateway reads the
-// company policy from the file without reporting its digest) leaves the proof
-// unknown: its company action policy cannot be compared, and is never assumed.
+// gatewayConfigDigest. Every serve of this release reports it, in native mode
+// too (#431); a process that serves the Action Gateway but does not report
+// which gateway config it read (an older release) leaves the proof unknown:
+// its company action policy cannot be compared, and is never assumed.
 func ProveActionPolicy(v View, readable bool, name, tenant, agentDigest, gatewayConfigDigest string) Loaded {
 	const label = "talon serve"
 	if !readable {
