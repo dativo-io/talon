@@ -285,6 +285,21 @@ customer-support       enabled   loaded         4m ago         $0.0000 / $500.00
 hr-copilot             enabled   loaded         9s ago         $0.0000 / $500.00      —
 ```
 
+## When it does not work: `talon doctor`
+
+Run `talon doctor` in the installation's directory, with the same environment as Talon (`set -a; . ./talon.env; set +a`). It reads only — nothing is created, logged or changed, and no key or secret value is printed — and names the three failures a new installation meets first, each with its own fix:
+
+| What doctor reports | What it means | Fix |
+|---|---|---|
+| `config_load` fails: `permission denied` / `While parsing config: … line N` | `talon.config.yaml` exists but cannot be read or parsed. Every `talon` command refuses it with the same cause; nothing falls back to defaults | make it readable by the user that runs Talon (`chmod 600`, its owner) or fix the YAML line |
+| `use_case_key:<name>` fails: `not in the vault` / `ACL does not allow` / `empty` | that one application cannot authenticate; the others are listed separately | store the key for that use case: `printf '%s' "$KEY" \| talon secrets set <secret> --tenant <tenant> --agent <name>` |
+| `secrets_key_decrypts_vault` fails, `use_case_key:*` / `gateway_secrets_*` say `cannot be decrypted` | `TALON_SECRETS_KEY` is not the key the vault was created with (a different `talon.env`) | restore the original `TALON_SECRETS_KEY`. Do **not** set the secrets again: that replaces them |
+| `gateway_secrets_<provider>` fails: `not in the vault` | the provider key was never stored | `printf '%s' "$PROVIDER_KEY" \| talon secrets set <secret_name>` |
+| `gateway_upstream_<provider>` fails: `connection refused` / timeout | the provider `base_url` cannot be reached from this host | fix `base_url`, DNS or the egress path |
+| `action_source:<name>/<source>` fails | a declared MCP action source cannot be discovered; `talon serve` does not start while it is unreachable | start the MCP server or correct `actions.sources.<source>.url` and its credential |
+
+`talon doctor --skip-upstream` skips the network checks (provider endpoints and MCP sources).
+
 ## Day two
 
 [Operate AI use cases](operate-ai-use-cases.md) answers the questions that come next: why an application is blocked, how to stop one safely, how to replace a compromised key, what to do after an interrupted registration, and where the same facts are in the console.

@@ -2,6 +2,8 @@ package secrets
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -463,4 +465,57 @@ func TestGet_WrongSecretsKeyIsUndecryptable(t *testing.T) {
 	defer other.Close()
 	_, err = other.Get(context.Background(), "agent-key", "default", "a")
 	assert.ErrorIs(t, err, ErrSecretUndecryptable)
+}
+
+// ReadOnlyVault (#575) answers exactly like SecretStore.Get — value, ACL
+// denial, absence, wrong key — and writes nothing: no access-log row, no
+// access counter, no byte of the file; a missing file is never created.
+func TestReadOnlyVault_SameAnswersNoWrites(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.db")
+	_, err := OpenReadOnly(path, "0123456789abcdef0123456789abcdef")
+	require.ErrorIs(t, err, ErrVaultAbsent)
+	_, statErr := os.Stat(path)
+	require.True(t, os.IsNotExist(statErr), "opening read-only never creates a vault")
+
+	store, err := NewSecretStore(path, "0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	require.NoError(t, store.Set(ctx, "k1", []byte("v1"), ACL{Agents: []string{"bot"}}))
+	require.NoError(t, store.Close())
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+	accessFacts := func() (logged, counted int) {
+		db, err := sql.Open("sqlite3", "file:"+path+"?mode=ro")
+		require.NoError(t, err)
+		defer db.Close()
+		require.NoError(t, db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM secret_access_log`).Scan(&logged))
+		require.NoError(t, db.QueryRowContext(context.Background(), `SELECT access_count FROM secrets WHERE name = 'k1'`).Scan(&counted))
+		return logged, counted
+	}
+	loggedBefore, countedBefore := accessFacts() // Set logs itself
+
+	ro, err := OpenReadOnly(path, "0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	s, err := ro.Get(ctx, "k1", "default", "bot")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("v1"), s.Value)
+	_, err = ro.Get(ctx, "k1", "default", "other")
+	assert.ErrorIs(t, err, ErrSecretAccessDenied)
+	_, err = ro.Get(ctx, "nope", "default", "bot")
+	assert.ErrorIs(t, err, ErrSecretNotFound)
+	require.NoError(t, ro.Close())
+
+	wrong, err := OpenReadOnly(path, "fedcba9876543210fedcba9876543210")
+	require.NoError(t, err)
+	_, err = wrong.Get(ctx, "k1", "default", "bot")
+	assert.ErrorIs(t, err, ErrSecretUndecryptable)
+	require.NoError(t, wrong.Close())
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "no byte of the vault changed")
+	logged, counted := accessFacts()
+	assert.Equal(t, loggedBefore, logged, "no access-log row")
+	assert.Equal(t, countedBefore, counted, "no access counter")
 }

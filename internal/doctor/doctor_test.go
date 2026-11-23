@@ -737,7 +737,7 @@ func TestCheckRecoveryHold(t *testing.T) {
 	if got.Status != "fail" {
 		t.Fatalf("an installation on a restored backup must fail the check: %+v", got)
 	}
-	for _, want := range []string{"RECOVERY HOLD", "bk_1", "2026-11-20T10:00:00Z", "every Action Gateway claim is refused", "does not cover LLM gateway requests or MCP proxy tool calls"} {
+	for _, want := range []string{"RECOVERY HOLD", "bk_1", "2026-11-20T10:00:00Z", "every Action Gateway claim is refused", "covers every governed action, over HTTP and MCP"} {
 		if !strings.Contains(got.Message, want) {
 			t.Errorf("the message lacks %q: %s", want, got.Message)
 		}

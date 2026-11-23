@@ -4,6 +4,7 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -60,13 +61,33 @@ type Options struct {
 func Run(ctx context.Context, opts Options) *Report {
 	report := &Report{}
 
+	if err := config.FileError(); err != nil {
+		// The config file exists but cannot be used: report that one cause.
+		// Every other check would read the same file and fail for the same
+		// reason, or worse, judge the configless defaults instead (#575).
+		report.Checks = append(report.Checks, configLoadFailure(err))
+		report.Checks = append(report.Checks, checkSystem()...)
+		report.summarize()
+		return report
+	}
 	report.Checks = append(report.Checks, checkConfig()...)
 	report.Checks = append(report.Checks, checkTriggers(ctx, opts.GatewayConfigPath != ""))
+	if cfg, err := config.Load(); err == nil {
+		report.Checks = append(report.Checks, checkUseCaseKeys(ctx, cfg)...)
+		if !opts.SkipUpstream {
+			report.Checks = append(report.Checks, checkActionSources(ctx, cfg)...)
+		}
+	}
 	if opts.GatewayConfigPath != "" {
 		report.Checks = append(report.Checks, checkGateway(ctx, opts)...)
 	}
 	report.Checks = append(report.Checks, checkSystem()...)
+	report.summarize()
+	return report
+}
 
+// summarize counts the checks and sets the worst status.
+func (report *Report) summarize() {
 	for _, c := range report.Checks {
 		switch c.Status {
 		case "pass":
@@ -85,7 +106,6 @@ func Run(ctx context.Context, opts Options) *Report {
 	if report.Summary.Fail > 0 {
 		report.Status = "fail"
 	}
-	return report
 }
 
 func checkConfig() []CheckResult {
@@ -93,11 +113,7 @@ func checkConfig() []CheckResult {
 
 	cfg, err := config.Load()
 	if err != nil {
-		return []CheckResult{{
-			Name: "config_load", Category: "config", Status: "fail",
-			Message: fmt.Sprintf("Cannot load config: %v", err),
-			Fix:     "Check TALON_DATA_DIR and config file",
-		}}
+		return []CheckResult{configLoadFailure(err)}
 	}
 
 	results = append(results, checkConfigKeys(config.UsedConfigFile()))
@@ -105,6 +121,7 @@ func checkConfig() []CheckResult {
 	results = append(results, checkPolicy(cfg))
 	results = append(results, checkLLMKeys(cfg))
 	results = append(results, checkCryptoKeys(cfg)...)
+	results = append(results, checkVaultKey(context.Background(), cfg))
 	results = append(results, checkEvidenceDB(cfg))
 	results = append(results, checkRegistrations(cfg))
 	results = append(results, checkRecoveryHold(cfg))
@@ -280,13 +297,28 @@ func editDistance(a, b string) int {
 }
 
 func checkDataDir(cfg *config.Config) CheckResult {
-	if err := cfg.EnsureDataDir(); err != nil {
+	// Doctor creates nothing (#575): a missing data directory is created by
+	// the first command that stores something.
+	if fi, err := os.Stat(cfg.DataDir); err != nil {
+		if os.IsNotExist(err) {
+			return CheckResult{
+				Name: "data_dir_writable", Category: "config", Status: "pass",
+				Message: fmt.Sprintf("%s does not exist yet (talon creates it when it first stores something)", cfg.DataDir),
+			}
+		}
 		return CheckResult{
 			Name: "data_dir_writable", Category: "config", Status: "fail",
 			Message: fmt.Sprintf("%s — %v", cfg.DataDir, err),
 			Fix:     "Ensure directory exists and is writable",
 		}
+	} else if !fi.IsDir() {
+		return CheckResult{
+			Name: "data_dir_writable", Category: "config", Status: "fail",
+			Message: fmt.Sprintf("%s is not a directory", cfg.DataDir),
+			Fix:     "Point TALON_DATA_DIR at a directory",
+		}
 	}
+	// A transient probe (created and removed): writability, no state left.
 	testFile := filepath.Join(cfg.DataDir, ".doctor-write-test")
 	if err := os.WriteFile(testFile, []byte("ok"), 0o600); err != nil {
 		return CheckResult{
@@ -439,7 +471,15 @@ func checkCryptoKeys(cfg *config.Config) []CheckResult {
 }
 
 func checkEvidenceDB(cfg *config.Config) CheckResult {
-	store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	// Read-only (#575): opening the store read-write would create it, run
+	// schema statements and migrate an older store under a newer binary.
+	if _, err := os.Stat(cfg.EvidenceDBPath()); os.IsNotExist(err) {
+		return CheckResult{
+			Name: "evidence_db", Category: "config", Status: "pass",
+			Message: cfg.EvidenceDBPath() + " does not exist yet (talon serve creates it)",
+		}
+	}
+	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
 		return CheckResult{
 			Name: "evidence_db", Category: "config", Status: "fail",
@@ -463,6 +503,9 @@ func CheckRegistrations(cfg *config.Config) CheckResult { return checkRegistrati
 
 func checkRegistrations(cfg *config.Config) CheckResult {
 	const name = "agent_registrations"
+	if _, statErr := os.Stat(cfg.EvidenceDBPath()); os.IsNotExist(statErr) {
+		return CheckResult{Name: name, Category: "config", Status: "pass", Message: "No registration recorded yet."}
+	}
 	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
 		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("registration records could not be read: %v", err)}
@@ -482,6 +525,10 @@ func checkRegistrations(cfg *config.Config) CheckResult {
 func checkRecoveryHold(cfg *config.Config) CheckResult {
 	const name = "recovery_hold"
 	res := CheckResult{Name: name, Category: "config", Status: "pass"}
+	if _, statErr := os.Stat(cfg.EvidenceDBPath()); os.IsNotExist(statErr) {
+		res.Message = "No recovery hold (no evidence store yet)."
+		return res
+	}
 	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
 		res.Status, res.Message = "warn", fmt.Sprintf("the recovery state could not be read: %v", err)
@@ -501,7 +548,7 @@ func checkRecoveryHold(cfg *config.Config) CheckResult {
 	if len(holds) > 0 {
 		h := holds[0]
 		res.Status = "fail"
-		res.Message = fmt.Sprintf("RECOVERY HOLD: this installation runs on backup %s, taken %s, and has not been resumed. No governed action is dispatched: every Action Gateway claim is refused (recovery_hold). The hold does not cover LLM gateway requests or MCP proxy tool calls; those are served.", h.BackupID, h.BackupCreatedAt.UTC().Format(time.RFC3339))
+		res.Message = fmt.Sprintf("RECOVERY HOLD: this installation runs on backup %s, taken %s, and has not been resumed. No governed action is dispatched: every Action Gateway claim is refused (recovery_hold). The hold covers every governed action, over HTTP and MCP; LLM gateway requests are not held and are served.", h.BackupID, h.BackupCreatedAt.UTC().Format(time.RFC3339))
 		res.Fix = "Reconcile with the downstream systems, then: talon backup resume (lists what was open), talon backup resume --reconciled [--hold-operation <operation_id>]..."
 		return res
 	}
@@ -689,11 +736,17 @@ func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string
 	if unknownErr := policy.ValidateNoUnknownFields(cfg.DefaultPolicy); unknownErr != nil {
 		return pol.Agent.Name, pol.Agent.Key.SecretName, unknownErr
 	}
-	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	if secErr != nil {
+	// Read-only (#575): the dry-run reads each key like serve does, but
+	// through a mode=ro connection — no access-log row, no counter, no file
+	// created. A missing vault is a nil vault: the dry-run then names the
+	// key that is not stored.
+	secStore, secErr := openReadOnlyVault(cfg)
+	if secErr != nil && !errors.Is(secErr, secrets.ErrVaultAbsent) {
 		return pol.Agent.Name, pol.Agent.Key.SecretName, fmt.Errorf("cannot open secrets vault: %w", secErr)
 	}
-	defer secStore.Close()
+	if secStore != nil {
+		defer secStore.Close()
+	}
 	// The dry-run uses the SAME policy → agent adapter as serve startup
 	// (agentbridge.LoadedAgentFromPolicy), so the FULL identity — including
 	// the policy override, whose semantic validation (egress rule shape,
@@ -723,11 +776,13 @@ func gatewayIdentityPreflightDir(ctx context.Context, cfg *config.Config) (agent
 		return "", "", fmt.Errorf("no %s found under agents_dir %s — gateway mode requires at least one keyed agent (#267)", agentcatalog.AgentConfigFilename, cfg.AgentsDir)
 	}
 	fleet := fmt.Sprintf("%d agent(s) under %s", len(scan.Agents), cfg.AgentsDir)
-	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	if secErr != nil {
+	secStore, secErr := openReadOnlyVault(cfg)
+	if secErr != nil && !errors.Is(secErr, secrets.ErrVaultAbsent) {
 		return fleet, "", fmt.Errorf("cannot open secrets vault: %w", secErr)
 	}
-	defer secStore.Close()
+	if secStore != nil {
+		defer secStore.Close()
+	}
 	if _, err := gateway.BuildIdentityRegistry(ctx, scan.LoadedAgents(), secStore, os.Getenv("TALON_ADMIN_KEY")); err != nil {
 		return fleet, "", fmt.Errorf("identity registry dry-run failed: %w", err)
 	}
@@ -800,23 +855,29 @@ func checkGatewaySecrets(ctx context.Context, gwCfg *gateway.GatewayConfig) []Ch
 	if err != nil {
 		return results
 	}
-	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	if secErr != nil {
-		return results
+	secStore, secErr := openReadOnlyVault(cfg)
+	if secStore != nil {
+		defer secStore.Close()
 	}
-	defer secStore.Close()
 
 	for name := range gwCfg.Providers {
 		prov := gwCfg.Providers[name]
 		if !prov.Enabled || prov.SecretName == "" {
 			continue
 		}
-		_, getErr := secStore.Get(ctx, prov.SecretName, "default", "*")
+		getErr := secErr
+		if secStore != nil {
+			_, getErr = secStore.Get(ctx, prov.SecretName, "default", "*")
+		}
 		if getErr != nil {
+			msg, fix := secretProblem(getErr, prov.SecretName, "default", "*")
+			if errors.Is(getErr, secrets.ErrSecretNotFound) || errors.Is(getErr, secrets.ErrVaultAbsent) {
+				fix = fmt.Sprintf("Store the provider key (the value on stdin): printf '%%s' \"$PROVIDER_KEY\" | talon secrets set %s", prov.SecretName)
+			}
 			results = append(results, CheckResult{
 				Name: "gateway_secrets_" + name, Category: "gateway", Status: "fail",
-				Message: fmt.Sprintf("Secret %q not found for provider %s", prov.SecretName, name),
-				Fix:     fmt.Sprintf("Run: talon secrets set %s <your-api-key>", prov.SecretName),
+				Message: fmt.Sprintf("Provider %s: %s", name, msg),
+				Fix:     fix,
 			})
 		} else {
 			results = append(results, CheckResult{
