@@ -158,13 +158,13 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       # The applicability rule comes from the workflow's own ref (the audited
       # release may predate the script); the tests and fixtures below come
-      # from the release's tag.
+      # from the release's tag. A full checkout, as in pilot-acceptance: the
+      # tag checkout below reuses this repository, and a sparse one here
+      # carried its sparse set into it, so go.mod was never checked out and
+      # setup-go failed for every release that ships the console.
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          sparse-checkout: |
-            scripts/release-capabilities.sh
-          sparse-checkout-cone-mode: false
       - name: Does this release ship the operations console?
         id: cap
         env:
