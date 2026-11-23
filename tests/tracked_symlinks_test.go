@@ -16,7 +16,7 @@ import (
 // which breaks `npm`, Playwright and the screenshot baseline locally.
 // Installed dependencies are never tracked at all.
 func TestTrackedSymlinks_StayInsideTheRepository(t *testing.T) {
-	out, err := exec.Command("git", "-C", "..", "ls-files", "-s", "-z").Output()
+	out, err := exec.CommandContext(t.Context(), "git", "-C", "..", "ls-files", "-s", "-z").Output()
 	if err != nil {
 		t.Skipf("not a git checkout: %v", err)
 	}
@@ -25,23 +25,77 @@ func TestTrackedSymlinks_StayInsideTheRepository(t *testing.T) {
 			continue
 		}
 		meta, name, _ := strings.Cut(row, "\t")
-		for _, part := range strings.Split(name, "/") {
-			if part == "node_modules" {
-				t.Errorf("%s: installed dependencies are tracked; they come from the lockfile (npm ci)", name)
-			}
+		if p := trackedPathProblem(name); p != "" {
+			t.Error(p)
 		}
 		fields := strings.Fields(meta)
 		if len(fields) != 3 || fields[0] != "120000" {
 			continue
 		}
-		target, err := exec.Command("git", "-C", "..", "cat-file", "blob", fields[1]).Output()
+		target, err := exec.CommandContext(t.Context(), "git", "-C", "..", "cat-file", "blob", fields[1]).Output()
 		if err != nil {
 			t.Fatalf("%s: reading the link target: %v", name, err)
 		}
-		dest := string(target)
-		resolved := path.Clean(path.Join(path.Dir(name), dest))
-		if path.IsAbs(dest) || resolved == ".." || strings.HasPrefix(resolved, "../") {
-			t.Errorf("%s → %s: a tracked symlink must resolve inside the repository", name, dest)
+		if p := symlinkProblem(name, string(target)); p != "" {
+			t.Error(p)
 		}
 	}
+}
+
+// The two rules, on the shapes that must be caught and the ones that must
+// not: the original defect (an absolute link named node_modules), a relative
+// link that climbs out of the repository, and legitimate in-repository links.
+func TestTrackedSymlinks_Rules(t *testing.T) {
+	for _, c := range []struct {
+		name, target string
+		bad          bool
+	}{
+		{"tests/browser/node_modules", "/home/dev/src/talon/tests/browser/node_modules", true},
+		{"docs/link", "/etc/passwd", true},
+		{"docs/link", "../../outside", true},
+		{"a/b/link", "../../../x", true},
+		{"link", "..", true},
+		{"docs/link", "../README.md", false},
+		{"a/b/link", "../c/file", false},
+		{"link", "docs/guides", false},
+	} {
+		got := symlinkProblem(c.name, c.target)
+		if (got != "") != c.bad {
+			t.Errorf("symlinkProblem(%q → %q) = %q, want bad=%v", c.name, c.target, got, c.bad)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		bad  bool
+	}{
+		{"internal/console/frontend/node_modules", true},
+		{"tests/browser/node_modules/@playwright/test/package.json", true},
+		{"node_modules", true},
+		{"docs/node_modules.md", false},
+		{"internal/console/frontend/package-lock.json", false},
+	} {
+		if got := trackedPathProblem(c.name); (got != "") != c.bad {
+			t.Errorf("trackedPathProblem(%q) = %q, want bad=%v", c.name, got, c.bad)
+		}
+	}
+}
+
+// trackedPathProblem rejects installed dependencies anywhere in the index.
+func trackedPathProblem(name string) string {
+	for _, part := range strings.Split(name, "/") {
+		if part == "node_modules" {
+			return name + ": installed dependencies are tracked; they come from the lockfile (npm ci)"
+		}
+	}
+	return ""
+}
+
+// symlinkProblem rejects a link whose target is absolute or resolves
+// outside the repository.
+func symlinkProblem(name, target string) string {
+	resolved := path.Clean(path.Join(path.Dir(name), target))
+	if path.IsAbs(target) || resolved == ".." || strings.HasPrefix(resolved, "../") {
+		return name + " → " + target + ": a tracked symlink must resolve inside the repository"
+	}
+	return ""
 }
