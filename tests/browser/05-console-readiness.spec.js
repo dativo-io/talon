@@ -82,6 +82,10 @@ test("Installation events: not a tenant in the selector, not AI use case decisio
   await expect(page.getByTestId("outcome-story")).toContainText("Configuration reload — rejected");
   await expect(page.getByText("Signature valid").first()).toBeVisible();
   await expect(page.getByText("a Talon process, not an AI use case")).toBeVisible();
+  // Its outcome is the reload's, never a policy denial of a request.
+  await expect(page.getByRole("heading", { name: "Recorded outcome", exact: true })).toBeVisible();
+  await expect(page.getByText("Configuration reload: Rejected")).toBeVisible();
+  await expect(page.getByText("Talon denied")).toHaveCount(0);
   await expect(page.getByRole("link", { name: "talon-serve" })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Breadcrumb" }).getByRole("link", { name: "System" })).toBeVisible();
 

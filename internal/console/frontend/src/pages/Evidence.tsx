@@ -7,7 +7,7 @@ import { Breadcrumbs, scopeCrumb } from "../components/Breadcrumbs";
 import { ProofBoundary } from "../components/ProofBoundary";
 import { outcomeStory } from "../lib/outcome";
 import { evidenceProof } from "../lib/proof";
-import { AvailabilityNotice, CopyableIdentifier, DecisionOutcome, DetailSection, ErrorState, EvidenceVerification, Loading, Chips } from "../components/ui";
+import { AvailabilityNotice, Badge, CopyableIdentifier, DecisionOutcome, DetailSection, ErrorState, EvidenceVerification, Loading, Chips } from "../components/ui";
 import { duration, humanize, utc } from "../lib/format";
 import { installationEventView } from "../lib/installation";
 import type { OutcomeStory } from "../lib/outcome";
@@ -58,7 +58,7 @@ export function EvidencePage() {
             <div className="card-body story">
               <h2 id="ev-story">{story.headline}</h2>
               <p>{story.detail}</p>
-              {tampered ? null : <span className="small muted">The separate facts behind this sentence are under Decision and outcome.</span>}
+              {tampered ? null : <span className="small muted">The separate facts behind this sentence are under {installation ? "Recorded outcome" : "Decision and outcome"}.</span>}
             </div>
           </section>
           <ProofBoundary facts={evidenceProof(r, det.outcome, det.verification, installation)} />
@@ -73,12 +73,18 @@ export function EvidencePage() {
           </DetailSection>
 
           <div className="grid two">
-            <DetailSection title={tampered ? "Decision and outcome — claimed, not verified" : "Decision and outcome"} id="ev-outcome">
+            <DetailSection title={`${installation ? "Recorded outcome" : "Decision and outcome"}${tampered ? " — claimed, not verified" : ""}`} id="ev-outcome">
               {tampered ? <div className="notice error" role="note"><div>From an altered record: these values are what the record now says, not facts Talon vouches for.</div></div> : null}
-              <DecisionOutcome o={det.outcome} />
-              <p className="small">Why this outcome: {det.outcome.basis}</p>
+              {installation ? (
+                <InstallationOutcome type={r.invocation_type} allowed={r.policy_decision.allowed} />
+              ) : (
+                <>
+                  <DecisionOutcome o={det.outcome} />
+                  <p className="small">Why this outcome: {det.outcome.basis}</p>
+                </>
+              )}
               <dl className="facts">
-                <dt>Policy action</dt><dd>{r.policy_decision.action}</dd>
+                <dt>{installation ? "Recorded action" : "Policy action"}</dt><dd>{r.policy_decision.action}</dd>
                 <dt>Reasons</dt><dd><Chips items={r.policy_decision.reasons} /></dd>
                 <dt>Policy version</dt><dd>{r.policy_decision.policy_version ? <code>{r.policy_decision.policy_version}</code> : <span className="muted">not recorded</span>}</dd>
                 {r.status ? (<><dt>Execution status</dt><dd>{humanize(r.status)}{r.failure_reason ? ` (${r.failure_reason})` : ""}</dd></>) : null}
@@ -215,4 +221,17 @@ function CopyRaw({ value }: { value: string }) {
 function installationStory(type: string, allowed: boolean): OutcomeStory {
   const v = installationEventView(type, allowed);
   return { headline: `${v.label} — ${v.outcome.toLowerCase()}`, detail: `${v.detail} An installation event: not traffic of an AI use case, and not a tenant.`.trim(), tone: v.tone };
+}
+
+// An installation event's outcome is that of a Talon operation on the
+// installation (a reload activated or rejected, a recovery hold ended), never
+// a policy decision on an AI use case's request (#593).
+function InstallationOutcome({ type, allowed }: { type: string; allowed: boolean }) {
+  const v = installationEventView(type, allowed);
+  return (
+    <>
+      <Badge tone={v.tone}>{v.label}: {v.outcome}</Badge>
+      <p className="small">An installation event: the outcome of a Talon operation on the installation, not a policy decision on an AI use case&apos;s request.</p>
+    </>
+  );
 }

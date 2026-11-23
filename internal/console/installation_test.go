@@ -28,14 +28,17 @@ type installation struct {
 	*fixture
 }
 
+// installationClock is the fixed "now" of these tests: records are placed up
+// to 30 minutes before it, so "today" (the UTC day of the clock) holds them
+// whatever the wall-clock hour. The service and the fleet projection read
+// the same clock.
+var installationClock = time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+
 // newInstallation writes the given use cases (name → tenant_id, "" for the
 // default tenant) and opens empty stores.
 func newInstallation(t *testing.T, useCases map[string]string) *installation {
 	t.Helper()
-	now := time.Now().UTC()
-	if now.Sub(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)) < 45*time.Minute {
-		t.Skip("records are placed up to 30 minutes ago inside today's UTC day")
-	}
+	now := installationClock
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
 	for name, tenant := range useCases {
@@ -56,6 +59,25 @@ func newInstallation(t *testing.T, useCases map[string]string) *installation {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ss.Close() })
 	return &installation{&fixture{dir: dir, dbPath: dbPath, writer: w, sessions: ss, now: now}}
+}
+
+// service opens the console over the stores read-only, on the fixed clock.
+func (in *installation) service(t *testing.T) *Service {
+	t.Helper()
+	ro, err := evidence.OpenReadOnly(in.dbPath, testKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ro.Close() })
+	ss, err := session.OpenReadOnly(in.dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ss.Close() })
+	clock := func() time.Time { return in.now }
+	fleetSrc := OfflineFleetSource(filepath.Join(in.dir, "agents"), "", filepath.Join(in.dir, "talon.config.yaml"), "USD", ro, ss, clock)
+	svc, err := New(Config{
+		Evidence: ro, Sessions: ss, StorePath: in.dbPath, Currency: "USD",
+		Fleet: fleetSrc, Budgets: FleetCapsBudgets{Fleet: fleetSrc}, Version: "test", StartedAt: in.now, Now: clock,
+	})
+	require.NoError(t, err)
+	return svc
 }
 
 func (in *installation) traffic(t *testing.T, id, tenant, agent string, allowed bool, cost float64, minutesAgo int) {
