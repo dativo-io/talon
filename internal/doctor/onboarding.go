@@ -98,7 +98,7 @@ func secretProblem(err error, name, tenantID, agentID string) (msg, fix string) 
 		return fmt.Sprintf("secret %q is not in the vault", name), "Store it (or correct the name in the file): " + setCmd
 	case errors.Is(err, secrets.ErrSecretAccessDenied):
 		return fmt.Sprintf("secret %q exists but its ACL does not allow tenant %q, agent %q", name, tenantID, agentID),
-			"Review the stored secret ACL and the intended tenant/use-case binding. Have an authorized operator correct the ACL or binding; do not re-set the secret to bypass an access denial (talon secrets set replaces its value and ACL)"
+			"Review the stored secret ACL and the intended tenant/use-case binding. Have an authorized operator correct the ACL or binding; do not re-set the secret to bypass an access denial: setting it again replaces both its value and its ACL"
 	case errors.Is(err, secrets.ErrSecretUndecryptable):
 		return fmt.Sprintf("secret %q exists but cannot be decrypted with TALON_SECRETS_KEY (it was stored under another key)", name),
 			"Restore the original TALON_SECRETS_KEY; do not re-set the secret (that replaces it)"
@@ -193,34 +193,11 @@ func checkUseCaseKeys(ctx context.Context, cfg *config.Config) []CheckResult {
 func discoveryProblem(err error) string {
 	var up *wire.UpstreamError
 	if !errors.As(err, &up) {
-		switch {
-		case errors.Is(err, secrets.ErrSecretNotFound), errors.Is(err, secrets.ErrVaultAbsent):
-			return "source credential is not stored"
-		case errors.Is(err, secrets.ErrSecretAccessDenied):
-			return "source credential ACL denies this use case"
-		case errors.Is(err, secrets.ErrSecretUndecryptable):
-			return "source credential cannot be decrypted (restore the vault key)"
-		default:
-			return "local source configuration or credential error"
-		}
+		return localSourceProblem(err)
 	}
 	switch up.Kind {
 	case wire.UpstreamKindTransport:
-		switch {
-		case errors.Is(up.Err, syscall.ECONNREFUSED):
-			return "transport error: connection refused"
-		case errors.Is(up.Err, context.DeadlineExceeded):
-			return "transport error: timeout"
-		}
-		var dnsErr *net.DNSError
-		if errors.As(up.Err, &dnsErr) {
-			return "transport error: DNS lookup failed"
-		}
-		var netErr net.Error
-		if errors.As(up.Err, &netErr) && netErr.Timeout() {
-			return "transport error: timeout"
-		}
-		return "transport error (check address, TLS, DNS and egress)"
+		return transportProblem(up.Err)
 	case wire.UpstreamKindRPC:
 		if up.RPC != nil {
 			return fmt.Sprintf("the source answered a JSON-RPC error (code=%d category=%s)", up.RPC.Code, wire.RPCErrorCategory(up.RPC.Code))
@@ -234,6 +211,41 @@ func discoveryProblem(err error) string {
 		return "the discovery request could not be built"
 	}
 	return "upstream " + up.Kind + " error"
+}
+
+// localSourceProblem names a failure before anything was sent: the source's
+// credential or its configuration, by typed error only.
+func localSourceProblem(err error) string {
+	switch {
+	case errors.Is(err, secrets.ErrSecretNotFound), errors.Is(err, secrets.ErrVaultAbsent):
+		return "source credential is not stored"
+	case errors.Is(err, secrets.ErrSecretAccessDenied):
+		return "source credential ACL denies this use case"
+	case errors.Is(err, secrets.ErrSecretUndecryptable):
+		return "source credential cannot be decrypted (restore the vault key)"
+	default:
+		return "local source configuration or credential error"
+	}
+}
+
+// transportProblem names a transport failure by its type, never by its text
+// (which can quote a credential-bearing URL).
+func transportProblem(err error) string {
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "transport error: connection refused"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "transport error: timeout"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "transport error: DNS lookup failed"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "transport error: timeout"
+	}
+	return "transport error (check address, TLS, DNS and egress)"
 }
 
 var httpStatusRe = regexp.MustCompile(`HTTP (\d{3})`)
