@@ -97,7 +97,8 @@ func secretProblem(err error, name, tenantID, agentID string) (msg, fix string) 
 	case errors.Is(err, secrets.ErrSecretNotFound):
 		return fmt.Sprintf("secret %q is not in the vault", name), "Store it (or correct the name in the file): " + setCmd
 	case errors.Is(err, secrets.ErrSecretAccessDenied):
-		return fmt.Sprintf("secret %q exists but its ACL does not allow tenant %q, agent %q", name, tenantID, agentID), "Store it scoped to this use case: " + setCmd
+		return fmt.Sprintf("secret %q exists but its ACL does not allow tenant %q, agent %q", name, tenantID, agentID),
+			"Review the stored secret ACL and the intended tenant/use-case binding. Have an authorized operator correct the ACL or binding; do not re-set the secret to bypass an access denial (talon secrets set replaces its value and ACL)"
 	case errors.Is(err, secrets.ErrSecretUndecryptable):
 		return fmt.Sprintf("secret %q exists but cannot be decrypted with TALON_SECRETS_KEY (it was stored under another key)", name),
 			"Restore the original TALON_SECRETS_KEY; do not re-set the secret (that replaces it)"
