@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"regexp"
 	"sort"
-	"strings"
+	"syscall"
 	"time"
-	"unicode"
 
 	"github.com/spf13/viper"
 
@@ -187,22 +187,40 @@ func checkUseCaseKeys(ctx context.Context, cfg *config.Config) []CheckResult {
 	return out
 }
 
-// discoveryProblem describes a failed discovery from typed facts only. The
-// source's own text — a JSON-RPC error message, a header it sent — is
-// upstream-controlled: it could echo the credential doctor just presented
-// or carry terminal control sequences, so it is never printed (the same
-// rule as governed MCP outcomes, #431).
+// discoveryProblem reports only typed failure categories. Neither an upstream
+// response nor the transport's error text is safe to echo: a URL may embed
+// credentials in userinfo/query, and a response can reflect auth headers.
 func discoveryProblem(err error) string {
 	var up *wire.UpstreamError
 	if !errors.As(err, &up) {
-		// Talon's own errors (credential lookup, catalog bounds): they name a
-		// secret, never its value.
-		return printable(err.Error())
+		switch {
+		case errors.Is(err, secrets.ErrSecretNotFound), errors.Is(err, secrets.ErrVaultAbsent):
+			return "source credential is not stored"
+		case errors.Is(err, secrets.ErrSecretAccessDenied):
+			return "source credential ACL denies this use case"
+		case errors.Is(err, secrets.ErrSecretUndecryptable):
+			return "source credential cannot be decrypted (restore the vault key)"
+		default:
+			return "local source configuration or credential error"
+		}
 	}
 	switch up.Kind {
 	case wire.UpstreamKindTransport:
-		// The local transport error: it names only the configured address.
-		return "transport error: " + printable(fmt.Sprint(up.Err))
+		switch {
+		case errors.Is(up.Err, syscall.ECONNREFUSED):
+			return "transport error: connection refused"
+		case errors.Is(up.Err, context.DeadlineExceeded):
+			return "transport error: timeout"
+		}
+		var dnsErr *net.DNSError
+		if errors.As(up.Err, &dnsErr) {
+			return "transport error: DNS lookup failed"
+		}
+		var netErr net.Error
+		if errors.As(up.Err, &netErr) && netErr.Timeout() {
+			return "transport error: timeout"
+		}
+		return "transport error (check address, TLS, DNS and egress)"
 	case wire.UpstreamKindRPC:
 		if up.RPC != nil {
 			return fmt.Sprintf("the source answered a JSON-RPC error (code=%d category=%s)", up.RPC.Code, wire.RPCErrorCategory(up.RPC.Code))
@@ -219,21 +237,6 @@ func discoveryProblem(err error) string {
 }
 
 var httpStatusRe = regexp.MustCompile(`HTTP (\d{3})`)
-
-// printable drops control characters (terminal escape sequences) from a
-// diagnostic and bounds its length.
-func printable(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-	if len(s) > 300 {
-		s = s[:300] + "…"
-	}
-	return s
-}
 
 // discoverTimeout bounds one source's discovery in doctor.
 const discoverTimeout = 5 * time.Second
@@ -278,14 +281,14 @@ func checkActionSources(ctx context.Context, cfg *config.Config) []CheckResult {
 			if derr != nil {
 				out = append(out, CheckResult{
 					Name: name, Category: "use_cases", Status: "fail",
-					Message: fmt.Sprintf("MCP source %s of %s (%s) cannot be discovered: %s — talon serve will not start while it is unreachable", id, a.Name, src.URL, discoveryProblem(derr)),
+					Message: fmt.Sprintf("MCP source %s of %s cannot be discovered: %s — talon serve will not start while it is unreachable", id, a.Name, discoveryProblem(derr)),
 					Fix:     "Start the MCP server (or correct actions.sources." + id + ".url and its credential) before talon serve",
 				})
 				continue
 			}
 			out = append(out, CheckResult{
 				Name: name, Category: "use_cases", Status: "pass",
-				Message: fmt.Sprintf("MCP source %s of %s (%s): discovered, %d tool(s)", id, a.Name, src.URL, len(snap.Tools)),
+				Message: fmt.Sprintf("MCP source %s of %s: discovered, %d tool(s)", id, a.Name, len(snap.Tools)),
 			})
 		}
 	}
