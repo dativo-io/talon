@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/viper"
@@ -22,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/secrets"
 )
 
@@ -260,4 +262,160 @@ func TestCheckActionSources_DiscoversLikeServe(t *testing.T) {
 	got = byName(checkActionSources(context.Background(), cfg))["action_source:customer-support/crm"]
 	assert.Equal(t, "fail", got.Status)
 	assert.Contains(t, got.Message, "talon serve will not start")
+}
+
+// treeSnapshot records every entry under root: path, type, mode, size and
+// content digest (symlink targets for links). SQLite's own sidecar files of
+// a WAL-mode database are left out: the -shm shared-memory index (SQLite
+// creates it for ANY connection, read-only included) and an EMPTY -wal file
+// (removed when the last connection closes). Neither holds data; every
+// database file and every other file is compared byte for byte.
+func treeSnapshot(t *testing.T, root string) map[string]string {
+	t.Helper()
+	snap := map[string]string{}
+	err := filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		switch {
+		case fi.Mode()&os.ModeSymlink != 0:
+			target, _ := os.Readlink(p)
+			snap[rel] = "link->" + target
+		case fi.IsDir():
+			snap[rel] = "dir " + fi.Mode().String()
+		default:
+			if strings.HasSuffix(p, "-shm") || (strings.HasSuffix(p, "-wal") && fi.Size() == 0) {
+				return nil
+			}
+			b, rerr := os.ReadFile(p)
+			if rerr != nil {
+				return rerr
+			}
+			sum := sha256.Sum256(b)
+			snap[rel] = fmt.Sprintf("file %s %d %s", fi.Mode(), fi.Size(), hex.EncodeToString(sum[:8]))
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	return snap
+}
+
+// PR #592 review, finding 1: the old writability probe wrote a fixed-name
+// file in the data directory — overwriting and deleting an existing one,
+// and following a symlink to overwrite its target. Doctor now asks access(2)
+// and writes nothing: both stay exactly as they were.
+func TestRun_NeverTouchesAnExistingProbeNameOrItsSymlinkTarget(t *testing.T) {
+	cfg, _ := onboardingFleet(t)
+	require.NoError(t, os.MkdirAll(cfg.DataDir, 0o700))
+	outside := filepath.Join(t.TempDir(), "precious.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("operator data"), 0o600))
+	for _, name := range []string{".doctor-space-test", ".doctor-cache-write-test"} {
+		require.NoError(t, os.WriteFile(filepath.Join(cfg.DataDir, name), []byte("keep me"), 0o600))
+	}
+	require.NoError(t, os.Symlink(outside, filepath.Join(cfg.DataDir, ".doctor-write-test")))
+	enableCache(t)
+
+	before := treeSnapshot(t, cfg.DataDir)
+	report := Run(context.Background(), Options{SkipUpstream: true})
+	got := byName(report.Checks)
+	assert.Equal(t, "pass", got["data_dir_writable"].Status, got["data_dir_writable"].Message)
+	assert.Equal(t, before, treeSnapshot(t, cfg.DataDir), "no entry of the data directory changed")
+	b, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	assert.Equal(t, "operator data", string(b), "a symlink's target is never written")
+}
+
+// enableCache turns the cache on through configuration (the nested
+// cache.* keys have no environment-variable form), so the cache check runs.
+func enableCache(t *testing.T) {
+	t.Helper()
+	viper.Set("cache", map[string]any{"enabled": true, "default_ttl": 3600, "similarity_threshold": 0.92, "max_entries_per_tenant": 10000})
+	t.Cleanup(func() { viper.Set("cache", nil) })
+}
+
+// PR #592 review, finding 2: a doctor run on a FRESH installation creates
+// nothing — no data directory, no evidence store, no vault, no cache
+// directory — whether the data directory is missing or was created empty by
+// the operator, and still reports what talon will create and whether it can.
+func TestRun_FreshInstallationStaysEmpty(t *testing.T) {
+	for name, precreate := range map[string]bool{"data directory missing": false, "data directory created empty": true} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			dataDir := filepath.Join(root, "data")
+			if precreate {
+				require.NoError(t, os.MkdirAll(dataDir, 0o700))
+			}
+			t.Setenv("TALON_DATA_DIR", dataDir)
+			t.Setenv("TALON_AGENTS_DIR", "")
+			t.Setenv("TALON_SECRETS_KEY", strings.Repeat("s", 32))
+			enableCache(t)
+			prev, _ := os.Getwd()
+			require.NoError(t, os.Chdir(root))
+			t.Cleanup(func() { _ = os.Chdir(prev) })
+
+			before := treeSnapshot(t, root)
+			report := Run(context.Background(), Options{SkipUpstream: true})
+			assert.Equal(t, before, treeSnapshot(t, root), "doctor created something on a fresh installation")
+			got := byName(report.Checks)
+			assert.Equal(t, "pass", got["data_dir_writable"].Status, got["data_dir_writable"].Message)
+			assert.Equal(t, "pass", got["evidence_db"].Status, got["evidence_db"].Message)
+			assert.Equal(t, "pass", got["cache"].Status, got["cache"].Message)
+			if !precreate {
+				assert.Contains(t, got["data_dir_writable"].Message, "does not exist yet")
+				assert.Contains(t, got["cache"].Message, "does not exist yet")
+			}
+		})
+	}
+}
+
+// PR #592 review, finding 2: on an EXISTING installation (vault, evidence
+// store, two use cases) every doctor path — config, use cases, system
+// statistics, cache — leaves the whole tree byte-identical.
+func TestRun_ExistingInstallationUnchanged(t *testing.T) {
+	cfg, _ := onboardingFleet(t)
+	storeSecret(t, cfg, "customer-support-talon-key", keySupport, secrets.ACL{})
+	storeSecret(t, cfg, "hr-copilot-talon-key", keyHR, secrets.ACL{})
+	ev, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	require.NoError(t, err)
+	require.NoError(t, ev.Store(context.Background(), &evidence.Evidence{ID: "ev-1", CorrelationID: "c-1", TenantID: "default", AgentID: "customer-support", Timestamp: time.Now().UTC(), InvocationType: "gateway", PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"}}))
+	require.NoError(t, ev.Close())
+	enableCache(t)
+	// The store file read-only, as for an operator without write access:
+	// a read-only open still reads it, a read-write open (which could
+	// migrate it) cannot.
+	require.NoError(t, os.Chmod(cfg.EvidenceDBPath(), 0o400))
+
+	before := treeSnapshot(t, cfg.DataDir)
+	report := Run(context.Background(), Options{SkipUpstream: true})
+	assert.Equal(t, before, treeSnapshot(t, cfg.DataDir), "doctor changed the installation")
+	got := byName(report.Checks)
+	assert.Equal(t, "pass", got["evidence_stats"].Status, got["evidence_stats"].Message)
+	assert.Contains(t, got["evidence_stats"].Message, "1 records")
+	assert.Equal(t, "pass", got["disk_space"].Status, got["disk_space"].Message)
+}
+
+// PR #592 review, finding 2 (migration): an evidence store with an OLDER
+// schema — the original evidence table, before the migrations that added
+// columns — is read for statistics and never migrated: a read-write open
+// would add the columns and change the file.
+func TestRun_NeverMigratesAnOlderEvidenceStore(t *testing.T) {
+	cfg, _ := onboardingFleet(t)
+	require.NoError(t, os.MkdirAll(cfg.DataDir, 0o700))
+	db, err := sql.Open("sqlite3", "file:"+cfg.EvidenceDBPath())
+	require.NoError(t, err)
+	_, err = db.ExecContext(context.Background(), `CREATE TABLE evidence (
+		id TEXT PRIMARY KEY, correlation_id TEXT NOT NULL, timestamp TIMESTAMP NOT NULL,
+		tenant_id TEXT NOT NULL, agent_id TEXT NOT NULL, invocation_type TEXT NOT NULL,
+		evidence_json TEXT NOT NULL, signature TEXT NOT NULL);
+		INSERT INTO evidence VALUES ('ev-old', 'c-old', '2026-01-01T00:00:00Z', 'default', 'legacy', 'gateway', '{}', 'sig');`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	before := treeSnapshot(t, cfg.DataDir)
+	report := Run(context.Background(), Options{SkipUpstream: true})
+	assert.Equal(t, before, treeSnapshot(t, cfg.DataDir), "doctor migrated or otherwise changed an older evidence store")
+	got := byName(report.Checks)
+	assert.Equal(t, "pass", got["evidence_stats"].Status, got["evidence_stats"].Message)
+	assert.Contains(t, got["evidence_stats"].Message, "1 records")
 }

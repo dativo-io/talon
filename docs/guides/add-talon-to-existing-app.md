@@ -287,7 +287,7 @@ hr-copilot             enabled   loaded         9s ago         $0.0000 / $500.00
 
 ## When it does not work: `talon doctor`
 
-Run `talon doctor` in the installation's directory, with the same environment as Talon (`set -a; . ./talon.env; set +a`). It reads only — nothing is created, logged or changed, and no key or secret value is printed — and names the three failures a new installation meets first, each with its own fix:
+Run `talon doctor` in the installation's directory, with the same environment as Talon (`set -a; . ./talon.env; set +a`). It reads only: it writes no file, creates no directory or store, changes no stored record, secret or schema, and prints no key or secret value (reading a store that is in SQLite's WAL mode lets SQLite itself create its `-shm` index file, which holds no data). It names the three failures a new installation meets first, each with its own fix:
 
 | What doctor reports | What it means | Fix |
 |---|---|---|

@@ -301,10 +301,7 @@ func checkDataDir(cfg *config.Config) CheckResult {
 	// the first command that stores something.
 	if fi, err := os.Stat(cfg.DataDir); err != nil {
 		if os.IsNotExist(err) {
-			return CheckResult{
-				Name: "data_dir_writable", Category: "config", Status: "pass",
-				Message: fmt.Sprintf("%s does not exist yet (talon creates it when it first stores something)", cfg.DataDir),
-			}
+			return creatableDir("data_dir_writable", cfg.DataDir, "talon creates it when it first stores something")
 		}
 		return CheckResult{
 			Name: "data_dir_writable", Category: "config", Status: "fail",
@@ -318,15 +315,13 @@ func checkDataDir(cfg *config.Config) CheckResult {
 			Fix:     "Point TALON_DATA_DIR at a directory",
 		}
 	}
-	// A transient probe (created and removed): writability, no state left.
-	testFile := filepath.Join(cfg.DataDir, ".doctor-write-test")
-	if err := os.WriteFile(testFile, []byte("ok"), 0o600); err != nil {
+	if err := mayWrite(cfg.DataDir); err != nil {
 		return CheckResult{
 			Name: "data_dir_writable", Category: "config", Status: "fail",
 			Message: fmt.Sprintf("%s not writable — %v", cfg.DataDir, err),
+			Fix:     "Make the data directory writable by the user that runs talon",
 		}
 	}
-	_ = os.Remove(testFile)
 	return CheckResult{
 		Name: "data_dir_writable", Category: "config", Status: "pass",
 		Message: fmt.Sprintf("%s (writable)", cfg.DataDir),
@@ -654,23 +649,18 @@ func checkCache(cfg *config.Config) CheckResult {
 			}
 		}
 	}
+	// Read-only (#575): the directory is not created and nothing is written.
 	cacheDir := filepath.Dir(cfg.CacheDBPath())
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
-		return CheckResult{
-			Name: "cache", Category: "config", Status: "fail",
-			Message: fmt.Sprintf("Cache path directory %s: %v", cacheDir, err),
-			Fix:     "Ensure data_dir is writable or create the cache directory",
-		}
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		return creatableDir("cache", cacheDir, "talon creates it when the cache first stores an entry")
 	}
-	testPath := filepath.Join(cacheDir, ".doctor-cache-write-test")
-	if err := os.WriteFile(testPath, []byte("ok"), 0o600); err != nil {
+	if err := mayWrite(cacheDir); err != nil {
 		return CheckResult{
 			Name: "cache", Category: "config", Status: "fail",
 			Message: fmt.Sprintf("Cache path not writable: %s — %v", cfg.CacheDBPath(), err),
 			Fix:     "Ensure data_dir is writable",
 		}
 	}
-	_ = os.Remove(testPath)
 	return CheckResult{
 		Name: "cache", Category: "config", Status: "pass",
 		Message: fmt.Sprintf("%s (enabled, writable)", cfg.CacheDBPath()),
@@ -975,30 +965,25 @@ func checkSystem() []CheckResult {
 		return results
 	}
 
+	// Read-only (#575): space and permission are asked of the filesystem
+	// (statfs(2), access(2)); the evidence store is opened read-only — never
+	// created or migrated here.
 	evDir := filepath.Dir(cfg.EvidenceDBPath())
 	if info, statErr := os.Stat(evDir); statErr == nil && info.IsDir() {
-		testPath := filepath.Join(evDir, ".doctor-space-test")
-		data := make([]byte, 1024)
-		if writeErr := os.WriteFile(testPath, data, 0o600); writeErr != nil {
-			results = append(results, CheckResult{
-				Name: "disk_space", Category: "system", Status: "warn",
-				Message: "Cannot write test file to evidence directory",
-			})
-		} else {
-			_ = os.Remove(testPath)
-			results = append(results, CheckResult{
-				Name: "disk_space", Category: "system", Status: "pass",
-				Message: evDir,
-			})
-		}
+		results = append(results, diskSpace(evDir))
 	}
 
-	store, storeErr := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if _, statErr := os.Stat(cfg.EvidenceDBPath()); statErr != nil {
+		return results
+	}
+	store, storeErr := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if storeErr == nil {
 		defer store.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		count, countErr := store.CountInRange(ctx, "", "", time.Time{}, time.Time{})
+		// All records of every tenant (CountInRange filters one tenant;
+		// with "" it counted only records without a tenant: always 0).
+		count, _, countErr := store.Stats(ctx)
 		if countErr == nil {
 			fi, _ := os.Stat(cfg.EvidenceDBPath())
 			sizeStr := "unknown"
@@ -1172,4 +1157,54 @@ func checkAirGapEgressGuardFromGateway(gwCfg *gateway.GatewayConfig, gatewayConf
 		}
 	}
 	return checkAirGapEgressGuard(cfg, gwCfg)
+}
+
+// creatableDir reports a directory talon creates on first use: doctor does
+// not create it, it checks that the nearest existing ancestor would let
+// talon do so (access(2), nothing written).
+func creatableDir(name, dir, when string) CheckResult {
+	parent := filepath.Dir(dir)
+	for {
+		if fi, err := os.Stat(parent); err == nil && fi.IsDir() {
+			break
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			break
+		}
+		parent = next
+	}
+	if err := mayWrite(parent); err != nil {
+		return CheckResult{
+			Name: name, Category: "config", Status: "fail",
+			Message: fmt.Sprintf("%s does not exist and cannot be created: %s is not writable — %v", dir, parent, err),
+			Fix:     "Create the directory, or make " + parent + " writable by the user that runs talon",
+		}
+	}
+	return CheckResult{
+		Name: name, Category: "config", Status: "pass",
+		Message: fmt.Sprintf("%s does not exist yet (%s; %s is writable)", dir, when, parent),
+	}
+}
+
+// minFreeBytes is the space below which evidence writes are at risk.
+const minFreeBytes = 500 << 20
+
+// diskSpace reports the free space and writability of the evidence
+// directory without writing to it.
+func diskSpace(dir string) CheckResult {
+	free, err := freeBytes(dir)
+	switch {
+	case err != nil:
+		return CheckResult{Name: "disk_space", Category: "system", Status: "warn", Message: fmt.Sprintf("%s: free space unknown — %v", dir, err)}
+	case mayWrite(dir) != nil:
+		return CheckResult{Name: "disk_space", Category: "system", Status: "warn", Message: fmt.Sprintf("%s is not writable by this user", dir)}
+	case free < minFreeBytes:
+		return CheckResult{
+			Name: "disk_space", Category: "system", Status: "warn",
+			Message: fmt.Sprintf("%s: only %.0f MB free", dir, float64(free)/(1<<20)),
+			Fix:     "Free space on the evidence volume: evidence and the action ledger are written transactionally and refuse when the disk is full",
+		}
+	}
+	return CheckResult{Name: "disk_space", Category: "system", Status: "pass", Message: fmt.Sprintf("%s — %.1f GB free", dir, float64(free)/(1<<30))}
 }

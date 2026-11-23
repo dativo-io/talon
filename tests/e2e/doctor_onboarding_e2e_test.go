@@ -53,21 +53,54 @@ func (r doctorReport) check(name string) (status, message, fix string, ok bool) 
 	return "", "", "", false
 }
 
-// storeDigest is the stores' content: the database files, and a WAL only
-// when it holds data (SQLite removes an EMPTY WAL when the last connection
-// closes, read-only connections included; that is not a change of state).
+// storeDigest is the installation's whole tree: every path, type, mode,
+// size and content digest. SQLite's own sidecar files of a WAL-mode store
+// are left out — the -shm index (created by any connection, read-only
+// included) and an EMPTY -wal (removed when the last connection closes);
+// neither holds data.
 func storeDigest(t *testing.T, dir string) string {
 	t.Helper()
 	var b strings.Builder
-	for _, f := range []string{"secrets.db", "secrets.db-wal", "evidence.db", "evidence.db-wal"} {
-		data, err := os.ReadFile(filepath.Join(dir, f))
-		if err != nil || (strings.HasSuffix(f, "-wal") && len(data) == 0) {
-			continue
+	err := filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
 		}
-		sum := sha256.Sum256(data)
-		fmt.Fprintf(&b, "%s=%s ", f, hex.EncodeToString(sum[:8]))
+		rel, _ := filepath.Rel(dir, p)
+		switch {
+		case fi.Mode()&os.ModeSymlink != 0:
+			target, _ := os.Readlink(p)
+			fmt.Fprintf(&b, "%s link %s\n", rel, target)
+		case fi.IsDir():
+			fmt.Fprintf(&b, "%s dir %s\n", rel, fi.Mode())
+		case strings.HasSuffix(p, "-shm") || (strings.HasSuffix(p, "-wal") && fi.Size() == 0):
+		default:
+			data, rerr := os.ReadFile(p)
+			if rerr != nil {
+				return rerr
+			}
+			sum := sha256.Sum256(data)
+			fmt.Fprintf(&b, "%s file %s %s\n", rel, fi.Mode(), hex.EncodeToString(sum[:8]))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	return b.String()
+}
+
+// A fresh directory: doctor reports what talon would create and creates
+// nothing (PR #592 review: no data directory, store, vault or probe file).
+func TestE2E_Doctor_FreshInstallationStaysEmpty(t *testing.T) {
+	root := t.TempDir()
+	before := storeDigest(t, root)
+	r, raw := runDoctor(t, root, map[string]string{"TALON_DATA_DIR": filepath.Join(root, "data")})
+	if after := storeDigest(t, root); after != before {
+		t.Fatalf("doctor created something on a fresh installation:\n%s\n→\n%s", before, after)
+	}
+	if st, msg, _, _ := r.check("data_dir_writable"); st != "pass" || !strings.Contains(msg, "does not exist yet") {
+		t.Fatalf("data_dir_writable: %q %q\n%s", st, msg, raw)
+	}
 }
 
 func TestE2E_Doctor_OnboardingFailureModes(t *testing.T) {
