@@ -419,3 +419,43 @@ func TestRun_NeverMigratesAnOlderEvidenceStore(t *testing.T) {
 	assert.Equal(t, "pass", got["evidence_stats"].Status, got["evidence_stats"].Message)
 	assert.Contains(t, got["evidence_stats"].Message, "1 records")
 }
+
+// Discovery errors are described from typed facts only: a hostile source
+// that echoes the credential doctor presented — in its JSON-RPC error
+// message or a header — and adds terminal control sequences gets none of it
+// into doctor's output.
+func TestCheckActionSources_NeverPrintsUpstreamText(t *testing.T) {
+	cfg, agentsDir := onboardingFleet(t)
+	const token = "crm-token-0123456789abcdef"
+	storeSecret(t, cfg, "crm-mcp-token", token, secrets.ACL{})
+	for name, reply := range map[string]func(w http.ResponseWriter, auth string){
+		"json-rpc error echoing the token": func(w http.ResponseWriter, auth string) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"denied for %s \u001b[2J"}}`, auth)
+		},
+		"content type echoing the token": func(w http.ResponseWriter, auth string) {
+			w.Header().Set("Content-Type", "text/x-"+strings.TrimPrefix(auth, "Bearer "))
+			_, _ = w.Write([]byte("nope"))
+		},
+		"HTTP status": func(w http.ResponseWriter, auth string) {
+			http.Error(w, "unauthorized "+auth, http.StatusUnauthorized)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reply(w, r.Header.Get("Authorization")) }))
+			defer srv.Close()
+			p := filepath.Join(agentsDir, "customer-support", "agent.talon.yaml")
+			b, err := os.ReadFile(p)
+			require.NoError(t, err)
+			y := strings.Split(string(b), "actions:")[0] + "actions:\n  sources:\n    crm:\n      type: mcp\n      url: \"" + srv.URL + "\"\n      auth:\n        secret_name: crm-mcp-token\n  definitions:\n    lookup_ticket:\n      source: crm\n      upstream_name: ticket.lookup\n      read_only: true\n      review: {fields: [ticket_id]}\n"
+			require.NoError(t, os.WriteFile(p, []byte(y), 0o600))
+
+			res := checkActionSources(context.Background(), cfg)
+			got := byName(res)["action_source:customer-support/crm"]
+			require.Equal(t, "fail", got.Status)
+			assertNoSecretValue(t, res, token)
+			assert.NotContains(t, got.Message, "\x1b", "no terminal control sequence")
+			assert.NotContains(t, got.Message, "denied for", "no upstream text")
+		})
+	}
+}
