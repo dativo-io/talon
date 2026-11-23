@@ -181,6 +181,9 @@ func TestCheckUseCaseKeys_OneVerdictPerUseCase(t *testing.T) {
 		hr := byName(checkUseCaseKeys(context.Background(), cfg))["use_case_key:hr-copilot"]
 		assert.Equal(t, "fail", hr.Status)
 		assert.Contains(t, hr.Message, "ACL")
+		assert.Contains(t, hr.Fix, "Review the stored secret ACL")
+		assert.Contains(t, hr.Fix, "do not re-set")
+		assert.NotContains(t, hr.Fix, "talon secrets set", "an ACL denial must not lead to a destructive secret overwrite")
 	})
 	t.Run("secrets key changed", func(t *testing.T) {
 		cfg, _ := onboardingFleet(t)
