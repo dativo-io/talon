@@ -38,7 +38,7 @@
     "internal/cmd/ui.go": "f409d51db981221c49e0692c0664da4f6a9d9deb",
     "internal/cmd/ui_signal_other.go": "c5877f5e0d2f74f122cef2b051963a2c46bb52f7",
     "internal/cmd/ui_signal_unix.go": "fb4e2bbd3beb937b16eb8abe0c037ca870fa770a",
-    "internal/config/config.go": "18621e22f08fd0330446073184e3523f11491671",
+    "internal/config/config.go": "6f97ce0a45b4dcbcd19a233f418720e14695b4f5",
     "internal/console/access/gate.go": "ebe6a986fef1a0808a44781bced31095b6558947",
     "internal/console/access/pairing.go": "255f566af1ed3e2f148371e30a13269e03881d79",
     "internal/console/access/sessions.go": "31727306e28d949ef927cd3b5f5838feb83db539",
@@ -214,19 +214,19 @@
     "tests/browser/seed/main.go": "269abfd67b1f007d78a9c02dfa6e2a40bb139196"
   },
   "assets": {
-    "action-evidence.webp": "4d7690522244b531cd14c9f890db8e17580ecc49",
+    "action-evidence.webp": "6bdfc92c24e6f551fc26fce9ff24ecd363f136a3",
     "action-policy.webp": "b1d927b8dd8b8e1d9824c9b17360323c8cdd250c",
-    "approval-detail.webp": "e6dc233e63d473eb4050943443db4c01cf8d3efc",
-    "approvals.webp": "72d5c77aa866ea3755a680367c78874837e3cbf1",
-    "configuration.webp": "db3310cdf1a01df4daef4179580eb8b96c9c195f",
+    "approval-detail.webp": "b50b89d693ef7bb40425ec790af4e9eed288884a",
+    "approvals.webp": "cc151df2f101406dfa7584b9f98c32eb4b172d2a",
+    "configuration.webp": "4176a6b04b8d1645b44fe6a7cc83bd72f411c0fa",
     "costs.webp": "dd4c24907fe5e7159ccb0f8ea978d2f763159612",
-    "evidence-verification.webp": "276c35e120129fe037adeddfff19660de6244c8c",
+    "evidence-verification.webp": "74c8dc1103e6d3156bb3f6be4c216f5c4cb71e61",
     "overview-attention.webp": "00add38a862ed54b71f0317acb697d3ae72923c5",
     "overview-mobile.webp": "f0c79df23bd78dc15f3664d778e62dbe55e0e4fe",
-    "session-investigation.webp": "4286bae0429488ce6aeb8b8c70ce62ed56d76a13",
-    "showcase.webp": "1923c0dafdac74cab8d6343de472d930973b74e3",
-    "system-diagnostics.webp": "afb82ffbdd2880691ccddeb7dad91768f99fd3ee",
-    "tamper-detection.webp": "fff5cf51b940785e84daf0b82109b9e0ddedf7f6",
-    "use-case-summary.webp": "d003e2bf61d9b3375505e28110fe46cd50416748"
+    "session-investigation.webp": "f3bf671921fc02bd172ff7b66a553659a8d5e827",
+    "showcase.webp": "ffbe43a8920765bddc410925bcf9aaddad4246a6",
+    "system-diagnostics.webp": "898a5a60312198c938f6523e3415fbe510e4adde",
+    "tamper-detection.webp": "d8c2e9a3068a057c87ff60f3c0ca012be54644cb",
+    "use-case-summary.webp": "874631d6764f86ddc9adbb5f1610fed761c3fc41"
   }
 }
