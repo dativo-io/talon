@@ -64,6 +64,6 @@ internal_docs/
 .pr_body.md
 
 # Node (if we add JS tooling later)
-node_modules/
+node_modules
 smoke_test_*.log
 smoke_test_logs.out.txt
