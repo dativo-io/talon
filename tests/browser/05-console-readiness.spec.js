@@ -32,6 +32,65 @@ test("Overview: configured runtimes that do not run read degraded, with findings
   await expect(page.getByTestId("readiness").getByText("Degraded", { exact: true }).first()).toBeVisible();
 });
 
+// #593: Talon's own installation events (reloads activated/rejected by
+// talon serve, a recovery resumed by talon backup) are recorded under the
+// reserved namespace "system". They are not a tenant: the selector lists the
+// business tenants only — a historical tenant with traffic and no use case
+// stays — and the events are under System › Installation activity, each
+// with its outcome and a link to its signed, verifying record.
+test("Installation events: not a tenant in the selector, not AI use case decisions, listed under System with outcome and verified evidence", async ({ page }) => {
+  const f = state().fixture;
+  const inst = f.installation;
+  await pair(page, "/overview");
+  const select = page.getByLabel("Tenant scope");
+  await expect(select.locator("option[value='default']")).toHaveCount(1);
+  const labels = (await select.locator("option").allTextContents()).map((l) => l.trim());
+  expect(labels[0]).toBe("All tenants");
+  expect(labels).toContain("acme · observed only");
+  expect(labels.filter((l) => /^default · \d+ use cases?$/.test(l))).toHaveLength(1);
+  expect(labels).toHaveLength(3);
+  await expect(select.locator(`option[value='${inst.namespace}']`)).toHaveCount(0);
+
+  // Not AI use case decisions: no installation event in Recent decisions.
+  const decisions = page.locator("section", { has: page.locator("#events-title") });
+  await expect(decisions.locator("tbody tr").first()).toBeVisible();
+  const showAll = decisions.getByRole("button", { name: /Show all/ });
+  if (await showAll.count()) await showAll.click();
+  for (const id of [inst.reload_activated, inst.reload_rejected, inst.recovery_resumed]) {
+    await expect(decisions.getByText(id)).toHaveCount(0);
+  }
+  await expect(decisions.getByRole("link", { name: "talon-serve" })).toHaveCount(0);
+
+  // System › Installation activity.
+  await page.getByRole("navigation", { name: "Console sections" }).getByRole("link", { name: "System" }).click();
+  const act = page.locator("section", { has: page.locator("#sys-installation") });
+  await expect(act.getByRole("heading", { name: "Installation activity" })).toBeVisible();
+  const rejected = act.getByRole("row").filter({ hasText: inst.reload_rejected });
+  await expect(rejected).toContainText("Configuration reload");
+  await expect(rejected).toContainText("Rejected");
+  await expect(rejected).toContainText("talon-serve");
+  await expect(rejected).toContainText("policies.cost_limits.daily must be a number");
+  await expect(act.getByRole("row").filter({ hasText: inst.reload_activated })).toContainText("Activated");
+  const resumed = act.getByRole("row").filter({ hasText: inst.recovery_resumed });
+  await expect(resumed).toContainText("Recovery resumed");
+  await expect(resumed).toContainText("talon-backup");
+
+  // The signed record opens with no tenant scope, verifies, and is shown as
+  // an installation event — not as an AI use case.
+  await rejected.getByRole("link", { name: inst.reload_rejected }).click();
+  await expect(page).toHaveURL(new RegExp(`/evidence/${inst.reload_rejected}$`));
+  await expect(page.getByTestId("outcome-story")).toContainText("Configuration reload — rejected");
+  await expect(page.getByText("Signature valid").first()).toBeVisible();
+  await expect(page.getByText("a Talon process, not an AI use case")).toBeVisible();
+  await expect(page.getByRole("link", { name: "talon-serve" })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Breadcrumb" }).getByRole("link", { name: "System" })).toBeVisible();
+
+  // A URL that names the namespace says what it is.
+  await page.goto(`/overview?tenant=${inst.namespace}`);
+  await expect(page.getByLabel("Tenant scope")).toHaveValue(inst.namespace);
+  await expect(page.getByLabel("Tenant scope").locator(`option[value='${inst.namespace}']`)).toHaveText(`${inst.namespace} · installation events, not a tenant`);
+});
+
 test("Tenant scope: a discoverable selector; it filters use cases and keeps the installation outage visible; the scope survives navigation, reload and back", async ({ page }) => {
   const f = state().fixture;
   await pair(page, "/overview");

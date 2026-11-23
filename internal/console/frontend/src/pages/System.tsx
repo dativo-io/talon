@@ -1,12 +1,14 @@
 import { useEffect } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { ReadinessPanel } from "../components/Readiness";
 import { ProcessTable, RoleTable, roleLabel, RuntimeStateBadge } from "../components/RuntimeStatus";
 import { useApi } from "../api/useApi";
-import type { SystemInfo } from "../api/types";
+import type { InstallationActivity as InstallationActivityDTO, SystemInfo } from "../api/types";
 import { PageHead } from "../components/Layout";
-import { AvailabilityNotice, Badge, CopyableIdentifier, DetailSection, ErrorState, Loading } from "../components/ui";
-import { bytes, integer, relative, utc } from "../lib/format";
+import { AvailabilityNotice, Badge, Chips, CopyableIdentifier, DetailSection, EmptyState, ErrorState, Loading } from "../components/ui";
+import { bytes, integer, relative, utc, utcShort } from "../lib/format";
+import { installationEventView } from "../lib/installation";
 
 const COMMANDS = [
   ["Health checks", "talon doctor"],
@@ -104,6 +106,7 @@ export function System({ expiresAt, onLogout }: { expiresAt?: string; onLogout: 
               </div>
             ) : null}
           </DetailSection>
+          <InstallationActivity a={s.installation_activity} />
           <DetailSection title="Diagnostics" id="sys-diag">
             <p className="small muted">Run these on the Talon host. The console never runs commands.</p>
             <div className="table-wrap">
@@ -119,5 +122,52 @@ export function System({ expiresAt, onLogout }: { expiresAt?: string; onLogout: 
         </div>
       ) : null}
     </>
+  );
+}
+
+// Installation activity (#593): Talon's own operational events — reloads
+// activated or rejected by talon serve, recovery resumed by talon backup —
+// recorded under the reserved namespace `system`. They belong to the
+// installation, not to a tenant, so the tenant selector does not list that
+// namespace; each row links its signed record (no tenant scope applies).
+function InstallationActivity({ a }: { a: InstallationActivityDTO | undefined }) {
+  const events = a?.events ?? [];
+  return (
+    <DetailSection title="Installation activity" id="sys-installation">
+      <AvailabilityNotice a={a?.availability} what="Installation activity" />
+      <p className="small muted">
+        Talon's own operational events, each a signed record of the installation (its signature is checked when you open it): not traffic of an AI use case, and not a tenant. They count in no request, denial or cost figure.
+      </p>
+      {a?.availability.state === "empty" ? <EmptyState title="No installation event recorded yet" /> : null}
+      {events.length > 0 ? (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Time (UTC)</th><th>Event</th><th>Outcome</th><th>Recorded by</th><th>Details</th><th>Evidence</th></tr>
+            </thead>
+            <tbody>
+              {events.map((e) => {
+                const v = installationEventView(e.invocation_type, e.allowed);
+                return (
+                  <tr key={e.evidence_id}>
+                    <td title={utc(e.timestamp)}>{utcShort(e.timestamp)}</td>
+                    <td>{v.label}{v.detail ? <div className="small muted">{v.detail}</div> : null}</td>
+                    <td><Badge tone={v.tone}>{v.outcome}</Badge></td>
+                    <td><code>{e.recorded_by}</code></td>
+                    <td><Chips items={(e.reasons ?? []).slice(0, 3)} empty="—" /></td>
+                    <td><Link to={`/evidence/${encodeURIComponent(e.evidence_id)}`}>{e.evidence_id}</Link></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div className="table-foot">
+            <span className="small muted">
+              The {a?.limit ?? events.length} most recent. Verify one with <code>talon audit verify &lt;evidence-id&gt;</code>; list them all with <code>talon audit list --tenant system</code>.
+            </span>
+          </div>
+        </div>
+      ) : null}
+    </DetailSection>
   );
 }

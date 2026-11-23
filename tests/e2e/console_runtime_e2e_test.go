@@ -180,7 +180,55 @@ func TestE2E_ConsoleRuntime_ProcessTruth(t *testing.T) {
 	if status != http.StatusOK || len(cfg.Active) == 0 || !cfg.Active[0].ReloadRejected || cfg.Active[0].AgentFilesMatch == nil || *cfg.Active[0].AgentFilesMatch {
 		t.Fatalf("configuration must show the rejected reload and that the files differ from the active generation: %+v", cfg.Active)
 	}
+
+	// #593: the real serve signed that rejection as an installation event,
+	// under the reserved namespace. It is listed on System, verifies in the
+	// console and with the CLI, and makes no tenant: the selector lists only
+	// the use case's tenant.
+	var reload console.InstallationEvent
+	deadline = time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) && reload.EvidenceID == "" {
+		for _, e := range c.system(t).InstallationActivity.Events {
+			if e.InvocationType == "config_reload" && !e.Allowed {
+				reload = e
+			}
+		}
+		if reload.EvidenceID == "" {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	if reload.EvidenceID == "" || reload.RecordedBy != "talon-serve" || len(reload.Reasons) == 0 {
+		t.Fatalf("the rejected reload must be listed as installation activity with its causes: %+v", c.system(t).InstallationActivity)
+	}
+	tenantsNow := func() console.Tenants {
+		var ts console.Tenants
+		if status, body, _ := c.do(http.MethodGet, "/console/v1/tenants", "", nil); status != http.StatusOK {
+			t.Fatalf("tenants: %d %s", status, body)
+		} else {
+			mustJSON(t, body, &ts)
+		}
+		return ts
+	}
+	// The only agent file is broken: no valid use case, and the installation
+	// event alone makes no tenant.
+	if ts := tenantsNow(); len(ts.Tenants) != 0 || ts.Installation.TenantID != "system" {
+		t.Fatalf("with no valid use case the selector must be empty, never list the installation namespace: %+v", ts)
+	}
+	var ev console.EvidenceDetail
+	if status, body, _ = c.do(http.MethodGet, "/console/v1/evidence/"+reload.EvidenceID, "", nil); status != http.StatusOK {
+		t.Fatalf("evidence %s: %d %s", reload.EvidenceID, status, body)
+	}
+	mustJSON(t, body, &ev)
+	if ev.Detail == nil || !ev.Detail.InstallationEvent || ev.Detail.Verification.State != "valid" {
+		t.Fatalf("the reload record must open as a verified installation event: %s", body)
+	}
+	if out, stderr, code := RunTalon(t, dir, nil, "audit", "verify", reload.EvidenceID); code != 0 {
+		t.Fatalf("talon audit verify %s: %d\n%s\n%s", reload.EvidenceID, code, out, stderr)
+	}
 	_ = os.WriteFile(agentFile, good, 0o600)
+	if ts := tenantsNow(); len(ts.Tenants) != 1 || ts.Tenants[0].TenantID != "default" || ts.Tenants[0].UseCases != 1 {
+		t.Fatalf("one use case: the selector lists only its tenant: %+v", ts.Tenants)
+	}
 
 	// Another installation (different signing key) in the same directory is
 	// never combined.

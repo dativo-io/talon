@@ -38,6 +38,8 @@ const (
 	MaxTimelineLimit     = evidence.MaxTimelinePage
 	DefaultActivitySpan  = 24 * time.Hour
 	UseCaseEventsLimit   = 20
+	// InstallationEventsLimit bounds System's installation activity.
+	InstallationEventsLimit = 20
 )
 
 // FleetSource yields the attention queue for a tenant ("" = all) and names
@@ -244,7 +246,9 @@ func (s *Service) recentEvents(ctx context.Context, tenant string, limit int) Re
 	}
 	// Same recipe as GET /api/v1/events/recent: over-fetch, project, sort
 	// newest first, cut to the limit. tenant "" lists every tenant.
-	records, err := s.cfg.Evidence.List(ctx, tenant, "", time.Time{}, s.now(), max(limit*4, 200))
+	// Installation events are not AI use case decisions: they are listed on
+	// the System page (#593).
+	records, err := s.cfg.Evidence.ListActivity(ctx, tenant, "", time.Time{}, s.now(), max(limit*4, 200))
 	if err != nil {
 		out.Availability = unavailable(SourceEvidenceStore, err)
 		return out
@@ -554,7 +558,9 @@ func (s *Service) Evidence(ctx context.Context, id, tenant string) (*EvidenceDet
 	if tenant != "" && d.Record.TenantID != tenant {
 		return nil, fmt.Errorf("%w: evidence %q", ErrNotFound, id)
 	}
-	return &EvidenceDetail{Meta: s.meta(tenant), Availability: ok(SourceEvidenceStore, s.now()), Detail: operationalRecord(d)}, nil
+	detail := operationalRecord(d)
+	detail.InstallationEvent = evidence.IsInstallationEvent(d.Record.TenantID, d.Record.InvocationType)
+	return &EvidenceDetail{Meta: s.meta(tenant), Availability: ok(SourceEvidenceStore, s.now()), Detail: detail}, nil
 }
 
 const (
@@ -658,6 +664,7 @@ func (s *Service) System(ctx context.Context) *System {
 		Runtime: s.runtime(),
 	}
 	out.Readiness = s.readiness(ctx, out.Runtime)
+	out.InstallationActivity = s.installationActivity(ctx)
 	if s.cfg.Evidence == nil {
 		out.Store.Availability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}
 		return out
@@ -677,6 +684,31 @@ func (s *Service) System(ctx context.Context) *System {
 		out.Store.NewestRecord = &n
 	}
 	out.Store.Availability = ok(SourceEvidenceStore, s.now())
+	return out
+}
+
+func (s *Service) installationActivity(ctx context.Context) InstallationActivity {
+	out := InstallationActivity{Events: []InstallationEvent{}, Limit: InstallationEventsLimit}
+	if s.cfg.Evidence == nil {
+		out.Availability = Availability{State: StateUnavailable, Source: SourceEvidenceStore, Error: noStoreMsg}
+		return out
+	}
+	records, err := s.cfg.Evidence.ListInstallationEvents(ctx, InstallationEventsLimit)
+	if err != nil {
+		out.Availability = unavailable(SourceEvidenceStore, err)
+		return out
+	}
+	for i := range records {
+		r := &records[i]
+		out.Events = append(out.Events, InstallationEvent{
+			EvidenceID: r.ID, Timestamp: r.Timestamp.UTC(), InvocationType: r.InvocationType,
+			RecordedBy: r.AgentID, Allowed: r.PolicyDecision.Allowed, Reasons: r.PolicyDecision.Reasons,
+		})
+	}
+	out.Availability = ok(SourceEvidenceStore, s.now())
+	if len(out.Events) == 0 {
+		out.Availability.State = StateEmpty
+	}
 	return out
 }
 

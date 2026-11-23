@@ -1,4 +1,5 @@
 import type { EvidenceRecord, Outcome, SessionSummary, Verification } from "../api/types";
+import { installationEventView } from "./installation";
 import { outcomeStory } from "./outcome";
 
 // Facts sorted into the three proof categories of ProofBoundary (#533 PR 2).
@@ -35,8 +36,13 @@ interface Orchestration {
   session_source?: string;
 }
 
-export function evidenceProof(r: EvidenceRecord, o: Outcome | undefined, v: Verification | undefined): ProofLists {
+// installation marks Talon's own installation event (#593, the server's
+// installation_event): its agent_id is a Talon process and its tenant_id the
+// reserved installation namespace, so it is never described as an AI use
+// case in a tenant, nor as a request.
+export function evidenceProof(r: EvidenceRecord, o: Outcome | undefined, v: Verification | undefined, installation = false): ProofLists {
   const trust: ProofTrust = v?.state === "invalid" ? "signature_invalid" : v?.state === "valid" ? "signature_verified" : "recorded";
+  if (installation) return installationProof(r, trust, v);
   const story = outcomeStory(o);
   const verified = [
     `AI use case ${r.agent_id} in tenant ${r.tenant_id}, as Talon resolved it at its boundary.`,
@@ -65,6 +71,22 @@ export function evidenceProof(r: EvidenceRecord, o: Outcome | undefined, v: Veri
   const what = o?.tool ? `${o.tool}` : "the request";
   const notVerified = [`What the destination did with ${what} beyond the answer Talon recorded.`, ...OUTSIDE];
   return { trust, recorded: verified, reported, notVerified };
+}
+
+function installationProof(r: EvidenceRecord, trust: ProofTrust, v: Verification | undefined): ProofLists {
+  const view = installationEventView(r.invocation_type, r.policy_decision.allowed);
+  const recorded = [
+    `Installation event written by the Talon process ${r.agent_id} under the reserved namespace ${r.tenant_id}: not an AI use case and not a tenant.`,
+    `${trust === "signature_invalid" ? "Outcome the record claims" : "Recorded outcome"}: ${view.label}, ${view.outcome.toLowerCase()} (${r.policy_decision.action}).`,
+  ];
+  if (trust !== "signature_invalid" && view.detail) recorded.push(view.detail);
+  recorded.push(v ? (v.state === "valid" ? "Signature: valid when checked by this console." : "Signature: INVALID — the record changed after signing.") : "Signature: not checked.");
+  return {
+    trust,
+    recorded,
+    reported: [],
+    notVerified: ["Whether the state this event recorded still holds now: current activation and runtime state are on the Configuration and System pages."],
+  };
 }
 
 export function sessionProof(s: SessionSummary, managed: boolean, tenant: string): ProofLists {

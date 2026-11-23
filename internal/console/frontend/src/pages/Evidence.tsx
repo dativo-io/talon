@@ -9,6 +9,8 @@ import { outcomeStory } from "../lib/outcome";
 import { evidenceProof } from "../lib/proof";
 import { AvailabilityNotice, CopyableIdentifier, DecisionOutcome, DetailSection, ErrorState, EvidenceVerification, Loading, Chips } from "../components/ui";
 import { duration, humanize, utc } from "../lib/format";
+import { installationEventView } from "../lib/installation";
+import type { OutcomeStory } from "../lib/outcome";
 import { scoped, useScope } from "../lib/scope";
 
 // One signed evidence record: Talon's decision, the separately recorded
@@ -23,8 +25,12 @@ export function EvidencePage() {
   const r = det?.record;
   const withheld = det?.withheld ?? [];
   const reasonWithheld = withheld.find((w) => w.field === "action_lifecycle.decision_reason");
-  const crumbs = [scopeCrumb(tenant)];
-  if (r) {
+  // An installation event (#593) belongs to the installation, not to an AI
+  // use case: it is reached from System, and its agent_id names a Talon
+  // process.
+  const installation = det?.installation_event === true;
+  const crumbs = installation ? [{ label: "System", to: "/system" }, { label: "Installation activity", to: "/system" }] : [scopeCrumb(tenant)];
+  if (r && !installation) {
     crumbs.push({ label: r.agent_id, to: scoped(`/use-cases/${encodeURIComponent(r.agent_id)}`, r.tenant_id) });
     if (r.session_id) crumbs.push({ label: `Session ${r.session_id}`, to: scoped(`/sessions/${encodeURIComponent(r.session_id)}`, r.tenant_id, { agent: r.agent_id }) });
   }
@@ -36,7 +42,9 @@ export function EvidencePage() {
     ? null
     : tampered
       ? { headline: "Signature invalid — this record's outcome cannot be relied on", detail: "The record changed after it was signed. Its decision, dispatch and destination facts are shown below only as claims; do not act on them.", tone: "error" as const }
-      : outcomeStory(det.outcome);
+      : installation && r
+        ? installationStory(r.invocation_type, r.policy_decision.allowed)
+        : outcomeStory(det.outcome);
   return (
     <>
       <Breadcrumbs items={crumbs} />
@@ -53,7 +61,7 @@ export function EvidencePage() {
               {tampered ? null : <span className="small muted">The separate facts behind this sentence are under Decision and outcome.</span>}
             </div>
           </section>
-          <ProofBoundary facts={evidenceProof(r, det.outcome, det.verification)} />
+          <ProofBoundary facts={evidenceProof(r, det.outcome, det.verification, installation)} />
           <DetailSection title="Verification" id="ev-verify">
             <div className="row">
               <EvidenceVerification v={det.verification} />
@@ -82,8 +90,17 @@ export function EvidencePage() {
             <DetailSection title="Identity" id="ev-identity">
               <dl className="facts">
                 <dt>Recorded at</dt><dd>{utc(r.timestamp)}</dd>
-                <dt>AI use case</dt><dd><Link to={scoped(`/use-cases/${encodeURIComponent(r.agent_id)}`, r.tenant_id)}>{r.agent_id}</Link></dd>
-                <dt>Tenant</dt><dd>{r.tenant_id}</dd>
+                {installation ? (
+                  <>
+                    <dt>Recorded by</dt><dd><code>{r.agent_id}</code> <span className="small muted">(a Talon process, not an AI use case)</span></dd>
+                    <dt>Scope</dt><dd>Installation event <span className="small muted">(recorded under the reserved namespace <code>{r.tenant_id}</code>; not a tenant)</span></dd>
+                  </>
+                ) : (
+                  <>
+                    <dt>AI use case</dt><dd><Link to={scoped(`/use-cases/${encodeURIComponent(r.agent_id)}`, r.tenant_id)}>{r.agent_id}</Link></dd>
+                    <dt>Tenant</dt><dd>{r.tenant_id}</dd>
+                  </>
+                )}
                 <dt>Record type</dt><dd><code>{r.invocation_type}</code></dd>
                 <dt>Session</dt>
                 <dd>
@@ -193,4 +210,9 @@ function CopyRaw({ value }: { value: string }) {
       Copy JSON
     </button>
   );
+}
+
+function installationStory(type: string, allowed: boolean): OutcomeStory {
+  const v = installationEventView(type, allowed);
+  return { headline: `${v.label} — ${v.outcome.toLowerCase()}`, detail: `${v.detail} An installation event: not traffic of an AI use case, and not a tenant.`.trim(), tone: v.tone };
 }

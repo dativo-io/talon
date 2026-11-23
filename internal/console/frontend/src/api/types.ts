@@ -253,6 +253,8 @@ export interface TenantEntry {
 export interface Tenants {
   meta: Meta;
   tenants: TenantEntry[];
+  // The reserved namespace of installation events (#593): not a tenant.
+  installation?: { tenant_id: string };
   availability: Availability;
 }
 
@@ -566,7 +568,7 @@ export interface WithheldField {
 export interface EvidenceDetail {
   meta: Meta;
   availability: Availability;
-  detail?: { record: EvidenceRecord; verification: Verification; outcome: Outcome; withheld?: WithheldField[] };
+  detail?: { record: EvidenceRecord; verification: Verification; outcome: Outcome; withheld?: WithheldField[]; installation_event?: boolean };
 }
 
 export interface StoreHealth {
@@ -584,6 +586,25 @@ export interface SystemInfo {
   store: StoreHealth;
   runtime: Runtime;
   readiness: Readiness;
+  installation_activity?: InstallationActivity;
+}
+
+// Talon's own installation events, newest first (#593).
+export interface InstallationActivity {
+  availability: Availability;
+  events: InstallationEvent[] | null;
+  limit: number;
+}
+
+// One installation event as its signed record states it; reasons are the
+// record's own, written by Talon.
+export interface InstallationEvent {
+  evidence_id: string;
+  timestamp: string;
+  invocation_type: string;
+  recorded_by: string;
+  allowed: boolean;
+  reasons?: string[];
 }
 
 export interface Retry {

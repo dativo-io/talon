@@ -161,7 +161,7 @@ talonctl backup resume --reconciled --hold-operation refund-T-1842 --hold-operat
 A resume that ends no hold (it was already resumed, or another operator's resume won) says so, writes no evidence and names none; if you asked it to hold operation ids, it exits non-zero and lists them as not held.
 
 - **Configuration:** if the company policy or agent files now differ from those captured with the backup, the resume is refused until you have reviewed them and pass `--accept-config-change`. A restore must not silently change which policy is enforced.
-- **Record:** the held operation ids, the end of the hold and a signed `recovery_resumed` evidence record (backup id, number of open operations, held ids) are committed in one transaction. If the record cannot be written, nothing changes: the hold stays active and dispatch stays refused.
+- **Record:** the held operation ids, the end of the hold and a signed `recovery_resumed` evidence record (backup id, number of open operations, held ids; an installation event, shown in the console under System › Installation activity) are committed in one transaction. If the record cannot be written, nothing changes: the hold stays active and dispatch stays refused.
 
 **What Talon guarantees after a restore, and what it does not:**
 - Until you resume: no governed action is dispatched.

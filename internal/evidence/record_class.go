@@ -74,10 +74,10 @@ var nonRequestClass = map[string]RecordClass{
 	"budget_threshold": ClassOperatorEvent,
 
 	// `talon backup resume` ended a recovery hold after a restore (#465).
-	"recovery_resumed": ClassOperatorEvent,
+	InvocationTypeRecoveryResumed: ClassOperatorEvent,
 
 	// Configuration lifecycle.
-	"config_reload": ClassConfigEvent,
+	InvocationTypeConfigReload: ClassConfigEvent,
 
 	// Tool / cache maintenance.
 	CacheEventEviction:      ClassToolEvent,
