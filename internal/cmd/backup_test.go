@@ -289,6 +289,12 @@ func TestBackup_ResumeAfterRestore(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.Equal(t, "recovery_resumed", rows[0].InvocationType)
 	require.True(t, store.VerifyRecord(&rows[0]))
+	// #593: an installation event, not a tenant's activity.
+	require.True(t, evidence.IsInstallationEvent(rows[0].TenantID, rows[0].InvocationType))
+	inst, err := store.ListInstallationEvents(ctx, 5)
+	require.NoError(t, err)
+	require.Len(t, inst, 1)
+	require.Equal(t, rows[0].ID, inst[0].ID)
 	holds, err := action.ActiveRecoveryHolds(ctx, store.DB())
 	require.NoError(t, err)
 	require.Empty(t, holds)

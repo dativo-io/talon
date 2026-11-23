@@ -259,6 +259,11 @@ type EvidenceDetail struct {
 type EvidenceRecordDetail struct {
 	*evidence.RecordDetail
 	Withheld []WithheldField `json:"withheld,omitempty"`
+	// InstallationEvent marks Talon's own installation-level record
+	// (evidence.IsInstallationEvent): its agent_id names a Talon process,
+	// not an AI use case, and its tenant_id is the reserved installation
+	// namespace, not a tenant (#593).
+	InstallationEvent bool `json:"installation_event,omitempty"`
 }
 
 // WithheldField names one field of the stored record that this view does
@@ -304,6 +309,34 @@ type System struct {
 	Store     StoreHealth `json:"store"`
 	Runtime   Runtime     `json:"runtime"`
 	Readiness Readiness   `json:"readiness"`
+	// InstallationActivity lists Talon's own installation events (#593).
+	InstallationActivity InstallationActivity `json:"installation_activity"`
+}
+
+// InstallationActivity is the newest installation events, newest first:
+// configuration reloads activated or rejected by talon serve, recovery
+// resumes by talon backup, and legacy talon enforce mode changes. Each links
+// its signed record. They are installation-wide: no tenant scope applies,
+// and none of them is AI use case traffic.
+type InstallationActivity struct {
+	Availability Availability        `json:"availability"`
+	Events       []InstallationEvent `json:"events"`
+	Limit        int                 `json:"limit"`
+}
+
+// InstallationEvent is one installation event as its signed record states
+// it. Reasons are the record's own policy_decision.reasons, written by Talon
+// (reload causes, the backups a resume covered) — not the request-oriented
+// explanations of an AI use case decision.
+type InstallationEvent struct {
+	EvidenceID     string    `json:"evidence_id"`
+	Timestamp      time.Time `json:"timestamp"`
+	InvocationType string    `json:"invocation_type"`
+	// RecordedBy is the record's agent_id: the Talon process that wrote it
+	// (talon-serve, talon-backup, talon-cli), never an AI use case.
+	RecordedBy string   `json:"recorded_by"`
+	Allowed    bool     `json:"allowed"`
+	Reasons    []string `json:"reasons,omitempty"`
 }
 
 // Info identifies the console process itself.

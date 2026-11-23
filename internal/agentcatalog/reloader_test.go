@@ -159,6 +159,17 @@ func (f *reloadFixture) reloadRows(t *testing.T) []evidence.Evidence {
 	t.Helper()
 	rows, err := f.evStore.List(context.Background(), "system", "talon-serve", time.Time{}, time.Time{}, 50)
 	require.NoError(t, err)
+	// #593: every reload record is an installation event — listed as
+	// installation activity, never as a tenant's.
+	inst, err := f.evStore.ListInstallationEvents(context.Background(), 50)
+	require.NoError(t, err)
+	require.Len(t, inst, len(rows))
+	for i := range rows {
+		require.True(t, evidence.IsInstallationEvent(rows[i].TenantID, rows[i].InvocationType), rows[i].ID)
+	}
+	tenants, err := f.evStore.ListActivityTenantIDs(context.Background())
+	require.NoError(t, err)
+	require.NotContains(t, tenants, evidence.InstallationTenantID)
 	return rows
 }
 

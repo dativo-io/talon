@@ -488,9 +488,9 @@ func (r *Reloader) writeReloadEvidence(ctx context.Context, digest string, activ
 		ID:              id,
 		CorrelationID:   id,
 		Timestamp:       time.Now().UTC(),
-		TenantID:        "system",
+		TenantID:        evidence.InstallationTenantID,
 		AgentID:         "talon-serve",
-		InvocationType:  "config_reload",
+		InvocationType:  evidence.InvocationTypeConfigReload,
 		RequestSourceID: "reload_loop",
 		PolicyDecision: evidence.PolicyDecision{
 			Allowed:       activated,

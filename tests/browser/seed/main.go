@@ -52,6 +52,18 @@ type expectations struct {
 	LLMCost         string `json:"llm_cost"`
 	// Action is the genuine Action Gateway lifecycle of refund-bot.
 	Action actionExpectations `json:"action"`
+	// Installation names Talon's own installation events (#593).
+	Installation installationExpectations `json:"installation"`
+}
+
+// installationExpectations are the installation events the seed records,
+// in the exact shape their production writers sign (agentcatalog.Reloader,
+// `talon backup resume`): the reserved namespace, never a tenant.
+type installationExpectations struct {
+	Namespace       string `json:"namespace"`
+	ReloadActivated string `json:"reload_activated"`
+	ReloadRejected  string `json:"reload_rejected"`
+	RecoveryResumed string `json:"recovery_resumed"`
 }
 
 // actionExpectations names the signed lifecycle records the action service
@@ -290,6 +302,26 @@ policies:
 			InvocationType: "gateway", PolicyDecision: allow, Execution: evidence.Execution{ModelUsed: "gpt-4o-mini"},
 		})
 	}
+	// Talon's own installation events (#593), newer than any traffic: a
+	// reload activated and one rejected by talon serve, and a recovery hold
+	// resumed by talon backup. None of them is a tenant's activity.
+	inst := installationExpectations{Namespace: evidence.InstallationTenantID, ReloadActivated: "cr_seed_activated", ReloadRejected: "cr_seed_rejected", RecoveryResumed: "rr_seed_resumed"}
+	put(&evidence.Evidence{
+		ID: inst.ReloadActivated, CorrelationID: inst.ReloadActivated, Timestamp: at(90), TenantID: evidence.InstallationTenantID, AgentID: "talon-serve",
+		InvocationType: evidence.InvocationTypeConfigReload, RequestSourceID: "reload_loop",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "sha256:5eed0001"},
+	})
+	put(&evidence.Evidence{
+		ID: inst.ReloadRejected, CorrelationID: inst.ReloadRejected, Timestamp: at(91), TenantID: evidence.InstallationTenantID, AgentID: "talon-serve",
+		InvocationType: evidence.InvocationTypeConfigReload, RequestSourceID: "reload_loop",
+		PolicyDecision: evidence.PolicyDecision{Allowed: false, Action: "deny", PolicyVersion: "sha256:5eed0002", Reasons: []string{"agents/hr-analytics-assistant/agent.talon.yaml: policies.cost_limits.daily must be a number"}},
+		Execution:      evidence.Execution{Error: "config_reload_rejected"},
+	})
+	put(&evidence.Evidence{
+		ID: inst.RecoveryResumed, CorrelationID: inst.RecoveryResumed, Timestamp: at(92), TenantID: evidence.InstallationTenantID, AgentID: "talon-backup",
+		InvocationType: evidence.InvocationTypeRecoveryResumed, RequestSourceID: "operator",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "recovery_resumed", Reasons: []string{"backups: bk_seed taken 2026-11-20T10:00:00Z", "open operations in the backup: 0"}},
+	})
 	// A long session (60 records) for timeline paging.
 	for i := 0; i < 60; i++ {
 		put(&evidence.Evidence{
@@ -324,7 +356,7 @@ policies:
 		AllowedID: "pa-allowed-aggregate", ExportDeniedID: "pa-export-denied", HRRejectedID: "pa-hr-rejected", LLMID: "pa-llm-answer",
 		StandaloneID: "pa-standalone", TamperedID: "pa-tampered", Correlation: corr, LLMCost: "$0.0123",
 		CacheHitID: "pa-cache-hit", LongSession: "pa-long", ForeignUseCase: "eu-reports", Records: count,
-		Action: act,
+		Action: act, Installation: inst,
 	}
 	must(json.NewEncoder(os.Stdout).Encode(out))
 }

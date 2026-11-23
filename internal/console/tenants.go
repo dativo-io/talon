@@ -4,27 +4,44 @@ import (
 	"context"
 	"errors"
 	"sort"
-	"time"
+
+	"github.com/dativo-io/talon/internal/evidence"
 )
 
 // Tenants lists the tenant identities this installation knows, for the scope
 // selector (#533 PR 1): tenants of configured AI use cases, tenants with
-// recorded evidence, and tenants with session-store rows. It is a discovery
-// aid, not an authorization list: selecting a tenant filters what the paired
-// operator already may read, and nothing here provisions tenants.
+// recorded activity in the evidence store, and tenants with session-store
+// rows. It is a discovery aid, not an authorization list: selecting a tenant
+// filters what the paired operator already may read, and nothing here
+// provisions tenants.
+//
+// Talon's own installation events (evidence.IsInstallationEvent: reload
+// activation/rejection, recovery resume) are recorded under the reserved
+// namespace Installation.TenantID; they do not make that namespace a tenant
+// (#593). They are listed on the System page. A tenant that is itself named
+// like the namespace is listed when it has use cases, sessions or activity
+// of its own.
 type Tenants struct {
 	Meta    Meta          `json:"meta"`
 	Tenants []TenantEntry `json:"tenants"`
+	// Installation names the reserved namespace of installation events, so
+	// a view scoped to it can say what it is instead of "not seen".
+	Installation InstallationScope `json:"installation"`
 	// Availability is partial when a source did not answer: tenants seen
 	// only there are then missing.
 	Availability Availability `json:"availability"`
+}
+
+// InstallationScope is the reserved tenant_id of installation events.
+type InstallationScope struct {
+	TenantID string `json:"tenant_id"`
 }
 
 // TenantEntry is one tenant identity and where it was seen.
 type TenantEntry struct {
 	TenantID    string `json:"tenant_id"`
 	UseCases    int    `json:"use_cases"`    // configured AI use cases in this tenant
-	HasEvidence bool   `json:"has_evidence"` // recorded evidence exists
+	HasEvidence bool   `json:"has_evidence"` // recorded evidence of its own activity exists (installation events excluded)
 	HasSessions bool   `json:"has_sessions"` // session-store rows exist
 	Configured  bool   `json:"configured"`   // at least one configured use case
 }
@@ -34,7 +51,7 @@ const maxTenants = 500
 
 // Tenants builds the tenant list.
 func (s *Service) Tenants(ctx context.Context) *Tenants {
-	out := &Tenants{Meta: s.meta(""), Tenants: []TenantEntry{}}
+	out := &Tenants{Meta: s.meta(""), Tenants: []TenantEntry{}, Installation: InstallationScope{TenantID: evidence.InstallationTenantID}}
 	byID := map[string]*TenantEntry{}
 	get := func(id string) *TenantEntry {
 		if id == "" {
@@ -98,7 +115,7 @@ func (s *Service) evidenceTenants(ctx context.Context) ([]string, error) {
 	if s.cfg.Evidence == nil {
 		return nil, errors.New(noStoreMsg)
 	}
-	return s.cfg.Evidence.ListTenantIDs(ctx, time.Time{}, time.Time{})
+	return s.cfg.Evidence.ListActivityTenantIDs(ctx)
 }
 
 func (s *Service) sessionTenants(ctx context.Context) ([]string, error) {
