@@ -47,7 +47,6 @@
     "internal/console/dto.go": "45db2dfa636d748620e8ef909a2fa0915bc55d32",
     "internal/console/effective.go": "a2a5b4807252adfe2467d3ec69a5a90dd0c4247b",
     "internal/console/frontend/index.html": "2530db3390060b3718fb8993fddf3dbeaf43402c",
-    "internal/console/frontend/node_modules": "97e97bf0594e6bed70fefbfec87e0183bee7f08d",
     "internal/console/frontend/package-lock.json": "28841e933e4f233c8362ba16e5f593da6717c0cb",
     "internal/console/frontend/package.json": "beea866b9593983ed470cb0e4135029571443df2",
     "internal/console/frontend/src/App.tsx": "3286724595ceea26eb1a3b02327809ed6a37d552",
