@@ -336,7 +336,13 @@ func TestGoverned_CallerProvidedOperationID(t *testing.T) {
 // Action Gateway, with evidence and zero upstream calls.
 func TestGoverned_ForbiddenToolCalledDirectlyIsDeniedWithZeroCalls(t *testing.T) {
 	f := newGovFixture(t)
-	code, out := f.call(t, "delete_customer", map[string]any{"customer_id": "c-1"})
+	// The argument value is a canary no generated identifier can contain.
+	// The former value "c-1" also occurred inside the random operation id
+	// ("mcp-" + a UUID, e.g. "…-ab3c-1bfd…") about one run in 128, which
+	// failed the leak assertion below although nothing leaked.
+	const canary = "customer-ZQ-canary"
+	require.Regexp(t, `[^0-9a-f-]`, canary, "the canary must not be hex/UUID-shaped")
+	code, out := f.call(t, "delete_customer", map[string]any{"customer_id": canary})
 	require.Equal(t, http.StatusOK, code)
 	x := ext(t, out)
 	assert.Equal(t, govcode.PolicyDenied, x["code"])
@@ -344,7 +350,7 @@ func TestGoverned_ForbiddenToolCalledDirectlyIsDeniedWithZeroCalls(t *testing.T)
 	assert.Equal(t, "not_dispatched", x["provenance"])
 	assert.Equal(t, true, x["evidence"].(map[string]any)["committed"])
 	assert.Zero(t, f.src.count("customer.delete"))
-	assert.NotContains(t, mustJSON(t, out), "c-1", "argument values never appear in the denial")
+	assert.NotContains(t, mustJSON(t, out), canary, "argument values never appear in the denial")
 	assert.Equal(t, action.LifecycleValid, f.verified(t, x["operationId"].(string)).Verdict)
 }
 
