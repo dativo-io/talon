@@ -1,0 +1,59 @@
+name: n8n compatibility
+
+# Stock n8n nodes call the model through Talon with the onboarding guide's
+# settings (#575; the pinned n8n profile shared with #576). n8n runs from an
+# image pinned by digest (scripts/n8n-compat.sh); a mock provider stands
+# behind Talon, so no paid request is made.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/gateway/**'
+      - 'internal/cmd/serve*'
+      - 'internal/cmd/agents*'
+      - 'tests/n8n/**'
+      - 'scripts/n8n-compat.sh'
+      - 'docs/guides/add-talon-to-existing-app.md'
+      - '.github/workflows/n8n-compat.yml'
+      - 'go.mod'
+      - 'go.sum'
+  push:
+    branches: [main]
+    paths:
+      - 'internal/gateway/**'
+      - 'internal/cmd/serve*'
+      - 'internal/cmd/agents*'
+      - 'tests/n8n/**'
+      - 'scripts/n8n-compat.sh'
+      - 'docs/guides/add-talon-to-existing-app.md'
+      - '.github/workflows/n8n-compat.yml'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'A published release to test instead of this commit (for example v1.17.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  n8n:
+    name: n8n 2.49.5 through Talon (stock nodes, mock provider)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Published release under test (dispatch with a tag)
+        if: inputs.tag != ''
+        env:
+          TAG: ${{ inputs.tag }}
+        run: echo "TALON_E2E_BINARY=$(bash scripts/fetch-release-binary.sh "${TAG#v}" "$RUNNER_TEMP/talon")" >> "$GITHUB_ENV"
+      - name: Stock n8n nodes through Talon
+        run: bash scripts/n8n-compat.sh
