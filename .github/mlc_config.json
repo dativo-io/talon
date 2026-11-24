@@ -5,8 +5,7 @@
     { "pattern": "^http://talon" },
     { "pattern": "https://spec.modelcontextprotocol.io" },
     { "pattern": "https://docs.dativo.com" },
-    { "pattern": "https://dativo-community.slack.com" },
-    { "pattern": "^https://github\\.com/dativo-io/talon/compare/v1\\.16\\.1\\.\\.\\.v1\\.17\\.0$" }
+    { "pattern": "https://dativo-community.slack.com" }
   ],
   "timeout": "10s",
   "retryOn429": true,
