@@ -287,6 +287,8 @@ hr-copilot             enabled   loaded         9s ago         $0.0000 / $500.00
 
 ## When it does not work: `talon doctor`
 
+This section describes `talon doctor` since v1.18. In v1.17.0 and earlier, doctor does not have the per-use-case checks below and is not read-only: for example, in a directory without an installation it creates `data/evidence.db`.
+
 Run `talon doctor` in the installation's directory, with the same environment as Talon (`set -a; . ./talon.env; set +a`). It reads only: it writes no file, creates no directory or store, changes no stored record, secret or schema, and prints no key or secret value (reading a store that is in SQLite's WAL mode lets SQLite itself create its `-shm` index file, which holds no data). It names the three failures a new installation meets first, each with its own fix:
 
 | What doctor reports | What it means | Fix |
