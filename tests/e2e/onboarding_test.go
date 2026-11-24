@@ -402,6 +402,7 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	}
 	o := newOnboarding(t)
 	companyBefore, _ := os.ReadFile(o.cfgPath)
+	ph := newOnboardingPhases(t, "two applications, one company policy")
 
 	// 1-2. The installation is prepared; nothing is registered.
 	if out, stderr, code := o.talon("validate"); code != 0 && !strings.Contains(out+stderr, "agent") {
@@ -409,7 +410,10 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	}
 
 	// 3. Register the first existing application. Nothing runs yet.
-	key1, out := o.register("customer-support", "--owner", "support-engineering", "--description", "AI customer support assistant")
+	var key1, out string
+	ph.step("first use case: registration", func() {
+		key1, out = o.register("customer-support", "--owner", "support-engineering", "--description", "AI customer support assistant")
+	})
 	for _, want := range []string{
 		"Registered customer-support (tenant default)", "Owner     support-engineering", "Purpose   AI customer support assistant",
 		"Company policy: inherited", "daily_cost 50", "pii_action block", "always enforced", "forbidden_tools delete_*",
@@ -452,9 +456,9 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 
 	// 4-5. Start the gateway. The registration alone is not a connection:
 	// loaded, and still no authenticated traffic.
-	o.serve()
+	ph.step("startup and activation", o.serve)
 	defer func() { o.stop() }()
-	o.waitLoaded("customer-support")
+	ph.step("startup and activation", func() { o.waitLoaded("customer-support") })
 	r = o.report("customer-support")
 	if r.Verification.Reading.Code != effective.ReadingLoadedNoTraffic || r.LastDecision != nil {
 		t.Fatalf("loaded but never connected: %s; last decision %v", r.Verification.Reading.Text, r.LastDecision)
@@ -470,8 +474,10 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	// The application, with the real SDK: a permitted request is answered
 	// through Talon by the provider; a request the company policy blocks
 	// never reaches the provider.
-	if res := o.sdk(key1, "Summarise ticket T-30 in five words."); !res.OK || res.Content != "ok" {
-		t.Fatalf("the permitted request: %+v", res)
+	var first sdkResult
+	ph.step("first governed request", func() { first = o.sdk(key1, "Summarise ticket T-30 in five words.") })
+	if !first.OK || first.Content != "ok" {
+		t.Fatalf("the permitted request: %+v", first)
 	}
 	o.wantCalls(1, "one permitted request")
 	if res := o.sdk(key1, piiPrompt); res.OK || res.Status != 400 || res.Code != "pii_policy_violation" {
@@ -501,10 +507,17 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	if !strings.Contains(strings.Join(r.Verification.NotEstablished, "\n"), "that a provider was reached") {
 		t.Fatalf("a denied newest request must not claim the provider was reached: %v", r.Verification.NotEstablished)
 	}
-	if vout, stderr, code := o.talon("audit", "verify", g.EvidenceID); code != 0 {
-		t.Fatalf("talon audit verify %s: %d\n%s\n%s", g.EvidenceID, code, vout, stderr)
+	var (
+		vout, vstderr, text string
+		vcode               int
+	)
+	ph.step("first use case: verification", func() {
+		vout, vstderr, vcode = o.talon("audit", "verify", g.EvidenceID)
+		text, _, _ = o.talon("agents", "show", "customer-support", "--effective")
+	})
+	if vcode != 0 {
+		t.Fatalf("talon audit verify %s: %d\n%s\n%s", g.EvidenceID, vcode, vout, vstderr)
 	}
-	text, _, _ := o.talon("agents", "show", "customer-support", "--effective")
 	for _, want := range []string{"5. Connection and verification", "Authenticated traffic observed under the expected policy", "llm_gateway:", "signature valid; policy matches_current", "not established by the above:"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("talon agents show --effective misses %q:\n%s", want, text)
@@ -530,7 +543,10 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 	// 8. A second, unrelated application: one command, the same company
 	// policy, nothing copied and nothing of the company or of the first
 	// application changed. The first one keeps serving meanwhile.
-	key2, out2 := o.register("hr-copilot", "--owner", "people-ops", "--description", "HR policy assistant")
+	var key2, out2 string
+	ph.step("second use case: registration", func() {
+		key2, out2 = o.register("hr-copilot", "--owner", "people-ops", "--description", "HR policy assistant")
+	})
 	if key2 == key1 || !strings.Contains(out2, "Not active yet: the running Talon process loads it at its next re-scan of agents_dir") || !strings.Contains(out2, "No restart is needed") {
 		t.Fatalf("second registration while serving:\n%s", out2)
 	}
@@ -541,13 +557,19 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 		t.Fatalf("the first application during the second registration: %+v", res)
 	}
 	o.wantCalls(2, "the first application keeps working")
-	o.waitLoaded("hr-copilot")
-	if res := o.sdk(key2, "Which policy covers parental leave?"); !res.OK {
-		t.Fatalf("the second application's permitted request: %+v", res)
+	// This test sets a 1s re-scan (env()) to stay fast; the summary says so,
+	// because the product default shapes this wait for customers.
+	ph.note("second use case: activation", "agents_reload_interval "+o.env()["TALON_AGENTS_RELOAD_INTERVAL"]+" set by this test")
+	ph.step("second use case: activation", func() { o.waitLoaded("hr-copilot") })
+	var second, denied sdkResult
+	ph.step("second use case: governed request", func() { second = o.sdk(key2, "Which policy covers parental leave?") })
+	if !second.OK {
+		t.Fatalf("the second application's permitted request: %+v", second)
 	}
 	o.wantCalls(3, "the second application's permitted request")
-	if res := o.sdk(key2, piiPrompt); res.OK || res.Status != 400 || res.Code != "pii_policy_violation" {
-		t.Fatalf("the same company rule applies to the second application: %+v", res)
+	ph.step("shared company policy", func() { denied = o.sdk(key2, piiPrompt) })
+	if denied.OK || denied.Status != 400 || denied.Code != "pii_policy_violation" {
+		t.Fatalf("the same company rule applies to the second application: %+v", denied)
 	}
 	o.wantCalls(3, "the second application's denied request reached the provider zero times")
 
@@ -576,10 +598,12 @@ func TestE2E_Onboarding_FirstAndSecondApplication(t *testing.T) {
 			t.Fatalf("the listing for %s after its requests: %q", name, got)
 		}
 	}
-	o.wantView("the second application after an allowed and a denied request", []string{"agents", "show", "hr-copilot"},
-		"hr-copilot — HR policy assistant", "owner people-ops", "Status      Working", "Runtime     loaded by the running Talon process",
-		"in the last hour (1 denied)", "the newest authenticated request was evaluated under this policy",
-		"LLM gateway · denied by Talon, not dispatched", "POLICY_DENIED_PII_INPUT", "(signature valid)", "Nothing to do")
+	ph.step("second use case: verification", func() {
+		o.wantView("the second application after an allowed and a denied request", []string{"agents", "show", "hr-copilot"},
+			"hr-copilot — HR policy assistant", "owner people-ops", "Status      Working", "Runtime     loaded by the running Talon process",
+			"in the last hour (1 denied)", "the newest authenticated request was evaluated under this policy",
+			"LLM gateway · denied by Talon, not dispatched", "POLICY_DENIED_PII_INPUT", "(signature valid)", "Nothing to do")
+	})
 
 	// The machine contracts did not change with the views: the listing's
 	// JSON is the fleet rows, the single view's JSON is one such row, and

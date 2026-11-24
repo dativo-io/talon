@@ -68,7 +68,7 @@ test-console-smoke: ## Operations-console smoke (#535/#536/#537, no keys, no Doc
 test-people-analytics-live: ## People Analytics over real processes (#545, no keys, no Docker): HR MCP backend with its own counters as the use case's MCP action source + `talon serve` (governed MCP endpoint) + `talon ui serve`; allowed executed once, forbidden never reaches the backend, backend rejection after dispatch shown as unknown, console = CLI = browser, SIGKILL/restart, tamper, negative auth; also the CI e2e (processes) and browser (Chromium) jobs
 	@bash scripts/people-analytics-live.sh
 
-test-onboarding: ## Onboarding acceptance over real processes (#472, no keys, no Docker): `talon agents add` for a first and a second application, the pinned OpenAI Node SDK against `talon serve --gateway` with a counting upstream, verified activation/traffic/policy (CLI = console), key replacement and revocation, concurrent registration; needs node and npm; also the CI browser job
+test-onboarding: ## Onboarding acceptance over real processes (#472, no keys, no Docker): `talon agents add` for a first and a second application, the pinned OpenAI Node SDK against `talon serve --gateway` with a counting upstream, verified activation/traffic/policy (CLI = console), key replacement and revocation, concurrent registration; prints how long each onboarding step took (reported, never asserted); needs node >= 22 and npm; also the CI browser job
 	@bash scripts/onboarding-acceptance.sh
 
 console-frontend: ## Build the console frontend into internal/console/web/static (embedded in the binary; needs node 22; commit the result)

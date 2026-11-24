@@ -16,23 +16,36 @@
 # and administrative routes must refuse a request with no credential and one
 # with the application's key.
 #
-# Offline: no provider key. Prerequisites: go, node >= 18 with npm, and the
+# Offline: no provider key. Prerequisites: go, node >= 22 with npm, and the
 # tools the guide's commands use (bash, openssl, curl); a missing one fails
 # with exit 2, it is never skipped. TALON_ONBOARDING_SDK_DIR may
 # name a directory with client.mjs and the pinned SDK already installed.
 # TALON_E2E_BINARY (a release executable) is honoured by the e2e TestMain.
+# On PASS it prints how long each customer-visible onboarding step took
+# (reported, never asserted) and appends that summary to
+# $GITHUB_STEP_SUMMARY when set (#575).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 missing=()
 command -v go >/dev/null 2>&1 || missing+=("go")
-command -v node >/dev/null 2>&1 || missing+=("node (>= 18)")
+command -v node >/dev/null 2>&1 || missing+=("node (>= 22)")
 for tool in openssl curl; do
   command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
   echo "onboarding-acceptance: missing prerequisite(s): ${missing[*]}" >&2
   exit 2
+fi
+# The pinned OpenAI SDK declares node >= 22 (tests/onboarding/package-lock.json).
+if [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]; then
+  echo "onboarding-acceptance: node $(node --version) is too old: the pinned OpenAI SDK needs node >= 22" >&2
+  exit 2
+fi
+# The e2e TestMain reports the binary by absolute path; compare like with like.
+if [ -n "${TALON_E2E_BINARY:-}" ]; then
+  TALON_E2E_BINARY="$(cd "$(dirname "$TALON_E2E_BINARY")" && pwd)/$(basename "$TALON_E2E_BINARY")"
+  export TALON_E2E_BINARY
 fi
 SDK_DIR="${TALON_ONBOARDING_SDK_DIR:-$REPO_ROOT/tests/onboarding}"
 if [ ! -d "$SDK_DIR/node_modules/openai" ]; then
@@ -65,4 +78,30 @@ if [ -n "${TALON_E2E_BINARY:-}" ] && ! grep -qF "e2e: binary under test is $TALO
   fail=1
 fi
 [ "$fail" -eq 0 ] || exit 1
+
+# Phase timings: what each customer-visible step took on this binary, from
+# the tests' "onboarding-phase:" lines. Automated time on this host, not a
+# human onboarding time.
+if [ -n "${TALON_E2E_BINARY:-}" ]; then
+  binary="$("$TALON_E2E_BINARY" version 2>/dev/null | head -1), sha256 $(sha256sum "$TALON_E2E_BINARY" | cut -c1-64)"
+else
+  binary="source build of $(git rev-parse --short HEAD 2>/dev/null || echo "an unknown commit")"
+fi
+summary="$(
+  echo "ONBOARDING ACCEPTANCE (deterministic: counting upstream, no provider key)"
+  echo "Binary under test: $binary"
+  awk -v p="onboarding-phase: " '
+    index($0, p) {
+      n = split(substr($0, index($0, p) + length(p)), f, / \| /)
+      if (f[1] != journey) { journey = f[1]; printf "  %s\n", journey }
+      printf "    %-36s %8s", f[2], f[3]
+      if (n >= 4) printf "   %s", f[4]
+      printf "\n"
+    }' "$log"
+  echo "Result: PASS (4 mandatory tests). Timings are reported, never asserted."
+)"
+echo "$summary"
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  printf '```text\n%s\n```\n' "$summary" >> "$GITHUB_STEP_SUMMARY"
+fi
 echo "PASS onboarding-acceptance: the guide's secure startup executed as written (0600 key file, loopback listener, admin routes refuse no credential and the application's key), first and second application through the OpenAI Node SDK $SDK_VERSION, verified activation and policy, upstream call counts, credential replacement and revocation, concurrent registration"
