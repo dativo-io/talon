@@ -2,8 +2,8 @@
   "schema": 1,
   "inputs": {
     ".github/workflows/console-screenshots.yml": "2a7abe01e407bdb9bb1d93c60c7fa7643bdd489e",
-    "go.mod": "0cc9161825dbbadc11cf269da77dd07fce6bcbde",
-    "go.sum": "e981ed060a861fe97cda1f51f149a41d3e8bf06b",
+    "go.mod": "e13b4507551753a231e10fa4843262db3f3e730d",
+    "go.sum": "97a0f8acb1a2f93575889351fd6d7c54b7be9819",
     "internal/action/argument_rule.go": "c5c3300ab7751e17d00d546c23c49187cac8b0b6",
     "internal/action/attribution.go": "1ed8a6812f93888a4a7f183ddaa09d00264f0af6",
     "internal/action/canonical.go": "1a8f8d544b2a649464ed075b1e9bd1c36888f502",
