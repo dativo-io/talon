@@ -41,7 +41,7 @@ export function ActivityChart({ buckets, label }: { buckets: ActivityBucket[]; l
       </svg>
       <figcaption className="legend">
         <span><i className="l-req" />Requests ({totalReq})</span>
-        <span><i className="l-deny" />Denied ({totalDeny})</span>
+        <span><i className="l-deny" />Denied requests ({totalDeny})</span>
       </figcaption>
     </figure>
   );

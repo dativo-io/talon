@@ -127,7 +127,7 @@ function SummarySection({ d, tenant }: { d: DetailDTO; tenant: string }) {
                   <dt>{x.label}</dt><dd><ReadyBadge state={x.state} /></dd>
                 </div>
               ))}
-              <dt>Requests, last {goDuration(d.counter_windows?.requests_denied)}</dt><dd>{integer(row.requests)} ({integer(row.denied)} denied by Talon)</dd>
+              <dt>Requests, last {goDuration(d.counter_windows?.requests_denied)}</dt><dd>{integer(row.requests)} ({integer(row.denied)} denied requests)</dd>
               <dt>Last request</dt><dd title={utc(row.last_run)}>{relative(row.last_run)}</dd>
               <dt>Spend today / this month</dt>
               <dd>
@@ -169,7 +169,8 @@ function ActivityAndSessions({ d, tenant, range, onRange }: { d: DetailDTO; tena
       <SectionHead id="uc-activity" title="Sessions & Activity" question="What happened when this AI use case ran?" />
       <div className="grid stats">
         <Stat label={`Requests, last ${goDuration(d.counter_windows?.requests_denied)}`} value={integer(row.requests)} />
-        <Stat label="Denied by Talon" value={integer(row.denied)} />
+        {/* Request-class records only (#590): a governed action decision (Action Gateway, HTTP or MCP) is not a request and is listed under Recent decisions. */}
+        <Stat label={`Denied requests, last ${goDuration(d.counter_windows?.requests_denied)}`} value={integer(row.denied)} sub="LLM and tool requests; governed action decisions are listed under Recent decisions" />
         <Stat label={`Provider fallbacks, last ${goDuration(d.counter_windows?.fallbacks)}`} value={integer(row.fallbacks)} />
         <Stat label={`Failed sessions, last ${goDuration(d.counter_windows?.failed_sessions)}`} value={integer(row.failed_sessions)} />
       </div>
@@ -195,11 +196,12 @@ function ActivityAndSessions({ d, tenant, range, onRange }: { d: DetailDTO; tena
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="card stat">
       <div className="label">{label}</div>
       <div className="value">{value}</div>
+      {sub ? <div className="sub">{sub}</div> : null}
     </div>
   );
 }

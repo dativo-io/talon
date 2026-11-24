@@ -203,3 +203,20 @@ test("the tenant scope filters approvals; an unknown approval is a not-found, no
   await page.goto("/approvals/apr_does_not_exist");
   await expect(page.getByRole("alert")).toContainText("not found");
 });
+
+// #590: "Denied requests" counts request-class records (LLM and tool
+// requests). refund-bot's only traffic is governed Action Gateway
+// operations, so its counter reads 0 while its Recent decisions list the
+// governed action Talon denied: the label says what the number counts and
+// where governed action decisions are, and nothing reads "Denied by Talon".
+test("Denied requests: governed action denials are listed under Recent decisions, never counted as denied requests", async ({ page }) => {
+  const a = state().fixture.action;
+  await pair(page, `/use-cases/${a.use_case}?tenant=default`);
+  const stat = page.locator(".card.stat", { hasText: "Denied requests" });
+  await expect(stat.locator(".value")).toHaveText("0");
+  await expect(stat).toContainText("governed action decisions are listed under Recent decisions");
+  await expect(page.getByText("Denied by Talon")).toHaveCount(0);
+  const decisions = page.locator("section", { has: page.locator("#uc-decisions") });
+  const deniedAction = decisions.locator("tbody tr").filter({ hasText: "action_lifecycle" }).filter({ hasText: "Talon denied it" });
+  await expect(deniedAction.first()).toBeVisible();
+});
