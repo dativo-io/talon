@@ -128,5 +128,118 @@ GWEOF
   wait "$TALON_GATEWAY_PID" 2>/dev/null || true
   TALON_GATEWAY_PID=""
   cd "$REPO_ROOT" || true
+  smoke_13_onboarding_two_use_cases
+}
+
+# smoke_13_secs prints b - a, two `date +%s.%N` stamps, in seconds.
+smoke_13_secs() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.2f", b - a }'; }
+
+# The documented onboarding against the real provider (#575): two AI use
+# cases registered with `talon agents add` under one company policy, the
+# second while the server runs, each sending one real request. A counting
+# pass-through between Talon and the provider proves that the denied requests
+# never reached it, and separates the provider's latency from Talon's. Two
+# small paid requests per run (gpt-4o-mini); PII requests are denied for free.
+smoke_13_onboarding_two_use_cases() {
+  local dir; dir="$(setup_section_dir "13_onboarding")"
+  local data="$dir/data" port pt_port pt_pid serve_pid
+  local pt_log="$dir/passthrough.jsonl" serve_log="$dir/serve.log"
+  local upstream="${TALON_SMOKE_PASSTHROUGH_UPSTREAM:-https://api.openai.com}"
+  local pii='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"My email is jan@example.com and my IBAN is DE89370400440532013000."}]}'
+  port="$(smoke_free_port)"; pt_port="$(smoke_free_port)"
+  cd "$dir" || return 0
+  : > "$pt_log"
+  python3 "$REPO_ROOT/tests/smoke_counting_passthrough.py" "$pt_port" "$pt_log" "$upstream" &
+  pt_pid=$!
+  cat > talon.config.yaml <<OBEOF
+agents_dir: ./agents
+gateway:
+  enabled: true
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "http://127.0.0.1:${pt_port}"
+  organization_policy:
+    defaults:
+      pii_action: block
+      daily_cost: 1
+      monthly_cost: 5
+OBEOF
+  ob() { env TALON_DATA_DIR="$data" talon "$@"; }
+  ob_key() { awk '/Application key/{getline; gsub(/^ +| +$/,""); print; exit}' "$1"; }
+  forwarded() { wc -l < "$pt_log" | tr -d ' '; }
+  printf '%s' "$OPENAI_API_KEY" | ob secrets set openai-api-key >/dev/null
+  local t0 t1 t_reg1 t_reg2 t_start t_act t_ver key1 key2
+  t0="$(date +%s.%N)"; ob agents add smoke-support --owner smoke-ops >"$dir/register-1.txt" 2>&1; t1="$(date +%s.%N)"
+  t_reg1="$(smoke_13_secs "$t0" "$t1")"; key1="$(ob_key "$dir/register-1.txt")"
+  t0="$(date +%s.%N)"
+  env TALON_DATA_DIR="$data" talon serve --host 127.0.0.1 --port "$port" --gateway --gateway-config talon.config.yaml >"$serve_log" 2>&1 &
+  serve_pid=$!
+  [[ -n "$SMOKE_BG_PIDS_FILE" ]] && echo "$serve_pid" >> "$SMOKE_BG_PIDS_FILE"
+  if [[ -z "$key1" ]] || ! smoke_wait_health "http://127.0.0.1:${port}" 15 1; then
+    log_failure "onboarding: the first use case's registration or the server's start failed" "key_printed=$([[ -n "$key1" ]] && echo yes || echo no)"
+    dump_diag_file "13_onboarding serve log" "$serve_log" 40
+    kill "$pt_pid" 2>/dev/null || true; stop_talon_pid "$serve_pid" "$port" || true
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
+  t_start="$(smoke_13_secs "$t0" "$(date +%s.%N)")"
+  local base="http://127.0.0.1:${port}${SMOKE_PATH_GW_PROXY}" r1 r2
+  r1="$(curl -s -o "$dir/answer-1.json" -w '%{http_code} %{time_total}' -X POST "$base" -H "Authorization: Bearer $key1" -H "Content-Type: application/json" -d "$SMOKE_BODY_SIMPLE")"
+  assert_pass "onboarding: the first use case's request is answered by the provider through Talon" test "${r1%% *}" = "200"
+  assert_pass "onboarding: that request reached the provider once (counted at the pass-through)" test "$(forwarded)" = "1"
+  # The next use case, registered while the server runs: the server loads it
+  # at its next re-scan (product default interval). Refused attempts (401)
+  # never reach the provider; the first accepted one is its real request.
+  t0="$(date +%s.%N)"; ob agents add smoke-hr --owner smoke-people >"$dir/register-2.txt" 2>&1; t1="$(date +%s.%N)"
+  t_reg2="$(smoke_13_secs "$t0" "$t1")"; key2="$(ob_key "$dir/register-2.txt")"
+  r2="401"
+  t0="$(date +%s.%N)"
+  while [[ -n "$key2" && "${r2%% *}" = "401" ]] && [[ "$(smoke_13_secs "$t0" "$(date +%s.%N)" | cut -d. -f1)" -lt 75 ]]; do
+    r2="$(curl -s -o "$dir/answer-2.json" -w '%{http_code} %{time_total}' -X POST "$base" -H "Authorization: Bearer $key2" -H "Content-Type: application/json" -d "$SMOKE_BODY_SIMPLE")"
+    [[ "${r2%% *}" = "401" ]] && sleep 0.25
+  done
+  t_act="$(smoke_13_secs "$t0" "$(date +%s.%N)")"
+  assert_pass "onboarding: the second use case, registered while serving, is answered through Talon" test "${r2%% *}" = "200"
+  assert_pass "onboarding: two paid requests in total reached the provider" test "$(forwarded)" = "2"
+  local d1 d2
+  d1="$(curl -s -o "$dir/denied-1.json" -w '%{http_code}' -X POST "$base" -H "Authorization: Bearer $key1" -H "Content-Type: application/json" -d "$pii")"
+  d2="$(curl -s -o "$dir/denied-2.json" -w '%{http_code}' -X POST "$base" -H "Authorization: Bearer $key2" -H "Content-Type: application/json" -d "$pii")"
+  assert_pass "onboarding: the shared company PII rule denies both use cases (400 pii_policy_violation)" \
+    bash -c "[ '$d1' = 400 ] && [ '$d2' = 400 ] && jq -e '.error.code == \"pii_policy_violation\"' '$dir/denied-1.json' >/dev/null && jq -e '.error.code == \"pii_policy_violation\"' '$dir/denied-2.json' >/dev/null"
+  if ! assert_pass "onboarding: the denied requests never reached the provider (still 2 at the pass-through)" test "$(forwarded)" = "2"; then
+    dump_diag_file "13_onboarding pass-through log (path, status, latency only)" "$pt_log"
+    dump_diag_file "13_onboarding serve log" "$serve_log" 40
+  fi
+  t0="$(date +%s.%N)"
+  local show1 show2 ev
+  show1="$(ob agents show smoke-support 2>&1)"; show2="$(ob agents show smoke-hr 2>&1)"
+  assert_pass "onboarding: both use cases read Working, newest records signature-valid" \
+    bash -c "grep -q 'Status      Working' <<<\"\$1\" && grep -q 'Status      Working' <<<\"\$2\" && grep -q '(signature valid)' <<<\"\$1\" && grep -q '(signature valid)' <<<\"\$2\"" _ "$show1" "$show2"
+  while read -r ev; do
+    [[ -n "$ev" ]] && assert_pass "onboarding: talon audit verify $ev" ob audit verify "$ev"
+  done < <(grep -ohE 'evidence gw_[0-9a-f-]+' <<<"$show1"$'\n'"$show2" | cut -d' ' -f2)
+  t_ver="$(smoke_13_secs "$t0" "$(date +%s.%N)")"
+  local c1 c2
+  c1="$(ob costs --agent smoke-support --json 2>/dev/null | jq -r '[.. | numbers] | max // 0' 2>/dev/null || echo 0)"
+  c2="$(ob costs --agent smoke-hr --json 2>/dev/null | jq -r '[.. | numbers] | max // 0' 2>/dev/null || echo 0)"
+  assert_pass "onboarding: each use case is charged for its own request (costs by use case > 0)" \
+    awk -v a="$c1" -v b="$c2" 'BEGIN { exit !(a > 0 && b > 0) }'
+  local up1 up2 tot1 tot2
+  up1="$(sed -n 1p "$pt_log" | jq -r '.upstream_ms')"; up2="$(sed -n 2p "$pt_log" | jq -r '.upstream_ms')"
+  tot1="$(awk -v t="${r1##* }" 'BEGIN { printf "%.0f", t * 1000 }')"; tot2="$(awk -v t="${r2##* }" 'BEGIN { printf "%.0f", t * 1000 }')"
+  echo "  ONBOARDING SMOKE (real provider through a counting pass-through: ${upstream})"
+  echo "    registration, first / second use case     ${t_reg1}s / ${t_reg2}s"
+  echo "    server start                              ${t_start}s"
+  echo "    second use case activation                ${t_act}s (product default agents_reload_interval)"
+  echo "    request total, first / second             ${tot1}ms / ${tot2}ms"
+  echo "    provider latency, first / second          ${up1}ms / ${up2}ms"
+  echo "    Talon overhead, first / second            $(awk -v a="$tot1" -v b="$up1" 'BEGIN { printf "%.0f", a - b }')ms / $(awk -v a="$tot2" -v b="$up2" 'BEGIN { printf "%.0f", a - b }')ms"
+  echo "    verification (agents show, audit verify)  ${t_ver}s"
+  echo "    paid requests                             $(forwarded)"
+  kill "$pt_pid" 2>/dev/null || true
+  stop_talon_pid "$serve_pid" "$port" || true
+  cd "$REPO_ROOT" || true
 }
 
