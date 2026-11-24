@@ -8,7 +8,7 @@ Two wire facts shape everything below (verified 2026-07 against the `openai/code
 
 ## Prerequisites
 
-- Talon installed (`go install github.com/dativo-io/talon/cmd/talon@latest` or `curl -sL https://install.gettalon.dev | sh`). On macOS, if `go install` fails with a linker error (e.g. `unsupported tapi file type`), use `CC=/usr/bin/clang go install ...@latest` or `make install` from a clone.
+- Talon installed (`go install github.com/dativo-io/talon/cmd/talon@latest` or `curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.17.0 sh`). On macOS, if `go install` fails with a linker error (e.g. `unsupported tapi file type`), use `CC=/usr/bin/clang go install ...@latest` or `make install` from a clone.
 - Codex CLI installed
 - A real OpenAI API key (`sk-...`) with billing set up — subscription-only accounts cannot be governed (see above)
 
@@ -41,12 +41,12 @@ Talon encrypts secrets with `TALON_SECRETS_KEY`. Use the **same** value when sto
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 
 # 2. Store your real OpenAI key (secret name must match the config's secret_name)
-talon secrets set openai-api-key "sk-your-openai-key"
+printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
 
 # 3. Mint the codex agent's traffic key (bound via agent.key.secret_name);
 #    keep $CODEX_KEY — Codex will present it to the gateway
 CODEX_KEY="$(openssl rand -hex 24)"
-talon secrets set codex-talon-key "$CODEX_KEY"
+printf '%s' \"$CODEX_KEY\" | talon secrets set codex-talon-key
 
 # 4. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set,
 #    with the codex agent file active (see step 1)
@@ -168,7 +168,7 @@ Because Codex always streams, cost figures depend on Talon parsing the usage blo
 
 - **404 on every request** — The `base_url` is missing the trailing `/v1`. Codex appends `/responses`, so `.../v1/proxy/openai` becomes `.../v1/proxy/openai/responses`, which matches neither Talon's `/v1/responses` handling nor OpenAI's endpoint. Set `base_url = "http://localhost:8080/v1/proxy/openai/v1"`.
 - **Authentication errors on every request** — Either `TALON_CODEX_KEY` is unset in the shell running Codex (the `env_key` mechanism sends nothing), or the provider has `requires_openai_auth = true` and Codex is sending subscription OAuth, which Talon rejects. Remove `requires_openai_auth`, export the agent key, restart Codex. [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
-- **`gateway_secret_get_failed` / "cipher: message authentication failed" / "Service configuration error"** — Vault decryption failed. Use the **same** `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. If you lost it, set a new one and re-run `talon secrets set openai-api-key "sk-..."`.
+- **`gateway_secret_get_failed` / "cipher: message authentication failed" / "Service configuration error"** — Vault decryption failed. Use the **same** `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. If you lost it, set a new one and re-run `printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key`.
 - **Long generations are cut off mid-response** — For a streamed generation this means the stream went *silent* longer than `stream_idle_timeout` (default 60s; raise it for slow providers) or the provider died — a steadily-flowing stream is no longer bounded by `request_timeout` (#217), and Talon emits `response.failed` so Codex stops waiting. For non-streaming calls `request_timeout` still bounds the whole call: the pack sets `600s`, and the response-header wait defaults to `request_timeout` (tunable via `response_header_timeout`). Also note Codex itself aborts a stream that has been idle for ~300 seconds and retries; Talon cannot extend that client-side limit.
 - **Streaming shows nothing for a long time, then everything at once** — `response_pii_action: redact` or `block` is preventive and buffers the entire SSE stream before release; time-to-first-token becomes total generation time. Use `warn` (streams normally, response PII observed after delivery) unless prevention is required ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
 - **A Responses client (not Codex) fails with "Item with id 'rs_...' not found. Items are not persisted when store is set to false"** — That client relies on `previous_response_id` continuity while sending `store: false` or no `store` field. Codex does not — it resends the full transcript each turn (`full_transcript_resend` conformance fixture). For clients that do, set `responses_store_mode: force_if_absent` on the provider (step 6).

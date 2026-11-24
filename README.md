@@ -81,22 +81,15 @@ Every decision — allow, deny, redact, fallback, budget stop — becomes an HMA
 
 ## Start with one AI use case
 
-Active policy is always enforced — there is no observe-and-forward posture — so you choose *what* the first policy does, not whether it applies.
-
-1. **Put Talon in front of one** dev or internal use case (change the base URL, present its agent key).
-2. **Check the config before traffic flows** — `talon doctor` validates the infrastructure config, `talon validate` the agent policy; both fail loudly on unknown or removed keys.
-3. **Choose each rule's action deliberately** — `pii_action: redact` keeps traffic flowing with PII replaced before the provider; `block` stops it. Cap spend, keep confidential data local, or strip a dangerous tool the same way — one rule at a time.
-4. **See a decision without spending** — `talon run --dry-run "<prompt>"` evaluates the native policy and prints the decision with no provider call. At the gateway, every denial is real, signed, and costs nothing ($0 — the provider is never reached).
-
 **Two ways to start. Pick the one you mean.**
 
 | | Try Talon | Connect your existing application |
 |---|---|---|
 | For | seeing real policy decisions and signed evidence in a few minutes | putting an application you already run behind your company policy |
-| Needs | Docker. No provider key, no application | a provider key, a company policy, one Talon key per application |
-| Start | [Quickstart](docs/QUICKSTART.md) | [Connect an existing application](docs/guides/add-talon-to-existing-app.md) |
+| Needs | Docker. No provider key, no application | Talon v1.17.0 or later and a provider key; the guide sets up the rest |
+| Start | [Quickstart](docs/QUICKSTART.md) | [Connect an existing application](docs/guides/add-talon-to-existing-app.md) (one guide) |
 
-Connecting an application is one command and two settings, and the second application is the same command again:
+After a one-time setup (three keys, one config file with your provider and company policy), connecting an application is one command and two settings, and every further application is the same command again:
 
 ```bash
 talon agents add customer-support --owner support-engineering   # registers it, issues its key, says what to set
@@ -104,6 +97,10 @@ talon agents add customer-support --owner support-engineering   # registers it, 
 talon agents show customer-support                               # is it working, and what to do next
 talon agents                                                     # every application on one screen
 ```
+
+**n8n:** the same two settings go into n8n's OpenAI credential (Base URL and API Key); the AI Agent, Basic LLM Chain and HTTP Request nodes then call the model through Talon. Recipe: [connect an n8n workflow](docs/guides/add-talon-to-existing-app.md#n8n).
+
+Active policy is always enforced — there is no observe-and-forward posture — so you choose *what* the first policy does, not whether it applies: `pii_action: redact` keeps traffic flowing with PII replaced before the provider, `block` stops it, and spend caps, data residency and forbidden tools work the same way, one rule at a time. A denial at the gateway is real, signed, and costs nothing: the provider is never reached.
 
 Day two is in [Operate AI use cases](docs/guides/operate-ai-use-cases.md) and the read-only [Operations Console](docs/guides/operations-console.md). To govern a consequential action in an existing automation, follow the [n8n refund approvals walkthrough](docs/guides/n8n-refund-approvals.md): allow, require human approval, or deny before Talon dispatches the bound action. Coding agents, MCP tools and native runs have distinct [integration paths](#integration-paths).
 
@@ -137,10 +134,11 @@ git clone https://github.com/dativo-io/talon && cd talon
 cd examples/docker-compose && docker compose up
 ```
 
-In another terminal, send a request containing an email and an IBAN:
+In another terminal, send a request containing an email and an IBAN. Every request names its AI use case by that use case's key; `talon-demo-key` is the demo's:
 
 ```bash
 curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Authorization: Bearer talon-demo-key" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"My email is jan@example.com and my IBAN is DE89370400440532013000. Help me reset my password."}]}'
 ```
@@ -159,31 +157,6 @@ The same stack starts the read-only operations console as its own service: open 
 > **Why did the request still succeed?** The demo config sets `pii_action: redact` — the enforced policy keeps traffic flowing but the provider never sees the raw values. The mock provider receives `[IBAN]` (and `[EMAIL]`) in place of the detected PII, and the signed record shows `pii_redacted: true` alongside the detections. The [product demo](#product-demo--three-use-cases-one-control-plane) shows the same redaction against real providers. Change one line to `pii_action: block` and the same request is denied before the provider is reached — a real denial that costs nothing. There is no shadow/observe-only posture (#442): whatever action a rule declares is what happens.
 
 Full walk-through: [60-second demo](docs/tutorials/quickstart-demo.md).
-
----
-
-## Drop-in OpenAI proxy
-
-For an existing OpenAI SDK app, start the dev quickstart proxy and repoint the base URL — same request shape, same SDK, governed path:
-
-```bash
-talon serve --proxy-quickstart --port 8080
-export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
-export OPENAI_API_KEY=sk-...
-```
-
-```python
-import openai
-
-client = openai.OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-...")
-resp = client.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=[{"role": "user", "content": "Summarize EU AI Act obligations for SMBs."}],
-)
-print(resp.choices[0].message.content)
-```
-
-Governance (policy, PII scan/redaction, evidence) stays active in quickstart mode. For production, use `--gateway` with `talon.config.yaml`. See [OpenAI proxy quickstart](docs/tutorials/proxy-quickstart.md).
 
 ---
 
@@ -299,7 +272,7 @@ Operating AI is the job; proving it is often the trigger. Talon is a single self
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | sh
 # a specific release, into a directory you own
-curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.16.0 INSTALL_DIR="$HOME/.local/bin" sh
+curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.17.0 INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 Verify any published release yourself, from the public artifacts only (checksums, executable version and commit against the tag, OpenShell showcase manifest and bundle, anonymous image pulls): `scripts/verify-release.sh --tag vX.Y.Z` (`make verify-release TAG=vX.Y.Z`; needs curl, jq, tar, sha256sum — no Go, no token). It prints `PASS verify-release: vX.Y.Z` or names the asset and the reason.
@@ -314,13 +287,7 @@ docker pull ghcr.io/dativo-io/talon:latest                                    # 
 
 Release assets are on [Releases](https://github.com/dativo-io/talon/releases/latest). Platform matrix and the macOS `!tapi-tbd` workaround: [Quickstart install guide](docs/QUICKSTART.md); how a release is verified before and after publication: [CONTRIBUTING](CONTRIBUTING.md#release-artifact-verification-maintainers).
 
-**First run:**
-
-```bash
-export TALON_SECRETS_KEY="$(openssl rand -hex 32)"   # vault encryption key
-talon init --scaffold --name my-agent                # agent.talon.yaml + talon.config.yaml
-talon run --dry-run "hello"                          # no LLM API key required
-```
+**First run:** connect your first application with [the guide](docs/guides/add-talon-to-existing-app.md). Building a new agent on Talon's own runtime instead? `talon init --scaffold` creates its files: [your first governed agent](docs/tutorials/first-governed-agent.md).
 
 ---
 

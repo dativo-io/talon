@@ -216,7 +216,7 @@ For a use case whose requests are Action Gateway operations, `talon agents show`
 |---|---|
 | Source-built Talon (this repository's `main` plus this change) with n8n 2.48.5 | tested by the script above |
 | A Talon release candidate | **not run**: `v1.17.0-rc.1` predates part of what this page uses and is no proof for it |
-| A published stable Talon release | **not run**: the latest stable, v1.16.1, does not contain argument rules, `talon approvals` or `talon agents add` |
+| A published stable Talon release | **not run yet** against v1.17.0, the first stable release with argument rules, `talon approvals` and `talon agents add` (#576 qualifies it) |
 | Other n8n releases, n8n Cloud, queue mode with several workers, a load test | **not run**. n8n 2.48.5 is the only tested release; do not assume that the workflow JSON imports unchanged elsewhere |
 | The Full Demo's n8n | **not verified.** This reference is tested on n8n **2.48.5**; `talon-full-demo` pins n8n **2.30.4**. Compatibility of this workflow with 2.30.4 is unverified |
 

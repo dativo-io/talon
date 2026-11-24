@@ -6,7 +6,7 @@ For a Docker-based cloud setup, see the [OpenClaw + Talon primer](openclaw-talon
 
 ## Prerequisites
 
-- Talon installed (`go install github.com/dativo-io/talon/cmd/talon@latest` or a specific tag like `@v0.9.0`, or `curl -sL https://install.gettalon.dev | sh`). On macOS, if `go install` fails with a linker error (e.g. `unsupported tapi file type`), use `CC=/usr/bin/clang go install ...@latest` or `make install` from a clone. If you get a **404 from sum.golang.org** when installing a newly released tag, see the troubleshooting section below.
+- Talon installed (`go install github.com/dativo-io/talon/cmd/talon@latest` or a specific tag like `@v0.9.0`, or `curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.17.0 sh`). On macOS, if `go install` fails with a linker error (e.g. `unsupported tapi file type`), use `CC=/usr/bin/clang go install ...@latest` or `make install` from a clone. If you get a **404 from sum.golang.org** when installing a newly released tag, see the troubleshooting section below.
 - OpenClaw installed and configured
 - Your real OpenAI (or other provider) API key
 
@@ -17,7 +17,7 @@ For a Docker-based cloud setup, see the [OpenClaw + Talon primer](openclaw-talon
 ```bash
 go install github.com/dativo-io/talon/cmd/talon@latest
 # macOS: if linker error (e.g. unsupported tapi file type), use: CC=/usr/bin/clang go install ...@latest
-# or: curl -sL https://install.gettalon.dev | sh
+# or: curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.17.0 sh
 
 # Generate a gateway-ready project pre-configured for OpenClaw:
 mkdir talon-openclaw && cd talon-openclaw
@@ -38,13 +38,13 @@ Talon encrypts secrets (including your OpenAI key) with `TALON_SECRETS_KEY`. You
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 
 # 2. Store your real OpenAI key in the vault (secret name must match gateway config's secret_name)
-talon secrets set openai-api-key "sk-your-openai-key"
-# Or: talon secrets set openai-api-key "$OPENAI_API_KEY"
+printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
+# Or: printf '%s' \"$OPENAI_API_KEY\" | talon secrets set openai-api-key
 
 # 3. Mint the openclaw agent's traffic key (bound via agent.key.secret_name in agent.talon.yaml);
 #    keep $OPENCLAW_KEY — it goes into openclaw.json as the apiKey
 OPENCLAW_KEY="$(openssl rand -hex 24)"
-talon secrets set openclaw-gateway-talon-key "$OPENCLAW_KEY"
+printf '%s' \"$OPENCLAW_KEY\" | talon secrets set openclaw-gateway-talon-key
 
 # 4. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set
 talon serve --gateway
@@ -132,7 +132,7 @@ You should see new evidence rows; the agent name (e.g. `openclaw-gateway`) appea
 - **`talon serve --gateway` fails with "agent is required" / "policies is required"** — Talon loads `agent.talon.yaml` from the current working directory. Run `talon serve --gateway` from the directory that contains a valid `agent.talon.yaml` (with top-level `agent:` and `policies:` keys). Easiest: run `talon init` (wizard) or `talon init --pack openclaw` in a new directory so both `agent.talon.yaml` and gateway-enabled `talon.config.yaml` are generated.
 - **OpenClaw reports "Invalid config … models.providers.openai.models"** — The `models` array must contain objects with both `id` and `name` (e.g. `{ "id": "gpt-4o-mini", "name": "gpt-4o-mini" }`). Plain strings or objects with only `id` or only `name` will fail validation.
 - **"systemctl --user unavailable" when running `openclaw gateway stop`** — Your shell (e.g. SSH or `su`) may not have access to the user D-Bus session. Stop the gateway process directly: `pkill openclaw-gateway`, then start OpenClaw again as you normally do.
-- **`gateway_secret_get_failed` / "cipher: message authentication failed"** — Talon can't decrypt the stored OpenAI key. Use the **same** `TALON_SECRETS_KEY` when running `talon secrets set` and `talon serve`. If you lost the key, set a new one and run `talon secrets set openai-api-key "sk-..."` again.
+- **`gateway_secret_get_failed` / "cipher: message authentication failed"** — Talon can't decrypt the stored OpenAI key. Use the **same** `TALON_SECRETS_KEY` when running `talon secrets set` and `talon serve`. If you lost the key, set a new one and run `printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key` again.
 - **Gateway returns "Service configuration error"** — Same cause: vault decryption failed (wrong or missing `TALON_SECRETS_KEY` when `talon serve` started). Restart Talon in a shell where `TALON_SECRETS_KEY` is set to the same value you used for `talon secrets set`.
 - **OpenClaw shows "404 status code (no body)"** — The client is calling the gateway with a path that becomes `.../chat/completions` instead of `.../v1/chat/completions`. Set `baseUrl` to **`http://localhost:8080/v1/proxy/openai/v1`** (trailing `/v1`) so that appended paths are correct. Restart OpenClaw after changing.
 - **OpenClaw shows "404" plus binary/garbage text** — The upstream returned an error (e.g. 404) with a body that was compressed or non-JSON; from v0.8.5 the gateway decompresses gzip responses automatically. Ensure you're on Talon >= v0.8.5.

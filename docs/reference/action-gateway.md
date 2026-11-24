@@ -222,7 +222,7 @@ actions:
     refunds:
       type: mcp
       url: https://refunds.internal/mcp       # https, or http for loopback; redirects are never followed
-      auth: {secret_name: refunds-mcp-key}    # vault-backed; header/scheme as for the MCP proxy
+      auth: {secret_name: refunds-mcp-key}    # vault-backed; auth.header / auth.scheme default to Authorization: Bearer (below)
       timeout: 15s                            # discovery deadline (default 15s, max 2m)
   definitions:
     create_refund_request:                    # canonical name — the ONLY callable identity

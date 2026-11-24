@@ -45,7 +45,7 @@ func documentedSteps(t *testing.T) map[string]string {
 		}
 		steps[m[1]] = m[2]
 	}
-	for _, name := range []string{"keys", "load", "config", "provider-key", "register", "register-output", "start", "check"} {
+	for _, name := range []string{"keys", "load", "config", "provider-key", "register", "register-output", "start", "check", "next"} {
 		if strings.TrimSpace(steps[name]) == "" {
 			t.Fatalf("the guide has no block marked <!-- onboarding-acceptance: %s -->", name)
 		}
@@ -236,7 +236,7 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 		d.env = append(d.env, "TMPDIR="+tmp)
 	}
 
-	ph := newOnboardingPhases(t, "documented installation (guide 1-3)")
+	ph := newOnboardingPhases(t, "documented path (guide 1-6)")
 
 	// --- Keys: generated into a file only the operator can read. ---------
 	ph.step("secure configuration", func() { d.run("keys", steps["keys"]) })
@@ -449,6 +449,42 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 		t.Fatalf("after one authorized request the documented path must verify, got %+v", report.Verification)
 	}
 
+	// --- The next application (guide 6): one command while the server runs.
+	// The running process loads it at its next re-scan, at the product's
+	// default interval (this test sets none): the wait a customer has.
+	var out2 string
+	ph.step("second use case: registration", func() { out2 = d.run("next", steps["next"]) })
+	secret2 := strings.Index(out2, "SECRET — shown once")
+	if secret2 < 0 {
+		t.Fatalf("the documented next registration printed no secret block:\n%s", out2)
+	}
+	appKey2 := useCaseKeyRe.FindString(out2[secret2:])
+	if appKey2 == "" || appKey2 == appKey {
+		t.Fatalf("the next application must get its own Talon key:\n%s", out2)
+	}
+	ph.note("second use case: activation", "product default agents_reload_interval")
+	ph.step("second use case: activation", func() {
+		deadline := time.Now().Add(75 * time.Second)
+		for chatThroughGateway(t, base, appKey2, "") != http.StatusOK {
+			if time.Now().After(deadline) {
+				logged, _ := os.ReadFile(filepath.Join(d.dir, "serve.log"))
+				t.Fatalf("the running server did not load the next application within 75s:\n%s", tail(string(logged), 3000))
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	})
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("the next application's first accepted request must reach the provider once (refused attempts never do): %d calls, want 2", n)
+	}
+	var denied int
+	ph.step("shared company policy", func() { denied = gatewayPromptStatus(t, base, appKey2, onboardingPIIPromptPlain) })
+	if denied != http.StatusBadRequest {
+		t.Fatalf("the company PII rule must deny the next application's request too: HTTP %d, want 400", denied)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("a request the company policy denies reached the provider: %d calls, want 2", n)
+	}
+
 	// --- Nothing but talon.env holds the operator's keys in clear text. ---
 	stop()
 	err = filepath.WalkDir(root, func(path string, e os.DirEntry, err error) error {
@@ -464,7 +500,7 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 				t.Errorf("%s is in clear text in %s", name, strings.TrimPrefix(path, root))
 			}
 		}
-		if bytes.Contains(raw, []byte(appKey)) || bytes.Contains(raw, []byte(onboardingProviderKey)) {
+		if bytes.Contains(raw, []byte(appKey)) || bytes.Contains(raw, []byte(appKey2)) || bytes.Contains(raw, []byte(onboardingProviderKey)) {
 			t.Errorf("an application or provider key is in clear text in %s", strings.TrimPrefix(path, root))
 		}
 		return nil
@@ -492,7 +528,33 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 	if st := chatThroughGateway(t, base, "talon_uc_"+strings.Repeat("0", 48), ""); st != http.StatusUnauthorized {
 		t.Fatalf("development mode: an unknown key on the gateway is HTTP %d, want 401", st)
 	}
-	if n := calls.Load(); n != 2 {
-		t.Fatalf("the provider was called %d times, want 2 (one authorized request per server)", n)
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("the provider was called %d times, want 3 (each application's authorized request, then one in development mode)", n)
 	}
+}
+
+// onboardingPIIPromptPlain carries personal data the guide's company policy
+// (pii_action: block) refuses before any provider call.
+const onboardingPIIPromptPlain = "My email is jan@example.com and my IBAN is DE89370400440532013000. Help me reset my password."
+
+// gatewayPromptStatus sends one chat completion with prompt through the
+// gateway and returns the HTTP status.
+func gatewayPromptStatus(t *testing.T, baseURL, key, prompt string) int {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"model": "gpt-4o-mini", "messages": []map[string]string{{"role": "user", "content": prompt}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/v1/proxy/openai/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("gateway request: %v", err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
 }

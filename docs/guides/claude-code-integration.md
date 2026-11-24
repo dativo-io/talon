@@ -6,7 +6,7 @@ One boundary up front, because it decides whether this guide applies to you: **T
 
 ## Prerequisites
 
-- Talon installed (`go install github.com/dativo-io/talon/cmd/talon@latest` or `curl -sL https://install.gettalon.dev | sh`). On macOS, if `go install` fails with a linker error (e.g. `unsupported tapi file type`), use `CC=/usr/bin/clang go install ...@latest` or `make install` from a clone.
+- Talon installed (`go install github.com/dativo-io/talon/cmd/talon@latest` or `curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.17.0 sh`). On macOS, if `go install` fails with a linker error (e.g. `unsupported tapi file type`), use `CC=/usr/bin/clang go install ...@latest` or `make install` from a clone.
 - Claude Code installed
 - A real Anthropic API key (`sk-ant-...`) with billing set up — subscription-only accounts cannot be governed (see above)
 
@@ -37,12 +37,12 @@ Talon encrypts secrets with `TALON_SECRETS_KEY`. Use the **same** value when sto
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 
 # 2. Store your real Anthropic key (secret name must match the config's secret_name)
-talon secrets set anthropic-api-key "sk-ant-your-key"
+printf '%s' "$ANTHROPIC_API_KEY" | talon secrets set anthropic-api-key
 
 # 3. Mint the claude-code agent's traffic key (bound via agent.key.secret_name);
 #    keep $CLAUDE_CODE_KEY — Claude Code will present it to the gateway
 CLAUDE_CODE_KEY="$(openssl rand -hex 24)"
-talon secrets set claude-code-talon-key "$CLAUDE_CODE_KEY"
+printf '%s' \"$CLAUDE_CODE_KEY\" | talon secrets set claude-code-talon-key
 
 # 4. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set
 talon serve --gateway
@@ -136,7 +136,7 @@ With `talon serve --gateway`, `talon metrics --json` / `GET /api/v1/metrics` car
 
 - **Claude Code gets authentication errors on every request, but `claude` worked before** — You are logged in with a subscription and only set `ANTHROPIC_BASE_URL`. The subscription OAuth token is not an agent key and Talon rejects it. Set `ANTHROPIC_AUTH_TOKEN=$CLAUDE_CODE_KEY` (or `ANTHROPIC_API_KEY`) so Claude Code presents the agent key. [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
 - **`talon serve --gateway` fails at startup after you edited the provider block** — If the error is the `upstream_auth_mode client_bearer is not supported for the anthropic API family` message quoted in step 2, remove `upstream_auth_mode: client_bearer`; vault-secret is the only supported mode for Anthropic.
-- **`gateway_secret_get_failed` / "cipher: message authentication failed" / "Service configuration error"** — Vault decryption failed. Use the **same** `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. If you lost it, set a new one and re-run `talon secrets set anthropic-api-key "sk-ant-..."`.
+- **`gateway_secret_get_failed` / "cipher: message authentication failed" / "Service configuration error"** — Vault decryption failed. Use the **same** `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. If you lost it, set a new one and re-run `printf '%s' "$ANTHROPIC_API_KEY" | talon secrets set anthropic-api-key`.
 - **Long generations are cut off mid-response** — For a streamed generation this means the stream went *silent* longer than `stream_idle_timeout` (default 60s; raise it for slow providers) or the provider died — a steadily-flowing stream is no longer bounded by `request_timeout` (#217). For non-streaming calls `request_timeout` still bounds the whole call: the pack sets `600s`, and the response-header wait defaults to `request_timeout` (tunable via `response_header_timeout`), so large non-streaming prompts get the same budget.
 - **Streaming shows nothing for a long time, then everything at once** — `response_pii_action: redact` or `block` is preventive and buffers the entire SSE stream before release; time-to-first-token becomes total generation time. Use `warn` (streams normally, response PII observed after delivery) unless prevention is required ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
 - **`talon audit list --session` finds nothing** — The session ID must match what Claude Code sent in `X-Claude-Code-Session-Id`. Check a recent record with `talon audit list --agent claude-code` and read the session ID from its orchestration metadata. Also note that orchestration header values over 128 bytes or containing non-token characters are rejected at ingestion (`internal/gateway/orchmeta.go`).
