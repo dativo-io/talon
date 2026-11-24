@@ -53,7 +53,7 @@
     "internal/console/frontend/src/api/client.ts": "99cfcbaddc65f474abeb117f967c9ed782bd16c5",
     "internal/console/frontend/src/api/types.ts": "c9ab6047e79def52f7f5401e78399193b0290bfa",
     "internal/console/frontend/src/api/useApi.ts": "ad3804c54b97dbc72a150817d02111fd7438e859",
-    "internal/console/frontend/src/components/ActivityChart.tsx": "5dd06b538f5834f8b389a90b38a5ff1d09a11978",
+    "internal/console/frontend/src/components/ActivityChart.tsx": "02fa33fada896d3046c2ccb4aa887837a0c79dfb",
     "internal/console/frontend/src/components/Approvals.tsx": "e2a47ad90b555cff48e5174bf0c5b359dce70f3d",
     "internal/console/frontend/src/components/Breadcrumbs.tsx": "8515b489a659ff5226c813d08b9e15f006bd2f75",
     "internal/console/frontend/src/components/EffectivePolicy.tsx": "d48bbb03af6e67d6bac2d52dd3e6806e6bf50f37",
@@ -84,8 +84,8 @@
     "internal/console/frontend/src/pages/SessionDetail.tsx": "2b6c3d7fb537487c5371335f3b21721fac780403",
     "internal/console/frontend/src/pages/Sessions.tsx": "513da2ae84c7aea2962fbeadf45eeb3b1cd87002",
     "internal/console/frontend/src/pages/System.tsx": "aeeb65afc3bfb5ca428129ad22cc686d0c3eafc4",
-    "internal/console/frontend/src/pages/UseCaseDetail.tsx": "d0793ead2b2292280ce62860cd9b5e4da2c6b12f",
-    "internal/console/frontend/src/pages/UseCases.tsx": "d41b09c31b64ce807d4a28b26dba0536aadb74f2",
+    "internal/console/frontend/src/pages/UseCaseDetail.tsx": "b4cee0edecc7c818f301b0524fdab11c56c79379",
+    "internal/console/frontend/src/pages/UseCases.tsx": "4e7ef6fd06b6c846064209e48c2b46193fcba6dd",
     "internal/console/frontend/src/styles.css": "8d737a87fe322e432e238cd3dfa9d1468aece9b3",
     "internal/console/frontend/tsconfig.json": "bb4c5fe9854b1ef45d8d206bd3782dd6fc2716ba",
     "internal/console/frontend/vite.config.ts": "beb21675a76a3e3fca4ca4a609b0e60eb0678a6d",
@@ -97,9 +97,9 @@
     "internal/console/service.go": "60c263418901348b09afb4027912c5e5028cfbc6",
     "internal/console/tenants.go": "c9e7de92f9810a8e1bee763949108be096dbb719",
     "internal/console/web/embed.go": "2e1119aec1840911f94a4cc54a2df9b3b76b12b4",
-    "internal/console/web/static/assets/index-DmrtAxm4.js": "1646f1343574f49e6d40577e44ab3804064cd2bc",
+    "internal/console/web/static/assets/index-DqQKZxu8.js": "677086ac80e8a118e873b9415f7cfa77bb076dbf",
     "internal/console/web/static/assets/style-mLQjaWLg.css": "fdaf8907f4b50490be9e6f4ca57eeb5cf9b2f985",
-    "internal/console/web/static/index.html": "20bfef46f8791a2965a4d5a49e98605277183584",
+    "internal/console/web/static/index.html": "6224eb5762095f0de03ec293a0b3195dc9f1686b",
     "internal/costs/report.go": "98a6e9e15e5277c4bec29c1f203441e5fe4497e2",
     "internal/effective/action_config.go": "8989be7c5f245844c21a0d245812f3028f115e9c",
     "internal/effective/next.go": "31570c16764347bebdb485d20c502edcc8016245",
@@ -225,9 +225,9 @@
     "overview-attention.webp": "00add38a862ed54b71f0317acb697d3ae72923c5",
     "overview-mobile.webp": "265f703c65de7f8a99091bce7ffb34b22aa4afd0",
     "session-investigation.webp": "5f35bd04f9152411c85761a533a9c8619f23cda5",
-    "showcase.webp": "3a5ec5ea119b21df813284d262b064b09efc8d73",
+    "showcase.webp": "f3e00b6a150aec691e4b60c5c01d12edaaf4c9ae",
     "system-diagnostics.webp": "11abdaa5fe9ae9035ad28b823906fc84a6e1b5b0",
     "tamper-detection.webp": "94a4023fdbaab67cbda901b24239e38c2aa5f793",
-    "use-case-summary.webp": "d44b1f486c84b80f1d16f693f7ffba2576a3282a"
+    "use-case-summary.webp": "f47d34886fcad4c7b3a0eb3fcef988f772de4080"
   }
 }

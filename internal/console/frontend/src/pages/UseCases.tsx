@@ -82,7 +82,7 @@ export function UseCases() {
                     <th className="num">Month spend</th>
                     <th className="num">Monthly cap</th>
                     <th className="num">Requests ({goDuration(uc.counter_windows?.requests_denied)})</th>
-                    <th className="num">Denied ({goDuration(uc.counter_windows?.requests_denied)})</th>
+                    <th className="num">Denied requests ({goDuration(uc.counter_windows?.requests_denied)})</th>
                     <th className="num">Fallbacks ({goDuration(uc.counter_windows?.fallbacks)})</th>
                     <th className="num">Failed sessions ({goDuration(uc.counter_windows?.failed_sessions)})</th>
                     <th className="num">Last request</th>
