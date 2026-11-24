@@ -240,6 +240,7 @@ type sourceReloadFixture struct {
 	holder    *RuntimeHolder
 	reloader  *Reloader
 	fake      *fakeSources
+	source    *countingSource
 	now       time.Time
 	mu        sync.Mutex
 }
@@ -274,8 +275,9 @@ func newSourceReloadFixture(t *testing.T) *sourceReloadFixture {
 	bundles, err := BuildRuntimeAgents(ctx, scan, deps)
 	require.NoError(t, err)
 	f.holder = NewRuntimeHolder(NewRuntimeSnapshot(scan, bundles, nil, f.now))
+	f.source = &countingSource{ScanSource: Source{Dir: agentsDir}}
 	f.reloader = NewReloader(ReloadConfig{
-		Source: Source{Dir: agentsDir}, Deps: deps, Holder: f.holder, Evidence: evStore, Clock: f.clock,
+		Source: f.source, Deps: deps, Holder: f.holder, Evidence: evStore, Clock: f.clock,
 		BuildRegistry: func(context.Context, *ScanResult, *RuntimeSnapshot) (*gateway.IdentityRegistry, error) {
 			return nil, nil
 		},
@@ -304,15 +306,17 @@ func TestReloader_SourceRefreshActivatesOnlyChangedFacts(t *testing.T) {
 	require.NotNil(t, state.NextSourceRefresh)
 	assert.Equal(t, f.now.Add(60*time.Second), *state.NextSourceRefresh, "next refresh follows the upstream ttlMs")
 
-	// Not due: free tick, no discovery.
+	// Not due: free tick, no discovery, and no agent file parsed (#575).
 	before := f.fake.calls.Load()
 	assert.Equal(t, ReloadUnchanged, f.reloader.ReloadOnce(ctx))
 	assert.Equal(t, before, f.fake.calls.Load())
+	assert.Zero(t, f.source.scans.Load(), "a tick with unchanged bytes and no refresh due parses nothing")
 
 	// Due, same facts: re-discovered, nothing activates, no evidence.
 	f.advance(61 * time.Second)
 	assert.Equal(t, ReloadUnchanged, f.reloader.ReloadOnce(ctx))
 	assert.Equal(t, before+1, f.fake.calls.Load())
+	assert.Equal(t, int64(1), f.source.scans.Load(), "a due refresh builds from a full scan, unchanged bytes or not")
 	assert.Same(t, boot, f.holder.Current())
 	assert.Empty(t, f.reloadRows(t))
 	assert.Equal(t, f.now.Add(60*time.Second), *f.reloader.State().NextSourceRefresh, "schedule renewed")
@@ -364,10 +368,12 @@ func TestReloader_SourceFailureKeepsLastKnownGood(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.False(t, rows[0].PolicyDecision.Allowed)
 
-	// Not yet due again: the rejection stays visible, no discovery storm.
-	calls := f.fake.calls.Load()
+	// Not yet due again: the rejection stays visible, no discovery storm,
+	// and nothing is parsed (#575).
+	calls, scans := f.fake.calls.Load(), f.source.scans.Load()
 	assert.Equal(t, ReloadUnchanged, f.reloader.ReloadOnce(ctx))
 	assert.Equal(t, calls, f.fake.calls.Load())
+	assert.Equal(t, scans, f.source.scans.Load())
 	assert.True(t, f.reloader.State().Rejected, "a source-only rejection is not cleared by unchanged bytes")
 
 	// Same broken state again: duplicate, no new record. A different

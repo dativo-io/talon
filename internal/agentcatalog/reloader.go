@@ -22,8 +22,9 @@ import (
 type ReloadOutcome int
 
 const (
-	// ReloadUnchanged: the scanned bytes match the active generation; no
-	// vault I/O, no evidence — the interval tick is free.
+	// ReloadUnchanged: the files' bytes match the active generation; with no
+	// source refresh due nothing is parsed (#575), and there is no vault
+	// I/O and no evidence.
 	ReloadUnchanged ReloadOutcome = iota
 	// ReloadActivated: a new generation validated, swapped, and recorded.
 	ReloadActivated
@@ -49,6 +50,16 @@ type EvidenceSink interface {
 	Store(ctx context.Context, ev *evidence.Evidence) error
 }
 
+// ScanSource is the agent-config input the reloader reads. Source satisfies
+// it; tests inject a counting source to prove what a tick reads (#575).
+type ScanSource interface {
+	// Digest is ScanResult.Digest for the files as they are now, from their
+	// raw bytes alone: nothing is parsed or validated.
+	Digest(ctx context.Context) (string, error)
+	// Scan is the full strict scan: every file parsed and validated.
+	Scan(ctx context.Context) (*ScanResult, error)
+}
+
 // RegistryBuilder constructs the identity registry for a reloaded generation,
 // given the scan and the PREVIOUS generation (for key reuse). It is
 // mode-aware — plain (native-only) serve allows a nil/keyless registry while
@@ -59,7 +70,9 @@ type RegistryBuilder func(ctx context.Context, scan *ScanResult, previous *Runti
 
 // ReloadConfig wires the periodic safe reload (#269).
 type ReloadConfig struct {
-	Source Source
+	// Source is what the reload re-reads (a Source; nil reads as the empty
+	// Source, which rejects every pass).
+	Source ScanSource
 	// Deps are the SHARED process dependencies bundles compile over — the
 	// same providers/config serve built at startup, so a reloaded generation
 	// is constructed exactly like the boot generation.
@@ -167,6 +180,9 @@ const (
 // NewReloader seeds the last-known-good generation from the holder's current
 // snapshot (the boot generation).
 func NewReloader(cfg ReloadConfig) *Reloader {
+	if cfg.Source == nil {
+		cfg.Source = Source{}
+	}
 	if cfg.BuildRegistry == nil {
 		// Default: vault-backed gateway builder with key reuse (keeps simple
 		// callers and tests working; serve injects a mode-aware builder).
@@ -283,6 +299,12 @@ func (r *Reloader) View() FleetView {
 // Either way the COMPLETE candidate (bundles including discovered catalogs,
 // registry) is built off to the side; it activates only when its
 // generation differs from the active one.
+//
+// A tick with no refresh due first compares the raw-bytes digest alone
+// (#575): equal bytes end the pass before any file is parsed, so the
+// interval costs a walk and a hash, not a strict load of every file. Any
+// difference, or a digest that cannot be computed, runs the full scan,
+// which decides everything below exactly as before.
 func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -292,19 +314,19 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	// distinct broken state loses its record after an evidence outage.
 	r.flushUnrecorded(ctx)
 
-	scan, scanErr := r.cfg.Source.Scan(ctx)
 	now := r.now()
 	refreshDue := r.refreshKnown && !now.Before(r.refreshAt)
-
-	// Fast path: unchanged bytes and no source refresh due. Clears an
-	// active CONFIG rejection when the operator reverted the broken edit
-	// (explicit outcome, #267 review); a source-only rejection stays
-	// visible until the sources are re-read successfully.
-	if scan.Digest == r.lastScan && !refreshDue {
-		if r.rejection != nil && !r.rejection.sourceOnly {
-			return r.recover()
+	if !refreshDue {
+		if digest, err := r.cfg.Source.Digest(ctx); err == nil && digest == r.lastScan {
+			return r.unchanged()
 		}
-		return ReloadUnchanged
+	}
+
+	scan, scanErr := r.cfg.Source.Scan(ctx)
+	// The bytes may have changed back since the digest above: unchanged
+	// bytes with no refresh due are an unchanged tick, never a build.
+	if scan.Digest == r.lastScan && !refreshDue {
+		return r.unchanged()
 	}
 	sourceOnly := scan.Digest == r.lastScan
 
@@ -389,6 +411,17 @@ func (r *Reloader) scanRejection(scan *ScanResult, scanErr error, sourceOnly boo
 		}
 	}
 	return nil, false
+}
+
+// unchanged ends a pass whose bytes equal the active generation's, with no
+// source refresh due. It clears an active CONFIG rejection when the operator
+// reverted the broken edit (explicit outcome, #267 review); a source-only
+// rejection stays visible until the sources are re-read successfully.
+func (r *Reloader) unchanged() ReloadOutcome {
+	if r.rejection != nil && !r.rejection.sourceOnly {
+		return r.recover()
+	}
+	return ReloadUnchanged
 }
 
 // recover ends a broken incident without a swap: the observed state is the

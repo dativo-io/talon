@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -63,12 +64,24 @@ func (s *ScanResult) LoadedAgents() []gateway.LoadedAgent {
 // rejection means. Hidden directories (dot-prefixed) are skipped; symlinked
 // directories are not followed (filepath.WalkDir semantics).
 func DiscoverAgents(ctx context.Context, dir string) (*ScanResult, error) {
+	paths, err := agentConfigPaths(ctx, dir)
+	if err != nil {
+		return &ScanResult{Source: dir}, err
+	}
+	result := scanFiles(ctx, dir, paths)
+	return result, result.scanError()
+}
+
+// agentConfigPaths returns every agent.talon.yaml under dir, sorted: the
+// walk both the full scan and the reloader's unchanged check (digestFiles)
+// run, so they always cover the same files.
+func agentConfigPaths(ctx context.Context, dir string) ([]string, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
-		return &ScanResult{Source: dir}, fmt.Errorf("agents_dir %s: %w", dir, err)
+		return nil, fmt.Errorf("agents_dir %s: %w", dir, err)
 	}
 	if !info.IsDir() {
-		return &ScanResult{Source: dir}, fmt.Errorf("agents_dir %s is not a directory", dir)
+		return nil, fmt.Errorf("agents_dir %s is not a directory", dir)
 	}
 
 	var paths []string
@@ -91,12 +104,49 @@ func DiscoverAgents(ctx context.Context, dir string) (*ScanResult, error) {
 		return nil
 	})
 	if walkErr != nil {
-		return &ScanResult{Source: dir}, fmt.Errorf("scanning agents_dir %s: %w", dir, walkErr)
+		return nil, fmt.Errorf("scanning agents_dir %s: %w", dir, walkErr)
 	}
 	sort.Strings(paths)
+	return paths, nil
+}
 
-	result := scanFiles(ctx, dir, paths)
-	return result, result.scanError()
+// rawDigest is the generation digest over the sorted (path, sha256(raw
+// bytes)) pairs (#269): the ONE definition behind ScanResult.Digest and the
+// reloader's unchanged check, so the two can never disagree. An unreadable
+// file is folded in as such, so it can never compare equal to readable
+// bytes.
+type rawDigest struct{ h hash.Hash }
+
+func newRawDigest(files int) *rawDigest {
+	d := &rawDigest{h: sha256.New()}
+	fmt.Fprintf(d.h, "src\x00%d\n", files)
+	return d
+}
+
+func (d *rawDigest) add(entry string, raw []byte, readErr error) {
+	if readErr != nil {
+		fmt.Fprintf(d.h, "%s\x00!unreadable\n", entry)
+		return
+	}
+	sum := sha256.Sum256(raw)
+	fmt.Fprintf(d.h, "%s\x00%s\n", entry, hex.EncodeToString(sum[:]))
+}
+
+func (d *rawDigest) sum() string { return hex.EncodeToString(d.h.Sum(nil)) }
+
+// digestFiles computes the scan digest of paths from their raw bytes alone:
+// nothing is parsed or validated (#575). It equals the Digest scanFiles
+// returns for the same bytes.
+func digestFiles(ctx context.Context, relBase string, paths []string) (string, error) {
+	d := newRawDigest(len(paths))
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		raw, readErr := os.ReadFile(path)
+		d.add(digestEntryName(relBase, path), raw, readErr)
+	}
+	return d.sum(), nil
 }
 
 // scanFiles loads every path through the strict gateway-agent pipeline and
@@ -111,8 +161,7 @@ func DiscoverAgents(ctx context.Context, dir string) (*ScanResult, error) {
 // and the gateway registry both depend on this).
 func scanFiles(ctx context.Context, relBase string, paths []string) *ScanResult {
 	result := &ScanResult{Source: relBase}
-	digest := sha256.New()
-	fmt.Fprintf(digest, "src\x00%d\n", len(paths))
+	digest := newRawDigest(len(paths))
 
 	type loaded struct {
 		path  string
@@ -124,15 +173,12 @@ func scanFiles(ctx context.Context, relBase string, paths []string) *ScanResult 
 	namePaths := make(map[string][]string, len(paths))
 
 	for _, path := range paths {
-		entry := digestEntryName(relBase, path)
 		raw, readErr := os.ReadFile(path)
+		digest.add(digestEntryName(relBase, path), raw, readErr)
 		if readErr != nil {
-			fmt.Fprintf(digest, "%s\x00!unreadable\n", entry)
 			records = append(records, loaded{path: path, err: fmt.Errorf("reading agent config: %w", readErr)})
 			continue
 		}
-		sum := sha256.Sum256(raw)
-		fmt.Fprintf(digest, "%s\x00%s\n", entry, hex.EncodeToString(sum[:]))
 
 		agent, loadErr := loadCatalogAgent(ctx, path)
 		if loadErr != nil {
@@ -143,7 +189,7 @@ func scanFiles(ctx context.Context, relBase string, paths []string) *ScanResult 
 		nameCount[agent.Name]++
 		namePaths[agent.Name] = append(namePaths[agent.Name], path)
 	}
-	result.Digest = hex.EncodeToString(digest.Sum(nil))
+	result.Digest = digest.sum()
 
 	for _, rec := range records {
 		switch {

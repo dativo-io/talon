@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,12 +78,40 @@ func (b *blockingEvidence) Store(_ context.Context, _ *evidence.Evidence) error 
 	return nil
 }
 
+// countingSource wraps the reloader's source and counts what each tick reads
+// (#575): Scan is the only read that parses and validates agent files,
+// Digest hashes their raw bytes.
+type countingSource struct {
+	ScanSource
+	digests atomic.Int64
+	scans   atomic.Int64
+}
+
+func (c *countingSource) Digest(ctx context.Context) (string, error) {
+	c.digests.Add(1)
+	return c.ScanSource.Digest(ctx)
+}
+
+func (c *countingSource) Scan(ctx context.Context) (*ScanResult, error) {
+	c.scans.Add(1)
+	return c.ScanSource.Scan(ctx)
+}
+
+// revertingSource reports a digest of changed bytes while its scan reads the
+// files as they are: an edit reverted between the two reads of one tick.
+type revertingSource struct{ ScanSource }
+
+func (revertingSource) Digest(context.Context) (string, error) {
+	return "digest-of-bytes-reverted-before-the-scan", nil
+}
+
 type reloadFixture struct {
 	agentsDir string
 	vault     *secrets.SecretStore
 	evStore   *evidence.Store
 	holder    *RuntimeHolder
 	reloader  *Reloader
+	source    *countingSource
 }
 
 func newReloadFixture(t *testing.T, requireNonEmpty bool) *reloadFixture {
@@ -105,8 +134,9 @@ func newReloadFixture(t *testing.T, requireNonEmpty bool) *reloadFixture {
 
 	snap := f.buildGen(t)
 	f.holder = NewRuntimeHolder(snap)
+	f.source = &countingSource{ScanSource: Source{Dir: agentsDir}}
 	f.reloader = NewReloader(ReloadConfig{
-		Source: Source{Dir: agentsDir}, Deps: BundleDeps{},
+		Source: f.source, Deps: BundleDeps{},
 		Vault: vault, AdminKey: "", Holder: f.holder, Evidence: evStore,
 		RequireNonEmpty: requireNonEmpty,
 	})
@@ -180,6 +210,89 @@ func TestReloader_UnchangedIsFree(t *testing.T) {
 	assert.Equal(t, ReloadUnchanged, f.reloader.ReloadOnce(context.Background()))
 	assert.Same(t, before, f.holder.Current(), "no swap on unchanged bytes")
 	assert.Empty(t, f.reloadRows(t), "no evidence for an unchanged tick")
+}
+
+// TestReloader_UnchangedPassParsesNothing (#575): with no source refresh
+// due, a tick whose raw bytes equal the active generation's ends before any
+// file is parsed. Every other branch keeps its semantics: changed bytes are
+// parsed and validated; an invalid file keeps last-known-good and is
+// recorded once per distinct broken state, yet re-evaluated on every tick
+// (something other than the bytes, a key minted in the vault, can cure it);
+// a reverted edit recovers without a swap.
+func TestReloader_UnchangedPassParsesNothing(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+	path := filepath.Join(f.agentsDir, "support", "agent.talon.yaml")
+	original, err := os.ReadFile(path)
+	require.NoError(t, err)
+	write := func(b []byte) func() {
+		return func() { require.NoError(t, os.WriteFile(path, b, 0o600)) }
+	}
+	// Parses as YAML; only validation (the unknown-key gate) rejects it.
+	typo := []byte("agent:\n  name: support\n  version: \"1.0.0\"\n  key:\n    secret_name: support-key\npolicies:\n  cost_limits:\n    daily: 10\n    montly: 100\n")
+	boot := f.holder.Current()
+
+	steps := []struct {
+		name  string
+		edit  func()
+		want  ReloadOutcome
+		scans int64 // full scans so far: the only reads that parse
+		rows  int   // signed config_reload records so far
+		check func(t *testing.T)
+	}{
+		{name: "unchanged", want: ReloadUnchanged},
+		{name: "still unchanged", want: ReloadUnchanged},
+		{name: "changed bytes are parsed and validated", edit: write(typo), want: ReloadRejected, scans: 1, rows: 1, check: func(t *testing.T) {
+			assert.Same(t, boot, f.holder.Current(), "last-known-good keeps serving")
+			st := f.reloader.State()
+			require.True(t, st.Rejected)
+			require.NotEmpty(t, st.RejectedCauses)
+			assert.Contains(t, st.RejectedCauses[0], path, "the rejection names the file")
+			assert.Contains(t, st.RejectedCauses[0], "montly", "validation ran on the changed bytes")
+		}},
+		{name: "a broken state is re-evaluated every tick, recorded once", want: ReloadRejectedDuplicate, scans: 2, rows: 1},
+		{name: "the revert is recognised from the bytes alone", edit: write(original), want: ReloadRecovered, scans: 2, rows: 1, check: func(t *testing.T) {
+			assert.Same(t, boot, f.holder.Current(), "recovery is bookkeeping, not a new generation")
+			assert.False(t, f.reloader.State().Rejected)
+		}},
+		{name: "unchanged after recovery", want: ReloadUnchanged, scans: 2, rows: 1},
+		{name: "a valid edit is parsed and activated", edit: func() { f.writeAgentVersion(t, "support", "support-key", true, "2.0.0") }, want: ReloadActivated, scans: 3, rows: 2, check: func(t *testing.T) {
+			ra, ok := f.holder.Current().Get("support")
+			require.True(t, ok)
+			assert.Equal(t, "2.0.0", ra.Policy.Agent.Version, "the activated generation carries the parsed edit")
+		}},
+		{name: "unchanged after activation", want: ReloadUnchanged, scans: 3, rows: 2},
+	}
+	for i, st := range steps {
+		if st.edit != nil {
+			st.edit()
+		}
+		require.Equal(t, st.want, f.reloader.ReloadOnce(ctx), st.name)
+		assert.Equal(t, int64(i+1), f.source.digests.Load(), "%s: every tick compares the raw-bytes digest first", st.name)
+		assert.Equal(t, st.scans, f.source.scans.Load(), "%s: full scans (parsing)", st.name)
+		assert.Len(t, f.reloadRows(t), st.rows, st.name)
+		if st.check != nil {
+			st.check(t)
+		}
+	}
+}
+
+// TestReloader_BytesRevertedDuringThePassStayUnchanged (#575): the digest
+// saw changed bytes, and the scan that followed reads the active ones again
+// (an edit reverted between the two reads). That is an unchanged tick, as
+// it was before the digest existed: no build, no discovery of trusted
+// sources that nobody scheduled, no evidence.
+func TestReloader_BytesRevertedDuringThePassStayUnchanged(t *testing.T) {
+	f := newSourceReloadFixture(t)
+	ctx := context.Background()
+	boot := f.holder.Current()
+	f.reloader.cfg.Source = revertingSource{ScanSource: f.reloader.cfg.Source}
+
+	calls := f.fake.calls.Load()
+	assert.Equal(t, ReloadUnchanged, f.reloader.ReloadOnce(ctx))
+	assert.Equal(t, calls, f.fake.calls.Load(), "no refresh was due: nothing is discovered")
+	assert.Same(t, boot, f.holder.Current())
+	assert.Empty(t, f.reloadRows(t))
 }
 
 func TestReloader_ActivatesValidEdit(t *testing.T) {

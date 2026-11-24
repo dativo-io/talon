@@ -2,7 +2,7 @@ package agentcatalog
 
 import (
 	"context"
-	"fmt"
+	"errors"
 )
 
 // Source names the agent-config input for one catalog build: agents_dir mode
@@ -32,9 +32,30 @@ func (s Source) Scan(ctx context.Context) (*ScanResult, error) {
 		return DiscoverAgents(ctx, s.Dir)
 	}
 	if s.File == "" {
-		return &ScanResult{}, fmt.Errorf("agent config source is empty: set agents_dir or a policy file")
+		return &ScanResult{}, errEmptySource
 	}
 	result := scanFiles(ctx, s.File, []string{s.File})
 	result.Source = s.File
 	return result, result.scanError()
 }
+
+// Digest returns the digest Scan would report for the files as they are
+// now (ScanResult.Digest), computed from their raw bytes alone: the same
+// walk, nothing parsed or validated (#575). An error means the digest could
+// not be computed (the source is missing, not a directory, or the walk
+// failed); an unreadable file is not an error, it is part of the digest.
+func (s Source) Digest(ctx context.Context) (string, error) {
+	if s.Dir != "" {
+		paths, err := agentConfigPaths(ctx, s.Dir)
+		if err != nil {
+			return "", err
+		}
+		return digestFiles(ctx, s.Dir, paths)
+	}
+	if s.File == "" {
+		return "", errEmptySource
+	}
+	return digestFiles(ctx, s.File, []string{s.File})
+}
+
+var errEmptySource = errors.New("agent config source is empty: set agents_dir or a policy file")
