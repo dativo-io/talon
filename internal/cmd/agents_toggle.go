@@ -17,6 +17,7 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/runtimestatus"
 )
 
 // talon agents enable/disable (#268): the config-backed operational on/off
@@ -97,11 +98,28 @@ func runAgentToggle(cmd *cobra.Command, name string, enable bool) error {
 	if warn != "" {
 		fmt.Fprintf(out, "warning:  %s (the change and its evidence are recorded; verify after any crash)\n", warn)
 	}
-	fmt.Fprintf(out, "note: a running `talon serve` applies this within its reload interval (agents_reload_interval, default %s), or on restart.\n", config.DefaultAgentsReloadInterval)
+	fmt.Fprintf(out, "note: %s\n", toggleActivationNote(cfg))
 	if len(scanIssues) > 0 {
 		fmt.Fprintf(out, "warning: %d other config file(s) under the fleet source are invalid — the running fleet keeps last-known-good until they are fixed.\n", len(scanIssues))
 	}
 	return nil
+}
+
+// toggleActivationNote says when a running process applies the change: from
+// what the running processes report about re-reading agent files (#575),
+// or the default when none reports it.
+func toggleActivationNote(cfg *config.Config) string {
+	view, readable := installationRuntime(cfg, time.Now().UTC())
+	f := runtimestatus.ReloadFactsOf(view, "")
+	switch {
+	case !readable || !f.Known:
+		return fmt.Sprintf("a running `talon serve` applies this within its reload interval (agents_reload_interval, default %s), or on restart.", config.DefaultAgentsReloadInterval)
+	case len(f.RejectedCauses) > 0:
+		return "the running `talon serve` rejected the last change to the fleet and keeps serving the previous one: this applies only once a re-scan validates. Blocking: " + strings.Join(f.RejectedCauses, "; ")
+	case f.Disabled:
+		return "the running `talon serve` does not re-scan agent files (agents_reload_interval is \"0\"): it applies this when it restarts."
+	}
+	return "the running `talon serve` applies this at its next re-scan (" + f.Setting() + "), or on restart."
 }
 
 // prepareToggle takes the advisory lock, re-reads and strictly validates the

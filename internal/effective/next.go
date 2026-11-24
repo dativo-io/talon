@@ -57,10 +57,12 @@ type Serving struct {
 
 // runtimeFacts is what the runtime records say that a next step depends on.
 type runtimeFacts struct {
-	known    bool     // runtime records were read
-	running  bool     // a Talon process that serves the use case's requests is running
-	others   bool     // another Talon process of this installation is running
-	rejected []string // causes of a reload the running process rejected
+	known   bool // runtime records were read
+	running bool // a Talon process that serves the use case's requests is running
+	others  bool // another Talon process of this installation is running
+	// reload is how those serving processes re-read agent files (interval,
+	// disabled) and what their newest re-scan rejected (#575).
+	reload runtimestatus.ReloadFacts
 }
 
 func runtimeFactsOf(view *runtimestatus.View, readable bool, role string) runtimeFacts {
@@ -78,10 +80,8 @@ func runtimeFactsOf(view *runtimestatus.View, readable bool, role string) runtim
 			continue
 		}
 		f.running = true
-		if p.Catalog != nil && p.Catalog.ReloadRejected {
-			f.rejected = append(f.rejected, p.Catalog.RejectedCauses...)
-		}
 	}
+	f.reload = runtimestatus.ReloadFactsOf(*view, role)
 	return f
 }
 
@@ -186,10 +186,14 @@ func notServingStep(loaded runtimestatus.Loaded, rt runtimeFacts, name string, e
 		return NextStep{Code: NextStartRuntime, Text: "A Talon process of this installation is running, but none that serves the LLM gateway, so nothing serves this use case's requests. Start `talon serve --gateway` with this installation's keys; it loads the use case when it starts."}
 	case rt.known && !rt.running:
 		return NextStep{Code: NextStartRuntime, Text: "No Talon process of this installation is running, so nothing serves this use case. Start `talon serve` with this installation's keys; it loads the use case when it starts."}
-	case len(rt.rejected) > 0:
-		return NextStep{NextFixReload, "The running Talon process rejected the last change to the fleet and keeps serving the previous one: " + strings.Join(rt.rejected, "; ") + ". Fix that; the next re-scan loads the current files.", []string{"talon validate"}}
+	case len(rt.reload.RejectedCauses) > 0:
+		// Activation stays blocked for the whole fleet until a re-scan
+		// validates: name what blocks it, as the process recorded it.
+		return NextStep{NextFixReload, "The running Talon process rejected the last change to the fleet and keeps serving the previous one. Blocking: " + strings.Join(rt.reload.RejectedCauses, "; ") + ". Fix that; the next re-scan (" + rt.reload.Setting() + ") loads the current files.", []string{"talon validate"}}
+	case rt.known && rt.running && rt.reload.Disabled:
+		return NextStep{Code: NextRestartRuntime, Text: "A Talon process is running, but it does not re-scan agents_dir (agents_reload_interval is \"0\"): it loads this use case only when it starts. Restart `talon serve`, then look again."}
 	case rt.known && rt.running:
-		return NextStep{NextWaitReload, "A Talon process is running and has not loaded the current version of this use case yet. It re-scans agents_dir periodically (agents_reload_interval, default 30s): look again in a moment. If it stays like this, check the fleet.", []string{"talon validate"}}
+		return NextStep{NextWaitReload, "A Talon process is running and has not loaded the current version of this use case yet. It re-scans agents_dir periodically (" + rt.reload.Setting() + ") and loads it then, without a restart: look again in a moment. If it stays like this, check the fleet.", []string{"talon validate"}}
 	}
 	return NextStep{Code: NextCheckRuntime, Text: "Whether a Talon process serves this use case is not known here: this installation's runtime records could not be read. Look from the host that runs `talon serve`, with the installation's keys."}
 }

@@ -221,8 +221,15 @@ func registrationRuntimeLine(cfg *config.Config, report *effective.Report, rerr 
 	case effective.NextStartRuntime:
 		return "Not active: no Talon process of this installation is running. `talon serve` loads this use case when it starts."
 	case effective.NextWaitReload:
-		return fmt.Sprintf("Not active yet: the running Talon process loads it at its next re-scan of agents_dir (agents_reload_interval, default %s). No restart is needed.", config.DefaultAgentsReloadInterval)
+		// The interval the serving processes report, not a default (#575).
+		facts := runtimestatus.ReloadFacts{}
+		if view, readable := installationRuntime(cfg, time.Now().UTC()); readable {
+			facts = runtimestatus.ReloadFactsOf(view, report.Verification.Serving.Role)
+		}
+		return "Not active yet: the running Talon process loads it at its next re-scan of agents_dir (" + facts.Setting() + "). No restart is needed."
 	default:
+		// A rejected re-scan (blocking files and causes), reload disabled
+		// (restart), or another step: the report's own sentence.
 		return "Not active. " + next.Text
 	}
 }
