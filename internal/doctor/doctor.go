@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -887,7 +888,7 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 	if reqErr != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_" + name, Category: "gateway", Status: "fail",
-			Message: fmt.Sprintf("Invalid URL: %v", reqErr),
+			Message: "base_url is not a valid URL (its value is not shown: it can carry a credential)",
 		}}
 	}
 	start := time.Now()
@@ -897,7 +898,7 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 	if err != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_" + name, Category: "gateway", Status: "fail",
-			Message: fmt.Sprintf("Connection failed: %v", err),
+			Message: fmt.Sprintf("Connection to %s failed: %s", endpointForDisplay(baseURL), transportProblem(err)),
 			Fix:     "Check network connectivity and provider base_url",
 		}}
 	}
@@ -905,7 +906,7 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 
 	results = append(results, CheckResult{
 		Name: "gateway_upstream_" + name, Category: "gateway", Status: "pass",
-		Message: fmt.Sprintf("%s — %dms", baseURL, latency.Milliseconds()),
+		Message: fmt.Sprintf("%s — %dms", endpointForDisplay(baseURL), latency.Milliseconds()),
 	})
 
 	if latency > 2*time.Second {
@@ -929,13 +930,25 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 	return results
 }
 
+// endpointForDisplay is the scheme://host of a configured URL. Userinfo, path
+// and query can carry a credential and are never printed; the HTTP client's
+// error text embeds the URL, so failures are described by transportProblem
+// (the Console shows configured URLs as scheme://host too).
+func endpointForDisplay(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "the configured base_url"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 func checkModelsEndpoint(ctx context.Context, client *http.Client, name, baseURL string) []CheckResult {
 	modelsURL := baseURL + "/v1/models"
 	modelsReq, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if reqErr != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_models_" + name, Category: "gateway", Status: "fail",
-			Message: fmt.Sprintf("invalid models URL %s: %v", modelsURL, reqErr),
+			Message: fmt.Sprintf("invalid models URL for %s", endpointForDisplay(baseURL)),
 			Fix:     "Check base_url in gateway provider config",
 		}}
 	}
@@ -943,7 +956,7 @@ func checkModelsEndpoint(ctx context.Context, client *http.Client, name, baseURL
 	if modelsErr != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_models_" + name, Category: "gateway", Status: "warn",
-			Message: fmt.Sprintf("GET %s failed: %v", modelsURL, modelsErr),
+			Message: fmt.Sprintf("GET %s/v1/models failed: %s", endpointForDisplay(baseURL), transportProblem(modelsErr)),
 			Fix:     "Verify base_url points to an OpenAI-compatible API",
 		}}
 	}

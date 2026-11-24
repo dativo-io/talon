@@ -462,3 +462,47 @@ func TestCheckActionSources_NeverPrintsUpstreamText(t *testing.T) {
 		})
 	}
 }
+
+// Provider upstream checks never print a configured URL beyond scheme and
+// host: its userinfo or query can carry a credential (the rule the MCP
+// source check follows, and the Console's scheme://host display). Failures
+// are typed (refused, timeout, DNS), never the HTTP client's error text,
+// which embeds the URL.
+func TestCheckUpstream_NeverPrintsCredentialBearingURLParts(t *testing.T) {
+	const pw, token = "s3cret-pw-0193", "leak-me-token-7731"
+	allText := func(rs []CheckResult) string {
+		var b strings.Builder
+		for _, r := range rs {
+			b.WriteString(r.Message + " | " + r.Fix + "\n")
+		}
+		return b.String()
+	}
+	t.Run("connection refused", func(t *testing.T) {
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		addr := ln.Addr().String()
+		require.NoError(t, ln.Close()) // nothing listens there now
+		res := checkUpstream(context.Background(), "openai", "http://user:"+pw+"@"+addr+"/v1?api_key="+token)
+		text := allText(res)
+		assert.NotContains(t, text, pw)
+		assert.NotContains(t, text, token)
+		assert.Contains(t, text, "connection refused")
+		assert.Contains(t, text, "http://"+addr, "scheme and host identify the endpoint")
+	})
+	t.Run("reachable", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+		defer srv.Close()
+		res := checkUpstream(context.Background(), "openai", strings.Replace(srv.URL, "http://", "http://user:"+pw+"@", 1)+"/?token="+token)
+		text := allText(res)
+		assert.NotContains(t, text, pw)
+		assert.NotContains(t, text, token)
+		assert.Equal(t, "pass", byName(res)["gateway_upstream_openai"].Status)
+	})
+	t.Run("invalid URL", func(t *testing.T) {
+		res := checkUpstream(context.Background(), "openai", "http://user:"+pw+"@bad host/?k="+token)
+		text := allText(res)
+		assert.NotContains(t, text, pw)
+		assert.NotContains(t, text, token)
+		assert.Equal(t, "fail", res[0].Status)
+	})
+}
