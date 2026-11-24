@@ -17,6 +17,10 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.17.0] - 2026-11-24
+
+First production pilot release. A read-only operations console replaces both legacy dashboards (#533). Existing applications are registered and onboarded as AI use cases under one shared company policy, with per-use-case restrictions that cannot weaken it (#472, #561). Consequential actions go through the Action Gateway: argument-aware rules, human approval bound to the exact operation, and at most one Talon dispatch per operation within the supported boundary, with ambiguous outcomes recorded as `unknown` and never re-sent (#205, #458, #565). This now includes governed MCP: every `tools/call` on `POST /mcp` is an Action Gateway operation (#431). The release adds single-node backup, restore and a recovery hold (#465), a streaming response contract that delivers before completion (#476), and acceptance of every release on its own published artifacts. **Breaking:** the MCP proxy (`/mcp/proxy`, `--proxy-config`) and the legacy dashboards are removed. See [upgrading to 1.17](docs/guides/upgrading-to-1.17.md) and the [governed MCP migration table](docs/guides/mcp-governed-tools.md#8-migrating-from-the-mcp-proxy---proxy-config-mcpproxy). **Not in this release:** a side-effect-free policy-impact preview (#459; check a policy change with `talon validate` and `talon agents show --effective` before rollout) and a governed-action denial counter (#590). Claude Code inside OpenShell is proven on the deterministic delegated path only (#528, [LIMITATIONS](LIMITATIONS.md)).
+
 ### Added
 
 - **Governed MCP tools: every `tools/call` on `POST /mcp` is an Action Gateway operation; the MCP proxy and the in-process tool route are removed (#431).** Problem: an MCP tool call could be allowed or denied by policy, but a consequential one had no argument-bound approval, no at-most-once dispatch, no `unknown` handling and no recovery hold — those existed only for `/v1/action-operations`. Who should care: teams whose AI applications act through MCP servers (CRM, ticketing, HR backends) and operators who need one policy and one proof for them. What ships:
@@ -1074,6 +1078,7 @@ Fleet Operations v1 (#265 milestone): discover, inspect, stop, and safely reconf
 - Data residency: tier-based EU model routing.
 
 [Unreleased]: https://github.com/dativo-io/talon/compare/v1.15.2...HEAD
+[1.17.0]: https://github.com/dativo-io/talon/compare/v1.16.1...v1.17.0
 [1.16.1]: https://github.com/dativo-io/talon/compare/v1.16.0...v1.16.1
 [1.16.0]: https://github.com/dativo-io/talon/compare/v1.15.3...v1.16.0
 [1.15.3]: https://github.com/dativo-io/talon/compare/v1.15.2...v1.15.3
