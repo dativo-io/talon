@@ -11,9 +11,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -506,3 +509,88 @@ func TestCheckUpstream_NeverPrintsCredentialBearingURLParts(t *testing.T) {
 		assert.Equal(t, "fail", res[0].Status)
 	})
 }
+
+// The MCP source check (140c8411): a source URL can carry a credential in
+// its userinfo or query, so neither the URL nor transport error text (which
+// embeds it) is ever printed, on success or failure. A URL with userinfo is
+// refused by source validation before anything is sent (use
+// auth.secret_name); a query is accepted and must still never be echoed.
+func TestCheckActionSources_NeverPrintsCredentialBearingSourceURL(t *testing.T) {
+	const pw, token = "src-pw-55412", "src-token-90817"
+	cfg, agentsDir := onboardingFleet(t)
+	srv := sdk.NewServer(&sdk.Implementation{Name: "crm", Version: "1"}, &sdk.ServerOptions{
+		SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.TTLMs, c.CacheScope = 60000, "private" },
+	})
+	srv.AddTool(&sdk.Tool{Name: "ticket.lookup", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"ticket_id": map[string]any{"type": "string"}}}},
+		func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{}, nil
+		})
+	mcpHandler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv }, &sdk.StreamableHTTPOptions{Stateless: true})
+	var hits atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		mcpHandler.ServeHTTP(w, r)
+	}))
+	defer up.Close()
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	closedAddr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	setSource := func(url string) {
+		p := filepath.Join(agentsDir, "customer-support", "agent.talon.yaml")
+		b, err := os.ReadFile(p)
+		require.NoError(t, err)
+		y := strings.Split(string(b), "actions:")[0] + "actions:\n  sources:\n    crm:\n      type: mcp\n      url: \"" + url + "\"\n  definitions:\n    lookup_ticket:\n      source: crm\n      upstream_name: ticket.lookup\n      read_only: true\n      review: {fields: [ticket_id]}\n"
+		require.NoError(t, os.WriteFile(p, []byte(y), 0o600))
+	}
+	for _, c := range []struct {
+		name, url, status, want string
+		noRequest               bool
+	}{
+		{"userinfo is refused before any request", strings.Replace(up.URL, "http://", "http://user:"+pw+"@", 1) + "/?token=" + token, "fail", "local source configuration or credential error", true},
+		{"query, reachable", up.URL + "/?token=" + token, "pass", "1 tool(s)", false},
+		{"query, unreachable", "http://" + closedAddr + "/mcp?token=" + token, "fail", "connection refused", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			setSource(c.url)
+			before := hits.Load()
+			got := byName(checkActionSources(context.Background(), cfg))["action_source:customer-support/crm"]
+			if c.noRequest {
+				assert.Equal(t, before, hits.Load(), "the credential-bearing URL was never sent")
+			}
+			require.Equal(t, c.status, got.Status, got.Message)
+			text := got.Message + " | " + got.Fix
+			assert.Contains(t, text, c.want)
+			assert.NotContains(t, text, pw)
+			assert.NotContains(t, text, token)
+			assert.NotContains(t, text, "127.0.0.1", "the source URL is not printed at all")
+		})
+	}
+}
+
+// transportProblem names a transport failure by type only; an unknown error's
+// text (which may embed a URL with a credential) is never echoed.
+func TestTransportProblem_TypedOnly(t *testing.T) {
+	const secret = "leak-7799"
+	refused := &url.Error{Op: "Post", URL: "http://u:" + secret + "@h/x", Err: &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}}
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{refused, "transport error: connection refused"},
+		{&url.Error{Op: "Get", URL: "http://h/?k=" + secret, Err: &net.DNSError{Err: "no such host", Name: "h", IsNotFound: true}}, "transport error: DNS lookup failed"},
+		{fmt.Errorf("wrapped: %w", context.DeadlineExceeded), "transport error: timeout"},
+		{&url.Error{Op: "Get", URL: "http://h/?k=" + secret, Err: timeoutErr{}}, "transport error: timeout"},
+		{errors.New("tls: handshake failure at http://u:" + secret + "@h"), "transport error (check address, TLS, DNS and egress)"},
+	} {
+		got := transportProblem(c.err)
+		assert.Equal(t, c.want, got)
+		assert.NotContains(t, got, secret)
+	}
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
