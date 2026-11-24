@@ -30,7 +30,7 @@ pids=()
 n8n_container=""
 cleanup() {
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
-  [ -n "$n8n_container" ] && docker rm -f "$n8n_container" >/dev/null 2>&1 || true
+  if [ -n "$n8n_container" ]; then docker rm -f "$n8n_container" >/dev/null 2>&1 || true; fi
   if [ -z "${KEEP_N8N_COMPAT:-}" ]; then rm -rf "$W"; else echo "n8n-compat: run directory kept: $W"; fi
 }
 trap cleanup EXIT
@@ -49,7 +49,11 @@ cd "$W/install"
 export HOME="$W/talon-home"
 unset TALON_DATA_DIR TALON_SECRETS_KEY TALON_SIGNING_KEY TALON_ADMIN_KEY TALON_AGENTS_DIR TALON_GATEWAY_CONFIG
 (umask 077; printf 'TALON_SECRETS_KEY=%s\nTALON_SIGNING_KEY=%s\nTALON_ADMIN_KEY=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > talon.env)
-set -a; . ./talon.env; set +a
+set -a
+# talon.env is generated just above, so there is nothing to follow.
+# shellcheck source=/dev/null
+. ./talon.env
+set +a
 cat > talon.config.yaml <<YAML
 agents_dir: ./agents
 gateway:
