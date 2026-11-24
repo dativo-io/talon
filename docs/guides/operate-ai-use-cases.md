@@ -98,7 +98,7 @@ For one denied request, `Last request` gives the reason code, and `talon audit s
 
 ## Why is the company policy not active?
 
-The company policy lives in the `gateway:` block of `talon.config.yaml`. `talon serve` reads it **when it starts**; a change needs a restart. A use case's own file is different: a running process picks up a changed or new `agent.talon.yaml` at its next re-scan of `agents_dir` (`agents_reload_interval`, default 30s).
+The company policy lives in the `gateway:` block of `talon.config.yaml`. `talon serve` reads it **when it starts**; a change needs a restart. A use case's own file is different: a running process picks up a changed or new `agent.talon.yaml` at its next re-scan of `agents_dir` (`agents_reload_interval`, default 2s; `talon agents show <name>` states the interval the running process reports).
 
 ```bash
 talon agents show <name> --effective

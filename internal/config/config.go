@@ -88,9 +88,12 @@ const (
 	DefaultMaxAttachMB = 10
 	DefaultOllamaURL   = "http://localhost:11434"
 	// DefaultAgentsReloadInterval paces the periodic safe config reload
-	// (#269). An unchanged scan is digest-compare only (no vault I/O, no
-	// evidence), so 30s is effectively free.
-	DefaultAgentsReloadInterval = "30s"
+	// (#269): a newly registered use case activates at the next tick, once
+	// that generation is built. A tick with unchanged files hashes their raw
+	// bytes and parses nothing (no vault I/O, no evidence, #575), so 2s costs
+	// a small share of one core even with hundreds of use cases (measured in
+	// #575: about 2% at 200).
+	DefaultAgentsReloadInterval = "2s"
 	// DefaultOrphanRetentionDays bounds cleanup of memory/session rows whose
 	// agent has left the catalog (removed by a reload, #269 review): a fixed
 	// org-level floor independent of the live fleet, so orphaned data can
@@ -310,7 +313,7 @@ type Config struct {
 	// agent files (single-file or agents_dir) are re-scanned on this cadence
 	// and valid changes activate atomically; invalid edits keep the
 	// last-known-good generation serving. "0" disables reload. Parsed with
-	// time.ParseDuration; default 30s.
+	// time.ParseDuration; default DefaultAgentsReloadInterval (2s).
 	AgentsReloadInterval string
 	// OrphanRetentionDays bounds cleanup of memory/session rows whose agent
 	// has left the catalog (#269). A fixed org-level floor independent of the

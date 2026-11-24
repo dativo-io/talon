@@ -82,5 +82,5 @@ run "(cd '$WORK' && '$TALON' agents show customer-support)"
 
 say "Done"
 note_done() { printf '   %s\n' "$*"; }
-note_done "A running 'talon serve' applies the disable within its reload interval (default 30s), no restart."
+note_done "A running 'talon serve' applies the disable within its reload interval (default 2s), no restart."
 note_done "'talon agents' shows this machine's installation: its files, its evidence and the processes' own records (RUNTIME). It asks no server."
