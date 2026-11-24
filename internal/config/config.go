@@ -433,6 +433,11 @@ func init() {
 // file, and defaults) and returns a validated Config.
 func Load() (*Config, error) {
 	if fileErr != nil {
+		if errors.Is(fileErr, os.ErrNotExist) {
+			// Only an explicitly named file can be missing here: the search
+			// path's "not found" is the configless default (RecordFileRead).
+			return nil, fmt.Errorf("the config file named with --config does not exist: %w — check the path; Talon does not fall back to defaults when the named file is missing", fileErr)
+		}
 		return nil, fmt.Errorf("the infrastructure config file exists but cannot be used: %w — fix the file or its permissions; Talon does not fall back to defaults while it exists", fileErr)
 	}
 	cfg := &Config{

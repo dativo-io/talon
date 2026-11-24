@@ -447,3 +447,19 @@ func TestRecordFileRead_OnlyNotFoundIsConfigless(t *testing.T) {
 	_, err = Load()
 	require.NoError(t, err)
 }
+
+// A file named with --config that does not exist is reported as missing,
+// never as "exists but cannot be used" (the real viper error, not a stand-in).
+func TestLoad_NamedConfigFileMissingIsReportedAsMissing(t *testing.T) {
+	resetViper(t)
+	t.Cleanup(func() { RecordFileRead(nil) })
+	t.Setenv("TALON_DATA_DIR", t.TempDir())
+	viper.SetConfigFile(filepath.Join(t.TempDir(), "nope.yaml"))
+	RecordFileRead(viper.ReadInConfig())
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fs.ErrNotExist)
+	assert.Contains(t, err.Error(), "does not exist")
+	assert.NotContains(t, err.Error(), "exists but cannot be used")
+}
