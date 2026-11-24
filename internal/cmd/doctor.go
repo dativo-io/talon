@@ -96,6 +96,8 @@ func categoryTitle(cat string) string {
 		return "Configuration"
 	case "gateway":
 		return "Gateway"
+	case "use_cases":
+		return "AI use cases"
 	case "system":
 		return "System"
 	default:

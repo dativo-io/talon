@@ -21,6 +21,7 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -72,6 +73,31 @@ func ConsumedTopLevelKeys() map[string]bool {
 		"gateway": true,
 	}
 }
+
+// fileErr is why the infrastructure config file exists but cannot be used
+// (unreadable, unparseable, or an explicitly named file that is missing),
+// recorded once by the CLI when it reads the file; nil when the file loaded
+// or none was found on the search path. Viper's own state is process-global
+// already; this records only the outcome of reading it.
+var fileErr error
+
+// RecordFileRead records the outcome of reading the infrastructure config
+// file (viper.ReadInConfig). Not finding a file on the search path is the
+// configless default and is not an error; every other failure is, so no
+// command silently falls back to defaults while a talon.config.yaml exists
+// (#575: an unreadable file used to surface as unrelated errors, e.g. a
+// missing agent.talon.yaml, because agents_dir was never read).
+func RecordFileRead(err error) {
+	var notFound viper.ConfigFileNotFoundError
+	if err == nil || errors.As(err, &notFound) {
+		fileErr = nil
+		return
+	}
+	fileErr = err
+}
+
+// FileError is the recorded reason the config file cannot be used, or nil.
+func FileError() error { return fileErr }
 
 // UsedConfigFile returns the config file viper actually loaded, or "" when
 // running configless (defaults/env only). Wrapper so packages outside
@@ -406,6 +432,14 @@ func init() {
 // Load reads configuration from Viper (which merges env vars, config
 // file, and defaults) and returns a validated Config.
 func Load() (*Config, error) {
+	if fileErr != nil {
+		if errors.Is(fileErr, os.ErrNotExist) {
+			// Only an explicitly named file can be missing here: the search
+			// path's "not found" is the configless default (RecordFileRead).
+			return nil, fmt.Errorf("the config file named with --config does not exist: %w — check the path; Talon does not fall back to defaults when the named file is missing", fileErr)
+		}
+		return nil, fmt.Errorf("the infrastructure config file exists but cannot be used: %w — fix the file or its permissions; Talon does not fall back to defaults while it exists", fileErr)
+	}
 	cfg := &Config{
 		DataDir:              resolveDataDir(),
 		SecretsKey:           viper.GetString(KeySecretsKey),

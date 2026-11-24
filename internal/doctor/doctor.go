@@ -4,8 +4,10 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -60,13 +62,33 @@ type Options struct {
 func Run(ctx context.Context, opts Options) *Report {
 	report := &Report{}
 
+	if err := config.FileError(); err != nil {
+		// The config file exists but cannot be used: report that one cause.
+		// Every other check would read the same file and fail for the same
+		// reason, or worse, judge the configless defaults instead (#575).
+		report.Checks = append(report.Checks, configLoadFailure(err))
+		report.Checks = append(report.Checks, checkSystem()...)
+		report.summarize()
+		return report
+	}
 	report.Checks = append(report.Checks, checkConfig()...)
 	report.Checks = append(report.Checks, checkTriggers(ctx, opts.GatewayConfigPath != ""))
+	if cfg, err := config.Load(); err == nil {
+		report.Checks = append(report.Checks, checkUseCaseKeys(ctx, cfg)...)
+		if !opts.SkipUpstream {
+			report.Checks = append(report.Checks, checkActionSources(ctx, cfg)...)
+		}
+	}
 	if opts.GatewayConfigPath != "" {
 		report.Checks = append(report.Checks, checkGateway(ctx, opts)...)
 	}
 	report.Checks = append(report.Checks, checkSystem()...)
+	report.summarize()
+	return report
+}
 
+// summarize counts the checks and sets the worst status.
+func (report *Report) summarize() {
 	for _, c := range report.Checks {
 		switch c.Status {
 		case "pass":
@@ -85,7 +107,6 @@ func Run(ctx context.Context, opts Options) *Report {
 	if report.Summary.Fail > 0 {
 		report.Status = "fail"
 	}
-	return report
 }
 
 func checkConfig() []CheckResult {
@@ -93,11 +114,7 @@ func checkConfig() []CheckResult {
 
 	cfg, err := config.Load()
 	if err != nil {
-		return []CheckResult{{
-			Name: "config_load", Category: "config", Status: "fail",
-			Message: fmt.Sprintf("Cannot load config: %v", err),
-			Fix:     "Check TALON_DATA_DIR and config file",
-		}}
+		return []CheckResult{configLoadFailure(err)}
 	}
 
 	results = append(results, checkConfigKeys(config.UsedConfigFile()))
@@ -105,6 +122,7 @@ func checkConfig() []CheckResult {
 	results = append(results, checkPolicy(cfg))
 	results = append(results, checkLLMKeys(cfg))
 	results = append(results, checkCryptoKeys(cfg)...)
+	results = append(results, checkVaultKey(context.Background(), cfg))
 	results = append(results, checkEvidenceDB(cfg))
 	results = append(results, checkRegistrations(cfg))
 	results = append(results, checkRecoveryHold(cfg))
@@ -280,21 +298,31 @@ func editDistance(a, b string) int {
 }
 
 func checkDataDir(cfg *config.Config) CheckResult {
-	if err := cfg.EnsureDataDir(); err != nil {
+	// Doctor creates nothing (#575): a missing data directory is created by
+	// the first command that stores something.
+	if fi, err := os.Stat(cfg.DataDir); err != nil {
+		if os.IsNotExist(err) {
+			return creatableDir("data_dir_writable", cfg.DataDir, "talon creates it when it first stores something")
+		}
 		return CheckResult{
 			Name: "data_dir_writable", Category: "config", Status: "fail",
 			Message: fmt.Sprintf("%s — %v", cfg.DataDir, err),
 			Fix:     "Ensure directory exists and is writable",
 		}
+	} else if !fi.IsDir() {
+		return CheckResult{
+			Name: "data_dir_writable", Category: "config", Status: "fail",
+			Message: fmt.Sprintf("%s is not a directory", cfg.DataDir),
+			Fix:     "Point TALON_DATA_DIR at a directory",
+		}
 	}
-	testFile := filepath.Join(cfg.DataDir, ".doctor-write-test")
-	if err := os.WriteFile(testFile, []byte("ok"), 0o600); err != nil {
+	if err := mayWrite(cfg.DataDir); err != nil {
 		return CheckResult{
 			Name: "data_dir_writable", Category: "config", Status: "fail",
 			Message: fmt.Sprintf("%s not writable — %v", cfg.DataDir, err),
+			Fix:     "Make the data directory writable by the user that runs talon",
 		}
 	}
-	_ = os.Remove(testFile)
 	return CheckResult{
 		Name: "data_dir_writable", Category: "config", Status: "pass",
 		Message: fmt.Sprintf("%s (writable)", cfg.DataDir),
@@ -439,7 +467,15 @@ func checkCryptoKeys(cfg *config.Config) []CheckResult {
 }
 
 func checkEvidenceDB(cfg *config.Config) CheckResult {
-	store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	// Read-only (#575): opening the store read-write would create it, run
+	// schema statements and migrate an older store under a newer binary.
+	if _, err := os.Stat(cfg.EvidenceDBPath()); os.IsNotExist(err) {
+		return CheckResult{
+			Name: "evidence_db", Category: "config", Status: "pass",
+			Message: cfg.EvidenceDBPath() + " does not exist yet (talon serve creates it)",
+		}
+	}
+	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
 		return CheckResult{
 			Name: "evidence_db", Category: "config", Status: "fail",
@@ -463,6 +499,9 @@ func CheckRegistrations(cfg *config.Config) CheckResult { return checkRegistrati
 
 func checkRegistrations(cfg *config.Config) CheckResult {
 	const name = "agent_registrations"
+	if _, statErr := os.Stat(cfg.EvidenceDBPath()); os.IsNotExist(statErr) {
+		return CheckResult{Name: name, Category: "config", Status: "pass", Message: "No registration recorded yet."}
+	}
 	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
 		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("registration records could not be read: %v", err)}
@@ -482,6 +521,10 @@ func checkRegistrations(cfg *config.Config) CheckResult {
 func checkRecoveryHold(cfg *config.Config) CheckResult {
 	const name = "recovery_hold"
 	res := CheckResult{Name: name, Category: "config", Status: "pass"}
+	if _, statErr := os.Stat(cfg.EvidenceDBPath()); os.IsNotExist(statErr) {
+		res.Message = "No recovery hold (no evidence store yet)."
+		return res
+	}
 	store, err := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
 		res.Status, res.Message = "warn", fmt.Sprintf("the recovery state could not be read: %v", err)
@@ -501,7 +544,7 @@ func checkRecoveryHold(cfg *config.Config) CheckResult {
 	if len(holds) > 0 {
 		h := holds[0]
 		res.Status = "fail"
-		res.Message = fmt.Sprintf("RECOVERY HOLD: this installation runs on backup %s, taken %s, and has not been resumed. No governed action is dispatched: every Action Gateway claim is refused (recovery_hold). The hold does not cover LLM gateway requests or MCP proxy tool calls; those are served.", h.BackupID, h.BackupCreatedAt.UTC().Format(time.RFC3339))
+		res.Message = fmt.Sprintf("RECOVERY HOLD: this installation runs on backup %s, taken %s, and has not been resumed. No governed action is dispatched: every Action Gateway claim is refused (recovery_hold). The hold covers every governed action, over HTTP and MCP; LLM gateway requests are not held and are served.", h.BackupID, h.BackupCreatedAt.UTC().Format(time.RFC3339))
 		res.Fix = "Reconcile with the downstream systems, then: talon backup resume (lists what was open), talon backup resume --reconciled [--hold-operation <operation_id>]..."
 		return res
 	}
@@ -607,23 +650,18 @@ func checkCache(cfg *config.Config) CheckResult {
 			}
 		}
 	}
+	// Read-only (#575): the directory is not created and nothing is written.
 	cacheDir := filepath.Dir(cfg.CacheDBPath())
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
-		return CheckResult{
-			Name: "cache", Category: "config", Status: "fail",
-			Message: fmt.Sprintf("Cache path directory %s: %v", cacheDir, err),
-			Fix:     "Ensure data_dir is writable or create the cache directory",
-		}
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		return creatableDir("cache", cacheDir, "talon creates it when the cache first stores an entry")
 	}
-	testPath := filepath.Join(cacheDir, ".doctor-cache-write-test")
-	if err := os.WriteFile(testPath, []byte("ok"), 0o600); err != nil {
+	if err := mayWrite(cacheDir); err != nil {
 		return CheckResult{
 			Name: "cache", Category: "config", Status: "fail",
 			Message: fmt.Sprintf("Cache path not writable: %s — %v", cfg.CacheDBPath(), err),
 			Fix:     "Ensure data_dir is writable",
 		}
 	}
-	_ = os.Remove(testPath)
 	return CheckResult{
 		Name: "cache", Category: "config", Status: "pass",
 		Message: fmt.Sprintf("%s (enabled, writable)", cfg.CacheDBPath()),
@@ -689,11 +727,17 @@ func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string
 	if unknownErr := policy.ValidateNoUnknownFields(cfg.DefaultPolicy); unknownErr != nil {
 		return pol.Agent.Name, pol.Agent.Key.SecretName, unknownErr
 	}
-	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	if secErr != nil {
+	// Read-only (#575): the dry-run reads each key like serve does, but
+	// through a mode=ro connection — no access-log row, no counter, no file
+	// created. A missing vault is a nil vault: the dry-run then names the
+	// key that is not stored.
+	secStore, secErr := openReadOnlyVault(cfg)
+	if secErr != nil && !errors.Is(secErr, secrets.ErrVaultAbsent) {
 		return pol.Agent.Name, pol.Agent.Key.SecretName, fmt.Errorf("cannot open secrets vault: %w", secErr)
 	}
-	defer secStore.Close()
+	if secStore != nil {
+		defer secStore.Close()
+	}
 	// The dry-run uses the SAME policy → agent adapter as serve startup
 	// (agentbridge.LoadedAgentFromPolicy), so the FULL identity — including
 	// the policy override, whose semantic validation (egress rule shape,
@@ -723,11 +767,13 @@ func gatewayIdentityPreflightDir(ctx context.Context, cfg *config.Config) (agent
 		return "", "", fmt.Errorf("no %s found under agents_dir %s — gateway mode requires at least one keyed agent (#267)", agentcatalog.AgentConfigFilename, cfg.AgentsDir)
 	}
 	fleet := fmt.Sprintf("%d agent(s) under %s", len(scan.Agents), cfg.AgentsDir)
-	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	if secErr != nil {
+	secStore, secErr := openReadOnlyVault(cfg)
+	if secErr != nil && !errors.Is(secErr, secrets.ErrVaultAbsent) {
 		return fleet, "", fmt.Errorf("cannot open secrets vault: %w", secErr)
 	}
-	defer secStore.Close()
+	if secStore != nil {
+		defer secStore.Close()
+	}
 	if _, err := gateway.BuildIdentityRegistry(ctx, scan.LoadedAgents(), secStore, os.Getenv("TALON_ADMIN_KEY")); err != nil {
 		return fleet, "", fmt.Errorf("identity registry dry-run failed: %w", err)
 	}
@@ -747,7 +793,10 @@ func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
 		fix := "Create agent.talon.yaml with agent.key.secret_name and mint the key: talon secrets set <name> <key>"
 		switch {
 		case secretName != "":
-			fix = fmt.Sprintf("Run: talon secrets set %s <agent-key>", secretName)
+			fix = unprintableNameFix
+			if w, ok := shellWord(secretName); ok {
+				fix = fmt.Sprintf("Run: talon secrets set %s <agent-key>", w)
+			}
 		case dirMode:
 			fix = "Fix the file named in the error: every agent.talon.yaml under agents_dir must validate, carry a unique agent.name, and bind a minted key (talon secrets set <name> <key>)"
 		}
@@ -800,23 +849,32 @@ func checkGatewaySecrets(ctx context.Context, gwCfg *gateway.GatewayConfig) []Ch
 	if err != nil {
 		return results
 	}
-	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
-	if secErr != nil {
-		return results
+	secStore, secErr := openReadOnlyVault(cfg)
+	if secStore != nil {
+		defer secStore.Close()
 	}
-	defer secStore.Close()
 
 	for name := range gwCfg.Providers {
 		prov := gwCfg.Providers[name]
 		if !prov.Enabled || prov.SecretName == "" {
 			continue
 		}
-		_, getErr := secStore.Get(ctx, prov.SecretName, "default", "*")
+		getErr := secErr
+		if secStore != nil {
+			_, getErr = secStore.Get(ctx, prov.SecretName, "default", "*")
+		}
 		if getErr != nil {
+			msg, fix := secretProblem(getErr, prov.SecretName, "default", "*")
+			if errors.Is(getErr, secrets.ErrSecretNotFound) || errors.Is(getErr, secrets.ErrVaultAbsent) {
+				fix = unprintableNameFix
+				if w, ok := shellWord(prov.SecretName); ok {
+					fix = fmt.Sprintf("Store the provider key (the value on stdin): printf '%%s' \"$PROVIDER_KEY\" | talon secrets set %s", w)
+				}
+			}
 			results = append(results, CheckResult{
 				Name: "gateway_secrets_" + name, Category: "gateway", Status: "fail",
-				Message: fmt.Sprintf("Secret %q not found for provider %s", prov.SecretName, name),
-				Fix:     fmt.Sprintf("Run: talon secrets set %s <your-api-key>", prov.SecretName),
+				Message: fmt.Sprintf("Provider %s: %s", name, msg),
+				Fix:     fix,
 			})
 		} else {
 			results = append(results, CheckResult{
@@ -836,7 +894,7 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 	if reqErr != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_" + name, Category: "gateway", Status: "fail",
-			Message: fmt.Sprintf("Invalid URL: %v", reqErr),
+			Message: "base_url is not a valid URL (its value is not shown: it can carry a credential)",
 		}}
 	}
 	start := time.Now()
@@ -846,7 +904,7 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 	if err != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_" + name, Category: "gateway", Status: "fail",
-			Message: fmt.Sprintf("Connection failed: %v", err),
+			Message: fmt.Sprintf("Connection to %s failed: %s", endpointForDisplay(baseURL), transportProblem(err)),
 			Fix:     "Check network connectivity and provider base_url",
 		}}
 	}
@@ -854,7 +912,7 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 
 	results = append(results, CheckResult{
 		Name: "gateway_upstream_" + name, Category: "gateway", Status: "pass",
-		Message: fmt.Sprintf("%s — %dms", baseURL, latency.Milliseconds()),
+		Message: fmt.Sprintf("%s — %dms", endpointForDisplay(baseURL), latency.Milliseconds()),
 	})
 
 	if latency > 2*time.Second {
@@ -878,13 +936,25 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 	return results
 }
 
+// endpointForDisplay is the scheme://host of a configured URL. Userinfo, path
+// and query can carry a credential and are never printed; the HTTP client's
+// error text embeds the URL, so failures are described by transportProblem
+// (the Console shows configured URLs as scheme://host too).
+func endpointForDisplay(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "the configured base_url"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 func checkModelsEndpoint(ctx context.Context, client *http.Client, name, baseURL string) []CheckResult {
 	modelsURL := baseURL + "/v1/models"
 	modelsReq, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if reqErr != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_models_" + name, Category: "gateway", Status: "fail",
-			Message: fmt.Sprintf("invalid models URL %s: %v", modelsURL, reqErr),
+			Message: fmt.Sprintf("invalid models URL for %s", endpointForDisplay(baseURL)),
 			Fix:     "Check base_url in gateway provider config",
 		}}
 	}
@@ -892,7 +962,7 @@ func checkModelsEndpoint(ctx context.Context, client *http.Client, name, baseURL
 	if modelsErr != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_models_" + name, Category: "gateway", Status: "warn",
-			Message: fmt.Sprintf("GET %s failed: %v", modelsURL, modelsErr),
+			Message: fmt.Sprintf("GET %s/v1/models failed: %s", endpointForDisplay(baseURL), transportProblem(modelsErr)),
 			Fix:     "Verify base_url points to an OpenAI-compatible API",
 		}}
 	}
@@ -914,30 +984,25 @@ func checkSystem() []CheckResult {
 		return results
 	}
 
+	// Read-only (#575): space and permission are asked of the filesystem
+	// (statfs(2), access(2)); the evidence store is opened read-only — never
+	// created or migrated here.
 	evDir := filepath.Dir(cfg.EvidenceDBPath())
 	if info, statErr := os.Stat(evDir); statErr == nil && info.IsDir() {
-		testPath := filepath.Join(evDir, ".doctor-space-test")
-		data := make([]byte, 1024)
-		if writeErr := os.WriteFile(testPath, data, 0o600); writeErr != nil {
-			results = append(results, CheckResult{
-				Name: "disk_space", Category: "system", Status: "warn",
-				Message: "Cannot write test file to evidence directory",
-			})
-		} else {
-			_ = os.Remove(testPath)
-			results = append(results, CheckResult{
-				Name: "disk_space", Category: "system", Status: "pass",
-				Message: evDir,
-			})
-		}
+		results = append(results, diskSpace(evDir))
 	}
 
-	store, storeErr := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	if _, statErr := os.Stat(cfg.EvidenceDBPath()); statErr != nil {
+		return results
+	}
+	store, storeErr := evidence.OpenReadOnly(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if storeErr == nil {
 		defer store.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		count, countErr := store.CountInRange(ctx, "", "", time.Time{}, time.Time{})
+		// All records of every tenant (CountInRange filters one tenant;
+		// with "" it counted only records without a tenant: always 0).
+		count, _, countErr := store.Stats(ctx)
 		if countErr == nil {
 			fi, _ := os.Stat(cfg.EvidenceDBPath())
 			sizeStr := "unknown"
@@ -1111,4 +1176,54 @@ func checkAirGapEgressGuardFromGateway(gwCfg *gateway.GatewayConfig, gatewayConf
 		}
 	}
 	return checkAirGapEgressGuard(cfg, gwCfg)
+}
+
+// creatableDir reports a directory talon creates on first use: doctor does
+// not create it, it checks that the nearest existing ancestor would let
+// talon do so (access(2), nothing written).
+func creatableDir(name, dir, when string) CheckResult {
+	parent := filepath.Dir(dir)
+	for {
+		if fi, err := os.Stat(parent); err == nil && fi.IsDir() {
+			break
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			break
+		}
+		parent = next
+	}
+	if err := mayWrite(parent); err != nil {
+		return CheckResult{
+			Name: name, Category: "config", Status: "fail",
+			Message: fmt.Sprintf("%s does not exist and cannot be created: %s is not writable — %v", dir, parent, err),
+			Fix:     "Create the directory, or make " + parent + " writable by the user that runs talon",
+		}
+	}
+	return CheckResult{
+		Name: name, Category: "config", Status: "pass",
+		Message: fmt.Sprintf("%s does not exist yet (%s; %s is writable)", dir, when, parent),
+	}
+}
+
+// minFreeBytes is the space below which evidence writes are at risk.
+const minFreeBytes = 500 << 20
+
+// diskSpace reports the free space and writability of the evidence
+// directory without writing to it.
+func diskSpace(dir string) CheckResult {
+	free, err := freeBytes(dir)
+	switch {
+	case err != nil:
+		return CheckResult{Name: "disk_space", Category: "system", Status: "warn", Message: fmt.Sprintf("%s: free space unknown — %v", dir, err)}
+	case mayWrite(dir) != nil:
+		return CheckResult{Name: "disk_space", Category: "system", Status: "warn", Message: fmt.Sprintf("%s is not writable by this user", dir)}
+	case free < minFreeBytes:
+		return CheckResult{
+			Name: "disk_space", Category: "system", Status: "warn",
+			Message: fmt.Sprintf("%s: only %.0f MB free", dir, float64(free)/(1<<20)),
+			Fix:     "Free space on the evidence volume: evidence and the action ledger are written transactionally and refuse when the disk is full",
+		}
+	}
+	return CheckResult{Name: "disk_space", Category: "system", Status: "pass", Message: fmt.Sprintf("%s — %.1f GB free", dir, float64(free)/(1<<30))}
 }

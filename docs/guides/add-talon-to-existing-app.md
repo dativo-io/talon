@@ -285,6 +285,25 @@ customer-support       enabled   loaded         4m ago         $0.0000 / $500.00
 hr-copilot             enabled   loaded         9s ago         $0.0000 / $500.00      —
 ```
 
+## When it does not work: `talon doctor`
+
+This section describes `talon doctor` since v1.18. In v1.17.0 and earlier, doctor does not have the per-use-case checks below and is not read-only: for example, in a directory without an installation it creates `data/evidence.db`.
+
+Run `talon doctor` in the installation's directory, with the same environment as Talon (`set -a; . ./talon.env; set +a`). It reads only: it writes no file, creates no directory or store, changes no stored record, secret or schema, and prints no key or secret value (reading a store that is in SQLite's WAL mode lets SQLite itself create its `-shm` index file, which holds no data). It names the three failures a new installation meets first, each with its own fix:
+
+| What doctor reports | What it means | Fix |
+|---|---|---|
+| `config_load` fails: `permission denied` / `While parsing config: … line N` | `talon.config.yaml` exists but cannot be read or parsed. Every `talon` command refuses it with the same cause; nothing falls back to defaults | make it readable by the user that runs Talon (`chmod 600`, its owner) or fix the YAML line |
+| `use_case_key:<name>` fails: `not in the vault` | that application has no stored key | For a **new** secret, store the intended application key: `printf '%s' "$KEY" \| talon secrets set <secret> --tenant <tenant> --agent <name>` |
+| `use_case_key:<name>` fails: `ACL does not allow` | the secret **exists**, but its permissions or the use-case identity do not match | Review the secret ACL and intended tenant/use-case binding with an authorized operator. **Do not run `talon secrets set` to bypass this:** it overwrites the existing secret and its ACL, potentially affecting another application |
+| `use_case_key:<name>` fails: `empty` | the stored key is empty | Have an authorized operator replace the empty key and update the consuming application consistently; treat this as a deliberate credential rotation |
+| `secrets_key_decrypts_vault` fails, `use_case_key:*` / `gateway_secrets_*` say `cannot be decrypted` | `TALON_SECRETS_KEY` is not the key the vault was created with (a different `talon.env`) | restore the original `TALON_SECRETS_KEY`. Do **not** set the secrets again: that replaces them |
+| `gateway_secrets_<provider>` fails: `not in the vault` | the provider key was never stored | `printf '%s' "$PROVIDER_KEY" \| talon secrets set <secret_name>` |
+| `gateway_upstream_<provider>` fails: `connection refused` / timeout | the provider `base_url` cannot be reached from this host | fix `base_url`, DNS or the egress path |
+| `action_source:<name>/<source>` fails | a declared MCP action source cannot be discovered; `talon serve` does not start while it is unreachable | start the MCP server or correct `actions.sources.<source>.url` and its credential |
+
+`talon doctor --skip-upstream` skips the network checks (provider endpoints and MCP sources).
+
 ## Day two
 
 [Operate AI use cases](operate-ai-use-cases.md) answers the questions that come next: why an application is blocked, how to stop one safely, how to replace a compromised key, what to do after an interrupted registration, and where the same facts are in the console.
