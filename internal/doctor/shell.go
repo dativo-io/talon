@@ -1,0 +1,47 @@
+package doctor
+
+import (
+	"fmt"
+	"strings"
+	"unicode"
+)
+
+// shellWord renders a configured value as one POSIX shell word for a
+// copy-paste remediation command, so the value never becomes shell syntax:
+// agent.key.secret_name and a provider's secret_name accept any non-empty
+// string. A value made only of characters no shell treats specially is
+// printed as it is; anything else is single-quoted, an embedded ' written as
+// '\”. ok is false for a value with a control or format character (an escape
+// sequence, a newline, a bidi override): printed raw it would also reach the
+// terminal, so the caller prints no command for it (unprintableNameFix).
+func shellWord(s string) (word string, ok bool) {
+	if strings.IndexFunc(s, func(r rune) bool { return !unicode.IsGraphic(r) }) >= 0 {
+		return "", false
+	}
+	if s != "" && strings.IndexFunc(s, func(r rune) bool { return !shellPlain(r) }) < 0 {
+		return s, true
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'", true
+}
+
+// shellPlain reports a character no POSIX shell treats specially anywhere in
+// an argument word.
+func shellPlain(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./:@%+=,", r)
+}
+
+// unprintableNameFix replaces a remediation command whose secret name cannot
+// be printed safely; the message beside it shows the name escaped.
+const unprintableNameFix = "The configured secret name contains control or format characters (shown escaped above): correct secret_name in the file, then run talon doctor again"
+
+// storeKeyCommand is the copy-paste command that stores a use case's key,
+// read from the environment variable env, scoped to tenant and agent.
+func storeKeyCommand(env, name, tenant, agent string) (string, bool) {
+	n, ok1 := shellWord(name)
+	tn, ok2 := shellWord(tenant)
+	ag, ok3 := shellWord(agent)
+	if !ok1 || !ok2 || !ok3 {
+		return "", false
+	}
+	return fmt.Sprintf("printf '%%s' \"$%s\" | talon secrets set %s --tenant %s --agent %s", env, n, tn, ag), true
+}

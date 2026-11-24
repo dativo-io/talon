@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -518,4 +519,33 @@ func TestReadOnlyVault_SameAnswersNoWrites(t *testing.T) {
 	logged, counted := accessFacts()
 	assert.Equal(t, loggedBefore, logged, "no access-log row")
 	assert.Equal(t, countedBefore, counted, "no access counter")
+}
+
+// Review finding (#592, 2026-11-23): a damaged nonce must not crash the
+// reader. AES-GCM's Open panics on a nonce of the wrong length; a vault row
+// with one is an undecryptable secret (as VerifyFile already treats it).
+func TestReadOnlyVault_MalformedNonceIsUndecryptableNotAPanic(t *testing.T) {
+	ctx := context.Background()
+	const key = "0123456789abcdef0123456789abcdef"
+	path := filepath.Join(t.TempDir(), "secrets.db")
+	store, err := NewSecretStore(path, key)
+	require.NoError(t, err)
+	require.NoError(t, store.Set(ctx, "k1", []byte("v1"), ACL{}))
+	require.NoError(t, store.Close())
+	setNonce := func(raw []byte) {
+		db, err := sql.Open("sqlite3", path)
+		require.NoError(t, err)
+		defer db.Close()
+		_, err = db.ExecContext(ctx, `UPDATE secrets SET nonce = ? WHERE name = 'k1'`, base64.StdEncoding.EncodeToString(raw))
+		require.NoError(t, err)
+	}
+	for _, n := range []int{0, 5, 11, 13, 32} {
+		setNonce(make([]byte, n))
+		ro, err := OpenReadOnly(path, key)
+		require.NoError(t, err)
+		var getErr error
+		require.NotPanics(t, func() { _, getErr = ro.Get(ctx, "k1", "default", "bot") }, "nonce of %d bytes", n)
+		require.NoError(t, ro.Close())
+		assert.ErrorIs(t, getErr, ErrSecretUndecryptable, "nonce of %d bytes", n)
+	}
 }

@@ -122,6 +122,11 @@ func (v *ReadOnlyVault) Get(ctx context.Context, name, tenantID, agentID string)
 	if err != nil {
 		return nil, fmt.Errorf("decoding nonce: %w", err)
 	}
+	// AES-GCM's Open panics on a nonce of the wrong length: a damaged row is
+	// an undecryptable secret, never a crash (VerifyFile checks the same).
+	if len(nonce) != v.gcm.NonceSize() {
+		return nil, fmt.Errorf("decrypting secret: %w: the stored nonce is %d bytes, want %d (the entry is damaged)", ErrSecretUndecryptable, len(nonce), v.gcm.NonceSize())
+	}
 	plaintext, err := v.gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decrypting secret: %w: %w", ErrSecretUndecryptable, err)

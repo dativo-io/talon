@@ -90,18 +90,24 @@ func checkVaultKey(ctx context.Context, cfg *config.Config) CheckResult {
 // and how to fix that cause — never by printing a value, and never advising
 // a re-set for a secret that exists but does not decrypt.
 func secretProblem(err error, name, tenantID, agentID string) (msg, fix string) {
-	setCmd := fmt.Sprintf("printf '%%s' \"$VALUE\" | talon secrets set %s --tenant %s --agent %s", name, tenantID, agentID)
+	setCmd, printable := storeKeyCommand("VALUE", name, tenantID, agentID)
+	store := func(lead string) string {
+		if !printable {
+			return unprintableNameFix
+		}
+		return lead + setCmd
+	}
 	switch {
 	case errors.Is(err, secrets.ErrVaultAbsent):
-		return fmt.Sprintf("secret %q is not stored: no secrets vault exists yet", name), "Store it: " + setCmd
+		return fmt.Sprintf("secret %q is not stored: no secrets vault exists yet", name), store("Store it: ")
 	case errors.Is(err, secrets.ErrSecretNotFound):
-		return fmt.Sprintf("secret %q is not in the vault", name), "Store it (or correct the name in the file): " + setCmd
+		return fmt.Sprintf("secret %q is not in the vault", name), store("Store it (or correct the name in the file): ")
 	case errors.Is(err, secrets.ErrSecretAccessDenied):
 		return fmt.Sprintf("secret %q exists but its ACL does not allow tenant %q, agent %q", name, tenantID, agentID),
 			"Review the stored secret ACL and the intended tenant/use-case binding. Have an authorized operator correct the ACL or binding; do not re-set the secret to bypass an access denial: setting it again replaces both its value and its ACL"
 	case errors.Is(err, secrets.ErrSecretUndecryptable):
-		return fmt.Sprintf("secret %q exists but cannot be decrypted with TALON_SECRETS_KEY (it was stored under another key)", name),
-			"Restore the original TALON_SECRETS_KEY; do not re-set the secret (that replaces it)"
+		return fmt.Sprintf("secret %q exists but cannot be decrypted with TALON_SECRETS_KEY (it was stored under another key, or the entry is damaged)", name),
+			"Restore the original TALON_SECRETS_KEY; do not re-set the secret (that replaces it). If the key is right, the entry is damaged: restore the vault from a backup"
 	default:
 		return fmt.Sprintf("secret %q cannot be read: %v", name, err), "Check the vault file and TALON_SECRETS_KEY"
 	}
@@ -179,7 +185,11 @@ func checkUseCaseKeys(ctx context.Context, cfg *config.Config) []CheckResult {
 			msg, fix := secretProblem(getErr, secretName, tenant, a.Name)
 			out = append(out, CheckResult{Name: name, Category: "use_cases", Status: "fail", Message: a.Name + ": key " + msg, Fix: fix})
 		case empty:
-			out = append(out, CheckResult{Name: name, Category: "use_cases", Status: "fail", Message: fmt.Sprintf("%s: key secret %q is empty", a.Name, secretName), Fix: "Replace it: printf '%s' \"$NEW_KEY\" | talon secrets set " + secretName + " --tenant " + tenant + " --agent " + a.Name})
+			fix := unprintableNameFix
+			if cmd, ok := storeKeyCommand("NEW_KEY", secretName, tenant, a.Name); ok {
+				fix = "Replace it: " + cmd
+			}
+			out = append(out, CheckResult{Name: name, Category: "use_cases", Status: "fail", Message: fmt.Sprintf("%s: key secret %q is empty", a.Name, secretName), Fix: fix})
 		default:
 			out = append(out, CheckResult{Name: name, Category: "use_cases", Status: "pass", Message: fmt.Sprintf("%s (tenant %s): key secret %q resolves (value not shown)", a.Name, tenant, secretName)})
 		}

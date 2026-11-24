@@ -26,7 +26,8 @@ For user-facing entries, include:
   - `evidence_stats` counts every record (it filtered an empty tenant and reported 0 for every real installation).
   - The recovery-hold message no longer mentions the removed MCP proxy.
   - How to verify: `go test ./internal/doctor/ ./internal/secrets/ ./internal/config/`, `go test -tags e2e ./tests/e2e -run TestE2E_Doctor_OnboardingFailureModes` (two use cases registered with `talon agents add`; each failure mode on the binary; no key printed; the installation's whole tree unchanged), `TestE2E_Doctor_FreshInstallationStaysEmpty`. Guide: [When it does not work](docs/guides/add-talon-to-existing-app.md#when-it-does-not-work-talon-doctor).
-  - Discovery failures are described from typed facts (transport error, HTTP status, JSON-RPC code and category, contract violation): the source's own error text and headers are never printed — they could echo the credential doctor presented.
+  - Discovery failures are described from typed facts (connection refused, timeout, DNS, HTTP status, JSON-RPC code and category, contract violation): the source's URL, its own error text and its headers are never printed — a URL can carry a credential in its query, and a response could echo the credential doctor presented.
+  - Every `talon secrets set` command doctor prints renders the configured names as single POSIX shell words (`agent.key.secret_name` accepts any string), so pasting a fix never runs part of a name as a command; a name with a control or format character gets no command, only the escaped name. A damaged vault entry (a nonce of the wrong length) is reported as undecryptable instead of crashing doctor.
   - Upgrade impact: a `talon.config.yaml` that cannot be read or parsed — or a file named with `--config` that does not exist — now stops every `talon` command with the cause instead of being ignored. `gateway.BuildIdentityRegistry` takes a `KeyVault` interface (`*secrets.SecretStore` still satisfies it).
 
 ### Fixed

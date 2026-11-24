@@ -793,7 +793,10 @@ func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
 		fix := "Create agent.talon.yaml with agent.key.secret_name and mint the key: talon secrets set <name> <key>"
 		switch {
 		case secretName != "":
-			fix = fmt.Sprintf("Run: talon secrets set %s <agent-key>", secretName)
+			fix = unprintableNameFix
+			if w, ok := shellWord(secretName); ok {
+				fix = fmt.Sprintf("Run: talon secrets set %s <agent-key>", w)
+			}
 		case dirMode:
 			fix = "Fix the file named in the error: every agent.talon.yaml under agents_dir must validate, carry a unique agent.name, and bind a minted key (talon secrets set <name> <key>)"
 		}
@@ -863,7 +866,10 @@ func checkGatewaySecrets(ctx context.Context, gwCfg *gateway.GatewayConfig) []Ch
 		if getErr != nil {
 			msg, fix := secretProblem(getErr, prov.SecretName, "default", "*")
 			if errors.Is(getErr, secrets.ErrSecretNotFound) || errors.Is(getErr, secrets.ErrVaultAbsent) {
-				fix = fmt.Sprintf("Store the provider key (the value on stdin): printf '%%s' \"$PROVIDER_KEY\" | talon secrets set %s", prov.SecretName)
+				fix = unprintableNameFix
+				if w, ok := shellWord(prov.SecretName); ok {
+					fix = fmt.Sprintf("Store the provider key (the value on stdin): printf '%%s' \"$PROVIDER_KEY\" | talon secrets set %s", w)
+				}
 			}
 			results = append(results, CheckResult{
 				Name: "gateway_secrets_" + name, Category: "gateway", Status: "fail",

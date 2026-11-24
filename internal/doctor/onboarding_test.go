@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/secrets"
 )
 
@@ -594,3 +596,125 @@ type timeoutErr struct{}
 func (timeoutErr) Error() string   { return "i/o timeout" }
 func (timeoutErr) Timeout() bool   { return true }
 func (timeoutErr) Temporary() bool { return true }
+
+// Review finding (#592, 2026-11-23): a remediation command must never turn a
+// configured value into shell syntax. agent.key.secret_name and a provider's
+// secret_name accept any non-empty string, so every interpolated value is
+// rendered by shellWord. Proof by a real POSIX shell: the word parses back to
+// exactly the value, and the canary commands inside the value never run.
+var adversarialNames = []string{
+	"plain-name_1.2",
+	"two words",
+	"x; touch pwned",
+	"$(touch pwned)",
+	"`touch pwned`",
+	"x && touch pwned || touch pwned",
+	"x | touch pwned > pwned",
+	"it's",
+	`back\slash "dq" $HOME *`,
+	"ключ",
+	"-leading-dash",
+}
+
+func shellOrSkip(t *testing.T) string {
+	t.Helper()
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no POSIX sh on PATH")
+	}
+	return sh
+}
+
+func TestShellWord_ParsesBackToTheValueAndRunsNothing(t *testing.T) {
+	sh := shellOrSkip(t)
+	for _, v := range adversarialNames {
+		dir := t.TempDir()
+		w, ok := shellWord(v)
+		require.True(t, ok, "%q", v)
+		cmd := exec.CommandContext(t.Context(), sh, "-c", "printf '%s' "+w)
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		require.NoError(t, err, "%q -> %s", v, w)
+		assert.Equal(t, v, string(out), "the shell reads back exactly the value")
+		assert.NoFileExists(t, filepath.Join(dir, "pwned"), "nothing in %q ran", v)
+	}
+	w, _ := shellWord("plain-name_1.2")
+	assert.Equal(t, "plain-name_1.2", w, "an ordinary name stays readable")
+	w, _ = shellWord("")
+	assert.Equal(t, "''", w)
+	// A value with a control or format character (an escape sequence, a
+	// newline, a bidi override, a tab) is never rendered: raw, it would also
+	// reach the terminal.
+	for _, v := range []string{"a\nb", "\x1b[31mred", "x\u202ey", "tab\there"} {
+		_, ok := shellWord(v)
+		assert.False(t, ok, "%q", v)
+	}
+}
+
+// The doctor's own fix text, end to end: the generated `talon secrets set`
+// command is run by sh with `talon` replaced by a function printing its
+// argv. The secret name is exactly one argument; the canaries never run.
+func TestCheckUseCaseKeys_FixCommandsKeepSecretNameOneShellWord(t *testing.T) {
+	sh := shellOrSkip(t)
+	argv := func(t *testing.T, fix string) []string {
+		t.Helper()
+		i := strings.Index(fix, "printf '%s'")
+		require.GreaterOrEqual(t, i, 0, "a runnable command: %s", fix)
+		dir := t.TempDir()
+		cmd := exec.CommandContext(t.Context(), sh, "-c", `talon() { for a; do printf '%s\n' "[$a]"; done; }; `+fix[i:])
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		require.NoError(t, err, fix)
+		assert.NoFileExists(t, filepath.Join(dir, "pwned"), "nothing in the secret name ran: %s", fix)
+		var args []string
+		for _, l := range strings.Split(strings.TrimSuffix(string(out), "\n"), "\n") {
+			args = append(args, strings.TrimSuffix(strings.TrimPrefix(l, "["), "]"))
+		}
+		return args
+	}
+	t.Run("a name with an escape sequence gets no command at all", func(t *testing.T) {
+		cfg, agentsDir := onboardingFleet(t)
+		p := filepath.Join(agentsDir, "hr-copilot", "agent.talon.yaml")
+		require.NoError(t, os.WriteFile(p, []byte("agent:\n  name: hr-copilot\n  version: \"1.0.0\"\n  key:\n    secret_name: \"key\\x1b[31mred\"\npolicies:\n  cost_limits: {}\n"), 0o600))
+		got := byName(checkUseCaseKeys(context.Background(), cfg))["use_case_key:hr-copilot"]
+		require.Equal(t, "fail", got.Status, got.Message)
+		assert.Equal(t, unprintableNameFix, got.Fix)
+		assert.NotContains(t, got.Message+got.Fix, "\x1b", "no raw escape byte reaches the terminal")
+		assert.Contains(t, got.Message, `\x1b[31mred`, "the message shows the name escaped")
+	})
+	for _, name := range adversarialNames {
+		if strings.HasPrefix(name, "-") {
+			continue // a flag to the CLI, not a shell problem
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg, agentsDir := onboardingFleet(t)
+			p := filepath.Join(agentsDir, "hr-copilot", "agent.talon.yaml")
+			yamlName := "'" + strings.ReplaceAll(name, "'", "''") + "'"
+			require.NoError(t, os.WriteFile(p, []byte("agent:\n  name: hr-copilot\n  version: \"1.0.0\"\n  key:\n    secret_name: "+yamlName+"\npolicies:\n  cost_limits: {}\n"), 0o600))
+			storeSecret(t, cfg, "customer-support-talon-key", keySupport, secrets.ACL{})
+
+			missing := byName(checkUseCaseKeys(context.Background(), cfg))["use_case_key:hr-copilot"]
+			require.Equal(t, "fail", missing.Status, missing.Message)
+			assert.Equal(t, []string{"secrets", "set", name, "--tenant", "default", "--agent", "hr-copilot"}, argv(t, missing.Fix))
+
+			storeSecret(t, cfg, name, "", secrets.ACL{})
+			empty := byName(checkUseCaseKeys(context.Background(), cfg))["use_case_key:hr-copilot"]
+			require.Equal(t, "fail", empty.Status, empty.Message)
+			require.Contains(t, empty.Message, "empty")
+			assert.Equal(t, []string{"secrets", "set", name, "--tenant", "default", "--agent", "hr-copilot"}, argv(t, empty.Fix))
+		})
+	}
+}
+
+// The two older fixes that print a secret name use the same rendering.
+func TestGatewayFixes_QuoteTheSecretName(t *testing.T) {
+	const name = "openai key; touch pwned"
+	_, _ = onboardingFleet(t)
+	res := checkGatewaySecrets(context.Background(), &gateway.GatewayConfig{Providers: map[string]gateway.ProviderConfig{
+		"openai": {Enabled: true, SecretName: name},
+	}})
+	require.Len(t, res, 1)
+	w, _ := shellWord(name)
+	assert.Contains(t, res[0].Fix, "talon secrets set "+w)
+	assert.NotContains(t, res[0].Fix, "set "+name)
+}
