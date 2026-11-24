@@ -912,8 +912,8 @@ func commitResume(ctx context.Context, out io.Writer, evStore *evidence.Store, o
 		}
 		reasons := []string{"backups: " + strings.Join(backups, "; "), fmt.Sprintf("open operations in the backup: %d", openCount), "held operation ids: " + strings.Join(backupResumeHoldOps, ","), fmt.Sprintf("configuration changed since the backup: %t", drift)}
 		return w.Store(ctx, tx, &evidence.Evidence{
-			ID: id, CorrelationID: id, Timestamp: time.Now().UTC(), TenantID: "system", AgentID: "talon-backup",
-			InvocationType: "recovery_resumed", RequestSourceID: operatorID(),
+			ID: id, CorrelationID: id, Timestamp: time.Now().UTC(), TenantID: evidence.InstallationTenantID, AgentID: "talon-backup",
+			InvocationType: evidence.InvocationTypeRecoveryResumed, RequestSourceID: operatorID(),
 			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "recovery_resumed", Reasons: reasons},
 		})
 	})

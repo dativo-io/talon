@@ -1249,16 +1249,34 @@ func (s *Store) Get(ctx context.Context, id string) (*Evidence, error) {
 
 // List returns evidence records matching the given filters.
 func (s *Store) List(ctx context.Context, tenantID, agentID string, from, to time.Time, limit int) ([]Evidence, error) {
+	return s.list(ctx, tenantID, agentID, from, to, limit, false)
+}
+
+// ListActivity is List without installation events (IsInstallationEvent):
+// the records of tenants' traffic, actions and operator changes, for views
+// that present what AI use cases did (#593).
+func (s *Store) ListActivity(ctx context.Context, tenantID, agentID string, from, to time.Time, limit int) ([]Evidence, error) {
+	return s.list(ctx, tenantID, agentID, from, to, limit, true)
+}
+
+func (s *Store) list(ctx context.Context, tenantID, agentID string, from, to time.Time, limit int, activityOnly bool) ([]Evidence, error) {
 	ctx, span := tracer.Start(ctx, "evidence.list",
 		trace.WithAttributes(
 			attribute.String("tenant_id", tenantID),
 			attribute.String("agent_id", agentID),
+			attribute.Bool("activity_only", activityOnly),
 		))
 	defer span.End()
 
 	query := `SELECT evidence_json FROM evidence WHERE 1=1`
 	args := []interface{}{}
 
+	if activityOnly {
+		pred, predArgs := installationEventSQL()
+		//nolint:gosec // G202: installationEventSQL is built from internal constants only
+		query += ` AND NOT ` + pred
+		args = append(args, predArgs...)
+	}
 	if tenantID != "" {
 		query += ` AND tenant_id = ?`
 		args = append(args, tenantID)
@@ -1447,6 +1465,56 @@ func (s *Store) CountInRange(ctx context.Context, tenantID, agentID string, from
 		return 0, fmt.Errorf("counting evidence: %w", err)
 	}
 	return n, nil
+}
+
+// ListActivityTenantIDs returns the distinct tenant IDs with at least one
+// record that is not an installation event (IsInstallationEvent): the
+// tenants whose traffic, actions or operator changes were recorded (#593).
+// The installation namespace appears only when a tenant of that name has
+// activity of its own.
+func (s *Store) ListActivityTenantIDs(ctx context.Context) ([]string, error) {
+	pred, args := installationEventSQL()
+	//nolint:gosec // G202: installationEventSQL is built from internal constants only
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT tenant_id FROM evidence WHERE NOT `+pred+` ORDER BY tenant_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing tenant IDs with activity: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("listing tenant IDs with activity: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ListInstallationEvents returns the newest installation events (newest
+// first, at most limit): configuration reloads, recovery resumes and legacy
+// mode changes, as signed (#593).
+func (s *Store) ListInstallationEvents(ctx context.Context, limit int) ([]Evidence, error) {
+	pred, args := installationEventSQL()
+	//nolint:gosec // G202: installationEventSQL is built from internal constants only
+	rows, err := s.db.QueryContext(ctx, `SELECT evidence_json FROM evidence WHERE `+pred+` ORDER BY timestamp DESC, id DESC LIMIT ?`, append(args, limit)...)
+	if err != nil {
+		return nil, fmt.Errorf("listing installation events: %w", err)
+	}
+	defer rows.Close()
+	var out []Evidence
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("listing installation events: %w", err)
+		}
+		var ev Evidence
+		if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+			return nil, fmt.Errorf("listing installation events: %w", err)
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
 }
 
 // ListTenantIDs returns distinct tenant IDs that have evidence in the half-open time range [from, to).

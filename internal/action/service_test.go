@@ -792,12 +792,113 @@ func TestPayload_SealedAtRest(t *testing.T) {
 	require.Equal(t, OpAuthorized, p.Status)
 	require.Equal(t, 0, p.AttemptCount)
 
-	// Tampered ciphertext: authentication fails closed.
-	_, err = h.store.DB().ExecContext(ctx, `UPDATE action_payloads SET ciphertext = X'00' || substr(ciphertext, 2) WHERE operation_ref = ?`, res2.Operation.OperationRef)
-	require.NoError(t, err)
+	// Tampered ciphertext: authentication fails closed, nothing is claimed
+	// or dispatched.
+	corruptCiphertext(t, h, res2.Operation.OperationRef)
 	_, err = h.svc.Execute(ctx, "op-key")
 	require.Equal(t, CodePayloadUnavailable, CodeOf(err))
+	require.Equal(t, int64(1), h.down.calls.Load(), "no dispatch for a tampered payload")
+	p, _ = h.svc.Get(ctx, "op-key")
+	require.Equal(t, OpAuthorized, p.Status)
+	require.Equal(t, 0, p.AttemptCount)
+}
+
+// corruptCiphertext changes the stored ciphertext of an operation's payload
+// in place and proves it changed. It flips every bit of the first byte
+// (XOR 0xFF), which always alters it. The fixture it replaces wrote 0x00
+// over that byte: AES-GCM output is uniformly random, so about one run in
+// 256 the byte already was 0x00, nothing changed, the authentic payload
+// opened and was dispatched — the v1.17.0-rc.4 release failure.
+func corruptCiphertext(t *testing.T, h *harness, opRef string) {
+	t.Helper()
+	ctx := context.Background()
+	var ct []byte
+	require.NoError(t, h.store.DB().QueryRowContext(ctx, `SELECT ciphertext FROM action_payloads WHERE operation_ref = ?`, opRef).Scan(&ct))
+	require.NotEmpty(t, ct, "the payload must be sealed to be tampered with")
+	tampered := append([]byte(nil), ct...)
+	tampered[0] ^= 0xFF
+	_, err := h.store.DB().ExecContext(ctx, `UPDATE action_payloads SET ciphertext = ? WHERE operation_ref = ?`, tampered, opRef)
+	require.NoError(t, err)
+	var stored []byte
+	require.NoError(t, h.store.DB().QueryRowContext(ctx, `SELECT ciphertext FROM action_payloads WHERE operation_ref = ?`, opRef).Scan(&stored))
+	require.Equal(t, tampered, stored)
+	require.NotEqual(t, ct, stored, "the ciphertext must actually change")
+}
+
+// The rc.4 case, made deterministic: a validly sealed payload whose first
+// ciphertext byte is 0x00. Corrupting it fails closed with no claim and no
+// dispatch; the same payload, untouched, is authentic and dispatches once.
+func TestPayload_TamperFailsClosedWhenTheFirstCiphertextByteIsZero(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	res := h.establish(t, "op-zero", "notify_customer", `{"ticket_id":"z"}`)
+	ref := res.Operation.OperationRef
+	db := h.store.DB()
+	var nonce, ct []byte
+	var digest string
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT nonce, ciphertext FROM action_payloads WHERE operation_ref = ?`, ref).Scan(&nonce, &ct))
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT digest FROM action_operations WHERE ref = ?`, ref).Scan(&digest))
+	pt, err := h.cryptor.open(ref, digest, nonce, ct)
+	require.NoError(t, err)
+	// Re-seal the same payload until its first ciphertext byte is 0x00 (about
+	// 256 tries; the bound only guards against an endless loop).
+	for i := 0; ct[0] != 0x00; i++ {
+		require.Less(t, i, 1<<16)
+		nonce, ct, err = h.cryptor.seal(ref, digest, pt)
+		require.NoError(t, err)
+	}
+	_, err = db.ExecContext(ctx, `UPDATE action_payloads SET nonce = ?, ciphertext = ? WHERE operation_ref = ?`, nonce, ct, ref)
+	require.NoError(t, err)
+
+	corruptCiphertext(t, h, ref)
+	_, err = h.svc.Execute(ctx, "op-zero")
+	require.Equal(t, CodePayloadUnavailable, CodeOf(err))
+	require.Zero(t, h.down.calls.Load(), "a tampered payload is never dispatched")
+	op, err := h.svc.Get(ctx, "op-zero")
+	require.NoError(t, err)
+	require.Equal(t, OpAuthorized, op.Status)
+	require.Equal(t, 0, op.AttemptCount)
+
+	// Control: the authentic zero-first-byte payload opens and dispatches.
+	_, err = db.ExecContext(ctx, `UPDATE action_payloads SET ciphertext = ? WHERE operation_ref = ?`, ct, ref)
+	require.NoError(t, err)
+	exec, err := h.svc.Execute(ctx, "op-zero")
+	require.NoError(t, err)
+	require.Equal(t, OpSucceeded, exec.Operation.Status)
 	require.Equal(t, int64(1), h.down.calls.Load())
+}
+
+// Any single changed byte of the nonce or the ciphertext (which carries the
+// GCM tag) fails authentication with ErrPayloadUnavailable.
+func TestPayloadCryptor_AnyChangedByteFailsAuthentication(t *testing.T) {
+	c, err := NewPayloadCryptor(testVaultKey)
+	require.NoError(t, err)
+	const ref, digest = "opref-1", "sha256:abc"
+	nonce, ct, err := c.seal(ref, digest, []byte(`{"ticket_id":"t"}`))
+	require.NoError(t, err)
+	_, err = c.open(ref, digest, nonce, ct)
+	require.NoError(t, err)
+	for _, field := range []struct {
+		name string
+		buf  []byte
+	}{{"nonce", nonce}, {"ciphertext", ct}} {
+		for i := range field.buf {
+			for _, mask := range []byte{0x01, 0x80, 0xFF} {
+				n, x := append([]byte(nil), nonce...), append([]byte(nil), ct...)
+				if field.name == "nonce" {
+					n[i] ^= mask
+				} else {
+					x[i] ^= mask
+				}
+				_, err := c.open(ref, digest, n, x)
+				require.ErrorIs(t, err, ErrPayloadUnavailable, "%s byte %d mask %#x", field.name, i, mask)
+			}
+		}
+	}
+	_, err = c.open(ref, "sha256:other", nonce, ct)
+	require.ErrorIs(t, err, ErrPayloadUnavailable, "the payload is bound to its operation digest")
+	_, err = c.open("opref-2", digest, nonce, ct)
+	require.ErrorIs(t, err, ErrPayloadUnavailable, "the payload is bound to its operation")
 }
 
 // plaintextProbe builds a per-table LIKE clause over every column for the
