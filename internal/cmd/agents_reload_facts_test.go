@@ -118,7 +118,7 @@ func TestAgentsAdd_StatesTheRunningProcessReloadFacts(t *testing.T) {
 
 		out = add(t, cfg, "hr-copilot")
 		require.Contains(t, out, "Not active. The running Talon process rejected the last change to the fleet and keeps serving the previous one. "+blocking)
-		require.Contains(t, out, "Fix that; the next re-scan (every 2s, agents_reload_interval) loads the current files.")
+		require.Contains(t, out, "Fix that; the next re-scan (every 2s, agents_reload_interval) loads changed files, and a fix that leaves them unchanged, such as a key stored in the vault, is picked up within 30s.")
 		require.LessOrEqual(t, strings.Count(out, "\n"), 30, "the registration output stays short:\n%s", out)
 		next = show(t, cfg, "hr-copilot")
 		require.Contains(t, next, "Status      Not active")

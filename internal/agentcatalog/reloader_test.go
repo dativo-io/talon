@@ -216,9 +216,9 @@ func TestReloader_UnchangedIsFree(t *testing.T) {
 // due, a tick whose raw bytes equal the active generation's ends before any
 // file is parsed. Every other branch keeps its semantics: changed bytes are
 // parsed and validated; an invalid file keeps last-known-good and is
-// recorded once per distinct broken state, yet re-evaluated on every tick
-// (something other than the bytes, a key minted in the vault, can cure it);
-// a reverted edit recovers without a swap.
+// recorded once per distinct broken state, and its unchanged bytes wait for
+// their re-scan (TestReloader_RejectedBytesRescanOnABackoff); a reverted
+// edit recovers without a swap.
 func TestReloader_UnchangedPassParsesNothing(t *testing.T) {
 	ctx := context.Background()
 	f := newReloadFixture(t, true)
@@ -250,18 +250,18 @@ func TestReloader_UnchangedPassParsesNothing(t *testing.T) {
 			assert.Contains(t, st.RejectedCauses[0], path, "the rejection names the file")
 			assert.Contains(t, st.RejectedCauses[0], "montly", "validation ran on the changed bytes")
 		}},
-		{name: "a broken state is re-evaluated every tick, recorded once", want: ReloadRejectedDuplicate, scans: 2, rows: 1},
-		{name: "the revert is recognised from the bytes alone", edit: write(original), want: ReloadRecovered, scans: 2, rows: 1, check: func(t *testing.T) {
+		{name: "the same broken bytes wait for their re-scan, recorded once", want: ReloadRejectedDuplicate, scans: 1, rows: 1},
+		{name: "the revert is recognised from the bytes alone", edit: write(original), want: ReloadRecovered, scans: 1, rows: 1, check: func(t *testing.T) {
 			assert.Same(t, boot, f.holder.Current(), "recovery is bookkeeping, not a new generation")
 			assert.False(t, f.reloader.State().Rejected)
 		}},
-		{name: "unchanged after recovery", want: ReloadUnchanged, scans: 2, rows: 1},
-		{name: "a valid edit is parsed and activated", edit: func() { f.writeAgentVersion(t, "support", "support-key", true, "2.0.0") }, want: ReloadActivated, scans: 3, rows: 2, check: func(t *testing.T) {
+		{name: "unchanged after recovery", want: ReloadUnchanged, scans: 1, rows: 1},
+		{name: "a valid edit is parsed and activated", edit: func() { f.writeAgentVersion(t, "support", "support-key", true, "2.0.0") }, want: ReloadActivated, scans: 2, rows: 2, check: func(t *testing.T) {
 			ra, ok := f.holder.Current().Get("support")
 			require.True(t, ok)
 			assert.Equal(t, "2.0.0", ra.Policy.Agent.Version, "the activated generation carries the parsed edit")
 		}},
-		{name: "unchanged after activation", want: ReloadUnchanged, scans: 3, rows: 2},
+		{name: "unchanged after activation", want: ReloadUnchanged, scans: 2, rows: 2},
 	}
 	for i, st := range steps {
 		if st.edit != nil {
@@ -293,6 +293,93 @@ func TestReloader_BytesRevertedDuringThePassStayUnchanged(t *testing.T) {
 	assert.Equal(t, calls, f.fake.calls.Load(), "no refresh was due: nothing is discovered")
 	assert.Same(t, boot, f.holder.Current())
 	assert.Empty(t, f.reloadRows(t))
+}
+
+// TestReloader_RejectedBytesRescanOnABackoff (#575): while the same broken
+// bytes stay on disk, the full scan runs one interval after the rejection,
+// then at doubling waits up to max(30s, interval), not on every tick. A cure
+// outside the files (a key stored in the vault) is picked up at the next
+// re-scan, within 30s; any byte change is scanned at the very next tick and
+// starts the backoff again; a revert recovers without a scan. Last-known-good
+// keeps serving and each distinct broken state has one record.
+func TestReloader_RejectedBytesRescanOnABackoff(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+	start := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	var at time.Duration // time since start, moved by tick
+	f.reloader = NewReloader(ReloadConfig{
+		Source: f.source, Vault: f.vault, Holder: f.holder, Evidence: f.evStore, RequireNonEmpty: true,
+		Clock: func() time.Time { return start.Add(at) },
+	})
+	f.reloader.interval = 2 * time.Second // what Run sets
+	tick := func(t *testing.T, when time.Duration, want ReloadOutcome) bool {
+		t.Helper()
+		at = when
+		scans := f.source.scans.Load()
+		require.Equal(t, want, f.reloader.ReloadOnce(ctx), "tick at %s", when)
+		return f.source.scans.Load() > scans
+	}
+	// scannedTicks ticks every 2s over (from, to] and returns the ticks that
+	// ran a full scan.
+	scannedTicks := func(t *testing.T, from, to time.Duration, want ReloadOutcome) []time.Duration {
+		t.Helper()
+		var scanned []time.Duration
+		for when := from + 2*time.Second; when <= to; when += 2 * time.Second {
+			if tick(t, when, want) {
+				scanned = append(scanned, when)
+			}
+		}
+		return scanned
+	}
+	s := time.Second
+	boot := f.holder.Current()
+
+	// A use case whose key was never stored: the build is refused.
+	f.writeAgent(t, "coding", "coding-key", true)
+	require.True(t, tick(t, 0, ReloadRejected))
+	assert.Equal(t, []time.Duration{2 * s, 6 * s, 14 * s}, scannedTicks(t, 0, 14*s, ReloadRejectedDuplicate), "re-scans at doubling waits, not every tick")
+
+	// The key is stored without touching a file: picked up at the next
+	// re-scan (30s), not before, and never later than 30s after the cure.
+	require.NoError(t, f.vault.Set(ctx, "coding-key", []byte("tk-coding"), secrets.ACL{}))
+	assert.Empty(t, scannedTicks(t, 14*s, 28*s, ReloadRejectedDuplicate))
+	assert.Same(t, boot, f.holder.Current(), "last-known-good keeps serving")
+	require.True(t, tick(t, 30*s, ReloadActivated))
+	_, resolved := f.holder.Current().Registry.ResolveKey("tk-coding")
+	assert.True(t, resolved, "the cure through the vault activated")
+	activated := f.holder.Current()
+
+	// A broken edit: scanned at once; then waits that double up to 30s and
+	// stay there.
+	path := filepath.Join(f.agentsDir, "support", "agent.talon.yaml")
+	original, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("agent:\n  name: support\n  version: \"1.0.0\"\n  typo_one: 1\n"), 0o600))
+	require.True(t, tick(t, 32*s, ReloadRejected))
+	assert.Equal(t, []time.Duration{34 * s, 38 * s, 46 * s, 62 * s, 92 * s, 122 * s}, scannedTicks(t, 32*s, 122*s, ReloadRejectedDuplicate), "the wait is capped at 30s")
+
+	// Another broken edit: a byte change is scanned at the very next tick,
+	// recorded as its own broken state, and starts the backoff again.
+	require.NoError(t, os.WriteFile(path, []byte("agent:\n  name: support\n  version: \"1.0.0\"\n  typo_two: 1\n"), 0o600))
+	require.True(t, tick(t, 124*s, ReloadRejected))
+	require.True(t, tick(t, 126*s, ReloadRejectedDuplicate), "one interval after the new state")
+	require.False(t, tick(t, 128*s, ReloadRejectedDuplicate))
+
+	// The revert recovers from the bytes alone, without a scan.
+	require.NoError(t, os.WriteFile(path, original, 0o600))
+	require.False(t, tick(t, 130*s, ReloadRecovered))
+	assert.Same(t, activated, f.holder.Current())
+	assert.False(t, f.reloader.State().Rejected)
+
+	rows := f.reloadRows(t)
+	allowed := 0
+	for i := range rows {
+		if rows[i].PolicyDecision.Allowed {
+			allowed++
+		}
+	}
+	assert.Len(t, rows, 4, "three distinct broken states and one activation, one record each")
+	assert.Equal(t, 1, allowed)
 }
 
 func TestReloader_ActivatesValidEdit(t *testing.T) {

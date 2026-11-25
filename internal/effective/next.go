@@ -3,6 +3,7 @@ package effective
 import (
 	"strings"
 
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/runtimestatus"
 )
 
@@ -189,13 +190,25 @@ func notServingStep(loaded runtimestatus.Loaded, rt runtimeFacts, name string, e
 	case len(rt.reload.RejectedCauses) > 0:
 		// Activation stays blocked for the whole fleet until a re-scan
 		// validates: name what blocks it, as the process recorded it.
-		return NextStep{NextFixReload, "The running Talon process rejected the last change to the fleet and keeps serving the previous one. Blocking: " + strings.Join(rt.reload.RejectedCauses, "; ") + ". Fix that; the next re-scan (" + rt.reload.Setting() + ") loads the current files.", []string{"talon validate"}}
+		return NextStep{NextFixReload, "The running Talon process rejected the last change to the fleet and keeps serving the previous one. Blocking: " + strings.Join(rt.reload.RejectedCauses, "; ") + ". Fix that; " + RescanAfterFix(rt.reload) + ".", []string{"talon validate"}}
 	case rt.known && rt.running && rt.reload.Disabled:
 		return NextStep{Code: NextRestartRuntime, Text: "A Talon process is running, but it does not re-scan agents_dir (agents_reload_interval is \"0\"): it loads this use case only when it starts. Restart `talon serve`, then look again."}
 	case rt.known && rt.running:
 		return NextStep{NextWaitReload, "A Talon process is running and has not loaded the current version of this use case yet. It re-scans agents_dir periodically (" + rt.reload.Setting() + ") and loads it then, without a restart: look again in a moment. If it stays like this, check the fleet.", []string{"talon validate"}}
 	}
 	return NextStep{Code: NextCheckRuntime, Text: "Whether a Talon process serves this use case is not known here: this installation's runtime records could not be read. Look from the host that runs `talon serve`, with the installation's keys."}
+}
+
+// RescanAfterFix says when a running process loads the fix of a rejected
+// re-scan, from what it reports (#575): a changed file at its next re-scan;
+// a fix that leaves the files unchanged, such as a key stored in the vault,
+// when it next re-checks the rejected bytes, which a process that reports
+// its interval does within agentcatalog.RejectedRescanCeiling.
+func RescanAfterFix(f runtimestatus.ReloadFacts) string {
+	if f.Every <= 0 || f.Unreported {
+		return "the next re-scan (" + f.Setting() + ") loads the current files"
+	}
+	return "the next re-scan (" + f.Setting() + ") loads changed files, and a fix that leaves them unchanged, such as a key stored in the vault, is picked up within " + agentcatalog.RejectedRescanCeiling(f.Every).String()
 }
 
 func lowerFirst(s string) string {

@@ -33,6 +33,8 @@ const (
 	ReloadRejected
 	// ReloadRejectedDuplicate: the same broken state as the previous pass —
 	// no new evidence row (one record per distinct broken state, not per tick).
+	// Also the outcome of a tick that finds the same broken bytes before
+	// their re-scan is due (#575).
 	ReloadRejectedDuplicate
 	// ReloadRecovered: the bytes reverted to the last-known-good generation
 	// while a rejection was active — the rejection clears without a swap.
@@ -140,6 +142,9 @@ type Reloader struct {
 	lastGood    string     // generation id of the active snapshot
 	lastScan    string     // scan digest of the active snapshot (config change detector)
 	activatedAt time.Time
+	// interval is the cadence Run ticks at, the first wait before the bytes
+	// of a config rejection are scanned again (#575). Zero until Run starts.
+	interval time.Duration
 	// refreshKnown/refreshAt pace the re-discovery of trusted action
 	// sources (#427): due when the earliest upstream freshness hint of the
 	// active generation expires (floored/capped), or after a bounded
@@ -168,6 +173,13 @@ type rejectionState struct {
 	causes     []string
 	issues     []FleetIssue
 	sourceOnly bool
+	// scanDigest, backoff and rescanAt pace the full re-scan of the bytes a
+	// config rejection was decided on (#575, paceRescan). Empty scanDigest
+	// (a source-only rejection, a rolled-back activation, a scan that failed
+	// before it hashed anything) is never waited out.
+	scanDigest string
+	backoff    time.Duration
+	rescanAt   time.Time
 }
 
 // Source refresh pacing.
@@ -176,6 +188,22 @@ const (
 	maxSourceRefresh   = action.MaxSourceTTL
 	sourceRetryBackoff = 30 * time.Second
 )
+
+// Re-scan pacing of a persisting config rejection (#575): the first wait
+// when the tick interval is not known, and the longest wait unless the
+// interval is longer (RejectedRescanCeiling).
+const (
+	minRejectedRescan = time.Second
+	maxRejectedRescan = 30 * time.Second
+)
+
+// RejectedRescanCeiling is the longest a running reloader ticking at
+// interval waits before it scans unchanged rejected bytes again (#575):
+// a fix that leaves the files unchanged, such as a key stored in the vault,
+// is picked up within it.
+func RejectedRescanCeiling(interval time.Duration) time.Duration {
+	return max(maxRejectedRescan, interval)
+}
 
 // NewReloader seeds the last-known-good generation from the holder's current
 // snapshot (the boot generation).
@@ -236,6 +264,9 @@ func (r *Reloader) scheduleRefresh(snap *RuntimeSnapshot) {
 
 // Run ticks ReloadOnce every interval until ctx is done.
 func (r *Reloader) Run(ctx context.Context, interval time.Duration) {
+	r.mu.Lock()
+	r.interval = interval
+	r.mu.Unlock()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -302,9 +333,11 @@ func (r *Reloader) View() FleetView {
 //
 // A tick with no refresh due first compares the raw-bytes digest alone
 // (#575): equal bytes end the pass before any file is parsed, so the
-// interval costs a walk and a hash, not a strict load of every file. Any
-// difference, or a digest that cannot be computed, runs the full scan,
-// which decides everything below exactly as before.
+// interval costs a walk and a hash, not a strict load of every file. The
+// same holds for the very bytes the active config rejection was decided on
+// until their re-scan is due (paceRescan). Any other difference, or a
+// digest that cannot be computed, runs the full scan, which decides
+// everything below exactly as before.
 func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -317,8 +350,13 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	now := r.now()
 	refreshDue := r.refreshKnown && !now.Before(r.refreshAt)
 	if !refreshDue {
-		if digest, err := r.cfg.Source.Digest(ctx); err == nil && digest == r.lastScan {
-			return r.unchanged()
+		if digest, err := r.cfg.Source.Digest(ctx); err == nil {
+			if digest == r.lastScan {
+				return r.unchanged()
+			}
+			if outcome, waiting := r.awaitingRescan(digest, now); waiting {
+				return outcome
+			}
 		}
 	}
 
@@ -413,6 +451,54 @@ func (r *Reloader) scanRejection(scan *ScanResult, scanErr error, sourceOnly boo
 	return nil, false
 }
 
+// paceRescan schedules the next full scan of the bytes a config rejection
+// was decided on (#575). Scanning them on every tick would only repeat the
+// rejection, at the cost of a strict load of every file. Something other
+// than the bytes can cure it (a key stored in the vault), so they are still
+// scanned again: one interval after the rejection, then at doubling waits
+// up to RejectedRescanCeiling, the cadence of the former 30s default. A
+// change of the bytes is scanned at the next tick regardless (the digest
+// differs), and a due source refresh scans too.
+func (r *Reloader) paceRescan(rej, prev *rejectionState, now time.Time) {
+	base := r.interval
+	if base <= 0 {
+		base = minRejectedRescan
+	}
+	rej.scanDigest = rej.digest
+	rej.backoff = base
+	if prev != nil && prev.key == rej.key && prev.backoff > 0 {
+		rej.backoff = min(2*prev.backoff, RejectedRescanCeiling(base))
+	}
+	rej.rescanAt = now.Add(rej.backoff)
+	// A source refresh cannot be served from rejected bytes: their candidate
+	// is refused before it could refresh anything. It waits for the next
+	// re-scan instead of forcing a full scan (and discovery) on every tick.
+	if r.refreshKnown && r.refreshAt.Before(rej.rescanAt) {
+		r.refreshAt = rej.rescanAt
+	}
+}
+
+// awaitingRescan answers a tick that finds the very bytes the active config
+// rejection was decided on, before their re-scan is due (#575): nothing is
+// scanned, the rejection stays as observed, and the outcome is the one a
+// scan of those bytes reports (a duplicate once its record persisted;
+// rejected while the record is still owed and retried by flushUnrecorded).
+func (r *Reloader) awaitingRescan(digest string, now time.Time) (ReloadOutcome, bool) {
+	rej := r.rejection
+	if rej == nil || rej.scanDigest == "" || digest != rej.scanDigest || !now.Before(rej.rescanAt) {
+		return 0, false
+	}
+	if _, done := r.recorded[rej.key]; done {
+		return ReloadRejectedDuplicate, true
+	}
+	if _, pending := r.unrecorded[rej.key]; pending {
+		return ReloadRejected, true
+	}
+	// Owed a record again (the dedup memory overflowed): the full pass
+	// writes it.
+	return 0, false
+}
+
 // unchanged ends a pass whose bytes equal the active generation's, with no
 // source refresh due. It clears an active CONFIG rejection when the operator
 // reverted the broken edit (explicit outcome, #267 review); a source-only
@@ -457,11 +543,16 @@ func (r *Reloader) reject(ctx context.Context, scan *ScanResult, causes []string
 	// Preserve the incident-start time across polls of the SAME continuous broken
 	// state: RejectedAt marks WHEN the incident began, not the last poll, so the
 	// attention queue can order incidents by onset (#300 review round 6, P2).
-	at := r.now()
-	if r.rejection != nil && r.rejection.key == key {
-		at = r.rejection.at
+	now := r.now()
+	at := now
+	prev := r.rejection
+	if prev != nil && prev.key == key {
+		at = prev.at
 	}
 	rej := &rejectionState{key: key, digest: digest, at: at, causes: causes, issues: append([]FleetIssue(nil), scan.Issues...), sourceOnly: sourceOnly}
+	if !sourceOnly && digest != "" {
+		r.paceRescan(rej, prev, now)
+	}
 	r.rejection = rej // current observed state (for View)
 
 	if _, done := r.recorded[key]; done {

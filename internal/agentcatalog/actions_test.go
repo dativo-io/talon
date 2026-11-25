@@ -395,6 +395,52 @@ func TestReloader_SourceFailureKeepsLastKnownGood(t *testing.T) {
 	assert.Len(t, f.reloadRows(t), 2)
 }
 
+// TestReloader_RejectedBytesDeferTheSourceRefresh (#575): the candidate of a
+// config rejection is refused before it could refresh any source, so once
+// the active generation's refresh falls due it waits for the next re-scan of
+// the rejected bytes instead of forcing a full scan and a discovery on every
+// tick. The re-scan that finds the source reachable again activates.
+func TestReloader_RejectedBytesDeferTheSourceRefresh(t *testing.T) {
+	f := newSourceReloadFixture(t)
+	ctx := context.Background()
+	f.reloader.interval = 2 * time.Second // what Run sets
+	boot := f.holder.Current()
+	require.Equal(t, f.now.Add(60*time.Second), *f.reloader.State().NextSourceRefresh)
+
+	// A config edit whose build needs the source, which is down: the bytes
+	// changed, so this is a config rejection, not a source-only one.
+	f.fake.set("", errors.New("refunds: connection refused"))
+	writeActionsAgent(t, f.agentsDir, "refunder", discoveredActions("ticket_id")+"        non_material: [amount]\n")
+	calls := f.fake.calls.Load()
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	require.False(t, f.reloader.State().SourcesRejected)
+
+	// Two minutes of 2s ticks; the boot generation's refresh is due at 60s.
+	var scannedAt []time.Duration
+	for elapsed := 2 * time.Second; elapsed <= 120*time.Second; elapsed += 2 * time.Second {
+		f.advance(2 * time.Second)
+		if elapsed == 100*time.Second {
+			f.fake.set("", nil) // the source is reachable again
+		}
+		scans := f.source.scans.Load()
+		out := f.reloader.ReloadOnce(ctx)
+		if f.source.scans.Load() > scans {
+			scannedAt = append(scannedAt, elapsed)
+		}
+		if elapsed < 120*time.Second {
+			require.Equal(t, ReloadRejectedDuplicate, out, "at %s", elapsed)
+			require.Same(t, boot, f.holder.Current(), "last-known-good keeps serving")
+		} else {
+			require.Equal(t, ReloadActivated, out, "the re-scan after the cure activates")
+		}
+	}
+	s := time.Second
+	assert.Equal(t, []time.Duration{2 * s, 6 * s, 14 * s, 30 * s, 60 * s, 90 * s, 120 * s}, scannedAt, "a due refresh waits for the next re-scan")
+	assert.Equal(t, int64(1+len(scannedAt)), f.fake.calls.Load()-calls, "one discovery per scan (the rejection and each re-scan), none per tick")
+	assert.False(t, f.reloader.State().Rejected)
+	assert.Len(t, f.reloadRows(t), 2, "one rejection, one activation")
+}
+
 func TestReloader_ConfigEditWithSourcesActivatesImmediately(t *testing.T) {
 	f := newSourceReloadFixture(t)
 	ctx := context.Background()

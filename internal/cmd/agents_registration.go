@@ -20,6 +20,7 @@ import (
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/effective"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
@@ -804,7 +805,7 @@ func fleetActivation(cfg *config.Config) string {
 	f := runtimestatus.ReloadFactsOf(v, "")
 	switch {
 	case len(f.RejectedCauses) > 0:
-		return "a Talon process is running, but it rejected the last change to the fleet and keeps serving the previous one, so this use case is not active. Blocking: " + strings.Join(f.RejectedCauses, "; ") + ". Fix that; the next re-scan (" + f.Setting() + ") loads the current files."
+		return "a Talon process is running, but it rejected the last change to the fleet and keeps serving the previous one, so this use case is not active. Blocking: " + strings.Join(f.RejectedCauses, "; ") + ". Fix that; " + effective.RescanAfterFix(f) + "."
 	case f.Disabled:
 		return "a Talon process is running, but it does not re-scan agents_dir (agents_reload_interval is \"0\"): it loads this use case only when it starts. Restart `talon serve`."
 	}
