@@ -100,7 +100,7 @@ talonctl agents add support-assistant --tenant acme --owner support-ops@acme.exa
 ```
 
 The command:
-- reports the **company policy the file declares** and, separately, whether a running gateway has loaded it. It refuses when no organization policy is configured, unless you pass `--no-company-policy` on purpose. Before Talon is started it reads `NOT PROVEN ACTIVE`; after step 4's start, `talonctl agents show support-assistant --effective` shows what the running process loaded;
+- reports the **company policy the file declares** and, separately, whether a running gateway has loaded it. It refuses when no organization policy is configured, unless you pass `--no-company-policy` on purpose. Before Talon is started it reads `Not active`; after step 4's start, `talonctl agents show support-assistant --effective` shows what the running process loaded;
 - writes `/etc/talon/agents/support-assistant/agent.talon.yaml` with only the use case's identity and key binding, so every policy is the company's;
 - prints the use case's **key once**: put it into your application's secret manager now.
 
@@ -237,7 +237,7 @@ talonctl ui pair                         # a fresh code, printed to the same log
 sudo systemctl stop talon-ui             # when you are done
 ```
 
-Open `http://127.0.0.1:8787/` on the host (or through an SSH tunnel: `ssh -L 8787:127.0.0.1:8787 <host>`), enter the code. The browser gets a read-only session; no admin, agent, vault or provider key reaches it. The six pages (Overview, AI Use Cases, Sessions, Costs, Configuration, System) show what is configured, which processes run and what Talon decided, and the evidence page checks each record's signature. [Operations console](operations-console.md).
+Open `http://127.0.0.1:8787/` on the host (or through an SSH tunnel: `ssh -L 8787:127.0.0.1:8787 <host>`), enter the code. The browser gets a read-only session; no admin, agent, vault or provider key reaches it. The seven pages (Overview, AI Use Cases, Approvals, Sessions, Costs, Configuration, System) show what is configured, which processes run and what Talon decided, and the evidence page checks each record's signature. [Operations console](operations-console.md).
 
 A valid signature proves the record is unchanged since Talon signed it. It does not prove anything Talon did not see.
 
@@ -274,7 +274,7 @@ Record PASS, FAIL or NOT RUN for each item, with the command output and the rele
 | # | Criterion | How to check | Result |
 |---|---|---|---|
 | 1 | Installed from a published artifact, no source build | `verify-release.sh --tag vX.Y.Z` → `PASS`; `talon version` shows `Talon X.Y.Z` and the same commit | |
-| 2 | The released console opens and pairs | pairing code from `talon ui serve`; the six pages load; the System page shows the running process | |
+| 2 | The released console opens and pairs | pairing code from `talon ui serve`; the seven pages load; the System page shows the running process | |
 | 3 | An existing AI use case is registered and connected | `talon agents add` reports your company policy; the application's first request appears in `talon audit list` under that use case | |
 | 4 | Company policy applies to one consequential action | `talon actions show <action>` shows the company band; a PII request is blocked with `pii_policy_violation` | |
 | 5 | Allow, approval and deny work against your real destination | three test requests; **count the calls on your destination system**: allow 1, approval 0 until approved then 1, deny 0 | |

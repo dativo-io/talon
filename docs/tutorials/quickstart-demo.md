@@ -27,6 +27,7 @@ In another terminal:
 
 ```bash
 curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Authorization: Bearer talon-demo-key" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
@@ -91,7 +92,7 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" 'http://localhost:8080/v1/evide
 curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/v1/costs | jq .
 ```
 
-Talon ships no browser dashboard; the CLI and these endpoints are the operator surface (the read-only console is tracked in [#533](https://github.com/dativo-io/talon/issues/533)).
+The same stack starts the read-only Operations Console at <http://127.0.0.1:8787/> (pairing code from `docker compose logs talon-ui`); the CLI and these endpoints show the same records.
 
 ## What you just proved
 

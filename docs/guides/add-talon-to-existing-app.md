@@ -38,13 +38,21 @@ Without `TALON_ADMIN_KEY`, `talon serve` runs in development mode and its admini
 
 ## Prerequisites
 
-- Talon installed ([installation](../../README.md#install)) on Linux or macOS. The commands below are the `talon` CLI; the same steps work with the published image by running them in the container.
-- A provider API key.
+- **Talon v1.17.0 or later** on Linux or macOS. On linux/amd64, the installer checks the release's published digests before it installs anything:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.17.0 sh
+  ```
+
+  Other platforms and the container image: [installation](../../README.md#install). The commands below are the `talon` CLI; the same steps work with the published image by running them in the container.
+- Your provider API key, in the environment variable `OPENAI_API_KEY` for step 1. It goes into Talon's encrypted vault; the application never holds it.
 - `openssl` (to generate keys).
+
+Talon keeps its state, the vault and the signed evidence, in `~/.talon`; set `TALON_DATA_DIR` to keep it elsewhere.
 
 ## 1. Prepare Talon (once)
 
-Create a directory, work from it for every command below, and generate the installation's three keys **into a file only you can read**:
+Work from one directory for every command below (for example `mkdir talon && cd talon`), and generate the installation's three keys **into a file only you can read**:
 
 <!-- onboarding-acceptance: keys -->
 ```bash
@@ -146,14 +154,16 @@ It refuses, without registering anything, when the company policy is missing (`-
 
 ## 3. Start Talon
 
-Start it bound to this machine only:
+Start it in this terminal, bound to this machine only, and leave it running:
 
 <!-- onboarding-acceptance: start -->
 ```bash
 talon serve --host 127.0.0.1 --port 8080 --gateway --gateway-config talon.config.yaml
 ```
 
-`--host 127.0.0.1` matters: without `--host`, `talon serve` listens on every network interface. The shell must have loaded `talon.env`, so the server starts with the admin key set. Check both facts before you connect anything:
+`--host 127.0.0.1` matters: without `--host`, `talon serve` listens on every network interface. The shell must have loaded `talon.env`: a server started without the admin key logs `TALON_ADMIN_KEY not set` first.
+
+Open a second terminal in the same directory, load `talon.env` there (`set -a; . ./talon.env; set +a`), and check both facts before you connect anything:
 
 <!-- onboarding-acceptance: check -->
 ```bash
@@ -174,14 +184,33 @@ A running `talon serve` re-scans `agents_dir` every `agents_reload_interval` (de
 - forward only what applications use: `/v1/proxy/` (and `/v1/action-operations` if you use the Action Gateway). Do **not** publish the administrative endpoints;
 - never publish Talon's port to the Internet directly.
 
+For example, with Caddy on the same host, which obtains the TLS certificate for the name:
+
+```text
+talon.example.com {
+    handle /v1/proxy/* {
+        reverse_proxy 127.0.0.1:8080
+    }
+    handle {
+        respond 404
+    }
+}
+```
+
+Through it, `curl -s -o /dev/null -w '%{http_code}\n' https://talon.example.com/v1/secrets` prints `404`: the administrative endpoints are not reachable.
+
 Talon keys and the admin key are bearer credentials: over plain HTTP on a network, anyone on the path can read them. The Operations Console has its own listener and its own rules ([console access](../reference/console-access.md)).
 
 ## 4. Point the application at Talon
 
-Two settings change in the application:
+Two settings change in the application, and nothing else:
 
-- **Base URL:** `<talon-url>/v1/proxy/<provider>/v1`. On the same machine that is `http://127.0.0.1:8080/v1/proxy/openai/v1`; from another machine it is the `https://` URL of the proxy in front of Talon.
-- **API key:** the application's **Talon key**. Talon identifies the use case by it and uses the provider key from its vault when forwarding.
+| Client | Base URL | API key |
+|---|---|---|
+| OpenAI SDKs and OpenAI-compatible clients, including [n8n](#n8n) | `<talon-url>/v1/proxy/openai/v1` | the application's **Talon key** |
+| Anthropic SDK | `<talon-url>/v1/proxy/anthropic` | the application's **Talon key** |
+
+On the same machine, `<talon-url>` is `http://127.0.0.1:8080`; from another machine it is the `https://` URL of the proxy in front of Talon. Talon identifies the use case by its key and uses the provider key from its vault when forwarding.
 
 Node.js (official `openai` package; the acceptance suite runs this client with version 7.59.0, see `tests/onboarding/client.mjs`):
 
@@ -216,7 +245,25 @@ res = client.chat.completions.create(
 
 A request Talon denies surfaces in the SDK as an API error: for example HTTP 400 with code `pii_policy_violation` when the company policy blocks personal data. A request with an unknown key is HTTP 401 and is never forwarded.
 
-Coding agents, the governed MCP endpoint (`POST /mcp`), the HTTP Action Gateway, n8n and OpenShell connect the same use case in other ways: [choosing an integration path](choosing-integration-path.md). Their guarantees differ; that page says how.
+### n8n
+
+n8n's AI nodes call the model through Talon with the same two settings, held in one credential. Verified with n8n 2.49.5 and Talon v1.17.0, stock nodes only:
+
+1. In n8n, add an **OpenAI** credential: **API Key** is the application's Talon key, **Base URL** is `<talon-url>/v1/proxy/openai/v1`. n8n tests a new credential by listing models (`GET /models`), which Talon does not serve, so it reports that it could not connect: save the credential anyway.
+2. In the **OpenAI Chat Model** node, choose that credential and set **Model** to **By ID** (for example `gpt-4o-mini`); the **From list** picker uses the same model listing.
+
+The **Basic LLM Chain** and **AI Agent** nodes then run through Talon, including tool calls, JSON output and streaming, with the node's **Use Responses API** setting on (its default) or off. Without an AI node, an **HTTP Request** node with a **Header Auth** credential (`Authorization` = `Bearer <Talon key>`) can `POST` to `<talon-url>/v1/proxy/openai/v1/chat/completions`.
+
+What n8n shows:
+
+- a request the company policy denies fails the node with **Bad request - please check your parameters**; the error details carry Talon's reason (for example `400 Request contains PII that is not allowed`), and nothing reached the provider;
+- a tool the company forbids (`forbidden_tools`) is removed from the request before the model sees it, so the agent runs without it.
+
+Keep every model in the workflow on the Talon credential, including an AI Agent's fallback model: a model on a provider credential bypasses Talon. If you enable n8n's SSRF protection (`N8N_SSRF_PROTECTION_ENABLED`), allow Talon's host with `N8N_SSRF_ALLOWED_HOSTNAMES`. n8n Cloud and n8n's queue mode are not covered here yet.
+
+### Other clients
+
+Coding agents, the governed MCP endpoint (`POST /mcp`), the HTTP Action Gateway (including governed n8n actions) and OpenShell connect the same use case in other ways: [choosing an integration path](choosing-integration-path.md). Their guarantees differ; that page says how.
 
 ## 5. Verify
 
@@ -233,16 +280,16 @@ tenant default · owner support-engineering · agents/customer-support/agent.tal
   Status      Working
   Configured  enabled
   Runtime     loaded by the running Talon process
-  Traffic     last request 12s ago · 2 in the last hour (1 denied)
+  Traffic     last request 1s ago · 1 in the last hour (0 denied)
   Policy      daily_cost 50 · monthly_cost 500 · pii_action block · forbidden_tools delete_*
               the newest authenticated request was evaluated under this policy
   Cost        $0.0000 / $500.00 this month · $0.0000 / $50.00 today
   Health      no budget, denial or failure signal
 
 Last request
-  2026-11-20 11:09:52Z · LLM gateway · denied by Talon, not dispatched
-  POLICY_DENIED_PII_INPUT: Request blocked because input PII was detected.
-  evidence gw_1a57c581-366 (signature valid) · session sess_gw_5d47fb3e-982
+  2026-11-24 22:57:43Z · LLM gateway · allowed by Talon, dispatched
+  POLICY_ALLOWED: Request allowed by policy.
+  evidence gw_23917447-f77 (signature valid) · session sess_gw_0da128ce-3bd
 
 Next
   Nothing to do: a running Talon process serves this use case, and the newest request was authenticated, verifies and was evaluated under the policy the current files compile to.
@@ -267,11 +314,14 @@ The view keeps four facts apart and never lets one stand for another: the file (
 
 ## 6. Connect the next application
 
+<!-- onboarding-acceptance: next -->
 ```bash
 talon agents add hr-copilot --owner people-ops --description "HR policy assistant"
 ```
 
-That is the whole step. Give the application its two settings and send a request. The second application gets its own identity, key, budget accounting and evidence, and runs under the same company policy: nothing is copied into its file, the company configuration is not touched, the running Talon loads it without a restart, and the first application keeps serving meanwhile.
+That is the whole step. The running Talon loads the new use case at its next re-scan of `agents_dir`, without a restart; the registration output says so. Until then the gateway refuses the new key exactly as it refuses an unknown one (`401`), so check with the same command as in step 5 before the first request: `talon agents show hr-copilot` reads **Waiting for its first request** once the use case is loaded.
+
+Then give the application its two settings and send a request. The second application gets its own identity, key, budget accounting and evidence, and runs under the same company policy: nothing is copied into its file, the company configuration is not touched, and the first application keeps serving meanwhile.
 
 See all of them at once:
 
@@ -284,6 +334,25 @@ USE CASE               STATE     RUNTIME        LAST REQUEST   COST THIS MONTH  
 customer-support       enabled   loaded         4m ago         $0.0000 / $500.00      —
 hr-copilot             enabled   loaded         9s ago         $0.0000 / $500.00      —
 ```
+
+## When it does not work: `talon doctor`
+
+This section describes `talon doctor` since v1.18. In v1.17.0 and earlier, doctor does not have the per-use-case checks below and is not read-only: for example, in a directory without an installation it creates `data/evidence.db`.
+
+Run `talon doctor` in the installation's directory, with the same environment as Talon (`set -a; . ./talon.env; set +a`). It reads only: it writes no file, creates no directory or store, changes no stored record, secret or schema, and prints no key or secret value (reading a store that is in SQLite's WAL mode lets SQLite itself create its `-shm` index file, which holds no data). It names the three failures a new installation meets first, each with its own fix:
+
+| What doctor reports | What it means | Fix |
+|---|---|---|
+| `config_load` fails: `permission denied` / `While parsing config: … line N` | `talon.config.yaml` exists but cannot be read or parsed. Every `talon` command refuses it with the same cause; nothing falls back to defaults | make it readable by the user that runs Talon (`chmod 600`, its owner) or fix the YAML line |
+| `use_case_key:<name>` fails: `not in the vault` | that application has no stored key | For a **new** secret, store the intended application key: `printf '%s' "$KEY" \| talon secrets set <secret> --tenant <tenant> --agent <name>` |
+| `use_case_key:<name>` fails: `ACL does not allow` | the secret **exists**, but its permissions or the use-case identity do not match | Review the secret ACL and intended tenant/use-case binding with an authorized operator. **Do not run `talon secrets set` to bypass this:** it overwrites the existing secret and its ACL, potentially affecting another application |
+| `use_case_key:<name>` fails: `empty` | the stored key is empty | Have an authorized operator replace the empty key and update the consuming application consistently; treat this as a deliberate credential rotation |
+| `secrets_key_decrypts_vault` fails, `use_case_key:*` / `gateway_secrets_*` say `cannot be decrypted` | `TALON_SECRETS_KEY` is not the key the vault was created with (a different `talon.env`) | restore the original `TALON_SECRETS_KEY`. Do **not** set the secrets again: that replaces them |
+| `gateway_secrets_<provider>` fails: `not in the vault` | the provider key was never stored | `printf '%s' "$PROVIDER_KEY" \| talon secrets set <secret_name>` |
+| `gateway_upstream_<provider>` fails: `connection refused` / timeout | the provider `base_url` cannot be reached from this host | fix `base_url`, DNS or the egress path |
+| `action_source:<name>/<source>` fails | a declared MCP action source cannot be discovered; `talon serve` does not start while it is unreachable | start the MCP server or correct `actions.sources.<source>.url` and its credential |
+
+`talon doctor --skip-upstream` skips the network checks (provider endpoints and MCP sources).
 
 ## Day two
 

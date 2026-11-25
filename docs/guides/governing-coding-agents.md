@@ -43,7 +43,7 @@ Talon sits between the fleet and both providers as a gateway. Every request carr
 
 ## Prerequisites
 
-- Talon installed (`go install github.com/dativo-io/talon/cmd/talon@latest` or `curl -sL https://install.gettalon.dev | sh`). macOS linker errors: `CC=/usr/bin/clang go install ...@latest`.
+- Talon installed (`go install github.com/dativo-io/talon/cmd/talon@latest` or `curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/main/scripts/install.sh | TALON_VERSION=v1.17.0 sh`). macOS linker errors: `CC=/usr/bin/clang go install ...@latest`.
 - Claude Code, Codex CLI, or any orchestrator/client that can set HTTP headers on its LLM requests.
 - Real Anthropic and OpenAI API keys (for governed traffic; the [demo](#6-run-the-offline-demo) needs none).
 
@@ -74,16 +74,19 @@ This creates `agent.talon.yaml`, `agents/codex/agent.talon.yaml`, `talon.config.
 
 ### 2. Store both provider keys and start the gateway
 
+First generate the installation's keys into a `0600` file and load it, exactly as in [step 1 of the onboarding guide](add-talon-to-existing-app.md#1-prepare-talon-once) (`talon.env` with `TALON_SECRETS_KEY`, `TALON_SIGNING_KEY` and `TALON_ADMIN_KEY`). Values go to the vault on stdin, never as a command-line argument:
+
 ```bash
-export TALON_SECRETS_KEY=$(openssl rand -hex 32)   # keep it; same value at serve time
-talon secrets set anthropic-api-key "sk-ant-..."
-talon secrets set openai-api-key "sk-..."
+set -a; . ./talon.env; set +a
+printf '%s' "$ANTHROPIC_API_KEY" | talon secrets set anthropic-api-key
+printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
 
-# Mint each tool's Talon agent key (bound via agent.key.secret_name)
-talon secrets set claude-code-talon-key "$(openssl rand -hex 24)"
-talon secrets set codex-talon-key       "$(openssl rand -hex 24)"
+# Mint each tool's Talon agent key (bound via agent.key.secret_name); each tool
+# is configured with its value below.
+CLAUDE_CODE_KEY=$(openssl rand -hex 24); printf '%s' "$CLAUDE_CODE_KEY" | talon secrets set claude-code-talon-key
+CODEX_KEY=$(openssl rand -hex 24);       printf '%s' "$CODEX_KEY" | talon secrets set codex-talon-key
 
-talon serve --gateway
+talon serve --host 127.0.0.1 --port 8080 --gateway
 ```
 
 Each tool authenticates with its **agent key**; Talon resolves the key to the agent, derives the tenant, and injects the real provider key upstream. For the Anthropic provider family, vault-stored keys are the **only** upstream auth mode — `upstream_auth_mode: client_bearer` is rejected at config load. This also means subscription/OAuth billing cannot be governed: pointing only `ANTHROPIC_BASE_URL` at Talon sends Claude Code's OAuth token, which Talon rejects. See [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).

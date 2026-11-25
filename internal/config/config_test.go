@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -417,4 +419,47 @@ func TestResolveSovereigntyForGateway_NoGatewaySovereigntyIsNoop(t *testing.T) {
 	op := &Config{Sovereignty: &SovereigntyConfig{SovereigntyMode: DataSovereigntyEUPreferred}}
 	require.NoError(t, ResolveSovereigntyForGateway(op, gwPath))
 	assert.Equal(t, DataSovereigntyEUPreferred, op.EffectiveSovereigntyMode())
+}
+
+// #575: only "no config file on the search path" means configless; an
+// existing file that cannot be read or parsed makes Load fail with the
+// cause instead of silently running on defaults.
+func TestRecordFileRead_OnlyNotFoundIsConfigless(t *testing.T) {
+	resetViper(t)
+	t.Cleanup(func() { RecordFileRead(nil) })
+	t.Setenv("TALON_DATA_DIR", t.TempDir())
+
+	RecordFileRead(viper.ConfigFileNotFoundError{})
+	_, err := Load()
+	require.NoError(t, err, "no file on the search path is the configless default")
+
+	RecordFileRead(fmt.Errorf("open /x/talon.config.yaml: %w", fs.ErrPermission))
+	_, err = Load()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fs.ErrPermission)
+	assert.Contains(t, err.Error(), "does not fall back to defaults")
+
+	RecordFileRead(viper.ConfigParseError{})
+	_, err = Load()
+	require.Error(t, err)
+
+	RecordFileRead(nil)
+	_, err = Load()
+	require.NoError(t, err)
+}
+
+// A file named with --config that does not exist is reported as missing,
+// never as "exists but cannot be used" (the real viper error, not a stand-in).
+func TestLoad_NamedConfigFileMissingIsReportedAsMissing(t *testing.T) {
+	resetViper(t)
+	t.Cleanup(func() { RecordFileRead(nil) })
+	t.Setenv("TALON_DATA_DIR", t.TempDir())
+	viper.SetConfigFile(filepath.Join(t.TempDir(), "nope.yaml"))
+	RecordFileRead(viper.ReadInConfig())
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fs.ErrNotExist)
+	assert.Contains(t, err.Error(), "does not exist")
+	assert.NotContains(t, err.Error(), "exists but cannot be used")
 }

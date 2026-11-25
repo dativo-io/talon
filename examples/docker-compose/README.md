@@ -9,8 +9,9 @@ calls, so you don't need a real API key.
 # Start Talon + mock provider
 docker compose up
 
-# In another terminal, send a request with PII:
+# In another terminal, send a request with PII. The key names the demo's AI use case:
 curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Authorization: Bearer talon-demo-key" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
