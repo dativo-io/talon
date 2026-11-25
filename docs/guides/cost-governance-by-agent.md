@@ -2,22 +2,24 @@
 
 If your bot or app's AI spend is growing, Talon gives you a simple promise:
 
-> You can cap AI spend before it runs away, and prove every allow/deny decision with signed evidence.
+> You can deny requests before provider access using estimated-cost admission caps, and verify allow/deny decisions with signed evidence. Actual charges can exceed estimates; these are not invoice ceilings.
 
-This guide shows the fastest path to that outcome for a support-bot agent.
+This guide shows that outcome for a support-bot use case. See [budget limitations](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) for estimation, reservation and recovery boundaries.
 
 ---
 
+For first-time installation, use [connect an existing application](add-talon-to-existing-app.md) to configure `agents_dir`, credentials and the serving process. Active rules are always enforced; the legacy `gateway.mode` setting was removed in #442 and is rejected in v1.17. The abbreviated example below illustrates policy and verification, not a standalone installation procedure.
+
 ## What this guide covers
 
-- Hard daily/monthly spend caps for one agent (`support-slack-bot`)
+- Enforced daily/monthly estimate-based admission caps for one agent (`support-slack-bot`)
 - Deny **before** any upstream provider call when the next request would exceed cap
 - Signed evidence for both allowed and denied decisions
 - CLI + API visibility for today/month, by agent/model/provider
 
 ---
 
-## 1. Define the agent with hard EUR caps
+## 1. Define the use case with EUR admission caps
 
 The bot is one AI use case, so it gets one `agent.talon.yaml` — its Talon traffic identity and its one policy override over the organization baseline:
 
@@ -51,7 +53,6 @@ The gateway side of `talon.config.yaml` holds only providers and the organizatio
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "enforce"
 
   providers:
     openai:
@@ -160,7 +161,7 @@ Real-time snapshot (requires `--gateway`):
 ## Cost visibility vs caps vs evidence attribution
 
 - **Cost visibility**: today/month totals and breakdowns by tenant/agent/model/provider
-- **Hard budget caps**: deny requests that would exceed the effective daily/monthly cap before the provider call
+- **Budget admission caps**: deny requests whose estimated cost would exceed the effective daily/monthly cap before the provider call
 - **Evidence-backed attribution**: every allow/deny is signed and traceable by evidence ID, including budget-denied rows with zero provider cost and denial reason
 
 This is the launch narrative connection to evidence integrity:

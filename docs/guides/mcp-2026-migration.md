@@ -1,6 +1,6 @@
 # Migrate existing integrations to MCP `2026-07-28`
 
-**Audience:** teams upgrading an existing MCP integration. The MCP proxy (`/mcp/proxy`, `--proxy-config`) is removed (#431): its integrations move to the governed `POST /mcp` with [Governed MCP tools](mcp-governed-tools.md), which has the migration table. These are breaking changes on Talon main; check the [latest release](https://github.com/dativo-io/talon/releases/latest) before assuming a tagged binary includes them.
+**Audience:** teams upgrading an existing MCP integration. The MCP proxy (`/mcp/proxy`, `--proxy-config`) is removed (#431): its integrations move to the governed `POST /mcp` with [Governed MCP tools](mcp-governed-tools.md), which has the migration table. These breaking changes shipped in [v1.17.0](https://github.com/dativo-io/talon/releases/tag/v1.17.0). Check your installed release and the [upgrade guide](upgrading-to-1.17.md) before migration.
 
 ## What changed
 
