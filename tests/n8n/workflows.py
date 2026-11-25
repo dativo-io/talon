@@ -97,3 +97,26 @@ def streaming(wid, name, path, responses):
 
 streaming("w9streamresp0001", "streaming AI Agent, Responses API (webhook)", "talon-stream-responses", None)
 streaming("wAstreamcompl001", "streaming AI Agent, Chat Completions (webhook)", "talon-stream-completions", False)
+
+
+# n8n-managed fallback, both models on the Talon credential: the primary asks
+# for a model Talon refuses (unpriced under the company's cost cap), so the
+# agent falls back to the second model, also governed by Talon.
+fb_agent = agent("Say hello in one word.")
+fb_agent["parameters"]["needsFallback"] = True
+primary = model(responses=False)
+primary["parameters"]["model"]["value"] = "gpt-unpriced-n8n-primary"
+fallback = model(responses=False)
+fallback.update({"id": "n-model-fallback", "name": "Fallback Chat Model", "position": [400, 200]})
+doc = {"id": "wBn8nfallback001", "name": "AI Agent fallback model, both on the Talon credential", "nodes": [manual(), fb_agent, primary, fallback],
+       "connections": {"Start": {"main": [[{"node": "AI Agent", "type": "main", "index": 0}]]},
+                       "OpenAI Chat Model": {"ai_languageModel": [[{"node": "AI Agent", "type": "ai_languageModel", "index": 0}]]},
+                       "Fallback Chat Model": {"ai_languageModel": [[{"node": "AI Agent", "type": "ai_languageModel", "index": 1}]]}},
+       "active": False, "settings": {"executionOrder": "v1"}}
+json.dump(doc, open(os.path.join(out, "wBn8nfallback001.json"), "w"), indent=1)
+
+# Talon-managed fallback: the upstream answers this model 503; Talon's
+# provider fallback chain retries on the backup provider. n8n sees one answer.
+m = model(responses=False)
+m["parameters"]["model"]["value"] = "gpt-4o"
+wf("wCtalonfallback1", "Talon provider fallback behind one n8n model call", [chain("Say hello in one word."), m], "Basic LLM Chain")

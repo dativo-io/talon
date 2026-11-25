@@ -8,8 +8,17 @@ import json
 import os
 import sys
 
+from n8n_output import execution_document, sanitized_tail  # noqa: E402
+
+
+def load(name):
+    path = os.path.join(W, name)
+    return [json.loads(line) for line in open(path)] if os.path.exists(path) else []
+
+
 W = sys.argv[1]
-REQUESTS = [json.loads(line) for line in open(os.path.join(W, "requests.jsonl"))] if os.path.exists(os.path.join(W, "requests.jsonl")) else []
+REQUESTS = load("requests.jsonl")
+BACKUP = load("requests-backup.jsonl")
 failures = 0
 
 
@@ -20,19 +29,29 @@ def check(ok, what):
         failures += 1
 
 
-def forwarded(name):
-    start, end = (int(x) for x in open(os.path.join(W, "slice-%s.txt" % name)).read().split())
-    return REQUESTS[start:end]
+def forwarded(name, log=None, prefix="slice"):
+    start, end = (int(x) for x in open(os.path.join(W, "%s-%s.txt" % (prefix, name))).read().split())
+    return (REQUESTS if log is None else log)[start:end]
 
 
 def execution(wid):
+    """(exit code, last node's first output item or None, raw output). A
+    successful exit without a well-formed execution document is a failure
+    with the reason printed, never a parse crash."""
     raw = open(os.path.join(W, "out-%s.txt" % wid)).read()
     code = int(open(os.path.join(W, "exit-%s.txt" % wid)).read().strip())
-    i = raw.find("\n{\n")
-    output = None
-    if code == 0 and i >= 0:
-        rd = json.loads(raw[i + 1:])["data"]["resultData"]
+    if code != 0:
+        return code, None, raw
+    doc = execution_document(raw)
+    if doc is None:
+        check(False, "%s: n8n printed no execution document\n%s" % (wid, sanitized_tail(raw)))
+        return code, None, raw
+    rd = doc["data"]["resultData"]
+    try:
         output = rd["runData"][rd["lastNodeExecuted"]][0]["data"]["main"][0][0]["json"]
+    except (KeyError, IndexError, TypeError):
+        check(False, "%s: the execution document has no output for its last node (%r)\n%s" % (wid, rd.get("lastNodeExecuted"), sanitized_tail(raw)))
+        return code, None, raw
     return code, output, raw
 
 
@@ -45,9 +64,10 @@ OK_CASES = [
     ("w6agentforbid001", "AI Agent with a tool the company forbids", {"output": "Hello"}, ["/v1/responses"]),
 ]
 for wid, what, want, paths in OK_CASES:
-    code, output, _ = execution(wid)
+    code, output, raw = execution(wid)
     reqs = forwarded(wid)
-    check(code == 0 and output == want, "%s: the workflow returns %s (got exit %d, %s)" % (what, json.dumps(want), code, json.dumps(output)))
+    ok = code == 0 and output == want
+    check(ok, "%s: the workflow returns %s (got exit %d, %s)%s" % (what, json.dumps(want), code, json.dumps(output), "" if ok else "\n" + sanitized_tail(raw)))
     check([r["path"] for r in reqs] == paths, "%s: Talon forwarded %s (got %s)" % (what, paths, [r["path"] for r in reqs]))
 
 reqs = forwarded("w3agenttool00001")
@@ -70,6 +90,26 @@ for wid, what in (("w5chainpii000001", "Chat Completions"), ("w7chainpiiresp01",
     check(code != 0, "personal data (%s): the n8n node fails" % what)
     check("PII" in raw, "personal data (%s): Talon's reason reaches n8n's error details" % what)
     check(forwarded(wid) == [], "personal data (%s): nothing reached the provider" % what)
+
+# --- Fallback stays governed --------------------------------------------
+# n8n-managed: the agent's primary model is one Talon refuses (unpriced under
+# the company cost cap); its fallback model, on the same Talon credential,
+# answers. Only the fallback request reached the provider.
+code, output, raw = execution("wBn8nfallback001")
+reqs = forwarded("wBn8nfallback001")
+ok = code == 0 and output == {"output": "Hello"}
+check(ok, "n8n fallback model on the Talon credential: the agent answers through its fallback (got exit %d, %s)%s" % (code, json.dumps(output), "" if ok else "\n" + sanitized_tail(raw)))
+check([r.get("model") for r in reqs] == ["gpt-4o-mini"],
+      "n8n fallback: Talon refused the primary model before any dispatch; only the fallback request reached the provider (got %s)" % [r.get("model") for r in reqs])
+# Talon-managed: the upstream answers the model 503; Talon's provider fallback
+# chain sends it to the backup provider; n8n sees one answer.
+code, output, raw = execution("wCtalonfallback1")
+reqs, backup = forwarded("wCtalonfallback1"), forwarded("wCtalonfallback1", BACKUP, "slice-backup")
+ok = code == 0 and output == {"text": "Hello"}
+check(ok, "Talon provider fallback: the workflow gets the backup provider's answer (got exit %d, %s)%s" % (code, json.dumps(output), "" if ok else "\n" + sanitized_tail(raw)))
+check([(r.get("model"), r.get("status")) for r in reqs] == [("gpt-4o", 503)] and [r.get("model") for r in backup] == ["gpt-4o-mini"],
+      "Talon provider fallback: the primary failed once (503), the backup provider answered the rewritten model (primary %s, backup %s)"
+      % ([(r.get("model"), r.get("status")) for r in reqs], [r.get("model") for r in backup]))
 
 # --- Streaming through a streaming webhook and the AI Agent -------------
 for path, upstream in (("talon-stream-responses", "/v1/responses"), ("talon-stream-completions", "/v1/chat/completions")):

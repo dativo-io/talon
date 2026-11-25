@@ -1,6 +1,7 @@
 """OpenAI-compatible mock provider for the n8n x Talon compatibility harness.
 
 Answers Chat Completions and Responses API requests (streaming and not),
+answers one optional model with a transient 503 (argv[3]),
 calls the first offered tool once, returns JSON when a JSON format is asked
 for, and appends what Talon forwarded to requests.jsonl. Deterministic; no
 model, no network.
@@ -11,6 +12,7 @@ import sys
 import time
 
 LOG = sys.argv[2] if len(sys.argv) > 2 else "requests.jsonl"
+FAIL_MODEL = sys.argv[3] if len(sys.argv) > 3 else ""  # answered 503: a transient upstream failure
 USAGE_CC = {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16}
 USAGE_R = {"input_tokens": 12, "output_tokens": 4, "total_tokens": 16}
 
@@ -62,6 +64,10 @@ class H(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         rec = {"t": time.time(), "path": self.path, "model": body.get("model"), "stream": bool(body.get("stream")),
                "keys": sorted(body.keys())}
+        if FAIL_MODEL and body.get("model") == FAIL_MODEL:
+            rec["status"] = 503
+            open(LOG, "a").write(json.dumps(rec) + "\n")
+            return self.send_json({"error": {"message": "upstream overloaded", "type": "server_error"}}, 503)
         if self.path.endswith("/chat/completions"):
             rec["tools"] = tool_names_cc(body)
             rec["json"] = wants_json(body)

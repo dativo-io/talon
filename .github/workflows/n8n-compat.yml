@@ -8,9 +8,10 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'internal/gateway/**'
-      - 'internal/cmd/serve*'
-      - 'internal/cmd/agents*'
+      # Any Go change can reach the gateway path (policy, config, identity,
+      # secrets, provider dispatch, evidence): no subset filter is safe.
+      - 'internal/**'
+      - 'cmd/**'
       - 'tests/n8n/**'
       - 'scripts/n8n-compat.sh'
       - 'docs/guides/add-talon-to-existing-app.md'
@@ -20,9 +21,10 @@ on:
   push:
     branches: [main]
     paths:
-      - 'internal/gateway/**'
-      - 'internal/cmd/serve*'
-      - 'internal/cmd/agents*'
+      # Any Go change can reach the gateway path (policy, config, identity,
+      # secrets, provider dispatch, evidence): no subset filter is safe.
+      - 'internal/**'
+      - 'cmd/**'
       - 'tests/n8n/**'
       - 'scripts/n8n-compat.sh'
       - 'docs/guides/add-talon-to-existing-app.md'

@@ -9,7 +9,9 @@
 # Basic LLM Chain and AI Agent with the Chat Model's Responses API on and off,
 # a tool round trip, JSON output, streaming through a streaming webhook, the
 # HTTP Request node, a company PII denial with zero provider calls, and a
-# forbidden tool removed before the model sees it.
+# forbidden tool removed before the model sees it; fallback that stays governed
+# (an n8n fallback model on the Talon credential, and Talon's own provider
+# fallback chain).
 #
 # n8n: the pinned image through Docker (TALON_N8N_IMAGE), or a local n8n
 # executable (TALON_N8N_BIN, node >= 24) where Docker is unavailable.
@@ -18,12 +20,15 @@
 set -euo pipefail
 
 N8N_IMAGE="${TALON_N8N_IMAGE:-n8nio/n8n:2.49.5@sha256:c349b24d6e242b4ea14d75e6f1a90c50e348cf4b1c4512b4a0a50219ead6533d}"
-TALON_PORT=18080 MOCK_PORT=18999 N8N_PORT=15678
+TALON_PORT=18080 MOCK_PORT=18999 BACKUP_PORT=18998 N8N_PORT=15678
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 missing=()
 for tool in python3 curl openssl; do command -v "$tool" >/dev/null 2>&1 || missing+=("$tool"); done
 if [ -z "${TALON_N8N_BIN:-}" ]; then command -v docker >/dev/null 2>&1 || missing+=("docker (or TALON_N8N_BIN)"); fi
 if [ "${#missing[@]}" -gt 0 ]; then echo "n8n-compat: missing prerequisite(s): ${missing[*]}" >&2; exit 2; fi
+
+# The reader of `n8n execute` output has its own regression tests (#575).
+python3 "$REPO_ROOT/tests/n8n/test_n8n_output.py" -q
 
 W="$(mktemp -d "${TMPDIR:-/tmp}/n8n-compat.XXXXXX")"
 pids=()
@@ -42,8 +47,10 @@ else
   (cd "$REPO_ROOT" && go build -o "$W/talon" ./cmd/talon)
   TALON="$W/talon"
 fi
-echo "n8n-compat: $("$TALON" version | head -1); n8n: ${TALON_N8N_BIN:-$N8N_IMAGE}"
-python3 "$REPO_ROOT/tests/n8n/mock_openai.py" "$MOCK_PORT" "$W/requests.jsonl" & pids+=($!)
+# The primary mock answers gpt-4o with a transient 503 (Talon's provider
+# fallback then uses the backup); the backup mock answers everything.
+python3 "$REPO_ROOT/tests/n8n/mock_openai.py" "$MOCK_PORT" "$W/requests.jsonl" gpt-4o & pids+=($!)
+python3 "$REPO_ROOT/tests/n8n/mock_openai.py" "$BACKUP_PORT" "$W/requests-backup.jsonl" & pids+=($!)
 mkdir -p "$W/talon-home" "$W/install"
 cd "$W/install"
 export HOME="$W/talon-home"
@@ -54,8 +61,16 @@ set -a
 # shellcheck source=/dev/null
 . ./talon.env
 set +a
+# Talon falls back only to a candidate it can price under a cost cap (it
+# refuses an unpriced one: "pricing_unavailable"), so the backup provider gets
+# a pricing entry through the existing pricing_file setting.
+{ cat "$REPO_ROOT/internal/pricing/default_models.yaml"
+  printf '  openai-backup:\n    models:\n      gpt-4o-mini:\n        input_per_1m: 0.15\n        output_per_1m: 0.60\n'
+} > pricing.yaml
 cat > talon.config.yaml <<YAML
 agents_dir: ./agents
+llm:
+  pricing_file: $W/install/pricing.yaml
 gateway:
   enabled: true
   providers:
@@ -63,6 +78,13 @@ gateway:
       enabled: true
       secret_name: "openai-api-key"
       base_url: "http://127.0.0.1:$MOCK_PORT"
+      fallback:
+        - provider: openai-backup
+          model: gpt-4o-mini
+    openai-backup:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "http://127.0.0.1:$BACKUP_PORT"
   organization_policy:
     defaults:
       pii_action: block
@@ -98,14 +120,15 @@ python3 "$REPO_ROOT/tests/n8n/workflows.py" "$W/wf" "http://127.0.0.1:$TALON_POR
 mkdir -p "$W/wf/workflows" && mv "$W"/wf/w*.json "$W/wf/workflows/"
 n8n_cli import:credentials --input="$W/wf/credentials.json" > "$W/import-credentials.log" 2>&1
 n8n_cli import:workflow --separate --input="$W/wf/workflows" > "$W/import-workflows.log" 2>&1
-lines() { if [ -f "$W/requests.jsonl" ]; then wc -l < "$W/requests.jsonl" | tr -d ' '; else echo 0; fi; }
+lines() { if [ -f "$W/${1:-requests}.jsonl" ]; then wc -l < "$W/${1:-requests}.jsonl" | tr -d ' '; else echo 0; fi; }
 
 for f in "$W"/wf/workflows/w*.json; do
   id="$(basename "$f" .json)"
   case "$id" in *stream*) continue ;; esac
-  before="$(lines)"
+  before="$(lines)"; before_backup="$(lines requests-backup)"
   set +e; n8n_cli execute --id="$id" > "$W/out-$id.txt" 2>&1; code=$?; set -e
   echo "$code" > "$W/exit-$id.txt"; echo "$before $(lines)" > "$W/slice-$id.txt"
+  echo "$before_backup $(lines requests-backup)" > "$W/slice-backup-$id.txt"
   echo "n8n-compat: executed $id (exit $code)"
 done
 
@@ -135,4 +158,12 @@ for path in talon-stream-responses talon-stream-completions; do
 done
 
 "$TALON" agents show n8n-support > "$W/agents-show.txt" 2>&1 || true
+
+# The receipt: exactly what was tested.
+if [ -n "${TALON_N8N_BIN:-}" ]; then
+  n8n_what="local n8n $("$TALON_N8N_BIN" --version 2>/dev/null | tail -1), node $(node --version)"
+else
+  n8n_what="$N8N_IMAGE (node $(docker run --rm --entrypoint node "$N8N_IMAGE" --version))"
+fi
+echo "n8n-compat receipt: $("$TALON" version | head -1) (sha256 $(sha256sum "$TALON" | cut -c1-64)); $n8n_what; python $(python3 -c 'import platform; print(platform.python_version())')"
 python3 "$REPO_ROOT/tests/n8n/check.py" "$W"
