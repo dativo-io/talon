@@ -18,7 +18,7 @@ Expected: PII blocked (400), model denied (403), unknown key refused (401), two 
 
 ## Prerequisites
 
-- Docker Compose v2.24+, Git and curl.
+- Docker Compose v2.24+, Git and curl; jq for the optional API inspection.
 - Local evaluation only: the fixture uses a public demo key and development-open administrative endpoints.
 
 ## Steps
@@ -32,7 +32,7 @@ export TALON_IMAGE=ghcr.io/dativo-io/talon:1.17.0
 docker compose -f docker-compose.yml -f docker-compose.published.yml up
 ```
 
-Wait for all three services to become healthy. Startup depends on the machine and image cache.
+Wait for all three services to become ready. Startup depends on the machine and image cache.
 
 ### 2. Send a request with PII
 
@@ -60,7 +60,7 @@ The demo configuration sets `organization_policy.defaults.pii_action: "redact"`.
 ### 3. List the evidence
 
 ```bash
-docker compose exec talon /usr/local/bin/talon audit list
+TALON_IMAGE=ghcr.io/dativo-io/talon:1.17.0 docker compose -f docker-compose.yml -f docker-compose.published.yml exec talon /usr/local/bin/talon audit list
 ```
 
 Expected shape:
@@ -72,7 +72,7 @@ Expected shape:
 ### 4. Inspect the evidence
 
 ```bash
-docker compose exec talon /usr/local/bin/talon audit show YOUR_EVIDENCE_ID
+TALON_IMAGE=ghcr.io/dativo-io/talon:1.17.0 docker compose -f docker-compose.yml -f docker-compose.published.yml exec talon /usr/local/bin/talon audit show YOUR_EVIDENCE_ID
 ```
 
 Replace YOUR_EVIDENCE_ID with the actual ID from audit list. The record shows:
@@ -85,7 +85,7 @@ Replace YOUR_EVIDENCE_ID with the actual ID from audit list. The record shows:
 ### 5. Verify signature integrity
 
 ```bash
-docker compose exec talon /usr/local/bin/talon audit verify YOUR_EVIDENCE_ID
+TALON_IMAGE=ghcr.io/dativo-io/talon:1.17.0 docker compose -f docker-compose.yml -f docker-compose.published.yml exec talon /usr/local/bin/talon audit verify YOUR_EVIDENCE_ID
 ```
 
 Expected result:
@@ -105,7 +105,7 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" 'http://localhost:8080/v1/evide
 curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/v1/costs | jq .
 ```
 
-For this local fixture the admin key is intentionally unset. The read-only [Operations Console](../guides/operations-console.md) is available at http://127.0.0.1:8787/. Obtain the one-time pairing code with `docker compose logs talon-ui`. Never expose this fixture to another host.
+For this local fixture the admin key is intentionally unset. The read-only [Operations Console](../guides/operations-console.md) is available at http://127.0.0.1:8787/. Obtain the one-time pairing code with `TALON_IMAGE=ghcr.io/dativo-io/talon:1.17.0 docker compose -f docker-compose.yml -f docker-compose.published.yml logs talon-ui`. Never expose this fixture to another host.
 
 ## What you just proved
 
@@ -116,13 +116,13 @@ In the optional Compose walkthrough, you executed and inspected this exact path:
 3. **The declared rule was enforced without breaking the application.** The provider received the redacted text, never the raw email or IBAN, and the signed record says so (`pii_redacted: true`).
 4. **The resulting evidence is tamper-evident and cryptographically verifiable.** `talon audit verify` checks the HMAC signature.
 
-This page did **not** yet execute tool filtering, PII blocking, model denial, sovereignty routing, a session budget, or tamper failure. To see a native policy decision without any model call, `talon run --dry-run "<prompt>"` prints the decision and exits. Reproduce the rest manually next:
+The Compose walkthrough does not exercise tool filtering, sovereignty routing, session budgets or tamper failure. The published-image quickstart above separately proves PII blocking and model denial; it does not test redaction or a live model response. To see a native policy decision without any model call, `talon run --dry-run "<prompt>"` prints the decision and exits. Reproduce the rest manually next:
 
 **[Reproduce the governed session manually →](manual-governed-session.md)**
 
 ## Now wire this to your app
 
-Point your existing app at Talon by changing only the base URL and using a Talon agent key.
+After configuring a separate authenticated Talon installation and registering the use case, point your existing app at its Talon base URL and use its dedicated key. Do not reuse the local demo's key or open admin endpoints.
 
 **Python (`openai` package):**
 
