@@ -8,6 +8,8 @@ This guide shows that outcome for a support-bot use case. See [budget limitation
 
 ---
 
+For first-time installation, use [connect an existing application](add-talon-to-existing-app.md) to configure `agents_dir`, credentials and the serving process. Active rules are always enforced; the removed `gateway.mode` setting is rejected in v1.17. The abbreviated example below illustrates policy and verification, not a standalone installation procedure.
+
 ## What this guide covers
 
 - Enforced daily/monthly estimate-based admission caps for one agent (`support-slack-bot`)
@@ -51,7 +53,6 @@ The gateway side of `talon.config.yaml` holds only providers and the organizatio
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "enforce"
 
   providers:
     openai:
@@ -160,7 +161,7 @@ Real-time snapshot (requires `--gateway`):
 ## Cost visibility vs caps vs evidence attribution
 
 - **Cost visibility**: today/month totals and breakdowns by tenant/agent/model/provider
-- **Hard budget caps**: deny requests that would exceed the effective daily/monthly cap before the provider call
+- **Budget admission caps**: deny requests whose estimated cost would exceed the effective daily/monthly cap before the provider call
 - **Evidence-backed attribution**: every allow/deny is signed and traceable by evidence ID, including budget-denied rows with zero provider cost and denial reason
 
 This is the launch narrative connection to evidence integrity:
