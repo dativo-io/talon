@@ -1,6 +1,6 @@
 # Try Talon without an API key
 
-See Talon's request path and signed evidence without any API keys or configuration. The mock provider handles the LLM call, so PII scanning, policy evaluation, cost tracking, and evidence generation run without spending money.
+Choose the published-image quickstart for policy decisions and signed evidence without a provider API key. For a synthetic model response, redaction and the Operations Console, continue with the optional Compose walkthrough.
 
 This page intentionally proves one small path. For tools, enforcement, sovereignty routing, session budgets, tamper detection, and RoPA, continue to [Reproduce the governed session manually](manual-governed-session.md).
 
@@ -23,7 +23,7 @@ Expected: PII blocked (400), model denied (403), unknown key refused (401), two 
 
 ## Steps
 
-### 1. Clone and start (30 seconds)
+### 1. Clone and start
 
 ```bash
 git clone --depth 1 --branch v1.17.0 https://github.com/dativo-io/talon
@@ -34,7 +34,7 @@ docker compose -f docker-compose.yml -f docker-compose.published.yml up
 
 Wait for all three services to become healthy. Startup depends on the machine and image cache.
 
-### 2. Send a request with PII (10 seconds)
+### 2. Send a request with PII
 
 In another terminal:
 
@@ -55,9 +55,9 @@ curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
 
 You'll get back a standard OpenAI-compatible JSON response. The mock provider returned a canned answer, but Talon's request pipeline inspected, classified, and **redacted** the request before forwarding it.
 
-The demo configuration sets `organization_policy.defaults.pii_action: "redact"`. Active policy is always enforced (#442) — there is no observe-only posture — so the rule you declare is what happens: the mock provider receives `[EMAIL]` and `[IBAN]` in place of the detected values, and the request still succeeds. Change that one line to `"block"` and the same request is denied before the provider is reached.
+The demo configuration sets `organization_policy.defaults.pii_action: "redact"`. Active policy is always enforced (#442) — there is no observe-only posture — so the rule you declare is what happens: the mock provider receives `[EMAIL]` and `[IBAN]` in place of the detected values, and the request still succeeds. If you change that one line to `"block"` and restart the demo service so it loads the policy, the same request is denied before the provider is reached.
 
-### 3. List the evidence (10 seconds)
+### 3. List the evidence
 
 ```bash
 docker compose exec talon /usr/local/bin/talon audit list
@@ -109,7 +109,7 @@ For this local fixture the admin key is intentionally unset. The read-only [Oper
 
 ## What you just proved
 
-You executed and inspected this exact path:
+In the optional Compose walkthrough, you executed and inspected this exact path:
 
 1. **Talon accepted an OpenAI-compatible request without changing the client protocol.**
 2. **PII was detected and classified before forwarding.** The email and IBAN produced a tier-2 finding.
@@ -178,7 +178,7 @@ See [What Talon does to your request](../explanation/what-talon-does-to-your-req
 
 ## You're done
 
-You ran the fastest Talon proof loop: one request, one governance decision, one signed record, one verification.
+You verified Talon policy decisions locally. Connect a real application using a separate installation and its own key; do not reuse the demo credentials.
 
 | I want to… | Next doc |
 |------------|----------|
