@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -536,4 +537,165 @@ func TestConsoleParity_EffectivePolicy(t *testing.T) {
 	assert.Equal(t, console.StateOK, dto.Availability.State)
 
 	assert.Equal(t, http.StatusNotFound, f.api(t, "/console/v1/use-cases/nope/effective-policy", nil), "unknown use case")
+}
+
+// cliStatus is what `talon agents show <name>` prints as its Status line and
+// its Next block (with an Also after a blocking condition).
+type cliStatus struct {
+	headline           string
+	next, also         string
+	nextCmds, alsoCmds []string
+}
+
+func parseCLIStatus(t *testing.T, out string) cliStatus {
+	t.Helper()
+	var s cliStatus
+	lines := strings.Split(out, "\n")
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		switch {
+		case strings.HasPrefix(l, "  Status      "):
+			s.headline = strings.TrimPrefix(l, "  Status      ")
+		case l == "Next" && i+1 < len(lines):
+			i++
+			s.next = strings.TrimPrefix(lines[i], "  ")
+			cmds := &s.nextCmds
+			for i+1 < len(lines) && strings.HasPrefix(lines[i+1], "  ") {
+				i++
+				switch {
+				case strings.HasPrefix(lines[i], "    "):
+					*cmds = append(*cmds, strings.TrimPrefix(lines[i], "    "))
+				case strings.HasPrefix(lines[i], "  Also: "):
+					s.also, cmds = strings.TrimPrefix(lines[i], "  Also: "), &s.alsoCmds
+				}
+			}
+		}
+	}
+	require.NotEmpty(t, s.headline, "the view prints a Status line:\n%s", out)
+	return s
+}
+
+// TestConsoleParity_UseCaseStatus (#575): for every use case of one
+// installation, the Status and Next `talon agents show <name>` prints are
+// the status the console's use-case list carries and its page shows, through
+// the states an application goes through: registered and not loaded, loaded
+// and waiting for its first request, working after an authenticated request
+// under the current policy, and blocked by an exhausted cap (where the
+// verification's own step follows as Also).
+func TestConsoleParity_UseCaseStatus(t *testing.T) {
+	f := newParityFixture(t)
+	agentsDir := filepath.Join(f.dir, "agents")
+	require.NoError(t, os.MkdirAll(filepath.Join(agentsDir, "fresh-bot"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "fresh-bot", "agent.talon.yaml"), []byte("agent:\n  name: fresh-bot\n  version: \"1.0.0\"\npolicies:\n  cost_limits:\n    monthly: 20\n"), 0o600))
+	names := []string{"fresh-bot", "hr-analytics-assistant", "scratch"}
+
+	agree := func(phase string) map[string]console.UseCaseStatus {
+		t.Helper()
+		var list struct {
+			UseCases console.UseCases `json:"use_cases"`
+		}
+		require.Equal(t, http.StatusOK, f.api(t, "/console/v1/use-cases", &list))
+		require.NotNil(t, list.UseCases.Statuses, phase)
+		assert.Equal(t, console.StateOK, list.UseCases.Statuses.Availability.State, phase)
+		byName := map[string]console.UseCaseStatus{}
+		for _, it := range list.UseCases.Statuses.Items {
+			byName[it.Name] = it
+		}
+		for _, name := range names {
+			item, found := byName[name]
+			require.True(t, found, "%s: the list carries %s", phase, name)
+			var page console.UseCaseDetail
+			require.Equal(t, http.StatusOK, f.api(t, "/console/v1/use-cases/"+name, &page), phase)
+			require.NotNil(t, page.Statuses, phase)
+			require.Len(t, page.Statuses.Items, 1, phase)
+			assert.Equal(t, item, page.Statuses.Items[0], "%s: the page shows the list's status of %s", phase, name)
+
+			cli := parseCLIStatus(t, string(f.cli(t, "agents", "show", name)))
+			assert.Equal(t, cli.headline, item.Headline, "%s: Status of %s", phase, name)
+			require.NotNil(t, item.Next, "%s: %s", phase, name)
+			assert.Equal(t, cli.next, item.Next.Text, "%s: Next of %s", phase, name)
+			assert.Equal(t, cli.nextCmds, item.Next.Commands, "%s: commands of %s", phase, name)
+			if item.Also == nil {
+				assert.Empty(t, cli.also, "%s: %s", phase, name)
+			} else {
+				assert.Equal(t, cli.also, item.Also.Text, "%s: Also of %s", phase, name)
+				assert.Equal(t, cli.alsoCmds, item.Also.Commands, "%s: %s", phase, name)
+			}
+		}
+		return byName
+	}
+	digests := func(name string) (agent, eff string) {
+		var r effective.Report
+		require.NoError(t, json.Unmarshal(f.cli(t, "agents", "show", name, "--effective", "--json"), &r))
+		for _, p := range r.Effective.Providers {
+			if p.Name == "openai" {
+				eff = p.EffectiveDigest
+			}
+		}
+		return r.CurrentFiles.PolicyDigest, eff
+	}
+
+	// 1. Registered, nothing runs: not active. The traffic the fixture holds
+	// carries no policy digests, so its use cases need attention.
+	st := agree("nothing runs")
+	assert.Equal(t, effective.StatusNotActive, st["fresh-bot"].Code)
+	assert.Equal(t, effective.NextStartRuntime, st["fresh-bot"].Next.Code)
+	assert.Equal(t, effective.StatusNeedsAttention, st["hr-analytics-assistant"].Code)
+	assert.Equal(t, effective.NextCheckPolicy, st["hr-analytics-assistant"].Next.Code)
+
+	// 2. A gateway runs and loaded every current file: waiting.
+	var gwDigest string
+	{
+		var r effective.Report
+		require.NoError(t, json.Unmarshal(f.cli(t, "agents", "show", "fresh-bot", "--effective", "--json"), &r))
+		gwDigest = r.CurrentFiles.GatewayConfig.Digest
+	}
+	rec := runtimestatus.Record{
+		Schema: runtimestatus.SchemaVersion, InstanceID: "gw1", IntervalSeconds: 5,
+		Installation: runtimestatus.Installation{KeyFingerprint: runtimestatus.Fingerprint(sessTestSigningKey)}, Roles: []string{runtimestatus.RoleGateway},
+		GatewayConfig: &runtimestatus.ConfigRef{Digest: gwDigest},
+		StartedAt:     time.Now().UTC().Add(-time.Hour), WrittenAt: time.Now().UTC(), State: runtimestatus.StateRunning,
+		Catalog: &runtimestatus.Catalog{ActiveGeneration: "g", ActivatedAt: time.Now().UTC().Add(-time.Hour)},
+	}
+	for _, n := range names {
+		d, _ := digests(n)
+		rec.Catalog.Agents = append(rec.Catalog.Agents, runtimestatus.Agent{Name: n, TenantID: "default", Enabled: true, PolicyDigest: d})
+	}
+	raw, err := json.Marshal(rec)
+	require.NoError(t, err)
+	rd := filepath.Join(f.dir, runtimestatus.DirName)
+	require.NoError(t, os.MkdirAll(rd, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(rd, "gw1.json"), raw, 0o600))
+	st = agree("a gateway runs")
+	assert.Equal(t, effective.StatusWaitingFirstRequest, st["fresh-bot"].Code)
+	assert.Equal(t, effective.NextSendRequest, st["fresh-bot"].Next.Code)
+
+	// 3. An authenticated request evaluated under the current files: working.
+	agentDigest, effDigest := digests("fresh-bot")
+	require.NotEmpty(t, effDigest)
+	ctx := context.Background()
+	require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+		ID: "fb_1", CorrelationID: "corr_fb_1", TenantID: "default", AgentID: "fresh-bot", InvocationType: "gateway", Timestamp: time.Now().UTC().Add(-time.Minute),
+		PolicyDecision:  evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyDigests: &evidence.PolicyDigests{Agent: agentDigest, Effective: effDigest}},
+		Execution:       evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 0.01, Currency: "USD", PricingKnown: true},
+		RoutingDecision: &evidence.RoutingDecision{SelectedProvider: "openai"},
+	}))
+	st = agree("an authenticated request")
+	assert.Equal(t, effective.StatusWorking, st["fresh-bot"].Code)
+	assert.Equal(t, effective.NextNone, st["fresh-bot"].Next.Code)
+
+	// 4. scratch spends past its monthly cap (50): blocked, and its
+	// verification step (the record carries no policy) follows as Also.
+	require.NoError(t, f.writer.Store(ctx, &evidence.Evidence{
+		ID: "sc_big", CorrelationID: "corr_sc_big", TenantID: "default", AgentID: "scratch", InvocationType: "gateway", Timestamp: time.Now().UTC().Add(-time.Minute),
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		Execution:      evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 60, Currency: "USD", PricingKnown: true},
+	}))
+	st = agree("scratch blocked")
+	sc := st["scratch"]
+	assert.Equal(t, effective.StatusBlocked, sc.Code)
+	assert.Equal(t, effective.NextBlocked, sc.Next.Code)
+	assert.Equal(t, []string{"talon costs --agent scratch"}, sc.Next.Commands)
+	require.NotNil(t, sc.Also)
+	assert.Equal(t, effective.NextCheckPolicy, sc.Also.Code)
 }

@@ -123,6 +123,11 @@ type UseCases struct {
 	// an approval waiting for a person. Empty on the embedded copy inside
 	// Overview, which carries its own Approvals section.
 	Approvals ApprovalsSummary `json:"approvals"`
+	// Statuses are the rows' statuses on the AI Use Cases page (#575): what
+	// `talon agents show <name>` leads with, one per row. Kept apart from
+	// Rows: fleet health is not redefined by them. Absent from the embedded
+	// copy inside Overview.
+	Statuses *UseCaseStatuses `json:"statuses,omitempty"`
 }
 
 // CounterWindows are Go duration strings ("1h0m0s").
@@ -196,6 +201,9 @@ type UseCaseDetail struct {
 	Findings  []Finding `json:"findings"`
 	// Approvals are this use case's approval counts (#565).
 	Approvals ApprovalsSummary `json:"approvals"`
+	// Statuses holds this use case's status (#575), the item the list
+	// carries for it: the Status and Next `talon agents show <name>` prints.
+	Statuses *UseCaseStatuses `json:"statuses,omitempty"`
 	// RecentDecisions are this use case's newest records with their outcome.
 	RecentDecisions DecisionList `json:"recent_decisions"`
 	// Issues are configuration issues the catalog attributes to this name

@@ -183,7 +183,8 @@ test("Fleet spend in another currency: unavailable, budget not evaluated, same a
   await expect(ui.getByText("unavailable")).toBeVisible();
   await expect(ui.getByText("€")).toHaveCount(0);
   await expect(ui.getByText(/budget not evaluated/)).toBeVisible();
-  await expect(ui.getByText("Needs attention")).toBeVisible();
+  // Fleet health keeps its signal in the Attention column (#575), next to the use case's status.
+  await expect(ui.getByTestId("fleet-attention").getByText("Needs attention")).toBeVisible();
 });
 
 test("Overview: one scope for the whole page — the chart totals today's requests, for all tenants and for one", async ({ page }) => {

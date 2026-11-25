@@ -61,7 +61,46 @@ type Inputs struct {
 	// values ever existed under its name. "" = not given (which credential
 	// observed traffic used is then reported as unknown).
 	SecretsDB string
-	Now       time.Time
+	// Shared, when set, is ReadShared's result for AgentsDir, DefaultPolicy
+	// and GatewayConfig: Build then reads neither the agent files nor the
+	// gateway config again. nil reads them for this report.
+	Shared *Shared
+	Now    time.Time
+}
+
+// Shared is what every report of one installation reads alike: one scan of
+// the agent files and one read of the gateway config. A caller that builds
+// the reports of several use cases at once (the console's use-case list,
+// #575) reads them once and passes the result in Inputs.Shared, so N reports
+// cost one directory scan and one config read plus each use case's own
+// bounded evidence and vault lookups, never N scans. Build only reads it.
+type Shared struct {
+	scan      *agentcatalog.ScanResult
+	gateway   *File
+	baseline  gateway.OrganizationPolicy
+	providers map[string]gateway.ProviderConfig
+}
+
+// ReadShared scans the agent configuration (agentsDir, else the
+// defaultPolicy file) and reads the gateway config. Its error is the scan's:
+// without agent files no report can be built. A gateway config that is
+// missing or invalid is not an error; each report states it.
+func ReadShared(ctx context.Context, agentsDir, defaultPolicy, gatewayConfig string) (*Shared, error) {
+	scan, err := fleetview.Scan(ctx, agentsDir, defaultPolicy)
+	if err != nil {
+		return nil, err
+	}
+	return SharedFromScan(scan, gatewayConfig), nil
+}
+
+// SharedFromScan is ReadShared over a scan the caller already holds (the one
+// its fleet rows were projected from, fleetview.Result.Scan): the reports
+// then describe exactly the files the rows do, and the files are not scanned
+// again. The gateway config is read here.
+func SharedFromScan(scan *agentcatalog.ScanResult, gatewayConfig string) *Shared {
+	sh := &Shared{scan: scan}
+	sh.gateway, sh.baseline, sh.providers = readGatewayConfig(gatewayConfig)
+	return sh
 }
 
 // Report is the effective-policy report.
@@ -163,16 +202,12 @@ type LastDecision struct {
 	Note            string `json:"note"`
 }
 
-// findAgent scans the agent files and returns the named use case in the
+// findAgent returns the named use case of the scanned agent files in the
 // requested tenant ("" = its own tenant). Agent names are unique per
 // installation: the catalog rejects every file of a duplicated name (#267),
 // so at most one match exists, and a duplicated name is reported as such
 // rather than as unknown.
-func findAgent(ctx context.Context, in Inputs) (agent *policy.Policy, path, digest, tenant string, err error) {
-	scan, err := fleetview.Scan(ctx, in.AgentsDir, in.DefaultPolicy)
-	if err != nil {
-		return nil, "", "", "", err
-	}
+func findAgent(scan *agentcatalog.ScanResult, in Inputs) (agent *policy.Policy, path, digest, tenant string, err error) {
 	var names []string
 	for i := range scan.Agents {
 		a := scan.Agents[i]
@@ -208,7 +243,14 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	agent, path, digest, tenant, err := findAgent(ctx, in)
+	sh := in.Shared
+	if sh == nil {
+		var err error
+		if sh, err = ReadShared(ctx, in.AgentsDir, in.DefaultPolicy, in.GatewayConfig); err != nil {
+			return nil, err
+		}
+	}
+	agent, path, digest, tenant, err := findAgent(sh.scan, in)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +264,11 @@ func Build(ctx context.Context, in Inputs) (*Report, error) {
 	}
 
 	// 3. effective (gateway layers)
-	baseline, providers := r.organization(in.GatewayConfig)
+	baseline, providers := sh.baseline, sh.providers
+	if sh.gateway != nil {
+		f := *sh.gateway // each report owns its copy
+		r.CurrentFiles.GatewayConfig = &f
+	}
 	override := agentbridge.LoadedAgentFromPolicy(agent, path).Override
 	eff, rules := gateway.ExplainEffectivePolicy(baseline, gateway.ProviderConfig{}, "", override)
 	r.Effective = Effective{
@@ -413,24 +459,26 @@ func proveBoundary(in Inputs, prove func(runtimestatus.View) runtimestatus.Loade
 	return prove(*in.Runtime)
 }
 
-func (r *Report) organization(path string) (baseline gateway.OrganizationPolicy, providers map[string]gateway.ProviderConfig) {
+// readGatewayConfig reads the gateway config at path: the file as reported
+// (nil when no path is given), its organization policy and its providers
+// (zero when the file is missing or invalid).
+func readGatewayConfig(path string) (file *File, baseline gateway.OrganizationPolicy, providers map[string]gateway.ProviderConfig) {
 	if path == "" {
-		return gateway.OrganizationPolicy{}, nil
+		return nil, gateway.OrganizationPolicy{}, nil
 	}
 	// One read: the digest shown and compared with the runtime's is of the
 	// bytes the organization policy below was parsed from.
 	gw, digest, err := gateway.LoadGatewayConfigWithDigest(path)
 	f := &File{Path: path, Digest: digest}
-	r.CurrentFiles.GatewayConfig = f
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return gateway.OrganizationPolicy{}, nil
+		return f, gateway.OrganizationPolicy{}, nil
 	case err != nil:
 		f.Present, f.Error = true, err.Error()
-		return gateway.OrganizationPolicy{}, nil
+		return f, gateway.OrganizationPolicy{}, nil
 	}
 	f.Present = true
-	return gw.OrganizationPolicy, gw.Providers
+	return f, gw.OrganizationPolicy, gw.Providers
 }
 
 func sortedKeys[V any](m map[string]V) []string {

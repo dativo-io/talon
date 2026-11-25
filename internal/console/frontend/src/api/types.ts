@@ -142,6 +142,41 @@ export interface UseCases {
   counter_windows: { requests_denied: string; fallbacks: string; failed_sessions: string };
   // #565: per-use-case approval counts (AI Use Cases page).
   approvals?: ApprovalsSummary;
+  // #575: each row's status (AI Use Cases page); absent on the copy inside Overview.
+  statuses?: UseCaseStatuses;
+}
+
+// #575: what `talon agents show <name>` leads with, computed in Go
+// (effective.StatusOf over the fleet row and the use case's effective
+// report). The console prints it; it derives nothing.
+export type UseCaseStatusCode =
+  | "working"
+  | "disabled"
+  | "not_active"
+  | "runtime_not_confirmed"
+  | "waiting_for_first_request"
+  | "needs_attention"
+  | "blocked"
+  | "not_determined";
+
+export interface UseCaseStatus {
+  tenant_id: string;
+  name: string;
+  code: UseCaseStatusCode;
+  headline: string;
+  // The step the CLI prints under "Next"; absent when not determined.
+  next?: UseCaseNextStep;
+  // After a blocking condition: the verification's own step, when it is an action.
+  also?: UseCaseNextStep;
+  // The connection and verification reading the status rests on.
+  reading?: { code: string; text: string };
+  // Why the status is not determined.
+  error?: string;
+}
+
+export interface UseCaseStatuses {
+  availability: Availability;
+  items: UseCaseStatus[] | null;
 }
 
 export interface WindowBounds {
@@ -762,6 +797,8 @@ export interface UseCaseDetail {
   activity: Activity;
   effective_policy: Availability;
   approvals?: ApprovalsSummary;
+  // #575: this use case's status, the item the list carries for it.
+  statuses?: UseCaseStatuses;
   // #533 PR 2: installation readiness, installation findings plus this use
   // case's own fleet finding, its newest records with outcome, and the
   // configuration issues attributed to its name.

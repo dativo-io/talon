@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
-import type { Availability, Health, Outcome, Verification, BudgetUsage } from "../api/types";
+import type { Availability, Health, Outcome, Verification, BudgetUsage, UseCaseStatus } from "../api/types";
 import { sourceLabel, viewOf, type Tone } from "../lib/availability";
+import { statusTone } from "../lib/status";
 import { humanize, money, percent, relative, utc } from "../lib/format";
 import { ApiError } from "../api/client";
 
@@ -98,6 +99,37 @@ const HEALTH: Record<Health, { label: string; tone: Tone | "ok" }> = {
 export function UseCaseHealth({ health }: { health: Health }) {
   const h = HEALTH[health] ?? { label: health, tone: "neutral" as const };
   return <Badge tone={h.tone}>{h.label}</Badge>;
+}
+
+// FleetAttention: canonical fleet health as the attention signal `talon
+// agents` prints (#575): blocked, needs attention and stopped with their
+// why, and no signal otherwise. "Healthy" is not shown as a verdict next to
+// a use case: whether it works is its status, not its fleet health.
+export function FleetAttention({ health, why, long }: { health: Health; why: string; long?: boolean }) {
+  const quiet = "no budget, denial or failure signal";
+  if (health === "healthy") {
+    return <span className="muted" data-testid="fleet-attention" data-health={health} title={quiet}>{long ? quiet : "—"}</span>;
+  }
+  return (
+    <span data-testid="fleet-attention" data-health={health}>
+      <UseCaseHealth health={health} />
+      {why && why !== "—" ? <span className="small"> {why}</span> : null}
+    </span>
+  );
+}
+
+// UseCaseStatusBadge: the status `talon agents show` leads with (#575),
+// computed in Go; the next step is its title. Without a status (not
+// reported), it says unknown, never a state.
+export function UseCaseStatusBadge({ status }: { status: UseCaseStatus | undefined }) {
+  if (!status) {
+    return <span className="muted" data-testid="use-case-status" data-code="">unknown</span>;
+  }
+  return (
+    <span data-testid="use-case-status" data-code={status.code}>
+      <Badge tone={statusTone(status.code)} title={status.next?.text ?? status.error}>{status.headline}</Badge>
+    </span>
+  );
 }
 
 // CurrencyAmount: an amount in its stated currency, or "unavailable" with

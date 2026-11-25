@@ -16,7 +16,7 @@ import (
 	"github.com/dativo-io/talon/internal/runtimestatus"
 )
 
-func putRuntime(t *testing.T, dir string, rec runtimestatus.Record) {
+func putRuntime(t testing.TB, dir string, rec runtimestatus.Record) {
 	t.Helper()
 	rd := filepath.Join(dir, runtimestatus.DirName)
 	require.NoError(t, os.MkdirAll(rd, 0o750))
