@@ -508,8 +508,12 @@ func TestUseCaseView_SaysWhatIsHappeningAndWhatToDoNext(t *testing.T) {
 		effective.NextCheckEvidence: "Needs attention", effective.NextSendNewRequest: "Needs attention", effective.NextCheckPolicy: "Needs attention",
 		effective.NextStoreKey: "Needs attention", effective.NextUseAuthenticatedBy: "Needs attention",
 	}
+	// The view prints the shared status (effective.StatusOf, #575), the one
+	// the console shows: the hand-written table holds for the printed line.
 	for code, want := range headlines {
-		assert.Equal(t, want, statusHeadline(effective.NextStep{Code: code}), code)
+		out := render(report(effective.NextStep{Code: code, Text: "step " + code}, runtimestatus.LoadedMatchesFile, effective.PolicyMatchesCurrent))
+		assert.Contains(t, out, "Status      "+want+"\n", code)
+		assert.Contains(t, out, "Next\n  step "+code+"\n", code)
 	}
 
 	// The next step's commands are printed as commands; a policy of another
