@@ -8,7 +8,7 @@ This guide shows that outcome for a support-bot use case. See [budget limitation
 
 ---
 
-For first-time installation, use [connect an existing application](add-talon-to-existing-app.md) to configure `agents_dir`, credentials and the serving process. Active rules are always enforced; the removed `gateway.mode` setting is rejected in v1.17. The abbreviated example below illustrates policy and verification, not a standalone installation procedure.
+For first-time installation, use [connect an existing application](add-talon-to-existing-app.md) to configure `agents_dir`, credentials and the serving process. Active rules are always enforced; the legacy `gateway.mode` setting was removed in #442 and is rejected in v1.17. The abbreviated example below illustrates policy and verification, not a standalone installation procedure.
 
 ## What this guide covers
 
