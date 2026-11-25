@@ -2,22 +2,22 @@
 
 If your bot or app's AI spend is growing, Talon gives you a simple promise:
 
-> You can cap AI spend before it runs away, and prove every allow/deny decision with signed evidence.
+> You can deny requests before provider access using estimated-cost admission caps, and verify allow/deny decisions with signed evidence. Actual charges can exceed estimates; these are not invoice ceilings.
 
-This guide shows the fastest path to that outcome for a support-bot agent.
+This guide shows that outcome for a support-bot use case. See [budget limitations](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) for estimation, reservation and recovery boundaries.
 
 ---
 
 ## What this guide covers
 
-- Hard daily/monthly spend caps for one agent (`support-slack-bot`)
+- Enforced daily/monthly estimate-based admission caps for one agent (`support-slack-bot`)
 - Deny **before** any upstream provider call when the next request would exceed cap
 - Signed evidence for both allowed and denied decisions
 - CLI + API visibility for today/month, by agent/model/provider
 
 ---
 
-## 1. Define the agent with hard EUR caps
+## 1. Define the use case with EUR admission caps
 
 The bot is one AI use case, so it gets one `agent.talon.yaml` — its Talon traffic identity and its one policy override over the organization baseline:
 
