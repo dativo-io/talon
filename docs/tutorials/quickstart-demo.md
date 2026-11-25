@@ -1,25 +1,38 @@
-# Quick Start: 60-Second Demo (No API Key)
+# Try Talon without an API key
 
 See Talon's request path and signed evidence without any API keys or configuration. The mock provider handles the LLM call, so PII scanning, policy evaluation, cost tracking, and evidence generation run without spending money.
 
 This page intentionally proves one small path. For tools, enforcement, sovereignty routing, session budgets, tamper detection, and RoPA, continue to [Reproduce the governed session manually](manual-governed-session.md).
 
+## First: run the published image
+
+Requires Docker, curl and Bash. This example runs v1.17.0; keep the script and image on the same release.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dativo-io/talon/v1.17.0/scripts/quickstart.sh -o talon-quickstart.sh
+# Inspect the script before running it.
+TALON_VERSION=1.17.0 bash talon-quickstart.sh
+```
+
+Expected: PII blocked (400), model denied (403), unknown key refused (401), two verified evidence records and final PASS. No provider exists in this fixture. For redaction, a mock response and the Operations Console, use the optional walkthrough below. Use synthetic inputs only.
+
 ## Prerequisites
 
-- Docker and Docker Compose
-- That's it.
+- Docker Compose v2.24+, Git and curl.
+- Local evaluation only: the fixture uses a public demo key and development-open administrative endpoints.
 
 ## Steps
 
 ### 1. Clone and start (30 seconds)
 
 ```bash
-git clone https://github.com/dativo-io/talon
+git clone --depth 1 --branch v1.17.0 https://github.com/dativo-io/talon
 cd talon/examples/docker-compose
-docker compose up
+export TALON_IMAGE=ghcr.io/dativo-io/talon:1.17.0
+docker compose -f docker-compose.yml -f docker-compose.published.yml up
 ```
 
-Wait for both services to show as healthy (about 15-30 seconds).
+Wait for all three services to become healthy. Startup depends on the machine and image cache.
 
 ### 2. Send a request with PII (10 seconds)
 
@@ -28,6 +41,7 @@ In another terminal:
 ```bash
 curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer talon-demo-key" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [
@@ -52,16 +66,16 @@ docker compose exec talon /usr/local/bin/talon audit list
 Expected shape:
 
 ```text
-✓ [req_a1b2c3d4] | ... | demo/demo-user | gpt-4o-mini | ...
+✓ [YOUR_EVIDENCE_ID] | ... | demo/demo-agent | gpt-4o-mini | ...
 ```
 
 ### 4. Inspect the evidence
 
 ```bash
-docker compose exec talon /usr/local/bin/talon audit show req_a1b2c3d4
+docker compose exec talon /usr/local/bin/talon audit show YOUR_EVIDENCE_ID
 ```
 
-The record shows:
+Replace YOUR_EVIDENCE_ID with the actual ID from audit list. The record shows:
 
 - **Policy decision:** allowed, with input PII redacted (`pii_redacted: true`)
 - **Classification:** email + IBAN detected; input tier 2
@@ -71,13 +85,13 @@ The record shows:
 ### 5. Verify signature integrity
 
 ```bash
-docker compose exec talon /usr/local/bin/talon audit verify req_a1b2c3d4
+docker compose exec talon /usr/local/bin/talon audit verify YOUR_EVIDENCE_ID
 ```
 
 Expected result:
 
 ```text
-✓ Evidence req_a1b2c3d4: signature VALID
+✓ Evidence YOUR_EVIDENCE_ID: signature VALID
 ```
 
 The HMAC-SHA256 signature makes later modification detectable during verification.
@@ -91,7 +105,7 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" 'http://localhost:8080/v1/evide
 curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/v1/costs | jq .
 ```
 
-Talon ships no browser dashboard; the CLI and these endpoints are the operator surface (the read-only console is tracked in [#533](https://github.com/dativo-io/talon/issues/533)).
+For this local fixture the admin key is intentionally unset. The read-only [Operations Console](../guides/operations-console.md) is available at http://127.0.0.1:8787/. Obtain the one-time pairing code with `docker compose logs talon-ui`. Never expose this fixture to another host.
 
 ## What you just proved
 
@@ -177,5 +191,5 @@ You ran the fastest Talon proof loop: one request, one governance decision, one 
 ## Clean up
 
 ```bash
-docker compose down -v
+TALON_IMAGE=ghcr.io/dativo-io/talon:1.17.0 docker compose -f docker-compose.yml -f docker-compose.published.yml down -v
 ```
