@@ -181,57 +181,6 @@ func buildUseCaseReport(ctx context.Context, cfg *config.Config, name, tenant st
 	return effective.Build(ctx, in)
 }
 
-// statusHeadline is the first thing the single view says. It is the next
-// step's code in two or three words; the sentence is under "Next".
-// blockedStep is the status and next action of a use case whose health is
-// BLOCKED: a persistent condition refuses all normal new work (a period cap
-// is exhausted, or the policy denies everything). It takes precedence over
-// what the verification of earlier traffic says: a use case that verified
-// yesterday and is refused every request today is not "Working", and there
-// is something to do. The fleet row's health and the report's verification
-// are unchanged; this is only what the human view leads with.
-func blockedStep(row *fleet.AgentRow) (headline string, step effective.NextStep, blocked bool) {
-	if row == nil || row.Health != fleet.HealthBlocked {
-		return "", effective.NextStep{}, false
-	}
-	why := row.Why
-	if why == "" || why == "—" {
-		why = "a persistent condition refuses all new work"
-	}
-	step = effective.NextStep{Code: "blocked", Text: "New requests of this use case are refused: " + why + "."}
-	for _, c := range row.Causes {
-		switch c.Kind {
-		case fleet.CauseBudgetExhausted:
-			step.Text += " They are served again when the period ends or the cap is raised (in the use case's file, within what the company policy allows)."
-			step.Commands = []string{"talon costs --agent " + row.Name}
-			return "Blocked", step, true
-		case fleet.CausePolicyDenyAll, fleet.CauseInvalidConfig:
-			step.Text += " The full report shows the rule and the file that sets it."
-			step.Commands = []string{"talon agents show " + row.Name + " --effective"}
-			return "Blocked", step, true
-		}
-	}
-	step.Text += " The full report shows the policy and the spend behind it."
-	step.Commands = []string{"talon agents show " + row.Name + " --effective"}
-	return "Blocked", step, true
-}
-
-func statusHeadline(next effective.NextStep) string {
-	switch next.Code {
-	case effective.NextNone:
-		return "Working"
-	case effective.NextEnable:
-		return "Disabled"
-	case effective.NextStartRuntime, effective.NextFixReload, effective.NextWaitReload:
-		return "Not active"
-	case effective.NextCheckRuntime:
-		return "Runtime not confirmed"
-	case effective.NextSendRequest:
-		return "Waiting for its first request"
-	}
-	return "Needs attention"
-}
-
 func runtimeLine(r *effective.Report) string {
 	// What counts is a process that serves this use case's requests
 	// (Verification.Serving), not any Talon process that read its file.
@@ -342,16 +291,19 @@ func stateWord(s fleet.State) string {
 // renderUseCase is the default `talon agents show <name>` view: what is
 // happening with this application, and whether to do something. report may
 // be nil when the effective report could not be built; the view then says
-// so and shows what the fleet row holds.
+// so and shows what the fleet row holds. The Status headline and the Next
+// step are effective.StatusOf, the function the console's use-case list and
+// page show them with (#575).
 func renderUseCase(w io.Writer, row *fleet.AgentRow, report *effective.Report, reportErr error, now time.Time) {
 	renderUseCaseIdentity(w, row)
-	var next *effective.NextStep
-	if report != nil && report.Verification != nil {
-		next = &report.Verification.Next
+	var v *effective.Verification
+	if report != nil {
+		v = report.Verification
 	}
-	headline, blockedNext, blocked := blockedStep(row)
-	if !blocked && next != nil {
-		headline = statusHeadline(*next)
+	status := effective.StatusOf(row, v)
+	headline := status.Headline
+	if status.Code == effective.StatusNotDetermined {
+		headline = "" // the facts line says why, with the error
 	}
 	renderUseCaseFacts(w, row, report, headline, reportErr, now)
 	if report != nil && report.LastDecision != nil {
@@ -361,28 +313,23 @@ func renderUseCase(w io.Writer, row *fleet.AgentRow, report *effective.Report, r
 		fmt.Fprintln(w)
 		renderAgentUseCase(w, row.UseCase)
 	}
-	renderNext(w, blocked, blockedNext, next)
+	renderNext(w, status)
 	fmt.Fprintf(w, "\nFull report: talon agents show %s --effective\n", row.Name)
 }
 
-// renderNext prints the next action. A blocking health condition leads; a
-// verification step that is itself an action (start the runtime, restart
-// it, send a request) is still stated after it, and "nothing to do" is not.
-func renderNext(w io.Writer, blocked bool, blockedNext effective.NextStep, next *effective.NextStep) {
-	step := next
-	if blocked {
-		step = &blockedNext
-	}
-	if step == nil {
+// renderNext prints the status's next action and, after a blocking health
+// condition, the verification step that is itself an action.
+func renderNext(w io.Writer, s effective.Status) {
+	if s.Next == nil {
 		return
 	}
-	fmt.Fprintf(w, "\nNext\n  %s\n", step.Text)
-	for _, c := range step.Commands {
+	fmt.Fprintf(w, "\nNext\n  %s\n", s.Next.Text)
+	for _, c := range s.Next.Commands {
 		fmt.Fprintf(w, "    %s\n", c)
 	}
-	if blocked && next != nil && next.Code != effective.NextNone {
-		fmt.Fprintf(w, "  Also: %s\n", next.Text)
-		for _, c := range next.Commands {
+	if s.Also != nil {
+		fmt.Fprintf(w, "  Also: %s\n", s.Also.Text)
+		for _, c := range s.Also.Commands {
 			fmt.Fprintf(w, "    %s\n", c)
 		}
 	}

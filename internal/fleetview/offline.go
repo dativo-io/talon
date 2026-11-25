@@ -63,6 +63,10 @@ type Result struct {
 	// agent's override — the same computation enforcement gates on. Exposed
 	// so a budget view can label its denominator with the same source.
 	Caps map[string]Caps
+	// Scan is the agent scan the rows were projected from, so a caller that
+	// reads more about the same use cases (the console's use-case status,
+	// #575) reads the same files without scanning them again.
+	Scan *agentcatalog.ScanResult
 }
 
 // Caps is one agent's binding caps; zero means uncapped for that period.
@@ -118,5 +122,5 @@ func ProjectOffline(ctx context.Context, in Inputs) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Result{Rows: rows, Issues: append([]agentcatalog.FleetIssue(nil), in.Scan.Issues...), Caps: caps}, nil
+	return &Result{Rows: rows, Issues: append([]agentcatalog.FleetIssue(nil), in.Scan.Issues...), Caps: caps, Scan: in.Scan}, nil
 }

@@ -141,15 +141,22 @@ func (s *Service) Overview(ctx context.Context, tenant string) *Overview {
 }
 
 func (s *Service) useCases(ctx context.Context, tenant string) UseCases {
+	out, _ := s.useCasesAndScan(ctx, tenant)
+	return out
+}
+
+// useCasesAndScan is useCases plus the agent scan the rows were projected
+// from (nil when the fleet source does not provide one).
+func (s *Service) useCasesAndScan(ctx context.Context, tenant string) (UseCases, *agentcatalog.ScanResult) {
 	out := UseCases{Rows: []fleet.AgentRow{}, Attention: []fleet.AgentRow{}, Issues: []agentcatalog.FleetIssue{}, Runtime: s.runtime(), HealthBasis: HealthBasisProjected, CounterWindows: counterWindows(fleet.DefaultThresholds())}
 	if s.cfg.Fleet == nil {
 		out.Availability = Availability{State: StateUnavailable, Source: SourceNone, Error: "no fleet source configured"}
-		return out
+		return out, nil
 	}
 	res, source, err := s.cfg.Fleet(ctx, tenant)
 	if err != nil {
 		out.Availability = unavailable(source, err)
-		return out
+		return out, nil
 	}
 	out.Availability = ok(source, s.now())
 	if source == SourceConfigFiles {
@@ -171,7 +178,7 @@ func (s *Service) useCases(ctx context.Context, tenant string) UseCases {
 	if len(res.Rows) == 0 && len(res.Issues) == 0 {
 		out.Availability.State = StateEmpty
 	}
-	return out
+	return out, res.Scan
 }
 
 func (s *Service) today(ctx context.Context, tenant string) Today {
@@ -275,8 +282,11 @@ func (s *Service) recentEvents(ctx context.Context, tenant string, limit int) Re
 
 // UseCases is the AI Use Cases list.
 func (s *Service) UseCases(ctx context.Context, tenant string) (Meta, UseCases) {
-	uc := s.useCases(ctx, tenant)
+	uc, scan := s.useCasesAndScan(ctx, tenant)
 	uc.Approvals = s.approvalsSummary(ctx, tenant, uc.Runtime)
+	if uc.Availability.State != StateUnavailable {
+		uc.Statuses = s.useCaseStatuses(ctx, uc.Rows, uc.Runtime, scan)
+	}
 	return s.meta(tenant), uc
 }
 
@@ -286,7 +296,7 @@ func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDet
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("%w: use case name is required", ErrInvalidArgument)
 	}
-	uc := s.useCases(ctx, tenant)
+	uc, scan := s.useCasesAndScan(ctx, tenant)
 	out := &UseCaseDetail{
 		Meta:           s.meta(tenant),
 		Availability:   uc.Availability,
@@ -320,6 +330,7 @@ func (s *Service) UseCase(ctx context.Context, tenant, name string) (*UseCaseDet
 	// the installation's plus this use case's own fleet finding.
 	out.Readiness = s.readiness(ctx, uc.Runtime)
 	out.Approvals = s.useCaseApprovals(ctx, scope, name, uc.Runtime)
+	out.Statuses = s.useCaseStatuses(ctx, []fleet.AgentRow{*row}, uc.Runtime, scan)
 	out.Findings = append(append([]Finding{}, out.Readiness.Findings...), useCaseFindings([]fleet.AgentRow{*row}, s.now())...)
 	out.Findings = append(out.Findings, approvalFindings(out.Approvals, s.now())...)
 	sortFindings(out.Findings)

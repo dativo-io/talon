@@ -16,7 +16,9 @@ type NextStep struct {
 	// Code is stable: none | enable | start_runtime | check_runtime |
 	// fix_reload | wait_reload | send_request | send_new_request |
 	// check_policy | restart_runtime | use_current_key | store_key |
-	// verify_evidence | check_evidence | use_authenticated_boundary.
+	// verify_evidence | check_evidence | use_authenticated_boundary; and
+	// blocked, which only StatusOf produces (from the fleet row's health,
+	// never from the verification).
 	Code string `json:"code"`
 	Text string `json:"text"`
 	// Commands are complete Talon commands that carry out or check the
@@ -42,6 +44,9 @@ const (
 	NextVerifyEvidence     = "verify_evidence"
 	NextCheckEvidence      = "check_evidence"
 	NextUseAuthenticatedBy = "use_authenticated_boundary"
+	// NextBlocked is the step of a use case whose fleet health is blocked
+	// (StatusOf); Verification.Next never carries it.
+	NextBlocked = "blocked"
 )
 
 // Serving is whether a running process that serves this use case's requests

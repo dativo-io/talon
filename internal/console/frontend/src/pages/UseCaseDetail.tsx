@@ -1,7 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { CostReport, Costs as CostsDTO, EffectivePolicyDTO, EvidenceIndex, UseCaseDetail as DetailDTO } from "../api/types";
+import type { CostReport, Costs as CostsDTO, EvidenceIndex, UseCaseDetail as DetailDTO, UseCaseNextStep, UseCaseStatuses } from "../api/types";
 import { PageHead } from "../components/Layout";
 import {
   AvailabilityNotice,
@@ -11,8 +11,9 @@ import {
   CurrencyAmount,
   EmptyState,
   ErrorState,
+  FleetAttention,
   Loading,
-  UseCaseHealth,
+  UseCaseStatusBadge,
 } from "../components/ui";
 import { Breadcrumbs, scopeCrumb } from "../components/Breadcrumbs";
 import { EffectivePolicySection } from "../components/EffectivePolicy";
@@ -25,6 +26,7 @@ import { breakdownRows, budgetUsage, fieldValue, warningsFor, type Breakdown } f
 import { goDuration, humanize, integer, money, relative, utc, utcShort } from "../lib/format";
 import { outcomeStory } from "../lib/outcome";
 import { scoped, useScope } from "../lib/scope";
+import { claimsNoFinding } from "../lib/status";
 import { ApprovalsCard } from "../components/Approvals";
 
 // The AI use case page answers four questions, one section each (#533 PR 2):
@@ -94,9 +96,11 @@ function SummarySection({ d, tenant }: { d: DetailDTO; tenant: string }) {
   const dims = (r?.dimensions ?? []).filter((x) => ["runtime.gateway", "runtime.mcp", "authentication.agent_keys"].includes(x.key));
   const report = d.costs.report;
   const top = (d.findings ?? [])[0];
+  const status = d.statuses?.items?.[0];
   return (
     <section id="uc-summary" className="uc-section stack" aria-labelledby="uc-summary-title">
       <SectionHead id="uc-summary" title="Summary" question="Is this AI use case operating as expected?" />
+      <StatusCard s={d.statuses} />
       <div className="grid two">
         <section className="card" aria-labelledby="uc-identity">
           <div className="card-head"><h3 id="uc-identity">Identity</h3></div>
@@ -119,7 +123,7 @@ function SummarySection({ d, tenant }: { d: DetailDTO; tenant: string }) {
           <div className="card-head"><h3 id="uc-state">State now</h3></div>
           <div className="card-body">
             <dl className="facts">
-              <dt>Fleet health</dt><dd><UseCaseHealth health={row.health} /> <span className="small">{row.why}</span></dd>
+              <dt>Fleet health</dt><dd><FleetAttention health={row.health} why={row.why} long /></dd>
               <dt>Installation readiness</dt>
               <dd>{r ? <><OverallBadge overall={r.overall} /> <span className="small">{r.summary}</span></> : <span className="muted">not reported</span>}</dd>
               {dims.map((x) => (
@@ -138,17 +142,16 @@ function SummarySection({ d, tenant }: { d: DetailDTO; tenant: string }) {
                   <MonthlyCapShare report={report} />
                 </> : <span className="muted">unavailable</span>}
               </dd>
-              <ConnectionReading name={row.name} tenant={row.tenant_id} />
             </dl>
-            <p className="small muted">Readiness is installation-wide: the runtimes serve every use case. Per-boundary proof that this use case's policy is active is under Policy &amp; Runtime.</p>
+            <p className="small muted">Readiness is installation-wide: the runtimes serve every use case. Fleet health judges budgets, denials and failures, not whether the use case is served. Per-boundary proof that this use case's policy is active is under Policy &amp; Runtime.</p>
           </div>
         </section>
       </div>
       {top ? (
         <FindingsList findings={[top]} tenant={tenant} title="Most urgent finding" />
-      ) : (
+      ) : claimsNoFinding(status) ? (
         <div className="notice info" role="status"><div>No finding: readiness reports no problem and fleet health flags nothing for this use case.</div></div>
-      )}
+      ) : null}
       <div className="row small">
         <span className="muted">Investigate:</span>
         <a href="#uc-activity">Sessions and decisions</a>
@@ -436,31 +439,44 @@ function MonthlyCapShare({ report }: { report: CostReport }) {
 }
 
 
-// ConnectionReading is one row of the Summary's facts: the one-line reading
-// of effective.Verification (has a running process loaded this use case,
-// has an authenticated request been observed, and under which policy). The
-// text is computed in Go; the detail is in Policy & Runtime.
-function ConnectionReading({ name, tenant }: { name: string; tenant: string }) {
-  const res = useApi<EffectivePolicyDTO>(api(`/use-cases/${encodeURIComponent(name)}/effective-policy`), { tenant });
-  const v = res.data?.report?.verification;
+// StatusCard heads the Summary (#575) with what `talon agents show <name>`
+// leads with: the status, the one next step with its commands (after a
+// blocking condition, the verification's own step as well), and the one-line
+// connection and verification reading it rests on (has a running process
+// loaded this use case, has an authenticated request been observed, and
+// under which policy). All of it is computed in Go with the page's own
+// response; the detail is in Policy & Runtime.
+function StatusCard({ s }: { s: UseCaseStatuses | undefined }) {
+  const st = s?.items?.[0];
   return (
-    <>
-      <dt>Connection and verification</dt>
-      <dd data-testid="connection-reading">
-        {res.error ? <span className="muted">unavailable: {res.error.message}</span> : null}
-        {!res.data && res.loading ? <span className="muted">loading…</span> : null}
-        {res.data && !v ? <span className="muted">not available</span> : null}
-        {v ? <span className="small" data-code={v.reading.code}>{v.reading.text} <a href="#uc-effective">Details</a></span> : null}
-      </dd>
-      {v?.next ? (
-        <>
-          <dt>Next step</dt>
-          <dd className="small" data-testid="connection-next" data-code={v.next.code}>
-            {v.next.text}
-            {v.next.commands?.map((c) => <div key={c}><code>{c}</code></div>)}
+    <section className="card" aria-labelledby="uc-status">
+      <div className="card-head">
+        <h3 id="uc-status">Status</h3>
+        <span className="small muted">the Status and Next <code>talon agents show</code> prints</span>
+      </div>
+      <div className="card-body">
+        <AvailabilityNotice a={s?.availability} what="The status" />
+        <dl className="facts">
+          <dt>Status</dt>
+          <dd><UseCaseStatusBadge status={st} /></dd>
+          {st?.next ? (<><dt>Next step</dt><dd><Step testid="use-case-next" step={st.next} /></dd></>) : null}
+          {st?.also ? (<><dt>Also</dt><dd><Step testid="use-case-also" step={st.also} /></dd></>) : null}
+          {st?.error ? (<><dt>Not determined</dt><dd className="small">{st.error}</dd></>) : null}
+          <dt>Connection and verification</dt>
+          <dd data-testid="connection-reading">
+            {st?.reading ? <span className="small" data-code={st.reading.code}>{st.reading.text} <a href="#uc-effective">Details</a></span> : <span className="muted">not available</span>}
           </dd>
-        </>
-      ) : null}
-    </>
+        </dl>
+      </div>
+    </section>
+  );
+}
+
+function Step({ step, testid }: { step: UseCaseNextStep; testid: string }) {
+  return (
+    <div className="small" data-testid={testid} data-code={step.code}>
+      {step.text}
+      {step.commands?.map((c) => <div key={c}><code>{c}</code></div>)}
+    </div>
   );
 }
