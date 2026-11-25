@@ -10,7 +10,7 @@ There are two ways to start with Talon. Pick the one you mean:
 | Needs | Docker. No provider key, no application | A provider key, a company policy, one Talon key per application |
 | Guide | [Quickstart](../QUICKSTART.md) | This page |
 
-The quickstart proves that Talon decides and signs. It does not connect your application: it uses a synthetic identity and no company policy.
+The published-image quickstart proves that Talon enforces a demonstration company policy and signs its decisions. It uses a synthetic identity and does not connect your application or exercise a live provider.
 
 ## The whole path
 
@@ -265,13 +265,15 @@ The view keeps four facts apart and never lets one stand for another: the file (
 
 `talon agents show <name> --effective` is the full report behind this view: the files and their digests, the policy with the layer that wins each rule, every interception boundary, and what the observations do not establish. `talon audit verify <evidence-id>` checks a record's signature independently. The [Operations Console](operations-console.md) shows the same facts on the use case's page.
 
+Before adding another application, send a permitted synthetic request and one containing a synthetic email address. The latter must return HTTP 400 with `pii_policy_violation` under the configured block policy; an unknown use-case key must return 401. Verify actual evidence IDs with `talon audit verify YOUR_EVIDENCE_ID` and check `talon agents show customer-support --effective`. Working alone does not prove a provider was reached.
+
 ## 6. Connect the next application
 
 ```bash
 talon agents add hr-copilot --owner people-ops --description "HR policy assistant"
 ```
 
-That is the whole step. Give the application its two settings and send a request. The second application gets its own identity, key, budget accounting and evidence, and runs under the same company policy: nothing is copied into its file, the company configuration is not touched, the running Talon loads it without a restart, and the first application keeps serving meanwhile.
+Give the application the same base URL and its own Talon key from its secret manager. Wait for its runtime state to be loaded, then send a permitted request and a synthetic PII request. The second application gets its own identity, key, budget accounting and evidence, and runs under the same company policy: nothing is copied into its file, the company configuration is not touched, the running Talon loads it without a restart, and the first application keeps serving meanwhile.
 
 See all of them at once:
 
@@ -284,6 +286,15 @@ USE CASE               STATE     RUNTIME        LAST REQUEST   COST THIS MONTH  
 customer-support       enabled   loaded         4m ago         $0.0000 / $500.00      —
 hr-copilot             enabled   loaded         9s ago         $0.0000 / $500.00      —
 ```
+
+Verify each application separately:
+
+```bash
+talon agents show customer-support --effective
+talon agents show hr-copilot --effective
+```
+
+Acceptance: both applications are loaded and have authenticated traffic under the current company policy, distinct evidence and cost attribution. The second application is denied by the same PII rule, and the first continues serving. No company policy change or restart is required. For a provider-free engineering test, run `make test-onboarding` in the matching release checkout (Go, Node, npm, curl and OpenSSL required). The [acceptance script](../../scripts/onboarding-acceptance.sh) checks actual upstream counts and credential lifecycle; a source-build pass does not establish your deployed binary or client compatibility.
 
 ## Day two
 
