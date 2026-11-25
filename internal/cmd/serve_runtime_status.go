@@ -25,8 +25,9 @@ var errNoKeyedAgents = errors.New("gateway mode requires at least one keyed agen
 // processes run, with which active catalog generation and reload state,
 // without any network path to them. It returns a stop function that writes
 // the final "stopped" record; a process killed without it simply stops
-// heartbeating and is reported stale, then offline.
-func startRuntimeStatus(ctx context.Context, cfg *config.Config, fleetView func() agentcatalog.FleetView, reloadEnabled bool) func() {
+// heartbeating and is reported stale, then offline. reloadEvery is the
+// interval the reloader runs at, zero when this process does not reload.
+func startRuntimeStatus(ctx context.Context, cfg *config.Config, fleetView func() agentcatalog.FleetView, reloadEvery time.Duration) func() {
 	base := runtimeBase(cfg)
 	roles := base.Roles
 	snapshot := func(r *runtimestatus.Record) {
@@ -37,7 +38,7 @@ func startRuntimeStatus(ctx context.Context, cfg *config.Config, fleetView func(
 		if v.Snapshot == nil {
 			return
 		}
-		r.Catalog = catalogOf(v, reloadEnabled)
+		r.Catalog = catalogOf(v, reloadEvery)
 		r.AgentKeys = agentKeysOf(v.Snapshot)
 	}
 	pub, err := runtimestatus.NewPublisher(cfg.DataDir, runtimestatus.DefaultInterval, base, snapshot)
@@ -128,12 +129,13 @@ func loadedConfigRef(path, loadedDigest string) *runtimestatus.ConfigRef {
 	return &runtimestatus.ConfigRef{Path: abs, Digest: loadedDigest, LoadedAt: time.Now().UTC()}
 }
 
-func catalogOf(v agentcatalog.FleetView, reloadEnabled bool) *runtimestatus.Catalog {
+func catalogOf(v agentcatalog.FleetView, reloadEvery time.Duration) *runtimestatus.Catalog {
 	c := &runtimestatus.Catalog{
 		ActiveGeneration: v.Snapshot.Generation,
 		ScanDigest:       v.Snapshot.ScanDigest,
 		ActivatedAt:      v.Snapshot.BuiltAt,
-		ReloadEnabled:    reloadEnabled,
+		ReloadEnabled:    reloadEvery > 0,
+		ReloadIntervalMs: reloadEvery.Milliseconds(),
 		ReloadRejected:   v.Reload.Rejected,
 		RejectedDigest:   v.Reload.RejectedDigest,
 		RejectedCauses:   v.Reload.RejectedCauses,

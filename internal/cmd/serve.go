@@ -1001,8 +1001,14 @@ func runServe(cmd *cobra.Command, args []string) (err error) {
 		Msg("talon_serve_started")
 
 	// Runtime status record for the console (#538): written from now on,
-	// with a final "stopped" record after the listeners shut down.
-	stopRuntimeStatus := startRuntimeStatus(ctx, cfg, fleetView, reloader != nil)
+	// with a final "stopped" record after the listeners shut down. It states
+	// the reload interval this process runs at (#575), so operator commands
+	// report when an agent-file change can become active.
+	var reloadEvery time.Duration
+	if reloader != nil {
+		reloadEvery = reloadInterval
+	}
+	stopRuntimeStatus := startRuntimeStatus(ctx, cfg, fleetView, reloadEvery)
 	runtimePublished = true
 	defer stopRuntimeStatus()
 

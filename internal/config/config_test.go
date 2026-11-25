@@ -418,3 +418,33 @@ func TestResolveSovereigntyForGateway_NoGatewaySovereigntyIsNoop(t *testing.T) {
 	require.NoError(t, ResolveSovereigntyForGateway(op, gwPath))
 	assert.Equal(t, DataSovereigntyEUPreferred, op.EffectiveSovereigntyMode())
 }
+
+// #575: the periodic reload defaults to 2s, and an explicit setting still
+// wins: the talon.config.yaml key, TALON_AGENTS_RELOAD_INTERVAL (over the
+// file), and "0" (reload disabled). Parsing, the 1s floor and the refusal of
+// a negative value are serve's (TestParseReloadInterval).
+func TestLoad_AgentsReloadInterval(t *testing.T) {
+	resetViper(t)
+	viper.SetDefault(KeyAgentsReloadEvery, DefaultAgentsReloadInterval) // registered by init()
+	t.Setenv("TALON_AGENTS_RELOAD_INTERVAL", "")
+	require.Equal(t, "2s", DefaultAgentsReloadInterval)
+
+	load := func() string {
+		t.Helper()
+		cfg, err := Load()
+		require.NoError(t, err)
+		return cfg.AgentsReloadInterval
+	}
+	assert.Equal(t, "2s", load(), "the default")
+
+	path := filepath.Join(t.TempDir(), "talon.config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("agents_reload_interval: \"30s\"\n"), 0o600))
+	viper.SetConfigFile(path)
+	require.NoError(t, viper.ReadInConfig())
+	assert.Equal(t, "30s", load(), "the config file key")
+
+	t.Setenv("TALON_AGENTS_RELOAD_INTERVAL", "0")
+	assert.Equal(t, "0", load(), "the environment wins over the file; \"0\" disables")
+	t.Setenv("TALON_AGENTS_RELOAD_INTERVAL", "1500ms")
+	assert.Equal(t, "1500ms", load())
+}

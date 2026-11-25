@@ -169,7 +169,7 @@ talonctl validate
 talonctl actions show create_refund_request           # Verdict: BY AMOUNT, and the company band
 ```
 
-Talon reloads the file within 30 seconds. Your application now asks Talon to perform the refund instead of calling the refund service. Two requests per action:
+Talon reloads the file within `agents_reload_interval` (default 2s). Your application now asks Talon to perform the refund instead of calling the refund service. Two requests per action:
 
 ```bash
 # 1. Establish: Talon decides. operation_id is yours; use one per business action (here: per ticket).
@@ -265,7 +265,7 @@ Do not run other `talon` commands or edit the configuration while the backup run
 talonctl agents add hr-copilot --tenant acme
 ```
 
-It inherits the same company policy, gets its own key, and the running server loads it within 30 seconds, without a restart.
+It inherits the same company policy, gets its own key, and the running server loads it within `agents_reload_interval` (default 2s), without a restart.
 
 ## Customer acceptance checklist
 

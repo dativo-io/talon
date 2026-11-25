@@ -163,7 +163,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY
 
 The first line must print `401` (no credential) and the second `200` (the operator). A `200` on the first line means the server runs without an admin key: stop it, load `talon.env`, start again. The application's Talon key gets `401` on the administrative endpoints too ([key scopes](../reference/authentication-and-key-scopes.md)).
 
-A running `talon serve` re-scans `agents_dir` every `agents_reload_interval` (default 30s), so later registrations need no restart. The company policy (`gateway:` block) is read at start: changing it needs a restart.
+A running `talon serve` re-scans `agents_dir` every `agents_reload_interval` (default 2s), so later registrations need no restart. The company policy (`gateway:` block) is read at start: changing it needs a restart.
 
 ### When the application runs on another machine
 

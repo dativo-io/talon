@@ -240,6 +240,7 @@ type sourceReloadFixture struct {
 	holder    *RuntimeHolder
 	reloader  *Reloader
 	fake      *fakeSources
+	source    *countingSource
 	now       time.Time
 	mu        sync.Mutex
 }
@@ -274,8 +275,9 @@ func newSourceReloadFixture(t *testing.T) *sourceReloadFixture {
 	bundles, err := BuildRuntimeAgents(ctx, scan, deps)
 	require.NoError(t, err)
 	f.holder = NewRuntimeHolder(NewRuntimeSnapshot(scan, bundles, nil, f.now))
+	f.source = &countingSource{ScanSource: Source{Dir: agentsDir}}
 	f.reloader = NewReloader(ReloadConfig{
-		Source: Source{Dir: agentsDir}, Deps: deps, Holder: f.holder, Evidence: evStore, Clock: f.clock,
+		Source: f.source, Deps: deps, Holder: f.holder, Evidence: evStore, Clock: f.clock,
 		BuildRegistry: func(context.Context, *ScanResult, *RuntimeSnapshot) (*gateway.IdentityRegistry, error) {
 			return nil, nil
 		},
@@ -304,15 +306,17 @@ func TestReloader_SourceRefreshActivatesOnlyChangedFacts(t *testing.T) {
 	require.NotNil(t, state.NextSourceRefresh)
 	assert.Equal(t, f.now.Add(60*time.Second), *state.NextSourceRefresh, "next refresh follows the upstream ttlMs")
 
-	// Not due: free tick, no discovery.
+	// Not due: free tick, no discovery, and no agent file parsed (#575).
 	before := f.fake.calls.Load()
 	assert.Equal(t, ReloadUnchanged, f.reloader.ReloadOnce(ctx))
 	assert.Equal(t, before, f.fake.calls.Load())
+	assert.Zero(t, f.source.scans.Load(), "a tick with unchanged bytes and no refresh due parses nothing")
 
 	// Due, same facts: re-discovered, nothing activates, no evidence.
 	f.advance(61 * time.Second)
 	assert.Equal(t, ReloadUnchanged, f.reloader.ReloadOnce(ctx))
 	assert.Equal(t, before+1, f.fake.calls.Load())
+	assert.Equal(t, int64(1), f.source.scans.Load(), "a due refresh builds from a full scan, unchanged bytes or not")
 	assert.Same(t, boot, f.holder.Current())
 	assert.Empty(t, f.reloadRows(t))
 	assert.Equal(t, f.now.Add(60*time.Second), *f.reloader.State().NextSourceRefresh, "schedule renewed")
@@ -364,10 +368,12 @@ func TestReloader_SourceFailureKeepsLastKnownGood(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.False(t, rows[0].PolicyDecision.Allowed)
 
-	// Not yet due again: the rejection stays visible, no discovery storm.
-	calls := f.fake.calls.Load()
+	// Not yet due again: the rejection stays visible, no discovery storm,
+	// and nothing is parsed (#575).
+	calls, scans := f.fake.calls.Load(), f.source.scans.Load()
 	assert.Equal(t, ReloadUnchanged, f.reloader.ReloadOnce(ctx))
 	assert.Equal(t, calls, f.fake.calls.Load())
+	assert.Equal(t, scans, f.source.scans.Load())
 	assert.True(t, f.reloader.State().Rejected, "a source-only rejection is not cleared by unchanged bytes")
 
 	// Same broken state again: duplicate, no new record. A different
@@ -387,6 +393,103 @@ func TestReloader_SourceFailureKeepsLastKnownGood(t *testing.T) {
 	assert.Same(t, boot, f.holder.Current())
 	assert.False(t, f.reloader.State().Rejected)
 	assert.Len(t, f.reloadRows(t), 2)
+}
+
+// TestReloader_RejectedBytesDeferTheSourceRefresh (#575): the candidate of a
+// config rejection is refused before it could refresh any source, so once
+// the active generation's refresh falls due it waits for the next re-scan of
+// the rejected bytes instead of forcing a full scan and a discovery on every
+// tick. The re-scan that finds the source reachable again activates.
+func TestReloader_RejectedBytesDeferTheSourceRefresh(t *testing.T) {
+	f := newSourceReloadFixture(t)
+	ctx := context.Background()
+	f.reloader.interval = 2 * time.Second // what Run sets
+	boot := f.holder.Current()
+	require.Equal(t, f.now.Add(60*time.Second), *f.reloader.State().NextSourceRefresh)
+
+	// A config edit whose build needs the source, which is down: the bytes
+	// changed, so this is a config rejection, not a source-only one.
+	f.fake.set("", errors.New("refunds: connection refused"))
+	writeActionsAgent(t, f.agentsDir, "refunder", discoveredActions("ticket_id")+"        non_material: [amount]\n")
+	calls := f.fake.calls.Load()
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	require.False(t, f.reloader.State().SourcesRejected)
+
+	// Two minutes of 2s ticks; the boot generation's refresh is due at 60s.
+	var scannedAt []time.Duration
+	for elapsed := 2 * time.Second; elapsed <= 120*time.Second; elapsed += 2 * time.Second {
+		f.advance(2 * time.Second)
+		if elapsed == 100*time.Second {
+			f.fake.set("", nil) // the source is reachable again
+		}
+		scans := f.source.scans.Load()
+		out := f.reloader.ReloadOnce(ctx)
+		if f.source.scans.Load() > scans {
+			scannedAt = append(scannedAt, elapsed)
+		}
+		if elapsed < 120*time.Second {
+			require.Equal(t, ReloadRejectedDuplicate, out, "at %s", elapsed)
+			require.Same(t, boot, f.holder.Current(), "last-known-good keeps serving")
+		} else {
+			require.Equal(t, ReloadActivated, out, "the re-scan after the cure activates")
+		}
+	}
+	s := time.Second
+	assert.Equal(t, []time.Duration{2 * s, 6 * s, 14 * s, 30 * s, 60 * s, 90 * s, 120 * s}, scannedAt, "a due refresh waits for the next re-scan")
+	assert.Equal(t, int64(1+len(scannedAt)), f.fake.calls.Load()-calls, "one discovery per scan (the rejection and each re-scan), none per tick")
+	assert.False(t, f.reloader.State().Rejected)
+	assert.Len(t, f.reloadRows(t), 2, "one rejection, one activation")
+}
+
+// TestReloader_RolledBackSourceRefreshRetriesOnTheBackoff (#575): a refresh
+// whose changed upstream facts cannot be recorded is rolled back and retried
+// on the re-scan backoff, not on every tick. Its files never changed, so the
+// unchanged files do not clear the state (that would restart the backoff
+// every other tick). Activation lands on the first retry after the evidence
+// store is back.
+func TestReloader_RolledBackSourceRefreshRetriesOnTheBackoff(t *testing.T) {
+	f := newSourceReloadFixture(t)
+	ctx := context.Background()
+	f.reloader.interval = 2 * time.Second // what Run sets
+	sink := &switchedEvidence{next: f.evStore}
+	sink.down.Store(true)
+	f.reloader.cfg.Evidence = sink
+	boot := f.holder.Current()
+
+	// The refresh is due and finds a changed schema; its record cannot be
+	// written.
+	f.fake.set(`{"type":"object","properties":{"amount":{"type":"integer"},"ticket_id":{"type":"string"}}}`, nil)
+	f.advance(61 * time.Second)
+	require.Equal(t, ReloadRolledBack, f.reloader.ReloadOnce(ctx))
+
+	var rebuiltAt []time.Duration
+	for elapsed := 2 * time.Second; elapsed <= 90*time.Second; elapsed += 2 * time.Second {
+		f.advance(2 * time.Second)
+		if elapsed == 64*time.Second {
+			sink.down.Store(false) // the evidence store is back
+		}
+		calls := f.fake.calls.Load()
+		out := f.reloader.ReloadOnce(ctx)
+		if f.fake.calls.Load() == calls {
+			require.Equal(t, ReloadUnchanged, out, "at %s", elapsed)
+			require.True(t, f.reloader.State().Rejected, "unchanged files do not clear the rollback (at %s)", elapsed)
+			continue
+		}
+		rebuiltAt = append(rebuiltAt, elapsed)
+		if elapsed < 90*time.Second {
+			require.Equal(t, ReloadRolledBack, out, "at %s", elapsed)
+			require.Same(t, boot, f.holder.Current(), "last-known-good keeps serving")
+		} else {
+			require.Equal(t, ReloadActivated, out, "the first retry after the store is back activates")
+		}
+	}
+	s := time.Second
+	assert.Equal(t, []time.Duration{2 * s, 6 * s, 14 * s, 30 * s, 60 * s, 90 * s}, rebuiltAt, "rebuilds (each a discovery) at doubling waits, not every tick")
+	assert.False(t, f.reloader.State().Rejected)
+	assert.NotEqual(t, boot.Generation, f.holder.Current().Generation)
+	rows := f.reloadRows(t)
+	require.Len(t, rows, 1, "only the activation was recorded")
+	assert.Contains(t, rows[0].PolicyDecision.Reasons[0], "after trusted action sources changed")
 }
 
 func TestReloader_ConfigEditWithSourcesActivatesImmediately(t *testing.T) {

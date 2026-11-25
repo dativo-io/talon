@@ -75,7 +75,7 @@ sudo journalctl -u talon --no-pager | grep -c 'TALON_.*_KEY='        # 0: no key
 - In-memory state: console sessions, pairing codes, and the process-local in-flight budget ledger.
 - An unrecorded provider charge remembered by the gateway process is forgotten on restart (LIMITATIONS §7).
 
-The company action policy (`talon.config.yaml`) is read at start. Changing it requires a restart, and that restart invalidates approvals granted under the old policy (`approval_binding_stale`). Agent files reload safely while serving, every `agents_reload_interval` (default 30s).
+The company action policy (`talon.config.yaml`) is read at start. Changing it requires a restart, and that restart invalidates approvals granted under the old policy (`approval_binding_stale`). Agent files reload safely while serving, every `agents_reload_interval` (default 2s).
 
 ## Back up
 

@@ -20,6 +20,7 @@ import (
 	"github.com/dativo-io/talon/internal/action"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/effective"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
@@ -796,12 +797,19 @@ func fleetActivation(cfg *config.Config) string {
 	if v.Err != "" {
 		return "this installation's runtime records could not be read (" + v.Err + "), so whether a running Talon process serves this use case is not known."
 	}
-	for i := range v.Processes {
-		if v.Processes[i].Assessed == runtimestatus.Running {
-			return fmt.Sprintf("a Talon process is running and loads the use case at its next re-scan of agents_dir (agents_reload_interval, default %s); if that re-scan rejects the fleet, the previous one keeps serving and this use case is not active.", config.DefaultAgentsReloadInterval)
-		}
+	if !anyRunning(&v) {
+		return "no Talon process of this installation is running. `talon serve` loads this use case when it starts."
 	}
-	return "no Talon process of this installation is running. `talon serve` loads this use case when it starts."
+	// What the running processes report about re-reading agent files
+	// (#575): a rejected re-scan blocks every activation until it is fixed.
+	f := runtimestatus.ReloadFactsOf(v, "")
+	switch {
+	case len(f.RejectedCauses) > 0:
+		return "a Talon process is running, but it rejected the last change to the fleet and keeps serving the previous one, so this use case is not active. Blocking: " + strings.Join(f.RejectedCauses, "; ") + ". Fix that; " + effective.RescanAfterFix(f) + "."
+	case f.Disabled:
+		return "a Talon process is running, but it does not re-scan agents_dir (agents_reload_interval is \"0\"): it loads this use case only when it starts. Restart `talon serve`."
+	}
+	return "a Talon process is running and loads the use case at its next re-scan of agents_dir (" + f.Setting() + "); if that re-scan rejects the fleet, the previous one keeps serving and this use case is not active."
 }
 
 // validateAgentContent runs the strict loader and the effective action

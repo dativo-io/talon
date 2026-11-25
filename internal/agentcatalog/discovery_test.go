@@ -204,3 +204,137 @@ func TestDiscoverAgents_ManyAgentsSortedByPath(t *testing.T) {
 		assert.Less(t, scan.Files[i-1].Path, scan.Files[i].Path, "deterministic path order")
 	}
 }
+
+// TestSource_DigestIsTheScanDigest (#575): the reloader's unchanged check
+// hashes raw bytes without parsing them, and must equal the digest the full
+// scan reports for the same files in every shape a scan can take, so equal
+// digests can only mean unchanged bytes, and a scan that fails before it
+// hashes anything fails the cheap read too.
+func TestSource_DigestIsTheScanDigest(t *testing.T) {
+	ctx := context.Background()
+	valid := func(t *testing.T) Source {
+		dir := t.TempDir()
+		writeAgentFile(t, dir, "customer-support", "customer-support", "cs-key")
+		writeAgentFile(t, dir, "teams/coding/prod", "coding", "coding-key")
+		writeRawFile(t, dir, "customer-support", "foo.talon.yaml", "not: an agent\n")
+		writeRawFile(t, dir, ".archive/old", AgentConfigFilename, "agent:\n  name: archived\n")
+		return Source{Dir: dir}
+	}
+	cases := []struct {
+		name string
+		src  func(t *testing.T) Source
+		// walkFails: the scan fails before any file is hashed.
+		walkFails bool
+	}{
+		{name: "valid nested set, hidden directory and other filenames skipped", src: valid},
+		{name: "an invalid file", src: func(t *testing.T) Source {
+			s := valid(t)
+			writeRawFile(t, s.Dir, "broken", AgentConfigFilename, "agent:\n  version: \"1.0.0\"\npolicies:\n  cost_limits: {}\n")
+			return s
+		}},
+		{name: "an unknown key", src: func(t *testing.T) Source {
+			s := valid(t)
+			writeRawFile(t, s.Dir, "typo", AgentConfigFilename, "agent:\n  name: typo\n  version: \"1.0.0\"\npolicies:\n  cost_limits:\n    montly: 1\n")
+			return s
+		}},
+		{name: "duplicate names", src: func(t *testing.T) Source {
+			s := valid(t)
+			writeAgentFile(t, s.Dir, "again", "coding", "other-key")
+			return s
+		}},
+		{name: "an empty directory", src: func(t *testing.T) Source { return Source{Dir: t.TempDir()} }},
+		{name: "a single file", src: func(t *testing.T) Source {
+			return Source{File: writeAgentFile(t, t.TempDir(), "x", "solo", "")}
+		}},
+		{name: "a single invalid file", src: func(t *testing.T) Source {
+			return Source{File: writeRawFile(t, t.TempDir(), "x", AgentConfigFilename, "agent: [\n")}
+		}},
+		{name: "a missing single file", src: func(t *testing.T) Source {
+			return Source{File: filepath.Join(t.TempDir(), AgentConfigFilename)}
+		}},
+		{name: "a missing directory", src: func(t *testing.T) Source { return Source{Dir: filepath.Join(t.TempDir(), "absent")} }, walkFails: true},
+		{name: "a file named as the directory", src: func(t *testing.T) Source {
+			return Source{Dir: writeAgentFile(t, t.TempDir(), "x", "solo", "")}
+		}, walkFails: true},
+		{name: "an empty source", src: func(*testing.T) Source { return Source{} }, walkFails: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := tc.src(t)
+			scan, _ := src.Scan(ctx)
+			digest, err := src.Digest(ctx)
+			if tc.walkFails {
+				require.Error(t, err)
+				assert.Empty(t, scan.Digest, "the scan hashed nothing either")
+				return
+			}
+			require.NoError(t, err)
+			require.NotEmpty(t, scan.Digest)
+			assert.Equal(t, scan.Digest, digest)
+		})
+	}
+
+	t.Run("an unreadable file", func(t *testing.T) {
+		src := valid(t)
+		path := writeAgentFile(t, src.Dir, "locked", "locked", "")
+		require.NoError(t, os.Chmod(path, 0))
+		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+		if _, err := os.ReadFile(path); err == nil {
+			t.Skip("the file is still readable (running as root)")
+		}
+		scan, scanErr := src.Scan(ctx)
+		require.Error(t, scanErr)
+		digest, err := src.Digest(ctx)
+		require.NoError(t, err, "an unreadable file is part of the digest, not a failure to compute it")
+		assert.Equal(t, scan.Digest, digest)
+	})
+
+	t.Run("any byte change changes the digest", func(t *testing.T) {
+		src := valid(t)
+		before, err := src.Digest(ctx)
+		require.NoError(t, err)
+		path := filepath.Join(src.Dir, "customer-support", AgentConfigFilename)
+		raw, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, append(raw, '\n'), 0o600))
+		after, err := src.Digest(ctx)
+		require.NoError(t, err)
+		assert.NotEqual(t, before, after)
+	})
+}
+
+// BenchmarkReloadTickRead is what one reload tick reads when nothing
+// changed: before #575 the full strict scan of every file, now the
+// raw-bytes digest alone.
+func BenchmarkReloadTickRead(b *testing.B) {
+	ctx := context.Background()
+	for _, n := range []int{50, 200} {
+		dir := b.TempDir()
+		for i := 0; i < n; i++ {
+			name := fmt.Sprintf("use-case-%03d", i)
+			d := filepath.Join(dir, name)
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				b.Fatal(err)
+			}
+			content := "agent:\n  name: " + name + "\n  version: \"1.0.0\"\n  key:\n    secret_name: " + name + "-talon-key\npolicies:\n  cost_limits: {}\n"
+			if err := os.WriteFile(filepath.Join(d, AgentConfigFilename), []byte(content), 0o600); err != nil {
+				b.Fatal(err)
+			}
+		}
+		src := Source{Dir: dir}
+		b.Run(fmt.Sprintf("full_scan/%d", n), func(b *testing.B) {
+			for b.Loop() {
+				if _, err := src.Scan(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("raw_digest/%d", n), func(b *testing.B) {
+			for b.Loop() {
+				if _, err := src.Digest(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

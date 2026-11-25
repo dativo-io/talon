@@ -17,7 +17,12 @@ import (
 func TestNextStep_IsDeterminedByTheFacts(t *testing.T) {
 	running := runtimeFacts{known: true, running: true}
 	stopped := runtimeFacts{known: true}
-	rejected := runtimeFacts{known: true, running: true, rejected: []string{"agents/broken/agent.talon.yaml: field typo_field not found"}}
+	rejected := runtimeFacts{known: true, running: true, reload: runtimestatus.ReloadFacts{Known: true, Every: 2 * time.Second, RejectedCauses: []string{"agents/broken/agent.talon.yaml: field typo_field not found"}}}
+	// #575: what the serving processes report about re-reading agent files.
+	every2s := runtimeFacts{known: true, running: true, reload: runtimestatus.ReloadFacts{Known: true, Every: 2 * time.Second}}
+	noReload := runtimeFacts{known: true, running: true, reload: runtimestatus.ReloadFacts{Known: true, Disabled: true}}
+	// A rejection reported by a process of an earlier release (no interval).
+	rejectedEarlier := runtimeFacts{known: true, running: true, reload: runtimestatus.ReloadFacts{Known: true, Unreported: true, RejectedCauses: []string{"agents/broken/agent.talon.yaml: field typo_field not found"}}}
 	loaded := runtimestatus.Loaded{State: runtimestatus.LoadedMatchesFile}
 	notLoaded := runtimestatus.Loaded{State: runtimestatus.NotInActiveGeneration}
 	endpoints := []string{"/v1/proxy/openai/v1"}
@@ -60,8 +65,11 @@ func TestNextStep_IsDeterminedByTheFacts(t *testing.T) {
 		{"a Talon process runs, but none that serves the LLM gateway", v(ReadingTrafficMatches), runtimestatus.Loaded{State: runtimestatus.LoadedUnknown}, runtimeFacts{known: true, others: true}, NextStartRuntime, []string{"verified, but that was earlier", "none that serves the LLM gateway", "talon serve --gateway"}, nil},
 		{"disabled wins over everything", v(ReadingTrafficMatches, func(v *Verification) { v.Configured = "disabled" }), loaded, running, NextEnable, []string{"disabled in its file"}, []string{"talon agents enable app"}},
 		{"registered, nothing running", v(ReadingNotLoaded), notLoaded, stopped, NextStartRuntime, []string{"No Talon process of this installation is running"}, nil},
-		{"registered, the running process rejected the fleet", v(ReadingNotLoaded), notLoaded, rejected, NextFixReload, []string{"rejected the last change to the fleet", "typo_field"}, []string{"talon validate"}},
-		{"registered, the running process has not reloaded yet", v(ReadingNotLoaded), notLoaded, running, NextWaitReload, []string{"has not loaded the current version of this use case yet"}, []string{"talon validate"}},
+		{"registered, the running process rejected the fleet", v(ReadingNotLoaded), notLoaded, rejected, NextFixReload, []string{"rejected the last change to the fleet", "Blocking: agents/broken/agent.talon.yaml: field typo_field not found.", "the next re-scan (every 2s, agents_reload_interval) loads changed files, and a fix that leaves them unchanged, such as a key stored in the vault, is picked up within 30s."}, []string{"talon validate"}},
+		{"registered, the running process has not reloaded yet", v(ReadingNotLoaded), notLoaded, running, NextWaitReload, []string{"has not loaded the current version of this use case yet", "periodically (agents_reload_interval)"}, []string{"talon validate"}},
+		{"registered, the running process re-scans every 2s", v(ReadingNotLoaded), notLoaded, every2s, NextWaitReload, []string{"has not loaded the current version of this use case yet", "re-scans agents_dir periodically (every 2s, agents_reload_interval)", "without a restart"}, []string{"talon validate"}},
+		{"registered, an earlier-release process rejected the fleet", v(ReadingNotLoaded), notLoaded, rejectedEarlier, NextFixReload, []string{"Blocking: agents/broken/agent.talon.yaml", "Fix that; the next re-scan (agents_reload_interval) loads the current files."}, []string{"talon validate"}},
+		{"registered, the running process does not reload", v(ReadingNotLoaded), notLoaded, noReload, NextRestartRuntime, []string{"does not re-scan agents_dir", `agents_reload_interval is "0"`, "only when it starts", "Restart `talon serve`"}, nil},
 		{"runtime records unreadable", v(ReadingLoadUnknown), runtimestatus.Loaded{State: runtimestatus.LoadedUnknown}, runtimeFacts{}, NextCheckRuntime, []string{"is not known here"}, nil},
 		{"loaded, no traffic", v(ReadingLoadedNoTraffic), loaded, running, NextSendRequest, []string{"<talon-url>/v1/proxy/openai/v1", "answered 401 and leaves no record"}, nil},
 		{"policy differs", v(ReadingTrafficDiffers), loaded, running, NextSendNewRequest, []string{"another policy"}, []string{"talon agents show app --effective"}},
@@ -90,6 +98,9 @@ func TestNextStep_IsDeterminedByTheFacts(t *testing.T) {
 			for _, want := range tc.contains {
 				assert.Contains(t, got.Text, want)
 			}
+			// #575: the interval is the one a process reports, never an
+			// assumed default.
+			assert.NotRegexp(t, `default \d`, got.Text)
 			if tc.commands != nil {
 				assert.Equal(t, tc.commands, got.Commands)
 			}

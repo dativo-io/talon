@@ -22,8 +22,9 @@ import (
 type ReloadOutcome int
 
 const (
-	// ReloadUnchanged: the scanned bytes match the active generation; no
-	// vault I/O, no evidence — the interval tick is free.
+	// ReloadUnchanged: the files' bytes match the active generation; with no
+	// source refresh due nothing is parsed (#575), and there is no vault
+	// I/O and no evidence.
 	ReloadUnchanged ReloadOutcome = iota
 	// ReloadActivated: a new generation validated, swapped, and recorded.
 	ReloadActivated
@@ -32,6 +33,8 @@ const (
 	ReloadRejected
 	// ReloadRejectedDuplicate: the same broken state as the previous pass —
 	// no new evidence row (one record per distinct broken state, not per tick).
+	// Also the outcome of a tick that finds the same broken bytes, or the
+	// bytes of a rolled-back activation, before their re-scan is due (#575).
 	ReloadRejectedDuplicate
 	// ReloadRecovered: the bytes reverted to the last-known-good generation
 	// while a rejection was active — the rejection clears without a swap.
@@ -39,6 +42,7 @@ const (
 	// ReloadRolledBack: the new generation was swapped in but its activation
 	// record could not be written — the pointer was rolled back (a signed
 	// activation record must describe an activation that occurred, #267).
+	// The activation is retried on the re-scan backoff (#575, paceRescan).
 	ReloadRolledBack
 )
 
@@ -47,6 +51,16 @@ const (
 // failures (#269 review — rollback and rejection-retry paths).
 type EvidenceSink interface {
 	Store(ctx context.Context, ev *evidence.Evidence) error
+}
+
+// ScanSource is the agent-config input the reloader reads. Source satisfies
+// it; tests inject a counting source to prove what a tick reads (#575).
+type ScanSource interface {
+	// Digest is ScanResult.Digest for the files as they are now, from their
+	// raw bytes alone: nothing is parsed or validated.
+	Digest(ctx context.Context) (string, error)
+	// Scan is the full strict scan: every file parsed and validated.
+	Scan(ctx context.Context) (*ScanResult, error)
 }
 
 // RegistryBuilder constructs the identity registry for a reloaded generation,
@@ -59,7 +73,9 @@ type RegistryBuilder func(ctx context.Context, scan *ScanResult, previous *Runti
 
 // ReloadConfig wires the periodic safe reload (#269).
 type ReloadConfig struct {
-	Source Source
+	// Source is what the reload re-reads (a Source; nil reads as the empty
+	// Source, which rejects every pass).
+	Source ScanSource
 	// Deps are the SHARED process dependencies bundles compile over — the
 	// same providers/config serve built at startup, so a reloaded generation
 	// is constructed exactly like the boot generation.
@@ -127,6 +143,9 @@ type Reloader struct {
 	lastGood    string     // generation id of the active snapshot
 	lastScan    string     // scan digest of the active snapshot (config change detector)
 	activatedAt time.Time
+	// interval is the cadence Run ticks at, the first wait before the bytes
+	// of a config rejection are scanned again (#575). Zero until Run starts.
+	interval time.Duration
 	// refreshKnown/refreshAt pace the re-discovery of trusted action
 	// sources (#427): due when the earliest upstream freshness hint of the
 	// active generation expires (floored/capped), or after a bounded
@@ -155,6 +174,16 @@ type rejectionState struct {
 	causes     []string
 	issues     []FleetIssue
 	sourceOnly bool
+	// rolledBack marks the state left by an activation whose record could
+	// not be written (no rejection record of its own is owed).
+	rolledBack bool
+	// scanDigest, backoff and rescanAt pace the full re-scan of the bytes a
+	// config rejection or a rolled-back activation was decided on (#575,
+	// paceRescan). Empty scanDigest (a source-only rejection, a scan that
+	// failed before it hashed anything) is never waited out.
+	scanDigest string
+	backoff    time.Duration
+	rescanAt   time.Time
 }
 
 // Source refresh pacing.
@@ -164,9 +193,28 @@ const (
 	sourceRetryBackoff = 30 * time.Second
 )
 
+// Re-scan pacing of a persisting config rejection (#575): the first wait
+// when the tick interval is not known, and the longest wait unless the
+// interval is longer (RejectedRescanCeiling).
+const (
+	minRejectedRescan = time.Second
+	maxRejectedRescan = 30 * time.Second
+)
+
+// RejectedRescanCeiling is the longest a running reloader ticking at
+// interval waits before it scans unchanged rejected bytes again (#575):
+// a fix that leaves the files unchanged, such as a key stored in the vault,
+// is picked up within it.
+func RejectedRescanCeiling(interval time.Duration) time.Duration {
+	return max(maxRejectedRescan, interval)
+}
+
 // NewReloader seeds the last-known-good generation from the holder's current
 // snapshot (the boot generation).
 func NewReloader(cfg ReloadConfig) *Reloader {
+	if cfg.Source == nil {
+		cfg.Source = Source{}
+	}
 	if cfg.BuildRegistry == nil {
 		// Default: vault-backed gateway builder with key reuse (keeps simple
 		// callers and tests working; serve injects a mode-aware builder).
@@ -220,6 +268,9 @@ func (r *Reloader) scheduleRefresh(snap *RuntimeSnapshot) {
 
 // Run ticks ReloadOnce every interval until ctx is done.
 func (r *Reloader) Run(ctx context.Context, interval time.Duration) {
+	r.mu.Lock()
+	r.interval = interval
+	r.mu.Unlock()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -283,6 +334,14 @@ func (r *Reloader) View() FleetView {
 // Either way the COMPLETE candidate (bundles including discovered catalogs,
 // registry) is built off to the side; it activates only when its
 // generation differs from the active one.
+//
+// A tick with no refresh due first compares the raw-bytes digest alone
+// (#575): equal bytes end the pass before any file is parsed, so the
+// interval costs a walk and a hash, not a strict load of every file. The
+// same holds for the very bytes the active config rejection was decided on
+// until their re-scan is due (paceRescan). Any other difference, or a
+// digest that cannot be computed, runs the full scan, which decides
+// everything below exactly as before.
 func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -292,19 +351,24 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	// distinct broken state loses its record after an evidence outage.
 	r.flushUnrecorded(ctx)
 
-	scan, scanErr := r.cfg.Source.Scan(ctx)
 	now := r.now()
 	refreshDue := r.refreshKnown && !now.Before(r.refreshAt)
-
-	// Fast path: unchanged bytes and no source refresh due. Clears an
-	// active CONFIG rejection when the operator reverted the broken edit
-	// (explicit outcome, #267 review); a source-only rejection stays
-	// visible until the sources are re-read successfully.
-	if scan.Digest == r.lastScan && !refreshDue {
-		if r.rejection != nil && !r.rejection.sourceOnly {
-			return r.recover()
+	if !refreshDue {
+		if digest, err := r.cfg.Source.Digest(ctx); err == nil {
+			if digest == r.lastScan {
+				return r.unchanged()
+			}
+			if outcome, waiting := r.awaitingRescan(digest, now); waiting {
+				return outcome
+			}
 		}
-		return ReloadUnchanged
+	}
+
+	scan, scanErr := r.cfg.Source.Scan(ctx)
+	// The bytes may have changed back since the digest above: unchanged
+	// bytes with no refresh due are an unchanged tick, never a build.
+	if scan.Digest == r.lastScan && !refreshDue {
+		return r.unchanged()
 	}
 	sourceOnly := scan.Digest == r.lastScan
 
@@ -357,7 +421,11 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 		log.Error().Err(err).Str("generation", shortDigest(next.Generation)).Msg("config_reload_activation_evidence_failed_rolled_back")
 		// Best-effort rollback record; the critical log above is the floor.
 		_ = r.writeReloadEvidence(ctx, next.Generation, false, []string{"activation rolled back: evidence write failed: " + err.Error()})
-		r.rejection = &rejectionState{key: next.Generation, digest: next.Generation, at: now, causes: []string{"activation evidence write failed: " + err.Error()}}
+		rej := &rejectionState{key: next.Generation, digest: next.Generation, at: now, causes: []string{"activation evidence write failed: " + err.Error()}, rolledBack: true}
+		// Rebuilding the whole generation on every tick of an evidence outage
+		// only repeats the rollback: it is retried on the re-scan backoff.
+		r.paceRescan(rej, r.rejection, scan.Digest, now)
+		r.rejection = rej
 		return ReloadRolledBack
 	}
 	r.lastGood = next.Generation
@@ -389,6 +457,74 @@ func (r *Reloader) scanRejection(scan *ScanResult, scanErr error, sourceOnly boo
 		}
 	}
 	return nil, false
+}
+
+// paceRescan schedules the next full scan of the bytes (scanDigest) a config
+// rejection or a rolled-back activation was decided on (#575). Scanning them
+// on every tick would only repeat the failure, at the cost of a strict load
+// of every file and, after a rollback, a rebuild of the whole generation.
+// Something other than the bytes can cure it (a key stored in the vault, an
+// evidence store that is back), so they are still scanned again: one
+// interval after the failure, then at doubling waits up to
+// RejectedRescanCeiling, the cadence of the former 30s default. A change of
+// the bytes is scanned at the next tick regardless (the digest differs), and
+// a due source refresh scans too.
+func (r *Reloader) paceRescan(rej, prev *rejectionState, scanDigest string, now time.Time) {
+	base := r.interval
+	if base <= 0 {
+		base = minRejectedRescan
+	}
+	rej.scanDigest = scanDigest
+	rej.backoff = base
+	if prev != nil && prev.key == rej.key && prev.backoff > 0 {
+		rej.backoff = min(2*prev.backoff, RejectedRescanCeiling(base))
+	}
+	rej.rescanAt = now.Add(rej.backoff)
+	// A source refresh cannot be served from rejected bytes: their candidate
+	// is refused before it could refresh anything. It waits for the next
+	// re-scan instead of forcing a full scan (and discovery) on every tick.
+	if r.refreshKnown && r.refreshAt.Before(rej.rescanAt) {
+		r.refreshAt = rej.rescanAt
+	}
+}
+
+// awaitingRescan answers a tick that finds the very bytes the active config
+// rejection or rolled-back activation was decided on, before their re-scan
+// is due (#575): nothing is scanned, the state stays as observed, and the
+// outcome is the one a scan of a rejection's bytes reports (a duplicate once
+// its record persisted; rejected while the record is still owed and retried
+// by flushUnrecorded). A rolled-back activation owes no rejection record: it
+// is a duplicate of itself until its retry.
+func (r *Reloader) awaitingRescan(digest string, now time.Time) (ReloadOutcome, bool) {
+	rej := r.rejection
+	if rej == nil || rej.scanDigest == "" || digest != rej.scanDigest || !now.Before(rej.rescanAt) {
+		return 0, false
+	}
+	if rej.rolledBack {
+		return ReloadRejectedDuplicate, true
+	}
+	if _, done := r.recorded[rej.key]; done {
+		return ReloadRejectedDuplicate, true
+	}
+	if _, pending := r.unrecorded[rej.key]; pending {
+		return ReloadRejected, true
+	}
+	// Owed a record again (the dedup memory overflowed): the full pass
+	// writes it.
+	return 0, false
+}
+
+// unchanged ends a pass whose bytes equal the active generation's, with no
+// source refresh due. It clears an active CONFIG rejection when the bytes it
+// was decided on are gone: the operator reverted the broken edit (explicit
+// outcome, #267 review). A source-only rejection, and the rollback of a
+// refresh whose files never changed (#575: its retry stays on the backoff),
+// stay visible until the sources are re-read successfully.
+func (r *Reloader) unchanged() ReloadOutcome {
+	if rej := r.rejection; rej != nil && !rej.sourceOnly && rej.scanDigest != r.lastScan {
+		return r.recover()
+	}
+	return ReloadUnchanged
 }
 
 // recover ends a broken incident without a swap: the observed state is the
@@ -424,11 +560,16 @@ func (r *Reloader) reject(ctx context.Context, scan *ScanResult, causes []string
 	// Preserve the incident-start time across polls of the SAME continuous broken
 	// state: RejectedAt marks WHEN the incident began, not the last poll, so the
 	// attention queue can order incidents by onset (#300 review round 6, P2).
-	at := r.now()
-	if r.rejection != nil && r.rejection.key == key {
-		at = r.rejection.at
+	now := r.now()
+	at := now
+	prev := r.rejection
+	if prev != nil && prev.key == key {
+		at = prev.at
 	}
 	rej := &rejectionState{key: key, digest: digest, at: at, causes: causes, issues: append([]FleetIssue(nil), scan.Issues...), sourceOnly: sourceOnly}
+	if !sourceOnly && digest != "" {
+		r.paceRescan(rej, prev, digest, now)
+	}
 	r.rejection = rej // current observed state (for View)
 
 	if _, done := r.recorded[key]; done {

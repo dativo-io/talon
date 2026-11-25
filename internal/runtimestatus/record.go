@@ -125,10 +125,15 @@ type Installation struct {
 // Catalog is the process's ACTIVE agent catalog generation and reload state,
 // copied from its reloader (agentcatalog.ReloadState / RuntimeSnapshot).
 type Catalog struct {
-	ActiveGeneration string     `json:"active_generation"`
-	ScanDigest       string     `json:"scan_digest"`
-	ActivatedAt      time.Time  `json:"activated_at"`
-	ReloadEnabled    bool       `json:"reload_enabled"`
+	ActiveGeneration string    `json:"active_generation"`
+	ScanDigest       string    `json:"scan_digest"`
+	ActivatedAt      time.Time `json:"activated_at"`
+	ReloadEnabled    bool      `json:"reload_enabled"`
+	// ReloadIntervalMs is how often the process re-scans its agent files
+	// (agents_reload_interval, in milliseconds) when reload is enabled
+	// (#575). Absent when reload is disabled and in records written by
+	// earlier releases: readers then do not know the interval.
+	ReloadIntervalMs int64      `json:"reload_interval_ms,omitempty"`
 	ReloadRejected   bool       `json:"reload_rejected"`
 	RejectedDigest   string     `json:"rejected_digest,omitempty"`
 	RejectedAt       *time.Time `json:"rejected_at,omitempty"`
