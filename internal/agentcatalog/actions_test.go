@@ -441,6 +441,57 @@ func TestReloader_RejectedBytesDeferTheSourceRefresh(t *testing.T) {
 	assert.Len(t, f.reloadRows(t), 2, "one rejection, one activation")
 }
 
+// TestReloader_RolledBackSourceRefreshRetriesOnTheBackoff (#575): a refresh
+// whose changed upstream facts cannot be recorded is rolled back and retried
+// on the re-scan backoff, not on every tick. Its files never changed, so the
+// unchanged files do not clear the state (that would restart the backoff
+// every other tick). Activation lands on the first retry after the evidence
+// store is back.
+func TestReloader_RolledBackSourceRefreshRetriesOnTheBackoff(t *testing.T) {
+	f := newSourceReloadFixture(t)
+	ctx := context.Background()
+	f.reloader.interval = 2 * time.Second // what Run sets
+	sink := &switchedEvidence{next: f.evStore}
+	sink.down.Store(true)
+	f.reloader.cfg.Evidence = sink
+	boot := f.holder.Current()
+
+	// The refresh is due and finds a changed schema; its record cannot be
+	// written.
+	f.fake.set(`{"type":"object","properties":{"amount":{"type":"integer"},"ticket_id":{"type":"string"}}}`, nil)
+	f.advance(61 * time.Second)
+	require.Equal(t, ReloadRolledBack, f.reloader.ReloadOnce(ctx))
+
+	var rebuiltAt []time.Duration
+	for elapsed := 2 * time.Second; elapsed <= 90*time.Second; elapsed += 2 * time.Second {
+		f.advance(2 * time.Second)
+		if elapsed == 64*time.Second {
+			sink.down.Store(false) // the evidence store is back
+		}
+		calls := f.fake.calls.Load()
+		out := f.reloader.ReloadOnce(ctx)
+		if f.fake.calls.Load() == calls {
+			require.Equal(t, ReloadUnchanged, out, "at %s", elapsed)
+			require.True(t, f.reloader.State().Rejected, "unchanged files do not clear the rollback (at %s)", elapsed)
+			continue
+		}
+		rebuiltAt = append(rebuiltAt, elapsed)
+		if elapsed < 90*time.Second {
+			require.Equal(t, ReloadRolledBack, out, "at %s", elapsed)
+			require.Same(t, boot, f.holder.Current(), "last-known-good keeps serving")
+		} else {
+			require.Equal(t, ReloadActivated, out, "the first retry after the store is back activates")
+		}
+	}
+	s := time.Second
+	assert.Equal(t, []time.Duration{2 * s, 6 * s, 14 * s, 30 * s, 60 * s, 90 * s}, rebuiltAt, "rebuilds (each a discovery) at doubling waits, not every tick")
+	assert.False(t, f.reloader.State().Rejected)
+	assert.NotEqual(t, boot.Generation, f.holder.Current().Generation)
+	rows := f.reloadRows(t)
+	require.Len(t, rows, 1, "only the activation was recorded")
+	assert.Contains(t, rows[0].PolicyDecision.Reasons[0], "after trusted action sources changed")
+}
+
 func TestReloader_ConfigEditWithSourcesActivatesImmediately(t *testing.T) {
 	f := newSourceReloadFixture(t)
 	ctx := context.Background()

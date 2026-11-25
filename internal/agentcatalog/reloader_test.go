@@ -382,6 +382,90 @@ func TestReloader_RejectedBytesRescanOnABackoff(t *testing.T) {
 	assert.Equal(t, 1, allowed)
 }
 
+// switchedEvidence fails every write while down and writes through after:
+// an evidence store outage that ends.
+type switchedEvidence struct {
+	down atomic.Bool
+	next EvidenceSink
+}
+
+func (s *switchedEvidence) Store(ctx context.Context, ev *evidence.Evidence) error {
+	if s.down.Load() {
+		return fmt.Errorf("evidence store unavailable")
+	}
+	return s.next.Store(ctx, ev)
+}
+
+// TestReloader_RolledBackActivationRetriesOnTheBackoff (#575): while the
+// activation record cannot be written, the rolled-back generation is not
+// rebuilt on every tick but on the re-scan backoff (one interval, then
+// doubling up to max(30s, interval)); a byte change still rebuilds at the
+// next tick; the activation lands on the first backoff rebuild after the
+// evidence store is back. The last-known-good generation serves throughout.
+func TestReloader_RolledBackActivationRetriesOnTheBackoff(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+	start := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	var at time.Duration
+	sink := &switchedEvidence{next: f.evStore}
+	sink.down.Store(true)
+	f.reloader = NewReloader(ReloadConfig{
+		Source: f.source, Vault: f.vault, Holder: f.holder, Evidence: sink, RequireNonEmpty: true,
+		Clock: func() time.Time { return start.Add(at) },
+	})
+	f.reloader.interval = 2 * time.Second // what Run sets
+	// rebuildTicks ticks every 2s over (from, to] and returns the ticks that
+	// rebuilt (a full scan); every rebuild has outcome rebuilt, every other
+	// tick ReloadRejectedDuplicate.
+	rebuildTicks := func(t *testing.T, from, to time.Duration, rebuilt ReloadOutcome) []time.Duration {
+		t.Helper()
+		var ticks []time.Duration
+		for at = from + 2*time.Second; at <= to; at += 2 * time.Second {
+			scans := f.source.scans.Load()
+			out := f.reloader.ReloadOnce(ctx)
+			if f.source.scans.Load() > scans {
+				ticks = append(ticks, at)
+				require.Equal(t, rebuilt, out, "rebuild at %s", at)
+			} else {
+				require.Equal(t, ReloadRejectedDuplicate, out, "tick at %s", at)
+			}
+		}
+		at = to
+		return ticks
+	}
+	s := time.Second
+	boot := f.holder.Current()
+
+	// A valid edit whose activation record cannot be written.
+	require.NoError(t, f.vault.Set(ctx, "coding-key", []byte("tk-coding"), secrets.ACL{}))
+	f.writeAgent(t, "coding", "coding-key", true)
+	require.Equal(t, ReloadRolledBack, f.reloader.ReloadOnce(ctx))
+	assert.Equal(t, []time.Duration{2 * s, 6 * s, 14 * s, 30 * s}, rebuildTicks(t, 0, 30*s, ReloadRolledBack), "rebuilds at doubling waits, not every tick")
+
+	// A byte change rebuilds at the next tick and starts the backoff again.
+	f.writeAgentVersion(t, "coding", "coding-key", true, "2.0.0")
+	at = 32 * s
+	require.Equal(t, ReloadRolledBack, f.reloader.ReloadOnce(ctx))
+	assert.Equal(t, []time.Duration{34 * s, 38 * s, 46 * s, 62 * s}, rebuildTicks(t, 32*s, 62*s, ReloadRolledBack))
+	assert.Same(t, boot, f.holder.Current(), "last-known-good serves while activation cannot be recorded")
+	assert.True(t, f.reloader.State().Rejected)
+
+	// The evidence store is back: the next backoff rebuild (92s) activates;
+	// nothing is rebuilt before it.
+	sink.down.Store(false)
+	assert.Empty(t, rebuildTicks(t, 62*s, 90*s, ReloadRolledBack))
+	assert.Same(t, boot, f.holder.Current())
+	at = 92 * s
+	require.Equal(t, ReloadActivated, f.reloader.ReloadOnce(ctx))
+	ra, ok := f.holder.Current().Get("coding")
+	require.True(t, ok)
+	assert.Equal(t, "2.0.0", ra.Policy.Agent.Version)
+	assert.False(t, f.reloader.State().Rejected)
+	rows := f.reloadRows(t)
+	require.Len(t, rows, 1, "only the activation was recorded: every write before failed")
+	assert.True(t, rows[0].PolicyDecision.Allowed)
+}
+
 func TestReloader_ActivatesValidEdit(t *testing.T) {
 	ctx := context.Background()
 	f := newReloadFixture(t, true)
