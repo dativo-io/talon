@@ -95,4 +95,4 @@ For unknown outcomes, inspect the operation and reconcile with the downstream sy
 
 For the full installation-to-second-use-case journey, use the [production pilot runbook](production-pilot.md). For the complete importable workflow, example files, test harness and state table, use the [n8n Action Gateway reference](../../examples/n8n-refund/README.md).
 
-**Boundary:** The HTTP Action Gateway governs exactly the actions sent through it. MCP-proxied tools have their own permission enforcement but do not inherit the HTTP Action Gateway's bound approval and claim lifecycle. Neither path controls direct tool or business API calls that bypass Talon.
+**Boundary:** The HTTP Action Gateway governs exactly the actions sent through it. Since v1.17.0, declared governed MCP tools on `POST /mcp` share the Action Gateway's bound approval, dispatch and recovery lifecycle; this HTTP fixture does not verify MCP client compatibility. See [governed MCP tools](mcp-governed-tools.md). Neither path controls direct tool or business API calls that bypass Talon.
