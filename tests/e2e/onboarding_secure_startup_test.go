@@ -236,8 +236,10 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 		d.env = append(d.env, "TMPDIR="+tmp)
 	}
 
+	ph := newOnboardingPhases(t, "documented installation (guide 1-3)")
+
 	// --- Keys: generated into a file only the operator can read. ---------
-	d.run("keys", steps["keys"])
+	ph.step("secure configuration", func() { d.run("keys", steps["keys"]) })
 	info, err := os.Stat(filepath.Join(d.dir, "talon.env"))
 	if err != nil {
 		t.Fatal(err)
@@ -262,11 +264,14 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 		t.Fatal("the documented configuration no longer names the provider's base URL once")
 	}
 	cfg := strings.Replace(steps["config"], "https://api.openai.com", upstream.URL, 1)
-	if err := os.WriteFile(filepath.Join(d.dir, "talon.config.yaml"), []byte(cfg+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	d.run("provider-key", steps["provider-key"])
-	out := d.run("register", steps["register"])
+	ph.step("secure configuration", func() {
+		if err := os.WriteFile(filepath.Join(d.dir, "talon.config.yaml"), []byte(cfg+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		d.run("provider-key", steps["provider-key"])
+	})
+	var out string
+	ph.step("registration", func() { out = d.run("register", steps["register"]) })
 	secretAt := strings.Index(out, "SECRET — shown once")
 	if secretAt < 0 {
 		t.Fatalf("the documented registration printed no secret block:\n%s", out)
@@ -345,7 +350,11 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 			time.Sleep(150 * time.Millisecond)
 		}
 	}
-	stop, pid := serve(withPort(strings.TrimSpace(steps["start"])))
+	var (
+		stop func()
+		pid  int
+	)
+	ph.step("startup and admin check", func() { stop, pid = serve(withPort(strings.TrimSpace(steps["start"]))) })
 
 	if got := listenAddresses(t, port); len(got) != 1 || got[0] != loopbackOnly {
 		t.Fatalf("the documented start must listen on 127.0.0.1 only, the listening sockets on port %d are %v", port, got)
@@ -364,7 +373,9 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 	}
 
 	// --- The documented check: 401 without a credential, 200 as operator.
-	if got := strings.Fields(d.run("check", withPort(steps["check"]))); len(got) != 2 || got[0] != "401" || got[1] != "200" {
+	var checked string
+	ph.step("startup and admin check", func() { checked = d.run("check", withPort(steps["check"])) })
+	if got := strings.Fields(checked); len(got) != 2 || got[0] != "401" || got[1] != "200" {
 		t.Fatalf("the documented check must print 401 then 200, printed %v", got)
 	}
 
@@ -408,7 +419,9 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("the provider was called %d times before the application sent anything", n)
 	}
-	if st := chatThroughGateway(t, base, appKey, ""); st != http.StatusOK {
+	var st int
+	ph.step("first governed request", func() { st = chatThroughGateway(t, base, appKey, "") })
+	if st != http.StatusOK {
 		t.Fatalf("the application's request with its Talon key: HTTP %d, want 200", st)
 	}
 	if n := calls.Load(); n != 1 {
@@ -427,7 +440,9 @@ func TestE2E_Onboarding_DocumentedSecureStartup(t *testing.T) {
 	// The documented verification reads the request as this use case's, with
 	// the credential stored now.
 	var report effective.Report
-	if err := json.Unmarshal([]byte(d.run("verify", "talon agents show customer-support --effective --json")), &report); err != nil {
+	var verified string
+	ph.step("verification", func() { verified = d.run("verify", "talon agents show customer-support --effective --json") })
+	if err := json.Unmarshal([]byte(verified), &report); err != nil {
 		t.Fatalf("decoding the effective report: %v", err)
 	}
 	if report.Verification == nil || report.Verification.Reading.Code != effective.ReadingTrafficMatches {
