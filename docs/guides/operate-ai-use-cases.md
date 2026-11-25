@@ -208,7 +208,7 @@ The [Operations Console](operations-console.md) is read-only and shows the same 
 | CLI | Console |
 |---|---|
 | `talon agents` | **AI Use Cases** (and the attention list on **Overview**) |
-| `talon agents show <name>` | the use case's page, **Summary**: state, readiness, the one-line reading and the next step |
+| `talon agents show <name>` | the use case's page, **Summary**: the same Status and Next, readiness and the one-line reading; **AI Use Cases** shows the Status of every use case |
 | `talon agents show <name> --effective` | the use case's page, **Policy & Runtime** |
 | `talon session show`, `talon audit show` | **Sessions**, and each record's evidence page |
 | `talon costs` | **Costs** |
