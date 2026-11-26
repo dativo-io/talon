@@ -1,6 +1,6 @@
 # How to offer Talon to multiple customers (multi-tenant / MSP)
 
-**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+**Credential handling:** Load `ACME_PROVIDER_API_KEY` for the scoped vault example. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
 
 If you are an MSP or ISV and want to offer Talon (or a compliance layer) to multiple customers, use tenant isolation with **one agent per customer tenant**, each bound to its own vault-backed agent key. This guide gives the steps.
 

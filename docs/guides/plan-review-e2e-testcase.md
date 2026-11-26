@@ -1,6 +1,6 @@
 # Plan Review — E2E test case
 
-**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+**Credential handling:** Load `OPENAI_API_KEY` only if using the optional live provider path. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
 
 Plan review is an **optional layer** for native `talon run` agents; this document is its test inventory.
 

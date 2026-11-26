@@ -1,6 +1,6 @@
 # Configuration reference
 
-**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](../guides/add-talon-to-existing-app.md).
+**Credential handling:** For provider examples, use the environment variable named by the provider configuration (for example `OPENAI_API_KEY`). Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](../guides/add-talon-to-existing-app.md).
 
 Talon uses **two configuration files** with distinct ownership and purpose. Understanding which file controls what is critical for clean separation between governance policy and infrastructure operations.
 

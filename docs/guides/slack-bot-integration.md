@@ -1,6 +1,6 @@
 # Govern your Slack bot with Talon
 
-**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+**Credential handling:** Load `OPENAI_API_KEY` on the Talon host. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
 
 Route your Slack bot's LLM calls through Talon to cap what the bot can spend, block PII before it leaves your infrastructure, and get a signed audit trail of every request — all with a single config change. The same evidence records support compliance reviews when you need them. Allow about 10 minutes.
 
