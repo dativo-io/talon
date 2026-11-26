@@ -26,33 +26,34 @@ The category describes where the product is going as well as where it is. To kee
 ```
 Available today
 ───────────────
-Per-agent cost caps (deny before the provider call) + hard session caps (atomic reservation, #144)
+Estimated-cost admission caps per agent and session (atomic reservation, not invoice ceilings, #144)
 Organization baseline + one explicit per-agent override (one effective-policy computation, #266)
 Policy-valid, error-driven provider fallback
 Session identity, session-scoped audit and cost rollups
-MCP tool-call interception; tool schema filtering
+MCP tool execution governed through POST /mcp; tool schema filtering on model requests
 Signed evidence: verify, export, compliance reports
 agents_dir discovery: one agent.talon.yaml per use case, one process serving all (#267)
 `talon agents` fleet attention queue (list/show/enable/disable) (#270)
 agent.enabled + periodic safe config reload (#268/#269)
 Same-provider retries with backoff, evidence-visible, then policy-valid fallback (#139)
-Cost warning thresholds as signed evidence + one org cost webhook; hard session caps by atomic reservation (#144)
+Cost warning thresholds as signed evidence + one org cost webhook; session admission reservation (#144)
 Session summary contract: talon session show over the shared evidence projection (#271)
 AI use-case operating record: agent.use_case in the fleet view (#382)
 Always-enforced posture: no global non-enforcing live posture (#442)
+CLI-primary fleet operations and read-only Operations Console (#533)
 MCP 2026-07-28 wire only: stateless, self-describing, header/body integrity (#447)
 Trusted action catalog: explicit + MCP-discovered definitions in the runtime generation (#427)
-Exact governed actions over the public Action Gateway: immutable operation, approver-only decision, at most one Talon-forwarded effect, signed lifecycle evidence (#458)
+Exact governed HTTP and MCP actions via the shared Action Gateway: bound operation, approver-only decision, separate dispatch, signed lifecycle evidence (#458/#431)
 OpenShell DELEGATE composition: Talon decides at PRE_CREDENTIALS and OpenShell enforces/injects credentials (v0.1.3 live baseline); opt-in PRE_RETURN response/usage settlement and a verified sandbox → HTTP Action Gateway hop are implemented and fixture-tested, with live status tracked separately (#482/#457)
 
-Active MVP direction
-────────────────────
+Active development direction
+────────────────────────────
 Session simplification: status open/completed, managed_by attribution and evidence-derived failure attention (#401)
 One typed approval kernel for plan review and action execution, replacing the legacy plan and tool-approval stores (#426/#430)
-MCP governance convergence onto ActionGovernance and one canonical POST /mcp (#431), Tasks continuation (#448)
+MCP Tasks continuation (#448)
 Durable native run checkpoints and approval waits (#430)
 n8n/external runtime adapter over the same action and approval services (#434)
-CLI-primary fleet operations; read-only OSS operations console as a projection of the same semantics (#533)
+
 ```
 
 ## Vocabulary
@@ -84,13 +85,15 @@ agent/use case
 
 A session may show **attention required** because it has a pending approval, unresolved operation or unrecovered provider failure. Those are shared projection facts linked to the session; they do not become new session statuses.
 
+The following describes the session lifecycle design tracked in #401; see the [object model](../reference/object-model.md) for fields available in the current release.
+
 `managed_by` is the single session field that names the concrete runtime or orchestrator responsible for the session lifecycle—for example `talon`, `n8n`, `claude-code` or `codex`. The separate `source` field records only how Talon obtained the session identity. Neither field authenticates authority or changes policy, and Talon does not expose a separate `lifecycle_owner` concept.
 
 ## Operator model: CLI primary, console secondary
 
 The operator interface is the local `talon` CLI, run where Talon runs — there is no remote-administration requirement, and configuration in YAML is the source of truth. Today the CLI covers auditing, costs, sessions, providers, secrets and compliance exports; it also covers the fleet: `talon agents` is the shipped attention queue (STATE/HEALTH/COST/WHY columns, with `talon agents show <name>`) and `talon agents enable/disable` is the host-local kill switch (Fleet Operations v1).
 
-Talon currently ships no browser UI: the legacy dashboards were removed, and the replacement OSS operations console (#533) is a **read-only projection** of the same backend semantics for inspection, filtering, verification and export. A focused approval inbox (#433) is an explicit narrow exception for authorized human decisions; it does not turn the console into a generic workflow system.
+Talon ships a read-only Operations Console (#533). The legacy dashboards were removed; the console is a **read-only projection** of the same backend semantics for inspection, filtering, verification and export. A focused approval inbox (#433) is an explicit narrow exception for authorized human decisions; it does not turn the console into a generic workflow system.
 
 The design rule for all surfaces: session status, run status, approval decision, operation status, attempt result, health, budget state and effective policy must be computed once and shared, never flattened or re-derived independently per interface. Parts of that already exist (the `/api/v1/metrics` snapshot is rebuilt from the same evidence the CLI reads); completing it is tracked on the roadmap.
 

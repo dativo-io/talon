@@ -1,5 +1,7 @@
 # How to run a first-line support agent with Talon
 
+**Credential handling:** Load `SUPPORT_INCOMING_WEBHOOK` for the notification example. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 Run a first-line support agent that summarizes tickets and suggests replies, with PII and cost controls. You can implement it as a **native Talon agent** (webhook or cron trigger) or by pointing an **existing support bot** at the LLM API gateway.
 
 ---
@@ -45,7 +47,9 @@ triggers:
 Mint the secret, then configure the ticketing system to POST to `/v1/triggers/support-incoming` with that value as a bearer token — in Zendesk, a webhook with "Bearer token" authentication; in Freshdesk, a trigger-webhook action with a custom `Authorization: Bearer <value>` header:
 
 ```bash
-talon secrets set support-incoming-webhook "$(openssl rand -hex 24)"
+SUPPORT_INCOMING_WEBHOOK="$(openssl rand -hex 24)"
+# Save this value securely for the intended caller before leaving the shell.
+printf '%s' "$SUPPORT_INCOMING_WEBHOOK" | talon secrets set support-incoming-webhook
 ```
 
 Requests without the secret (including ones carrying an agent key or the admin key) are answered `401 unauthorized` and start no run. Webhooks are native-only execution: run this agent with `talon serve` (no `--gateway`); a gateway serve refuses to start while an agent declares triggers, because trigger runs bypass `gateway.organization_policy`.

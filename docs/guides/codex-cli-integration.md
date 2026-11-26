@@ -1,5 +1,7 @@
 # How to govern Codex CLI with Talon
 
+**Credential handling:** Load the real OpenAI key as `OPENAI_API_KEY` on the Talon host. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 This guide shows how to route Codex CLI's OpenAI traffic through Talon so every request is audited, attributed per session and subagent, and policy-checked. Allow about 15 minutes.
 
 One boundary up front, because it decides whether this guide applies to you: **Talon can only govern Codex when Codex authenticates with an API key, not a ChatGPT subscription login.** Codex sends subscription OAuth tokens when `requires_openai_auth = true` is set on a provider — Talon rejects those as unknown agent keys. Governed operation is always *Talon agent key in, vault-stored provider key out*. See [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
@@ -41,12 +43,12 @@ Talon encrypts secrets with `TALON_SECRETS_KEY`. Use the **same** value when sto
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 
 # 2. Store your real OpenAI key (secret name must match the config's secret_name)
-talon secrets set openai-api-key "sk-your-openai-key"
+printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
 
 # 3. Mint the codex agent's traffic key (bound via agent.key.secret_name);
 #    keep $CODEX_KEY — Codex will present it to the gateway
 CODEX_KEY="$(openssl rand -hex 24)"
-talon secrets set codex-talon-key "$CODEX_KEY"
+printf '%s' "$CODEX_KEY" | talon secrets set codex-talon-key
 
 # 4. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set,
 #    with the codex agent file active (see step 1)
@@ -61,7 +63,7 @@ Codex presents its agent key; Talon resolves it to the `codex` agent (and its de
 | Key | Purpose | Where it lives |
 |-----|---------|----------------|
 | **TALON_SECRETS_KEY** | Encrypts/decrypts the vault. Must be the **same** for `talon secrets set` and `talon serve`. | Environment. Set before the steps above. |
-| **Agent key** (`$CODEX_KEY`) | Workload identity Codex sends to Talon as its "OpenAI API key"; resolves to the `codex` agent and its derived tenant. Not used for encryption. | Vault secret `codex-talon-key` (referenced by `agent.key.secret_name`), and in Codex's environment via the provider's `env_key` (step 4). Rotate with `talon secrets set codex-talon-key <new>` + restart — one active key, never two. |
+| **Agent key** (`$CODEX_KEY`) | Workload identity Codex sends to Talon as its "OpenAI API key"; resolves to the `codex` agent and its derived tenant. Not used for encryption. | Vault secret `codex-talon-key` (referenced by `agent.key.secret_name`), and in Codex's environment via the provider's `env_key` (step 4). Rotate with the stdin-based `talon secrets set codex-talon-key` procedure + restart — one active key, never two. |
 | **Provider key** (`sk-...`) | Talon's upstream credential. | Vault secret `openai-api-key` only. |
 
 ### 3. Confirm the gateway is running
@@ -168,7 +170,7 @@ Because Codex always streams, cost figures depend on Talon parsing the usage blo
 
 - **404 on every request** — The `base_url` is missing the trailing `/v1`. Codex appends `/responses`, so `.../v1/proxy/openai` becomes `.../v1/proxy/openai/responses`, which matches neither Talon's `/v1/responses` handling nor OpenAI's endpoint. Set `base_url = "http://localhost:8080/v1/proxy/openai/v1"`.
 - **Authentication errors on every request** — Either `TALON_CODEX_KEY` is unset in the shell running Codex (the `env_key` mechanism sends nothing), or the provider has `requires_openai_auth = true` and Codex is sending subscription OAuth, which Talon rejects. Remove `requires_openai_auth`, export the agent key, restart Codex. [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
-- **`gateway_secret_get_failed` / "cipher: message authentication failed" / "Service configuration error"** — Vault decryption failed. Use the **same** `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. If you lost it, set a new one and re-run `talon secrets set openai-api-key "sk-..."`.
+- **`gateway_secret_get_failed` / "cipher: message authentication failed" / "Service configuration error"** — Vault decryption failed. Use the **same** `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. If you lost it, set a new one and re-run the stdin-based `talon secrets set openai-api-key` procedure.
 - **Long generations are cut off mid-response** — For a streamed generation this means the stream went *silent* longer than `stream_idle_timeout` (default 60s; raise it for slow providers) or the provider died — a steadily-flowing stream is no longer bounded by `request_timeout` (#217), and Talon emits `response.failed` so Codex stops waiting. For non-streaming calls `request_timeout` still bounds the whole call: the pack sets `600s`, and the response-header wait defaults to `request_timeout` (tunable via `response_header_timeout`). Also note Codex itself aborts a stream that has been idle for ~300 seconds and retries; Talon cannot extend that client-side limit.
 - **Streaming shows nothing for a long time, then everything at once** — `response_pii_action: redact` or `block` is preventive and buffers the entire SSE stream before release; time-to-first-token becomes total generation time. Use `warn` (streams normally, response PII observed after delivery) unless prevention is required ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
 - **A Responses client (not Codex) fails with "Item with id 'rs_...' not found. Items are not persisted when store is set to false"** — That client relies on `previous_response_id` continuity while sending `store: false` or no `store` field. Codex does not — it resends the full transcript each turn (`full_transcript_resend` conformance fixture). For clients that do, set `responses_store_mode: force_if_absent` on the provider (step 6).

@@ -1,6 +1,6 @@
 # Dativo Talon
 
-**One company policy for your AI use cases.**
+**Scale and operate your AI use cases with confidence.**
 
 Talon is an open-source, self-hosted AI control plane. Control model access, data and tool permissions, enforce budgets, handle provider failures, and investigate decisions with signed evidence — on the paths you route through Talon.
 
@@ -58,7 +58,7 @@ If those are your questions, Talon sits in front of your existing OpenAI/Anthrop
 
 ### 3. Shared policy — central defaults, explicit exceptions
 
-- PII scanning (regex, Presidio, HTTP, or local-LLM engines) on prompts, attachments, tool arguments, and responses; redact, block, or warn before the provider — EU identifiers (IBAN MOD-97, VAT, national IDs) plus email, phone, card, passport, IP.
+- PII scanning (regex, Presidio-compatible external engines, or local-LLM engines) on supported request and response paths; apply configured redact, block or warn rules. Governed MCP action arguments and results follow effective company policy. Embedded tool-related content in LLM requests is evidence-only by default, not preventive redaction; see [tool-governance boundaries](LIMITATIONS.md#3-tool-governance-boundary). EU identifiers include IBAN, VAT and national IDs, alongside email, phone, card, passport and IP.
 - Tool allowlists and forbidden globs (`admin_*`): dangerous tools are stripped or blocked before the model ever sees them; MCP tool calls sent through Talon's governed `POST /mcp` to a declared action source are policy-checked before dispatch.
 - Egress and sovereignty rules: `eu_strict` / `eu_preferred` / `global` routing and destination controls, air-gap friendly.
 

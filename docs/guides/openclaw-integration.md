@@ -1,5 +1,7 @@
 # How to govern OpenClaw with Talon
 
+**Credential handling:** Load `OPENAI_API_KEY` on the Talon host for the OpenAI example. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 This guide shows how to route OpenClaw's LLM traffic through Talon so every request is audited and policy-enforced. Allow about 15 minutes.
 
 For a Docker-based cloud setup, see the [OpenClaw + Talon primer](openclaw-talon-primer/docker-openclaw-talon-primer.md).
@@ -38,13 +40,13 @@ Talon encrypts secrets (including your OpenAI key) with `TALON_SECRETS_KEY`. You
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 
 # 2. Store your real OpenAI key in the vault (secret name must match gateway config's secret_name)
-talon secrets set openai-api-key "sk-your-openai-key"
-# Or: talon secrets set openai-api-key "$OPENAI_API_KEY"
+printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
+# Or: printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
 
 # 3. Mint the openclaw agent's traffic key (bound via agent.key.secret_name in agent.talon.yaml);
 #    keep $OPENCLAW_KEY — it goes into openclaw.json as the apiKey
 OPENCLAW_KEY="$(openssl rand -hex 24)"
-talon secrets set openclaw-gateway-talon-key "$OPENCLAW_KEY"
+printf '%s' "$OPENCLAW_KEY" | talon secrets set openclaw-gateway-talon-key
 
 # 4. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set
 talon serve --gateway
@@ -57,7 +59,7 @@ If you use a different shell or process to start Talon, set `TALON_SECRETS_KEY` 
 | Key | Purpose | Where it lives |
 |-----|---------|----------------|
 | **TALON_SECRETS_KEY** | Encrypts/decrypts the vault. Must be the **same** when running `talon secrets set` and `talon serve`. | Environment. Set before the steps above. |
-| **Agent key** (`$OPENCLAW_KEY`) | Workload identity OpenClaw sends in `Authorization: Bearer ...`; resolves to the `openclaw-gateway` agent and its derived tenant. Not used for encryption. | Vault secret `openclaw-gateway-talon-key` (referenced by `agent.key.secret_name` in `agent.talon.yaml`), and the same value in OpenClaw's `openclaw.json` as `models.providers.openai.apiKey`. Rotate with `talon secrets set openclaw-gateway-talon-key <new>` + restart — one active key, never two. |
+| **Agent key** (`$OPENCLAW_KEY`) | Workload identity OpenClaw sends in `Authorization: Bearer ...`; resolves to the `openclaw-gateway` agent and its derived tenant. Not used for encryption. | Vault secret `openclaw-gateway-talon-key` (referenced by `agent.key.secret_name` in `agent.talon.yaml`), and the same value in OpenClaw's `openclaw.json` as `models.providers.openai.apiKey`. Rotate with the stdin-based `talon secrets set openclaw-gateway-talon-key` procedure + restart — one active key, never two. |
 | **Provider key** (`sk-...`) | Talon's upstream credential. | Vault secret `openai-api-key` only. |
 
 ### 3. Confirm the gateway is running
@@ -132,7 +134,7 @@ You should see new evidence rows; the agent name (e.g. `openclaw-gateway`) appea
 - **`talon serve --gateway` fails with "agent is required" / "policies is required"** — Talon loads `agent.talon.yaml` from the current working directory. Run `talon serve --gateway` from the directory that contains a valid `agent.talon.yaml` (with top-level `agent:` and `policies:` keys). Easiest: run `talon init` (wizard) or `talon init --pack openclaw` in a new directory so both `agent.talon.yaml` and gateway-enabled `talon.config.yaml` are generated.
 - **OpenClaw reports "Invalid config … models.providers.openai.models"** — The `models` array must contain objects with both `id` and `name` (e.g. `{ "id": "gpt-4o-mini", "name": "gpt-4o-mini" }`). Plain strings or objects with only `id` or only `name` will fail validation.
 - **"systemctl --user unavailable" when running `openclaw gateway stop`** — Your shell (e.g. SSH or `su`) may not have access to the user D-Bus session. Stop the gateway process directly: `pkill openclaw-gateway`, then start OpenClaw again as you normally do.
-- **`gateway_secret_get_failed` / "cipher: message authentication failed"** — Talon can't decrypt the stored OpenAI key. Use the **same** `TALON_SECRETS_KEY` when running `talon secrets set` and `talon serve`. If you lost the key, set a new one and run `talon secrets set openai-api-key "sk-..."` again.
+- **`gateway_secret_get_failed` / "cipher: message authentication failed"** — Talon can't decrypt the stored OpenAI key. Use the **same** `TALON_SECRETS_KEY` when running `talon secrets set` and `talon serve`. If you lost the key, set a new one and run the stdin-based `talon secrets set openai-api-key` procedure again.
 - **Gateway returns "Service configuration error"** — Same cause: vault decryption failed (wrong or missing `TALON_SECRETS_KEY` when `talon serve` started). Restart Talon in a shell where `TALON_SECRETS_KEY` is set to the same value you used for `talon secrets set`.
 - **OpenClaw shows "404 status code (no body)"** — The client is calling the gateway with a path that becomes `.../chat/completions` instead of `.../v1/chat/completions`. Set `baseUrl` to **`http://localhost:8080/v1/proxy/openai/v1`** (trailing `/v1`) so that appended paths are correct. Restart OpenClaw after changing.
 - **OpenClaw shows "404" plus binary/garbage text** — The upstream returned an error (e.g. 404) with a body that was compressed or non-JSON; from v0.8.5 the gateway decompresses gzip responses automatically. Ensure you're on Talon >= v0.8.5.

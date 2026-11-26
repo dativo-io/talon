@@ -2,7 +2,7 @@
 
 This playbook covers common operational scenarios when running AI agents governed by Talon. Each scenario includes immediate actions, investigation steps, and remediation. Work through the steps in order — earlier steps contain or limit blast radius, later steps prevent recurrence.
 
-> **Note on CLI commands:** Some CLI commands referenced below (marked with *planned*) are not yet implemented. Where a CLI command is planned, the equivalent Go API is available. See the code references for programmatic access.
+> **Scope first:** the run-control, pause, kill and in-memory override endpoints below describe native Talon run controls. Do not assume they cancel external workflows, prevent every model-gateway request, or stop an Action Gateway operation already dispatched. For external use cases, stop new work in the owning runtime, use `talon agents disable <name>` where supported, verify the active generation and denial with a synthetic request, and isolate bypass routes. Disabling is not instantaneous and does not recall in-flight effects. If a reload is rejected, the previous generation can remain active; see [operate AI use cases](operate-ai-use-cases.md). For a dispatched action with unknown outcome, reconcile with the downstream system; never blindly replay. See [Action Gateway](../reference/action-gateway.md) and [control-plane boundaries](../reference/control-plane-boundaries.md).
 
 ---
 
@@ -10,7 +10,7 @@ This playbook covers common operational scenarios when running AI agents governe
 
 An agent is executing more tool calls than expected, looping, or consuming excessive resources.
 
-**Immediate containment:**
+**Immediate containment (native runs only):**
 
 ```bash
 # Kill a specific run by correlation ID
@@ -99,7 +99,7 @@ talon audit export --from <start_time> --to <end_time> --format json
 
 **Remediate:**
 
-1. Escalate the `response_pii_action` in the agent's policy:
+1. For gateway traffic, tighten the company `gateway.organization_policy.defaults.response_pii_action` (restart-required) or use the supported monotonic use-case data-classification override; inspect the effective response policy. See [configuration](../reference/configuration.md#response-pii-actions-and-streaming):
    - `"warn"` → `"redact"` (strips PII from responses before release; `warn` only observes after delivery. Preventive redaction buffers streaming responses until the verdict)
    - `"redact"` → `"block"` (rejects the entire response with HTTP 451)
 2. Review `tool_policies` for any tools configured with `pii_action: "audit"` — determine whether they should be upgraded to `"redact"`.
@@ -116,7 +116,7 @@ An agent or tenant has exceeded expected spend, or is on track to blow through t
 talon costs --tenant <tenant_id>
 ```
 
-**Immediate containment (no restart required):**
+**Immediate containment (native run overrides only; not an external gateway admission cap):**
 
 ```bash
 # Set a stricter per-run cost cap at runtime
@@ -138,21 +138,9 @@ policies:
     monthly: 500.00
 ```
 
-2. Agent-file `cost_limits` edits are hot-reloaded by the periodic reload within `agents_reload_interval` (default 30s), so a restart is optional. For immediate effect, use the runtime overrides above, or restart Talon:
+2. Agent-file `cost_limits` edits are hot-reloaded by the periodic reload within `agents_reload_interval` (default 30s), so a restart is optional. For an external use case, stop or isolate traffic if immediate containment is required; verify the new generation before resuming. If a restart is needed, restart the existing service with its original configuration, keys and serving flags (do not switch modes).
 
-```bash
-talon serve --config <path>
-```
-
-3. For gradual degradation instead of hard cutoffs, enable cost degradation:
-
-```yaml
-policies:
-  degradation:
-    enabled: true
-```
-
-This automatically routes to cheaper models as budget thresholds are approached.
+3. For model gateway traffic, use the documented admission caps and policy-valid fallback configuration. Do not assume native cost-degradation settings automatically route gateway requests to cheaper models. [Cost governance](cost-governance-by-agent.md) explains estimate-based limits and the [configuration reference](../reference/configuration.md) explains provider fallback.
 
 ---
 
@@ -169,7 +157,7 @@ talon audit list --agent <agent> --limit 20
 
 **Remediate:**
 
-1. In the agent's `tool_policies`, switch the specific tool from redaction to audit-only:
+1. The following describes a legacy tool-policy configuration, not the governed MCP action contract. Do not weaken PII prevention merely to restore functionality. In an isolated test, establish the applicable boundary, required data and company constraints; obtain approval for any policy change. A tool-level audit-only setting cannot lift a binding company policy. See [governed MCP tools](mcp-governed-tools.md).
 
 ```yaml
 tool_policies:
@@ -177,7 +165,7 @@ tool_policies:
     pii_action: "audit"    # was: "redact"
 ```
 
-2. Verify that evidence still records the PII finding — `pii_action: "audit"` logs the detection without altering the data, preserving the compliance trail.
+2. Verify the actual data sent to the synthetic downstream destination and the signed decision. Observation is not prevention. If the required data cannot be sent under company policy, leave the operation blocked.
 3. No restart needed — agent-file policy edits are hot-reloaded within `agents_reload_interval` (default 30s). Restart only if reload is disabled (`0`).
 
 ---
@@ -186,7 +174,7 @@ tool_policies:
 
 An agent has stopped executing because repeated policy denials tripped the circuit breaker, but the denials were caused by a misconfigured policy rather than actual violations.
 
-**Diagnose:**
+**Diagnose (native runtime circuit breaker):**
 
 ```bash
 # Check recent evidence for the agent — look for policy denial records
@@ -211,13 +199,13 @@ circuitBreaker.Reset(tenantID, agentID)
 
 | Symptom | Scenario | First Action |
 |---|---|---|
-| Agent looping or excessive tool calls | [Runaway Agent](#scenario-1-runaway-agent) | `POST /v1/runs/{id}/kill` or `POST /v1/overrides/{tenant}/lockdown` |
+| Agent looping or excessive tool calls | [Runaway Agent](#scenario-1-runaway-agent) | Native runs: kill/lockdown; external use cases: stop new work in the owning runtime and verify containment |
 | `output_pii_detected` in evidence | [PII Leak Detected](#scenario-2-pii-leak-detected) | `talon audit list --agent <agent> --limit 50` |
-| Budget alerts or unexpected spend | [Cost Overrun](#scenario-3-cost-overrun) | `POST /v1/overrides/{tenant}/policy` with `max_cost_per_run` |
+| Budget alerts or unexpected spend | [Cost Overrun](#scenario-3-cost-overrun) | Inspect spend; native overrides apply to native runs only; isolate external traffic if immediate containment is needed |
 | `[REDACTED:*]` in tool arguments | [Redaction Breaking Process](#scenario-4-redaction-breaking-a-business-process) | `talon audit list --agent <agent> --limit 20` |
 | Agent stopped, circuit breaker open | [Circuit Breaker (False Positive)](#scenario-5-circuit-breaker-tripped-false-positive) | `talon audit list --agent <agent> --limit 20` |
-| Need to pause an agent mid-execution | [Operational Control](#operational-control-plane) | `POST /v1/runs/{id}/pause` |
-| Tool causing problems across agents | [Operational Control](#operational-control-plane) | `POST /v1/overrides/{tenant}/tools/disable` |
+| Need to pause a native run mid-execution | [Operational Control](../reference/operational-control-plane.md) | `POST /v1/runs/{id}/pause` |
+| Tool causing problems across native runs | [Operational Control](../reference/operational-control-plane.md) | `POST /v1/overrides/{tenant}/tools/disable` |
 
 ---
 
