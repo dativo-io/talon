@@ -1,5 +1,7 @@
 # How to run governed LLM calls in CI/CD
 
+**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 Use Talon from GitHub Actions, GitLab CI, or any pipeline so every LLM call (e.g. PR summary, code review, security scan) is audited and cost-controlled. Two options: call the LLM API gateway from the job (no Talon binary in the runner), or call the native API or run `talon run` from the runner.
 
 ---
@@ -27,7 +29,9 @@ policies:
 ```
 
 ```bash
-talon secrets set ci-openai-talon-key "$(openssl rand -hex 24)"
+CI_OPENAI_TALON_KEY="$(openssl rand -hex 24)"
+# Save this value securely for the intended caller before leaving the shell.
+printf '%s' "$CI_OPENAI_TALON_KEY" | talon secrets set ci-openai-talon-key
 ```
 
 Store that key value as a secret in GitHub/GitLab (e.g. `TALON_GATEWAY_KEY`). Store the real OpenAI key in Talon’s vault on the server.

@@ -1,5 +1,7 @@
 # How to offer Talon to multiple customers (multi-tenant / MSP)
 
+**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 If you are an MSP or ISV and want to offer Talon (or a compliance layer) to multiple customers, use tenant isolation with **one agent per customer tenant**, each bound to its own vault-backed agent key. This guide gives the steps.
 
 ---
@@ -34,8 +36,12 @@ agent:
 Mint one key per agent (never share keys between customers — the registry rejects two agents resolving to the same key):
 
 ```bash
-talon secrets set customer-acme-api-talon-key   "$(openssl rand -hex 24)"
-talon secrets set customer-globex-api-talon-key "$(openssl rand -hex 24)"
+CUSTOMER_ACME_API_TALON_KEY="$(openssl rand -hex 24)"
+# Save this value securely for the intended caller before leaving the shell.
+printf '%s' "$CUSTOMER_ACME_API_TALON_KEY" | talon secrets set customer-acme-api-talon-key
+CUSTOMER_GLOBEX_API_TALON_KEY="$(openssl rand -hex 24)"
+# Save this value securely for the intended caller before leaving the shell.
+printf '%s' "$CUSTOMER_GLOBEX_API_TALON_KEY" | talon secrets set customer-globex-api-talon-key
 ```
 
 When a request presents acme's agent key (`Authorization: Bearer <key>`), Talon resolves the agent and derives tenant `acme`. Tenant-scoped evidence and cost APIs, called with the same key, return only that tenant's data.
@@ -82,10 +88,10 @@ Customers use their own agent key; they never see other customers' keys or data.
 
 ```bash
 # Only acme's traffic may use this key (repeat --tenant for more; globs allowed)
-talon secrets set acme-openai-key "sk-..." --tenant acme
+printf '%s' "$ACME_PROVIDER_API_KEY" | talon secrets set acme-openai-key --tenant acme
 
 # Tenant- and agent-scoped
-talon secrets set acme-sales-key "sk-..." --tenant acme --agent "sales-*"
+printf '%s' "$ACME_PROVIDER_API_KEY" | talon secrets set acme-sales-key --tenant acme --agent "sales-*"
 ```
 
 An unscoped `talon secrets set` prints a notice reminding you of the allow-all default. `talon secrets audit` shows per-tenant allow/deny decisions for every retrieval — including the gateway's resolution of each agent's own traffic key.

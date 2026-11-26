@@ -1,5 +1,7 @@
 # Plan Review — E2E test case
 
+**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 Plan review is an **optional layer** for native `talon run` agents; this document is its test inventory.
 
 Structured end-to-end test for all **user-facing** Plan Review workflows. Pair with [How to test and operate Plan Review](plan-review-operators.md) for command reference.
@@ -61,7 +63,7 @@ export TALON_SECRETS_KEY="${TALON_SECRETS_KEY:-$(openssl rand -hex 32)}"
 export TALON_ADMIN_KEY="${TALON_ADMIN_KEY:-test-admin-key-change-me}"
 
 talon init --scaffold --name my-agent
-[[ -n "${OPENAI_API_KEY:-}" ]] && talon secrets set openai-api-key "$OPENAI_API_KEY"
+[[ -n "${OPENAI_API_KEY:-}" ]] && printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
 ```
 
 Record outputs in a log:

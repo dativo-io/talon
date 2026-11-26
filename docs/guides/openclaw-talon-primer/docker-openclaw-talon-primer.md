@@ -1,5 +1,7 @@
 # Docker primer: OpenClaw + Talon (OpenAI only)
 
+**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](../add-talon-to-existing-app.md).
+
 Straightforward setup: **only your OpenAI API key** is used. Talon runs as a gateway in front of OpenAI. OpenClaw sends every chat request to Talon; Talon checks policy, then forwards to OpenAI and records evidence.
 
 ## What this primer does
@@ -15,12 +17,12 @@ OpenClaw talks to an “OpenAI-compatible” endpoint. To use Talon as that endp
 | What OpenClaw sends | What you set in OpenClaw |
 |--------------------|---------------------------|
 | **Base URL** (where requests go) | Set the **OpenAI provider base URL** to the Talon gateway URL **with trailing `/v1`**: `http://localhost:8080/v1/proxy/openai/v1`. So every request goes to Talon; the `/v1` ensures paths like `chat/completions` become `.../v1/chat/completions` (required by OpenAI). |
-| **API key** (in `Authorization: Bearer ...`) | Set the **OpenAI provider API key** to the primer agent's **Talon agent key** — the value minted into the vault secret referenced by `agent.key.secret_name` in this primer's `agent.talon.yaml` (`talon secrets set gateway-primer-talon-key "$(openssl rand -hex 24)"`). Do **not** put your real OpenAI key here. Talon resolves the agent by this key; it then adds the real OpenAI key when forwarding. |
+| **API key** (in `Authorization: Bearer ...`) | Set the **OpenAI provider API key** to the primer agent's **Talon agent key** — the value minted into the vault secret referenced by `agent.key.secret_name` in this primer's `agent.talon.yaml` (`gateway-primer-talon-key` vault entry; generate a random value, retain it in the intended secret manager and supply it via stdin). Do **not** put your real OpenAI key here. Talon resolves the agent by this key; it then adds the real OpenAI key when forwarding. |
 
 **Two different keys (do not confuse):**
 
 - **TALON_SECRETS_KEY** (Docker: in `.env` as `TALON_SECRETS_KEY`) — Used by Talon to encrypt/decrypt the vault where the real OpenAI key is stored. If it changes, Talon cannot decrypt the secret and you get "cipher: message authentication failed". Never put this in OpenClaw.
-- **Agent key** (the value in the `gateway-primer-talon-key` vault secret, and in OpenClaw's `apiKey`) — The workload identity OpenClaw presents; it resolves to exactly one agent and its tenant. Not used for encryption. The vault value and OpenClaw's `openclaw.json` must match. Rotate with `talon secrets set gateway-primer-talon-key <new>` + restart — one active key per agent, never two.
+- **Agent key** (the value in the `gateway-primer-talon-key` vault secret, and in OpenClaw's `apiKey`) — The workload identity OpenClaw presents; it resolves to exactly one agent and its tenant. Not used for encryption. The vault value and OpenClaw's `openclaw.json` must match. Rotate with the stdin-based `talon secrets set gateway-primer-talon-key` procedure + restart — one active key per agent, never two.
 
 Important:
 

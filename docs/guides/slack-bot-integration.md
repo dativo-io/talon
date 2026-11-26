@@ -1,5 +1,7 @@
 # Govern your Slack bot with Talon
 
+**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 Route your Slack bot's LLM calls through Talon to cap what the bot can spend, block PII before it leaves your infrastructure, and get a signed audit trail of every request — all with a single config change. The same evidence records support compliance reviews when you need them. Allow about 10 minutes.
 
 ## Prerequisites
@@ -21,7 +23,7 @@ Ensure your config includes a `gateway` block and that the bot's agent file carr
 ### 2. Store the real API key in Talon
 
 ```bash
-talon secrets set openai-api-key
+printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
 ```
 
 ### 3. Point the Slack bot at the gateway
@@ -55,7 +57,9 @@ traffic key (#266). Mint it and configure the bot to send the VALUE as
 `Authorization: Bearer <value>` (or `x-api-key` for Anthropic):
 
 ```bash
-talon secrets set support-slack-bot-talon-key "$(openssl rand -hex 24)"
+SUPPORT_SLACK_BOT_TALON_KEY="$(openssl rand -hex 24)"
+# Save this value securely for the intended caller before leaving the shell.
+printf '%s' "$SUPPORT_SLACK_BOT_TALON_KEY" | talon secrets set support-slack-bot-talon-key
 ```
 
 Talon resolves that key to the agent (and its derived tenant), then uses the
