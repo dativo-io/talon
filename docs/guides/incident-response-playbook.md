@@ -138,7 +138,7 @@ policies:
     monthly: 500.00
 ```
 
-2. Agent-file `cost_limits` edits are hot-reloaded by the periodic reload within `agents_reload_interval` (default 30s), so a restart is optional. For an external use case, stop or isolate traffic if immediate containment is required; verify the new generation before resuming. If a restart is needed, restart the existing service with its original configuration, keys and serving flags (do not switch modes):
+2. Agent-file `cost_limits` edits are hot-reloaded by the periodic reload within `agents_reload_interval` (default 30s), so a restart is optional. For an external use case, stop or isolate traffic if immediate containment is required; verify the new generation before resuming. If a restart is needed, restart the existing service with its original configuration, keys and serving flags (do not switch modes).
 
 3. For model gateway traffic, use the documented admission caps and policy-valid fallback configuration. Do not assume native cost-degradation settings automatically route gateway requests to cheaper models. [Cost governance](cost-governance-by-agent.md) explains estimate-based limits and the [configuration reference](../reference/configuration.md) explains provider fallback.
 
@@ -199,13 +199,13 @@ circuitBreaker.Reset(tenantID, agentID)
 
 | Symptom | Scenario | First Action |
 |---|---|---|
-| Agent looping or excessive tool calls | [Runaway Agent](#scenario-1-runaway-agent) | `POST /v1/runs/{id}/kill` or `POST /v1/overrides/{tenant}/lockdown` |
+| Agent looping or excessive tool calls | [Runaway Agent](#scenario-1-runaway-agent) | Native runs: kill/lockdown; external use cases: stop new work in the owning runtime and verify containment |
 | `output_pii_detected` in evidence | [PII Leak Detected](#scenario-2-pii-leak-detected) | `talon audit list --agent <agent> --limit 50` |
-| Budget alerts or unexpected spend | [Cost Overrun](#scenario-3-cost-overrun) | `POST /v1/overrides/{tenant}/policy` with `max_cost_per_run` |
+| Budget alerts or unexpected spend | [Cost Overrun](#scenario-3-cost-overrun) | Inspect spend; native overrides apply to native runs only; isolate external traffic if immediate containment is needed |
 | `[REDACTED:*]` in tool arguments | [Redaction Breaking Process](#scenario-4-redaction-breaking-a-business-process) | `talon audit list --agent <agent> --limit 20` |
 | Agent stopped, circuit breaker open | [Circuit Breaker (False Positive)](#scenario-5-circuit-breaker-tripped-false-positive) | `talon audit list --agent <agent> --limit 20` |
-| Need to pause an agent mid-execution | [Operational Control](#operational-control-plane) | `POST /v1/runs/{id}/pause` |
-| Tool causing problems across agents | [Operational Control](#operational-control-plane) | `POST /v1/overrides/{tenant}/tools/disable` |
+| Need to pause a native run mid-execution | [Operational Control](../reference/operational-control-plane.md) | `POST /v1/runs/{id}/pause` |
+| Tool causing problems across native runs | [Operational Control](../reference/operational-control-plane.md) | `POST /v1/overrides/{tenant}/tools/disable` |
 
 ---
 

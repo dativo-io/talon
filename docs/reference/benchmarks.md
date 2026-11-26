@@ -21,7 +21,7 @@ Or with a saved snapshot file:
 scripts/run-benchmarks.sh -o /tmp/talon-benchmarks.md
 ```
 
-Requirements: Go 1.22+ (project pins 1.25.x in CI), CGO enabled (SQLite), repo root checkout.
+Requirements: the Go toolchain specified by the matching release's `go.mod` (Go 1.26.11 for v1.17.0; CI uses `go-version-file: go.mod`), CGO enabled (SQLite), repo root checkout.
 
 ## What we measure
 
