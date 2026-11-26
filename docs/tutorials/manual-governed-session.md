@@ -38,7 +38,7 @@ By the end you will have reproduced these controls manually:
 Clone Talon and export the provider keys:
 
 ```bash
-git clone https://github.com/dativo-io/talon.git
+git clone --depth 1 --branch v1.17.0 https://github.com/dativo-io/talon.git
 cd talon
 
 export ANTHROPIC_API_KEY=sk-ant-...

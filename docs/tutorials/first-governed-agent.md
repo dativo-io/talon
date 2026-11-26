@@ -12,7 +12,7 @@ See the [README install matrix](../../README.md#install) for all methods. **macO
 
 ```bash
 # Recommended on macOS / arm64
-git clone https://github.com/dativo-io/talon.git && cd talon
+git clone --depth 1 --branch v1.17.0 https://github.com/dativo-io/talon.git && cd talon
 make install   # → $(go env GOPATH)/bin/talon
 
 # Or: go install github.com/dativo-io/talon/cmd/talon@latest

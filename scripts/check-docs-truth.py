@@ -21,4 +21,11 @@ require("docs/guides/incident-response-playbook.md", "native run overrides only"
 forbid("docs/explanation/what-talon-does-to-your-request.md", r"\*\*Does not buffer streaming responses\.\*\*|No buffering for streams")
 require("docs/explanation/what-talon-does-to-your-request.md", "Preventive `redact` and `block`")
 forbid("docs/reference/benchmarks.md", r"not benchmarked until Epic")
+for name in ("slack-bot-integration", "openclaw-integration", "copaw-integration", "codex-cli-integration", "claude-code-integration", "governing-coding-agents", "multi-tenant-msp", "local-scanner-engines", "plan-review-operators", "plan-review-e2e-testcase", "cicd-pipeline-governance", "internal-support-agent"):
+    forbid(f"docs/guides/{name}.md", r'talon secrets set [\w.-]+\s+"\
+)
+forbid("docs/guides/local-scanner-engines.md", r'(?m)^\s+mode: "enforce"\s*
+)
+for name in ("manual-governed-session", "first-governed-agent"):
+    require(f"docs/tutorials/{name}.md", "git clone --depth 1 --branch v1.17.0")
 print("PASS targeted documentation truth regressions")
