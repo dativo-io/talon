@@ -185,19 +185,13 @@ connection to the provider (it does not pass through the client's TLS session).
 **Non-streaming:** The full response body is read, token usage is extracted
 from the JSON `usage` field, and the response is written to the client.
 
-**Streaming (SSE):** Talon detects `text/event-stream` in the response
-`Content-Type` and enters streaming mode. SSE chunks are forwarded as received
-using a `bufio.Scanner` with 512KB buffer. Each chunk is flushed immediately.
-Token usage is extracted incrementally from `data:` lines. The client sees the
-first token at the same time it would without Talon (minus the ~15ms pipeline
-overhead on the initial request).
+**Streaming (SSE):** Talon detects `text/event-stream`. Delivery depends on the effective response rule: `allow` and `warn` stream as received; `warn` observes after delivery. Preventive `redact` and `block` hold the response until a verdict. See Step 11 for the exact response contract. Token usage is extracted from provider usage events where available. Measure time to first token in your environment.
 
 Headers forwarded to upstream: `Content-Type`, `Authorization` (replaced with
 the real provider API key from the secrets vault). Headers forwarded to client:
 `Content-Type`, `X-Request-Id`, rate-limit headers.
 
-- **Latency:** Network RTT to provider (pass-through, no additional buffering
-  for streaming responses)
+- **Latency:** Upstream latency plus policy-dependent processing; preventive response rules buffer streams.
 
 ### Step 11: Response PII Scan
 
@@ -269,10 +263,10 @@ agent's daily/monthly accumulator (in-memory counter, periodically flushed).
 | 7 | Policy evaluation | 1-3ms | Compiled Rego, no I/O |
 | 8 | Tool governance | <1ms | List matching |
 | 9 | Redact (enforce only) | <1ms | String replacement |
-| 10 | Forward | Network RTT | No buffering for streams |
-| 11 | Response PII scan | 2-5ms | Non-streaming only |
+| 10 | Forward | Upstream-dependent | Preventive response rules buffer streams |
+| 11 | Response PII scan | Payload/engine-dependent | Non-streaming and applicable streaming rules |
 | 12 | Evidence + cost | 1-2ms | Async SQLite write + HMAC |
-| **Total overhead** | | **<15ms** | **Excluding network RTT** |
+| **Small non-streaming mock benchmark target** | | **<15ms** | **Not a streaming, concurrency or production SLA** |
 
 ## Throughput And Benchmarking
 
@@ -313,9 +307,7 @@ Overhead contributors, in order:
   With `pii_action: warn` the upstream provider receives exactly what your
   client sent; PII is scanned and logged but not altered. Only `redact` and
   tool stripping change the body, and only `block`/deny withholds it.
-- **Does not buffer streaming responses.** SSE chunks are forwarded to the
-  client as they arrive from the provider. There is no full-response buffering
-  for streaming requests.
+- **Does not buffer streaming responses under `allow` or `warn`.** Preventive `redact` and `block` buffer until the verdict; `warn` cannot recall already delivered bytes.
 - **Does not decrypt TLS to the upstream.** Talon terminates the client's
   HTTP connection and creates a new HTTPS connection to the provider. It does
   not act as a TLS-intercepting proxy.

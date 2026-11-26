@@ -2,8 +2,7 @@
 
 **Status:** stable · **Scope:** gateway pipeline overhead, PII scan latency, evidence write throughput.
 
-The README states that pipeline overhead is typically **under 15 ms excluding upstream
-latency**. This document defines how to reproduce the micro-benchmarks behind that claim,
+The README's **under 15 ms excluding upstream latency** target applies to the small-payload, non-streaming mock-upstream benchmark; it is not a production performance guarantee. This document defines how to reproduce the micro-benchmarks behind that claim,
 what each number measures, and what is intentionally out of scope.
 
 The authoritative numbers for a given machine are whatever `make benchmarks` prints
@@ -42,7 +41,7 @@ Requirements: Go 1.22+ (project pins 1.25.x in CI), CGO enabled (SQLite), repo r
 ### What is excluded
 
 - **WAN upstream RTT** — the gateway benchmark uses an in-process mock server; add your provider latency separately.
-- **Retry / fallback routing** — not benchmarked until Epic #113 ([#138](https://github.com/dativo-io/talon/issues/138) / [#139](https://github.com/dativo-io/talon/issues/139)) lands.
+- **Retry / fallback routing** — shipped, but excluded from this benchmark. Measure it independently under representative failure conditions.
 - **Streaming responses** — benchmarks use non-streaming JSON completions only.
 - **Attachment extraction / injection scan** — not in the default payload; add fixtures if you need that dimension.
 

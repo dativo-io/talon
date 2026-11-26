@@ -140,6 +140,8 @@ Application key — SECRET — shown once
   It cannot be shown again; a lost key is replaced (docs/guides/operate-ai-use-cases.md).
 ```
 
+The displayed registration output uses a shorthand about tightening policy. The actual precedence is field-specific: positive daily/monthly/session budget overrides can replace defaults (including raising a default), but any configured company ceiling remains binding. PII overrides can only tighten the company floor; attachment policy is company-owned. See [configuration and precedence](../reference/configuration.md) and inspect `talon agents show customer-support --effective`. Do not treat a default budget as a hard maximum.
+
 Everything above the key block is safe to copy into a ticket. The command states only what is established. It never names the gateway's address: a Talon server that answers somewhere is not thereby the gateway of this installation, so `<talon-url>` stays a placeholder for the address you supply (section 4). It calls the use case active only when a running process has loaded it.
 
 It refuses, without registering anything, when the company policy is missing (`--no-company-policy` states that you intend that), the name is taken, or the existing fleet does not validate. `--dry-run` prints the file and writes nothing. `--tenant` sets the tenant (default `default`).
@@ -300,7 +302,7 @@ Acceptance: both applications are loaded and have authenticated traffic under th
 
 [Operate AI use cases](operate-ai-use-cases.md) answers the questions that come next: why an application is blocked, how to stop one safely, how to replace a compromised key, what to do after an interrupted registration, and where the same facts are in the console.
 
-To tighten the policy for one application, edit its `agent.talon.yaml` (for example `policies.cost_limits.daily`). Company constraints cannot be lifted there.
+To change the policy for one application, edit its `agent.talon.yaml` (for example `policies.cost_limits.daily`). Positive budget overrides replace the baseline, while company ceilings still bind; PII can only tighten. Company constraints cannot be lifted there.
 
 ## Limits
 
