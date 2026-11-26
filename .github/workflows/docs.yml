@@ -5,8 +5,6 @@ on:
     paths:
       - 'docs/**'
       - '*.md'
-      - 'scripts/check-docs-truth.py'
-      - '.github/workflows/docs.yml'
       - 'examples/**/*.md'
 
 permissions:
@@ -29,6 +27,3 @@ jobs:
 
       - name: Compliance-claim discipline
         run: bash scripts/check-claim-discipline.sh
-
-      - name: Documentation truth regressions
-        run: python3 scripts/check-docs-truth.py

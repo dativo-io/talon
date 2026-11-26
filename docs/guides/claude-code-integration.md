@@ -1,6 +1,6 @@
 # How to govern Claude Code with Talon
 
-**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+**Credential handling:** Load the real Anthropic key as `ANTHROPIC_API_KEY` on the Talon host. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
 
 This guide shows how to route Claude Code's Anthropic API traffic through Talon so every request is audited, attributed per session and subagent, and policy-checked. Allow about 15 minutes.
 

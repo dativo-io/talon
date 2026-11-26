@@ -1,6 +1,6 @@
 # How to run a first-line support agent with Talon
 
-**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+**Credential handling:** Load `SUPPORT_INCOMING_WEBHOOK` for the notification example. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
 
 Run a first-line support agent that summarizes tickets and suggests replies, with PII and cost controls. You can implement it as a **native Talon agent** (webhook or cron trigger) or by pointing an **existing support bot** at the LLM API gateway.
 

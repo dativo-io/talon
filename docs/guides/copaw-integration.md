@@ -1,6 +1,6 @@
 # How to govern CoPaw with Talon
 
-**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+**Credential handling:** Load `OPENAI_API_KEY` or `DASHSCOPE_API_KEY`, depending on your provider. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
 
 This guide shows how to route CoPaw's LLM traffic through Talon so every request is audited and policy-enforced. CoPaw is an open-source personal AI assistant (AgentScope/Alibaba DAMO) with multi-channel support (DingTalk, Feishu, Discord, etc.). Allow about 15 minutes.
 

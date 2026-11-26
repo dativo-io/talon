@@ -1,6 +1,6 @@
 # How to govern a coding-agent fleet with Talon
 
-**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+**Credential handling:** Load `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` on the Talon host for the providers you use. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
 
 This guide shows how to govern an orchestrated coding-agent fleet — Claude Code subagents and Codex executors fanning out across two providers — through one Talon gateway, with per-session budgets, per-subagent attribution, and signed evidence. It is also the **canonical reference for the neutral orchestration-metadata contract**. Allow about 20 minutes.
 

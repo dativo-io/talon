@@ -1,6 +1,6 @@
 # Docker primer: CoPaw + Talon
 
-**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](../add-talon-to-existing-app.md).
+**Credential handling:** Set `OPENAI_API_KEY` in the local `.env` as shown below; keep the file out of version control. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](../add-talon-to-existing-app.md).
 
 Run Talon as a gateway in front of your LLM provider. CoPaw sends every chat request to Talon; Talon resolves the agent from the presented key, scans for PII, enforces cost and model limits, forwards to the provider, and writes an audit record.
 

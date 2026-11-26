@@ -1,6 +1,6 @@
 # Local scanner engines (Ollama / Llama cookbook)
 
-**Credential handling:** Load real provider keys from your secret manager into the environment before these commands; pass values to `talon secrets set` on stdin. Generated caller keys must be saved securely for the intended caller. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+**Credential handling:** Load `OPENAI_API_KEY` for the OpenAI example. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
 
 Talon can use a local LLM as its PII scanner engine: `scanner.type: llm`
 prompts any OpenAI-compatible endpoint (Ollama, llama.cpp server, vLLM) for
