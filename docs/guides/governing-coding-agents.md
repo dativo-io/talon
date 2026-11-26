@@ -1,5 +1,7 @@
 # How to govern a coding-agent fleet with Talon
 
+**Credential handling:** Load `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` on the Talon host for the providers you use. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 This guide shows how to govern an orchestrated coding-agent fleet — Claude Code subagents and Codex executors fanning out across two providers — through one Talon gateway, with per-session budgets, per-subagent attribution, and signed evidence. It is also the **canonical reference for the neutral orchestration-metadata contract**. Allow about 20 minutes.
 
 For single-tool setup without orchestration, start with the [OpenClaw guide](openclaw-integration.md) — the gateway mechanics (vault, agent identity, policy) are identical.
@@ -76,12 +78,16 @@ This creates `agent.talon.yaml`, `agents/codex/agent.talon.yaml`, `talon.config.
 
 ```bash
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)   # keep it; same value at serve time
-talon secrets set anthropic-api-key "sk-ant-..."
-talon secrets set openai-api-key "sk-..."
+printf '%s' "$ANTHROPIC_API_KEY" | talon secrets set anthropic-api-key
+printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
 
 # Mint each tool's Talon agent key (bound via agent.key.secret_name)
-talon secrets set claude-code-talon-key "$(openssl rand -hex 24)"
-talon secrets set codex-talon-key       "$(openssl rand -hex 24)"
+CLAUDE_CODE_TALON_KEY="$(openssl rand -hex 24)"
+# Save this value securely for the intended caller before leaving the shell.
+printf '%s' "$CLAUDE_CODE_TALON_KEY" | talon secrets set claude-code-talon-key
+CODEX_TALON_KEY="$(openssl rand -hex 24)"
+# Save this value securely for the intended caller before leaving the shell.
+printf '%s' "$CODEX_TALON_KEY" | talon secrets set codex-talon-key
 
 talon serve --gateway
 ```

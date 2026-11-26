@@ -245,6 +245,8 @@ PERSON and LOCATION are optional recognizers in the default EU patterns; they ar
 
 ## Require human approval for high-risk or tool use
 
+**Boundary:** This is legacy native Plan Review, not exact-action authorization and not an approval gate for external tool execution. For current HTTP and MCP actions, use [Action Gateway](../reference/action-gateway.md) and [governed MCP tools](mcp-governed-tools.md) with a separate reviewer credential.
+
 **Goal:** Pause execution until a human approves (EU AI Act Art. 14 style).
 
 **Where:** `agent.talon.yaml` under `compliance.human_oversight` and/or plan review configuration. When enabled, the runner generates an execution plan and waits for approval via CLI (`talon plan approve`) or API (`POST /v1/plans/{id}/approve`).
@@ -259,6 +261,8 @@ See [Agent planning](../AGENT_PLANNING.md) for the execution model and [How to t
 ---
 
 ## Govern tools by operation class (recommended over manual lists)
+
+**Historical native planning recipe:** v1.17.0 removed the in-process customer-tool registry and native tool execution loop. This section describes legacy planning configuration and intent classification, not a supported mechanism to intercept external tool execution. Use declared actions and exact-action rules for HTTP/MCP.
 
 **Goal:** Require human review for destructive, bulk, or install operations without maintaining long `forbidden_tools` lists. Talon classifies tools by intent (delete, purge, bulk, execute, install); you declare which classes always need review.
 
@@ -282,6 +286,8 @@ High-risk operation classes are enforced by built-in conservative defaults: `pur
 ---
 
 ## Harden `update_records`-style database tools
+
+**Historical native tool recipe:** the native in-process tool loop was removed. This is not a runnable v1.17 gateway or governed MCP recipe. Implement validation in the trusted downstream service and use the [Action Gateway](../reference/action-gateway.md) for bound authorization of catalogued actions.
 
 **Goal:** Stop a runaway agent from corrupting or deleting production data through a bulk mutation tool. Combine the three tool-safety controls — row-count guard, dry-run gate, and forbidden argument values — on the same tool.
 
@@ -358,6 +364,8 @@ The agent must either split the batch or escalate to a human reviewer.
 
 ## Combine tool policies with plan review
 
+**Legacy native planning only:** this does not authorize or dispatch external tools; the current exact-action lifecycle is separate.
+
 **Goal:** For high-risk tools, force human approval when the execution plan contains destructive verbs near numbers exceeding a volume threshold.
 
 **Where:** `agent.talon.yaml` under `compliance.plan_review`.
@@ -375,6 +383,8 @@ compliance:
 ---
 
 ## Tool governance: idempotency for side-effecting tools
+
+**Historical native tool configuration:** this is not the idempotency contract of the v1.17 HTTP or MCP Action Gateway. Use stable logical operation IDs, bound arguments and the documented attempt lifecycle; an unknown outcome requires reconciliation, not blind replay. See [Action Gateway](../reference/action-gateway.md).
 
 **Goal:** Retries are required for reliability but are dangerous for side-effecting tools (send email, charge card): if an upstream planner retries the whole sequence, the same action can run twice. Deduplicate repeated calls with the same parameters.
 
@@ -430,7 +440,7 @@ attachment_handling:
 agent:
   name: claude-code
   key:
-    secret_name: claude-code-talon-key   # mint: talon secrets set claude-code-talon-key "$(openssl rand -hex 24)"
+    secret_name: claude-code-talon-key   # vault reference; generate/store the secret via stdin as in the onboarding guide
 
 policies:
   session_limits:

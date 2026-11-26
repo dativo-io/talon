@@ -1,5 +1,7 @@
 # How to test and operate Plan Review
 
+**Credential handling:** Load `OPENAI_API_KEY` for the OpenAI example. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 Plan review is an **optional human-oversight gate** for native `talon run` agents — most Talon deployments (gateway proxying, coding agents) never enable it, and none of the four operating pillars depend on it. This operator guide covers Talon's **Plan Review Gate**: when enabled, it pauses agent execution **before the first LLM call** until an operator approves the execution plan, with every decision recorded in signed evidence. It provides supporting controls for EU AI Act Art. 14-style human oversight — not a compliance claim.
 
 **Not covered here:** the legacy per-tool approval routes (`/v1/tool-approvals`), a separate mid-run gate; the native agentic tool loop that requested them was removed in #431. See [Operational control plane](../reference/operational-control-plane.md).
@@ -45,7 +47,7 @@ export TALON_ADMIN_KEY="strong-admin-key"             # API approvals
 
 mkdir my-workspace && cd my-workspace
 talon init --scaffold --name my-agent
-talon secrets set openai-api-key "$OPENAI_API_KEY"
+printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
 ```
 
 ---

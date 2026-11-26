@@ -1,5 +1,7 @@
 # Local scanner engines (Ollama / Llama cookbook)
 
+**Credential handling:** Load `OPENAI_API_KEY` for the OpenAI example. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 Talon can use a local LLM as its PII scanner engine: `scanner.type: llm`
 prompts any OpenAI-compatible endpoint (Ollama, llama.cpp server, vLLM) for
 NER. This guide covers running it well. For the wire-level reference and
@@ -54,7 +56,7 @@ ollama pull llama3.1:8b                     # >= 8 GB RAM hosts
 # --- 3. Project scaffold + provider credential in the vault ---
 mkdir -p "$HOME/talon-scanner-drive" && cd "$HOME/talon-scanner-drive"
 talon init --scaffold --name scanner-drive
-talon secrets set openai-api-key "sk-proj-..."   # real key; vault-encrypted
+printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key   # real key; vault-encrypted
 
 # --- 4. Configure the llm scanner + gateway (talon.config.yaml) ---
 cat >> talon.config.yaml <<'CFG'
@@ -68,7 +70,6 @@ scanner:
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "enforce"
   providers:
     openai:
       enabled: true
@@ -80,7 +81,7 @@ gateway:
 CFG
 
 # Agent identity (#266): the scaffolded agent.talon.yaml binds me-talon-key
-talon secrets set me-talon-key "talon-drive-key"
+printf '%s' 'talon-drive-key' | talon secrets set me-talon-key # public local fixture key only
 
 # --- 5. Serve (startup health-probes Ollama and the model; fail-closed) ---
 talon serve --port 8080 --gateway --gateway-config talon.config.yaml

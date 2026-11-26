@@ -15,11 +15,11 @@ For first-time installation, use [connect an existing application](add-talon-to-
 - Enforced daily/monthly estimate-based admission caps for one agent (`support-slack-bot`)
 - Deny **before** any upstream provider call when the next request would exceed cap
 - Signed evidence for both allowed and denied decisions
-- CLI + API visibility for today/month, by agent/model/provider
+- CLI + API visibility for today/month, by agent/model/provider; session caps use estimate reservation, not a guarantee of final provider charges
 
 ---
 
-## 1. Define the use case with EUR admission caps
+## 1. Define the use case with admission caps
 
 The bot is one AI use case, so it gets one `agent.talon.yaml` — its Talon traffic identity and its one policy override over the organization baseline:
 
@@ -37,14 +37,14 @@ policies:
   models:
     allowed: ["gpt-4o-mini"]    # gateway model allowlist for this agent
   data_classification:
-    input_scan: true            # scan-only → PII action "warn" for this agent
+    input_scan: true            # scan-only does not override the company PII floor
 ```
 
 Mint the agent key the bot will present to the gateway (the vault stores it encrypted; keep the value in your secret manager):
 
 ```bash
 AGENT_KEY="$(openssl rand -hex 24)"
-talon secrets set support-slack-bot-talon-key "$AGENT_KEY"
+printf '%s' "$AGENT_KEY" | talon secrets set support-slack-bot-talon-key
 ```
 
 The gateway side of `talon.config.yaml` holds only providers and the organization baseline (see [examples/gateway/talon.config.gateway.yaml](../../examples/gateway/talon.config.gateway.yaml)):
@@ -69,7 +69,7 @@ gateway:
       max_daily_cost: 500.00    # optional org ceiling no agent override can exceed (#287)
 ```
 
-For a demo, temporarily lower the agent's `cost_limits.daily` (for example `0.01`) so you can trigger a denial quickly.
+The amounts are in the installation's configured cost currency; inspect the `currency` field in `talon costs --agent support-slack-bot --json`. Historical `_eur` field names are not a currency guarantee. Use a dedicated synthetic installation for denial testing.
 
 **Effective caps = one calculation path.** The caps enforcement applies are resolved by the same function that feeds `talon costs` and the `/v1/costs/budget` endpoint: organization baseline (`organization_policy.defaults.daily_cost` / `monthly_cost`) → the agent's one override (an agent cap replaces the baseline when > 0). Org budget ceilings (`organization_policy.constraints.max_daily_cost` / `max_monthly_cost`, #287) are enforced **in addition** to the resolved per-agent cap — an agent override can never raise them, and a ceiling denial names the organization in the deny reason (`budget_exceeded: request would exceed organization daily cost limit`). What you see reported is exactly what is enforced.
 
@@ -93,14 +93,14 @@ printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
 
 ## 3. Run the 6-step demo flow
 
-1. Configure a very low `cost_limits.daily` for `support-slack-bot`
-2. Send one request that is allowed
-3. Send a second request that would exceed budget
+1. Start with a cap sufficient for a permitted synthetic request and confirm the configured pricing and effective caps.
+2. Send one request and inspect settled usage and signed evidence.
+3. In the test installation, lower the positive admission cap below the already settled spend (or below the next known estimate); wait for the new agent generation to load and verify it using `talon agents show support-slack-bot --effective`. Send a request again.
 4. Verify Talon denies **before** the provider call
 5. Verify signed evidence exists for the denial
 6. Verify `budget_status` in the metrics snapshot reflects the event
 
-Example calls — the bot authenticates with its **agent key** (`$AGENT_KEY` from step 1):
+Example calls — the bot authenticates with its **agent key** (`$AGENT_KEY` from step 1). These calls are illustrative; two identical requests alone do not guarantee one allow and one deny. Use a deterministic mock for a reproducible test and inspect an independent upstream count. For released implementation coverage, see `internal/gateway/budget_enforcement_test.go` and `internal/gateway/session_budget_test.go` in the matching checkout.
 
 ```bash
 # Allowed request (first call)
@@ -109,14 +109,14 @@ curl -sS "http://localhost:8080/v1/proxy/openai/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Summarize ticket #123"}]}'
 
-# Denied request (second call, over cap)
+# After the lower cap is active: repeat and check the actual decision
 curl -sS "http://localhost:8080/v1/proxy/openai/v1/chat/completions" \
   -H "Authorization: Bearer $AGENT_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Summarize ticket #124"}]}'
 ```
 
-Expected deny characteristics:
+Expected deny characteristics when the binding cap is exceeded (missing pricing or unavailable budget state are distinct errors):
 
 - HTTP 403
 - Machine-readable error code/reason contains `budget_exceeded`

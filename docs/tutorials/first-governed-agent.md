@@ -2,23 +2,23 @@
 
 In this tutorial we will get from zero to a policy-enforced AI agent in one path: install Talon, initialize a project, configure an LLM key, run a query, and see evidence recorded. By the end you will have run a governed agent and seen the audit trail.
 
-**Prerequisites:** Go 1.22+ with CGO (or a **linux/amd64** release tarball), and an LLM API key (OpenAI or Anthropic) or a local Ollama instance for live runs. Dry-run works without an API key.
+**Prerequisites:** the matching release binary, or Go 1.26.11 (as specified by v1.17.0 `go.mod`) with CGO for a source build, and an LLM API key (OpenAI or Anthropic) or a local Ollama instance for live runs. Dry-run works without an API key.
 
 ---
 
 ## 1. Install Talon
 
-See the [README install matrix](../../README.md#install) for all methods. **macOS and arm64 Linux:** use from-source or `go install` (prebuilt GitHub tarballs are **linux/amd64 only**).
+See the [README install matrix](../../README.md#install) for all methods. For v1.17.0, Linux amd64 is the verified installer profile; macOS amd64 and arm64 archives are present as best-effort assets with per-file checksums. Linux arm64 installs from source. See the [release's platform assets](https://github.com/dativo-io/talon/releases/tag/v1.17.0) for exact availability and support scope.
 
 ```bash
-# Recommended on macOS / arm64
-git clone https://github.com/dativo-io/talon.git && cd talon
+# Source installation from the matching release
+git clone --depth 1 --branch v1.17.0 https://github.com/dativo-io/talon.git && cd talon
 make install   # → $(go env GOPATH)/bin/talon
 
-# Or: go install github.com/dativo-io/talon/cmd/talon@latest
+# Or: go install github.com/dativo-io/talon/cmd/talon@v1.17.0
 ```
 
-**macOS:** If linking fails with `unsupported tapi file type '!tapi-tbd'`, use `make install` or `CC=/usr/bin/clang CGO_ENABLED=1 go install github.com/dativo-io/talon/cmd/talon@latest`.
+**macOS:** If linking fails with `unsupported tapi file type '!tapi-tbd'`, use `make install` or `CC=/usr/bin/clang CGO_ENABLED=1 go install github.com/dativo-io/talon/cmd/talon@v1.17.0`.
 
 Check that it works:
 
@@ -103,7 +103,7 @@ You should see: `✓ Policy check: ALLOWED (dry run, no LLM call)`.
 
 ## 6. Try a policy block
 
-Edit `agent.talon.yaml` and set a very low daily budget:
+In your isolated test installation, inspect the settled cost of the prior run. If it recorded positive spend, edit `agent.talon.yaml` and set a positive daily budget below that spend (the amount below is illustrative). Otherwise first establish positive usage; an arbitrary cap alone does not guarantee denial:
 
 ```yaml
 policies:
@@ -117,7 +117,7 @@ Run again:
 talon run "Summarize EU regulation trends"
 ```
 
-You should see:
+If the binding budget is exceeded, expect a denial such as:
 
 ```
 ✗ Policy check: DENIED

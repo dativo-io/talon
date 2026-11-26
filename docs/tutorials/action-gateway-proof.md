@@ -1,10 +1,10 @@
 # Prove exact-action authorization before business execution
 
-**Five-minute evaluator proof (no provider API key).** This exercises the HTTP Action Gateway **implemented on Talon main**, not MCP `tools/call` or native tool-execution convergence. Check [releases](https://github.com/dativo-io/talon/releases/latest) before assuming a prebuilt tagged binary includes the feature. It uses an in-process counting mock as the downstream business API; no real refund or mutation is performed.
+**Evaluator proof (no provider API key).** The HTTP Action Gateway and declared governed MCP tools on `POST /mcp` share the released v1.17.0 Action Gateway. This specific smoke exercise builds and tests the HTTP adapter only; it is not a test of MCP client compatibility or native tool execution. For distributed artifact acceptance, see the [v1.17.0 release run](https://github.com/dativo-io/talon/actions/runs/45429574176). It uses an in-process counting mock as the downstream business API; no real refund or mutation is performed.
 
 ## Run
 
-From the Talon repository root, with Go and the dependencies needed to build the binary:
+From a clean checkout of the release matching your installation, with Go and the dependencies needed to build the binary (for v1.17.0, check out tag `v1.17.0`):
 
 ~~~bash
 make test-action-smoke     # or: bash scripts/action-smoke.sh
@@ -35,4 +35,4 @@ The smoke includes `talon audit verify --operation <operation-id>` and a deliber
 4. Let the authorized runtime later claim `POST /v1/action-operations/{operation_id}/attempts`; Talon revalidates and dispatches the HTTP action at most once.
 5. Inspect `talon audit list`, `talon audit show <evidence-id>` and `talon audit verify --operation <operation-id>`.
 
-**Current limits:** only the `talon_forwarded` HTTP adapter has bound approvals and at-most-once Talon dispatch. MCP-discovered definitions are catalogued but not executable by that adapter. MCP/native action convergence, Tasks continuation, SSO reviewer identities, external execution profiles and operator reconciliation of `unknown` are not shipped. Read [LIMITATIONS §10](../../LIMITATIONS.md).
+**Current limits:** HTTP actions and declared MCP tools use the same bound approval and dispatch lifecycle, with distinct adapters. MCP definitions are executed by the governed MCP dispatcher, not the HTTP adapter; see [governed MCP tools](../guides/mcp-governed-tools.md). Native runner and Plan Review convergence and MCP Tasks continuation are not shipped. An ambiguous post-dispatch outcome is not automatically replayed; reconcile with independent downstream records. Read [LIMITATIONS §10](../../LIMITATIONS.md).

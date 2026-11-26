@@ -1,5 +1,7 @@
 # How to govern Claude Code with Talon
 
+**Credential handling:** Load the real Anthropic key as `ANTHROPIC_API_KEY` on the Talon host. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 This guide shows how to route Claude Code's Anthropic API traffic through Talon so every request is audited, attributed per session and subagent, and policy-checked. Allow about 15 minutes.
 
 One boundary up front, because it decides whether this guide applies to you: **Talon can only govern Claude Code when Claude Code authenticates with an API key, not a Claude subscription login.** Setting only `ANTHROPIC_BASE_URL` makes Claude Code send its subscription OAuth token, which Talon rejects as an unknown agent key. Governed operation is always *Talon agent key in, vault-stored provider key out*. See [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
@@ -37,12 +39,12 @@ Talon encrypts secrets with `TALON_SECRETS_KEY`. Use the **same** value when sto
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 
 # 2. Store your real Anthropic key (secret name must match the config's secret_name)
-talon secrets set anthropic-api-key "sk-ant-your-key"
+printf '%s' "$ANTHROPIC_API_KEY" | talon secrets set anthropic-api-key
 
 # 3. Mint the claude-code agent's traffic key (bound via agent.key.secret_name);
 #    keep $CLAUDE_CODE_KEY — Claude Code will present it to the gateway
 CLAUDE_CODE_KEY="$(openssl rand -hex 24)"
-talon secrets set claude-code-talon-key "$CLAUDE_CODE_KEY"
+printf '%s' "$CLAUDE_CODE_KEY" | talon secrets set claude-code-talon-key
 
 # 4. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set
 talon serve --gateway
@@ -61,7 +63,7 @@ gateway provider "anthropic": upstream_auth_mode client_bearer is not supported 
 | Key | Purpose | Where it lives |
 |-----|---------|----------------|
 | **TALON_SECRETS_KEY** | Encrypts/decrypts the vault. Must be the **same** for `talon secrets set` and `talon serve`. | Environment. Set before the steps above. |
-| **Agent key** (`$CLAUDE_CODE_KEY`) | Workload identity Claude Code sends to Talon; resolves to the `claude-code` agent and its derived tenant. Not used for encryption. | Vault secret `claude-code-talon-key` (referenced by `agent.key.secret_name`), and in Claude Code's environment as `ANTHROPIC_AUTH_TOKEN`. Rotate with `talon secrets set claude-code-talon-key <new>` + restart — one active key, never two. |
+| **Agent key** (`$CLAUDE_CODE_KEY`) | Workload identity Claude Code sends to Talon; resolves to the `claude-code` agent and its derived tenant. Not used for encryption. | Vault secret `claude-code-talon-key` (referenced by `agent.key.secret_name`), and in Claude Code's environment as `ANTHROPIC_AUTH_TOKEN`. Rotate with the stdin-based `talon secrets set claude-code-talon-key` procedure + restart — one active key, never two. |
 | **Provider key** (`sk-ant-...`) | Talon's upstream credential. | Vault secret `anthropic-api-key` only. |
 
 ### 3. Confirm the gateway is running
@@ -136,7 +138,7 @@ With `talon serve --gateway`, `talon metrics --json` / `GET /api/v1/metrics` car
 
 - **Claude Code gets authentication errors on every request, but `claude` worked before** — You are logged in with a subscription and only set `ANTHROPIC_BASE_URL`. The subscription OAuth token is not an agent key and Talon rejects it. Set `ANTHROPIC_AUTH_TOKEN=$CLAUDE_CODE_KEY` (or `ANTHROPIC_API_KEY`) so Claude Code presents the agent key. [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
 - **`talon serve --gateway` fails at startup after you edited the provider block** — If the error is the `upstream_auth_mode client_bearer is not supported for the anthropic API family` message quoted in step 2, remove `upstream_auth_mode: client_bearer`; vault-secret is the only supported mode for Anthropic.
-- **`gateway_secret_get_failed` / "cipher: message authentication failed" / "Service configuration error"** — Vault decryption failed. Use the **same** `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. If you lost it, set a new one and re-run `talon secrets set anthropic-api-key "sk-ant-..."`.
+- **`gateway_secret_get_failed` / "cipher: message authentication failed" / "Service configuration error"** — Vault decryption failed. Use the **same** `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. If you lost it, set a new one and re-run the stdin-based `talon secrets set anthropic-api-key` procedure.
 - **Long generations are cut off mid-response** — For a streamed generation this means the stream went *silent* longer than `stream_idle_timeout` (default 60s; raise it for slow providers) or the provider died — a steadily-flowing stream is no longer bounded by `request_timeout` (#217). For non-streaming calls `request_timeout` still bounds the whole call: the pack sets `600s`, and the response-header wait defaults to `request_timeout` (tunable via `response_header_timeout`), so large non-streaming prompts get the same budget.
 - **Streaming shows nothing for a long time, then everything at once** — `response_pii_action: redact` or `block` is preventive and buffers the entire SSE stream before release; time-to-first-token becomes total generation time. Use `warn` (streams normally, response PII observed after delivery) unless prevention is required ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
 - **`talon audit list --session` finds nothing** — The session ID must match what Claude Code sent in `X-Claude-Code-Session-Id`. Check a recent record with `talon audit list --agent claude-code` and read the session ID from its orchestration metadata. Also note that orchestration header values over 128 bytes or containing non-token characters are rejected at ingestion (`internal/gateway/orchmeta.go`).
@@ -200,7 +202,7 @@ Talon governs **model API traffic**. Claude Code's local tool executions — fil
 |---|---|---|
 | Developer routes Claude Code via Talon on a subscription login | Gateway rejects the OAuth token as an unknown agent key — ungoverned traffic cannot masquerade as governed | Agent-key auth required; [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
 | Real Anthropic key spread across developer laptops | Vault-stored key injected upstream; `client_bearer` rejected at config load for the anthropic family | `talon secrets set anthropic-api-key`, `providers.anthropic.secret_name` |
-| Agent loop burns budget inside one session | Soft session cap denies the next request with `session_budget_exceeded` + structured `session_budget` evidence | `session_limits.max_cost` (`TestSessionBudget_*`) |
+| Agent loop burns budget inside one session | Estimated-cost session admission denies the next request with `session_budget_exceeded` + structured `session_budget` evidence | `session_limits.max_cost` (`TestSessionBudget_*`) |
 | Slow-burn overspend across sessions | Per-agent daily/monthly caps | `policies.cost_limits.daily` / `.monthly` |
 | Credentials pasted into prompts (AWS keys, GitHub tokens, PEM blocks, `sk-ant-...`) | Input-side scan with high-precision recognizers; findings recorded in signed evidence | `agent.talon.yaml` `custom_recognizers`, input `warn` |
 | Long generation hard-cut mid-stream | Streams bounded by idle silence, not total duration (#217) | `stream_idle_timeout` (raise for slow providers); `request_timeout: 600s` still bounds non-streaming calls and the header wait |

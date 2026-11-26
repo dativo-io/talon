@@ -44,7 +44,9 @@ The agent is not an executing process instance. Runtime activity appears in sess
 
 ## Session
 
-> **Status.** The session vocabulary in this section (`status` with `open | completed`, `managed_by`) is the settled target contract of [#401](https://github.com/dativo-io/talon/issues/401). The shipped store still exposes the older status vocabulary and no `managed_by` field; the architecture reference lists it as a retained surface pending migration ([Control-plane boundaries](control-plane-boundaries.md)).
+> **Released behavior (v1.17.0).** The session store exposes `status` values `active`, `pending_approval`, `executing`, `completed`, `failed`, `timed_out` and source values `talon`, `client_asserted`, `vendor_asserted`. The stored external identity is scoped to the authenticated use case and tenant. There is no `managed_by` field in this release. See [manual session inspection](../tutorials/manual-governed-session.md) and [control-plane boundaries](control-plane-boundaries.md).
+>
+> **Target design only.** The following session status, manager and transition descriptions are the proposed #401 contract, not a client API contract for the released store. Do not implement clients against `open` or `managed_by` yet. [Track #401](https://github.com/dativo-io/talon/issues/401).
 
 A **session** is the correlation and understanding boundary for related activity through Talon. It supports:
 
@@ -60,7 +62,7 @@ A session is not a universal workflow lifecycle.
 
 The canonical field is named `status`. There is no separate `session.state` field.
 
-A session has exactly two statuses:
+Under the target design, a session has exactly two statuses:
 
 ```text
 open | completed
@@ -241,7 +243,7 @@ HMAC signatures make evidence tamper-evident and verifiable; they do not make st
 
 CLI, API, console and reviewer surfaces must consume one shared projection and keep object statuses separate.
 
-Example session view:
+Illustrative target session view (not current CLI output):
 
 ```text
 Session:              refund-workflow-8912
@@ -262,6 +264,8 @@ Cost:                 $0.014
 The linked operation and approval views then show their own canonical statuses and exact authorization/execution facts.
 
 ## Integration rules
+
+These are architectural rules and target lifecycle behavior; manager attribution and explicit completion in the #401 design are not a shipped session API. For released external integrations, use the stable asserted session ID and authenticated use-case key documented for the chosen route. Do not send a `managed_by` field or assume an external completion endpoint.
 
 ### Native Talon
 

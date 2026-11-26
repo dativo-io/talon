@@ -1,5 +1,7 @@
 # Plan Review — E2E test case
 
+**Credential handling:** Load `OPENAI_API_KEY` only if using the optional live provider path. Load real credentials from your secret manager; pass values to `talon secrets set` on stdin. Keep generated Talon use-case keys in the intended application's secret store. For authenticated remote deployments, follow the secure installation procedure in the [existing application guide](add-talon-to-existing-app.md).
+
 Plan review is an **optional layer** for native `talon run` agents; this document is its test inventory.
 
 Structured end-to-end test for all **user-facing** Plan Review workflows. Pair with [How to test and operate Plan Review](plan-review-operators.md) for command reference.
@@ -61,7 +63,7 @@ export TALON_SECRETS_KEY="${TALON_SECRETS_KEY:-$(openssl rand -hex 32)}"
 export TALON_ADMIN_KEY="${TALON_ADMIN_KEY:-test-admin-key-change-me}"
 
 talon init --scaffold --name my-agent
-[[ -n "${OPENAI_API_KEY:-}" ]] && talon secrets set openai-api-key "$OPENAI_API_KEY"
+[[ -n "${OPENAI_API_KEY:-}" ]] && printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key
 ```
 
 Record outputs in a log:
