@@ -403,7 +403,7 @@ func checkKeyCollisions(a *LoadedAgent, keyMaterial, adminKey string, byKey map[
 		return fmt.Errorf("agents %q and %q resolve to the same key material — a key identifies exactly one AI use case", prev, a.Name)
 	}
 	if adminKey != "" && subtle.ConstantTimeCompare([]byte(keyMaterial), []byte(adminKey)) == 1 {
-		return fmt.Errorf("agent %q (%s): key secret %q resolves to the same value as TALON_ADMIN_KEY — an agent key must never carry admin authority; rotate one of them (`talon secrets set %s <new key>`): %w", a.Name, a.Path, a.KeySecretName, a.KeySecretName, ErrAdminKeyCollision)
+		return fmt.Errorf("agent %q (%s): key secret %q resolves to the same value as TALON_ADMIN_KEY — an agent key must never carry admin authority; rotate one of them: %w", a.Name, a.Path, a.KeySecretName, ErrAdminKeyCollision)
 	}
 	return nil
 }
@@ -477,7 +477,10 @@ func resolveAgentKey(ctx context.Context, a *LoadedAgent, tenantID string, newEn
 			}
 		}
 	}
-	return "", fmt.Errorf("agent %q (%s): resolving key secret %q: %w — set it via `talon secrets set %s <key>`", a.Name, a.Path, a.KeySecretName, vaultErr, a.KeySecretName)
+	// The cause only: "set it" would be the wrong advice for a secret that
+	// exists (ACL-denied, undecryptable), and the name is configuration, not
+	// shell syntax. `talon doctor` gives the fix for each cause.
+	return "", fmt.Errorf("agent %q (%s): resolving key secret %q: %w", a.Name, a.Path, a.KeySecretName, vaultErr)
 }
 
 // PriorKeys returns a lookup over this registry's resolved key material,

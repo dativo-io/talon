@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -36,4 +37,35 @@ func MetadataReadOnly(ctx context.Context, path, name string) (*SecretMetadata, 
 		return nil, fmt.Errorf("reading secret ACL: %w", err)
 	}
 	return &m, nil
+}
+
+// ErrVaultAbsent means no vault file exists yet: no secret has been stored.
+var ErrVaultAbsent = errors.New("no secrets vault exists yet (no secret has been stored)")
+
+// OpenReadOnly opens the vault at path for reading only (#575), as
+// evidence.OpenReadOnly does for the evidence store: the SQLite connection
+// is mode=ro, so no schema statement and no write can run through it, and a
+// missing file is ErrVaultAbsent, never a freshly created vault. Get answers
+// as the read-write store does (the same ACL check, decryption and typed
+// errors) and records nothing: no access-log row, no access counter, no
+// metric. Set and the other writers fail with SQLite's read-only error.
+//
+// It is for local inspection that already holds the vault key and the file
+// (`talon doctor`); no server route uses it.
+func OpenReadOnly(path, key string) (*SecretStore, error) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrVaultAbsent
+		}
+		return nil, fmt.Errorf("secrets vault %s: %w", path, err)
+	}
+	gcm, err := newGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite3", "file:"+path+"?mode=ro")
+	if err != nil {
+		return nil, fmt.Errorf("opening secrets vault read-only: %w", err)
+	}
+	return &SecretStore{db: db, gcm: gcm, readOnly: true}, nil
 }

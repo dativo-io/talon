@@ -64,7 +64,7 @@ policies:
 	rootCmd.SetArgs([]string{"doctor", "--skip-upstream"})
 
 	err := rootCmd.Execute()
-	require.NoError(t, err)
+	require.NoError(t, err, buf.String())
 
 	out := buf.String()
 	assert.Contains(t, out, "data_dir_writable")

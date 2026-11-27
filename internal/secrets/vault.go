@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,9 +50,11 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/secrets")
 
 // SecretStore manages encrypted secrets with ACL enforcement and audit logging.
 type SecretStore struct {
-	db            *sql.DB
-	encryptionKey []byte
-	gcm           cipher.AEAD
+	db  *sql.DB
+	gcm cipher.AEAD
+	// readOnly is set by OpenReadOnly: the connection cannot write, and Get
+	// records nothing.
+	readOnly bool
 }
 
 // Secret is a decrypted secret with metadata.
@@ -87,7 +90,7 @@ type AccessRecord struct {
 // NewSecretStore creates an encrypted secret store backed by SQLite.
 // The encryptionKey must be exactly 32 raw bytes or 64 hex characters (decoded to 32 bytes for AES-256).
 func NewSecretStore(dbPath string, encryptionKey string) (*SecretStore, error) {
-	keyBytes, err := resolveEncryptionKey(encryptionKey)
+	gcm, err := newGCM(encryptionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -128,21 +131,24 @@ func NewSecretStore(dbPath string, encryptionKey string) (*SecretStore, error) {
 		return nil, fmt.Errorf("creating schema: %w", err)
 	}
 
+	return &SecretStore{db: db, gcm: gcm}, nil
+}
+
+// newGCM returns the vault's cipher (AES-256-GCM) under key.
+func newGCM(key string) (cipher.AEAD, error) {
+	keyBytes, err := resolveEncryptionKey(key)
+	if err != nil {
+		return nil, err
+	}
 	block, err := aes.NewCipher(keyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("creating cipher: %w", err)
 	}
-
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, fmt.Errorf("creating GCM: %w", err)
 	}
-
-	return &SecretStore{
-		db:            db,
-		encryptionKey: keyBytes,
-		gcm:           gcm,
-	}, nil
+	return gcm, nil
 }
 
 // resolveEncryptionKey interprets the key as 32 raw bytes or 64 hex characters (→ 32 bytes for AES-256).
@@ -215,7 +221,8 @@ func (s *SecretStore) storeSecret(ctx context.Context, name string, value []byte
 }
 
 // Get retrieves and decrypts a secret after checking ACL.
-// Both allowed and denied access attempts are logged.
+// Both allowed and denied access attempts are logged, except through a
+// read-only store (OpenReadOnly), which records nothing.
 func (s *SecretStore) Get(ctx context.Context, name, tenantID, agentID string) (*Secret, error) {
 	ctx, span := tracer.Start(ctx, "secrets.get",
 		trace.WithAttributes(
@@ -235,7 +242,9 @@ func (s *SecretStore) Get(ctx context.Context, name, tenantID, agentID string) (
 		&encryptedValue, &nonceB64, &aclJSON, &createdAt, &accessedAt, &accessCount,
 	)
 
-	if err == sql.ErrNoRows {
+	// A read-only store runs no schema statement: a file without the vault
+	// table holds no secret (as in MetadataReadOnly).
+	if err == sql.ErrNoRows || s.readOnly && err != nil && strings.Contains(strings.ToLower(err.Error()), "no such table") {
 		s.logAccess(ctx, name, tenantID, agentID, false, "secret not found")
 		return nil, ErrSecretNotFound
 	}
@@ -252,7 +261,9 @@ func (s *SecretStore) Get(ctx context.Context, name, tenantID, agentID string) (
 
 	if !acl.CheckAccess(tenantID, agentID) {
 		s.logAccess(ctx, name, tenantID, agentID, false, "ACL denied")
-		RecordSecretAccess(ctx, name, agentID, "denied")
+		if !s.readOnly {
+			RecordSecretAccess(ctx, name, agentID, "denied")
+		}
 		span.SetStatus(codes.Error, "ACL denied")
 		return nil, fmt.Errorf("agent %s not authorized for secret %s: %w", agentID, name, ErrSecretAccessDenied)
 	}
@@ -269,26 +280,34 @@ func (s *SecretStore) Get(ctx context.Context, name, tenantID, agentID string) (
 		return nil, fmt.Errorf("decoding nonce: %w", err)
 	}
 
+	// AES-GCM's Open panics on a nonce of the wrong length: a damaged row is
+	// an undecryptable secret, never a crash (VerifyFile checks the same).
+	if len(nonce) != s.gcm.NonceSize() {
+		return nil, fmt.Errorf("decrypting secret: %w: the stored nonce is %d bytes, want %d (the entry is damaged)", ErrSecretUndecryptable, len(nonce), s.gcm.NonceSize())
+	}
 	plaintext, err := s.gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("decrypting secret: %w: %w", ErrSecretUndecryptable, err)
 	}
 
-	now := time.Now()
-	_, _ = s.db.ExecContext(ctx, `UPDATE secrets SET accessed_at = ?, access_count = access_count + 1 WHERE name = ?`,
-		now, name)
-
-	s.logAccess(ctx, name, tenantID, agentID, true, "")
-	RecordSecretAccess(ctx, name, agentID, "allowed")
+	accessed := accessedAt.Time
+	if !s.readOnly {
+		accessed = time.Now()
+		accessCount++
+		_, _ = s.db.ExecContext(ctx, `UPDATE secrets SET accessed_at = ?, access_count = access_count + 1 WHERE name = ?`,
+			accessed, name)
+		s.logAccess(ctx, name, tenantID, agentID, true, "")
+		RecordSecretAccess(ctx, name, agentID, "allowed")
+	}
 
 	return &Secret{
 		Name:        name,
 		Value:       plaintext,
 		ACL:         acl,
 		CreatedAt:   createdAt.Time,
-		AccessedAt:  now,
-		AccessCount: accessCount + 1,
+		AccessedAt:  accessed,
+		AccessCount: accessCount,
 	}, nil
 }
 
@@ -469,6 +488,9 @@ func (s *SecretStore) Delete(ctx context.Context, name string) error {
 
 // logAccess records secret access attempts for audit compliance.
 func (s *SecretStore) logAccess(ctx context.Context, secretName, tenantID, agentID string, allowed bool, reason string) {
+	if s.readOnly {
+		return
+	}
 	id := uuid.New().String()
 	query := `INSERT INTO secret_access_log (id, secret_name, tenant_id, agent_id, timestamp, allowed, reason)
 	          VALUES (?, ?, ?, ?, ?, ?, ?)`

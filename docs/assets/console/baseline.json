@@ -38,7 +38,7 @@
     "internal/cmd/ui.go": "f409d51db981221c49e0692c0664da4f6a9d9deb",
     "internal/cmd/ui_signal_other.go": "c5877f5e0d2f74f122cef2b051963a2c46bb52f7",
     "internal/cmd/ui_signal_unix.go": "fb4e2bbd3beb937b16eb8abe0c037ca870fa770a",
-    "internal/config/config.go": "18621e22f08fd0330446073184e3523f11491671",
+    "internal/config/config.go": "8fab5e0637ab118e1e86d5fccde8ad587a8929cb",
     "internal/console/access/gate.go": "ebe6a986fef1a0808a44781bced31095b6558947",
     "internal/console/access/pairing.go": "255f566af1ed3e2f148371e30a13269e03881d79",
     "internal/console/access/sessions.go": "31727306e28d949ef927cd3b5f5838feb83db539",

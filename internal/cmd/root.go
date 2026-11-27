@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/otel"
 )
 
@@ -190,8 +191,10 @@ func initConfig() {
 	viper.SetEnvPrefix("TALON")
 	viper.AutomaticEnv()
 
-	// Read config (ignore errors - file may not exist yet)
-	_ = viper.ReadInConfig()
+	// Read the config. Only "not found on the search path" means configless;
+	// an existing file that cannot be read or parsed (or an explicitly named
+	// --config that is missing) makes config.Load fail with the cause (#575).
+	config.RecordFileRead(viper.ReadInConfig())
 }
 
 // hardenParentCommands makes every parent-only command fail loudly on an
