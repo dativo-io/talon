@@ -2,7 +2,6 @@ package secrets
 
 import (
 	"context"
-	"crypto/aes"
 	"crypto/cipher"
 	"database/sql"
 	"encoding/base64"
@@ -31,17 +30,9 @@ type IntegrityReport struct {
 //   - it is reachable only from local code that already holds the vault key
 //     and the file. No server route calls it.
 func VerifyFile(ctx context.Context, path, key string) (*IntegrityReport, error) {
-	keyBytes, err := resolveEncryptionKey(key)
+	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
-	}
-	block, err := aes.NewCipher(keyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("creating cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("creating GCM: %w", err)
 	}
 	db, err := sql.Open("sqlite3", "file:"+path+"?mode=ro")
 	if err != nil {

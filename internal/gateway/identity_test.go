@@ -334,10 +334,10 @@ func TestIdentitiesReturnsDeepCopies(t *testing.T) {
 	assert.Equal(t, "search", id.Override.AllowedTools[0])
 }
 
-// The registry needs only an ACL-checked read (KeyVault, #575): the
-// read-only vault doctor uses resolves the same identities, and a typed-nil
-// store still means "no vault configured" (no panic, the key is named).
-func TestBuildIdentityRegistry_KeyVaultImplementations(t *testing.T) {
+// What `talon doctor` passes to the dry-run (#575): a read-only vault
+// resolves the same identities as the running store, and no vault (none
+// exists yet) still names the key that is not stored.
+func TestBuildIdentityRegistry_ReadOnlyVault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.db")
 	store, err := secrets.NewSecretStore(path, testVaultKey)
 	require.NoError(t, err)
@@ -353,8 +353,7 @@ func TestBuildIdentityRegistry_KeyVaultImplementations(t *testing.T) {
 	_, ok := reg.ResolveKey("tk-support-1")
 	assert.True(t, ok, "the read-only vault resolves the same identity")
 
-	var typedNil *secrets.SecretStore
-	_, err = BuildIdentityRegistry(context.Background(), agents, typedNil, "")
+	_, err = BuildIdentityRegistry(context.Background(), agents, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no vault configured")
 	assert.Contains(t, err.Error(), "support-key")

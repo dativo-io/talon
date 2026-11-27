@@ -113,12 +113,6 @@ func secretProblem(err error, name, tenantID, agentID string) (msg, fix string) 
 	}
 }
 
-// openReadOnlyVault opens the vault read-only; a nil vault with
-// ErrVaultAbsent when none exists.
-func openReadOnlyVault(cfg *config.Config) (*secrets.ReadOnlyVault, error) {
-	return secrets.OpenReadOnly(cfg.SecretsDBPath(), cfg.SecretsKey)
-}
-
 // useCases returns the AI use cases serve would load: the fleet under
 // agents_dir, or the single default policy.
 func useCases(ctx context.Context, cfg *config.Config) ([]agentcatalog.CatalogAgent, error) {
@@ -151,7 +145,7 @@ func checkUseCaseKeys(ctx context.Context, cfg *config.Config) []CheckResult {
 	if err != nil || len(agents) == 0 {
 		return nil // the identity / policy checks report an unreadable fleet
 	}
-	vault, vaultErr := openReadOnlyVault(cfg)
+	vault, vaultErr := secrets.OpenReadOnly(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if vault != nil {
 		defer vault.Close()
 	}
@@ -273,7 +267,7 @@ func checkActionSources(ctx context.Context, cfg *config.Config) []CheckResult {
 	if err != nil {
 		return nil
 	}
-	vault, _ := openReadOnlyVault(cfg)
+	vault, _ := secrets.OpenReadOnly(cfg.SecretsDBPath(), cfg.SecretsKey)
 	var getter mcpsource.SecretGetter
 	if vault != nil {
 		defer vault.Close()

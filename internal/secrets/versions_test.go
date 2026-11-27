@@ -202,7 +202,7 @@ func oldWriter(t *testing.T, db *sql.DB) *SecretStore {
 	require.NoError(t, err)
 	gcm, err := cipher.NewGCM(block)
 	require.NoError(t, err)
-	return &SecretStore{db: db, encryptionKey: []byte(versionsKey), gcm: gcm}
+	return &SecretStore{db: db, gcm: gcm}
 }
 
 // A vault that existed before versions were recorded has no history, and

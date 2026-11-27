@@ -233,27 +233,7 @@ type BuildOptions struct {
 
 // BuildIdentityRegistry resolves every agent's key binding through the vault
 // and validates the set fail-closed (see BuildIdentityRegistryWith).
-// KeyVault is what the registry needs from the secrets vault: one ACL-checked
-// read of an agent's key secret. *secrets.SecretStore (the running data
-// plane, audit-logged) and *secrets.ReadOnlyVault (read-only inspection such
-// as `talon doctor`, #575) both satisfy it.
-type KeyVault interface {
-	Get(ctx context.Context, name, tenantID, agentID string) (*secrets.Secret, error)
-}
-
-// noVault turns a typed-nil store into the nil interface, so "no vault
-// configured" keeps meaning no vault.
-func noVault(v KeyVault) KeyVault {
-	if s, ok := v.(*secrets.SecretStore); ok && s == nil {
-		return nil
-	}
-	if r, ok := v.(*secrets.ReadOnlyVault); ok && r == nil {
-		return nil
-	}
-	return v
-}
-
-func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault KeyVault, adminKey string) (*IdentityRegistry, error) {
+func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *secrets.SecretStore, adminKey string) (*IdentityRegistry, error) {
 	return BuildIdentityRegistryWith(ctx, agents, vault, adminKey, BuildOptions{})
 }
 
@@ -270,8 +250,7 @@ func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault KeyV
 //     configured). The server's tenant-or-admin middleware checks the admin
 //     bearer first, so a collision would silently elevate that agent's
 //     traffic to operator authority — fail startup instead.
-func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault KeyVault, adminKey string, opts BuildOptions) (*IdentityRegistry, error) {
-	vault = noVault(vault)
+func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault *secrets.SecretStore, adminKey string, opts BuildOptions) (*IdentityRegistry, error) {
 	reg := &IdentityRegistry{identities: make([]*ResolvedIdentity, 0, len(agents)), byWorkload: make(map[workloadKey]*ResolvedIdentity)}
 	byName := make(map[string]string, len(agents))   // name → path
 	byWorkload := make(map[workloadKey]string)       // binding → agent name (dup check)
@@ -462,7 +441,7 @@ func checkKeyCollisions(a *LoadedAgent, keyMaterial, adminKey string, byKey map[
 // identity with key material and an UNCHANGED tenant (a tenant move must
 // ACL-recheck), and refuses a RE-ENABLE (prior disabled → new enabled): granting
 // NEW access always needs a fresh, ACL-checked vault read.
-func resolveAgentKey(ctx context.Context, a *LoadedAgent, tenantID string, newEnabled bool, vault KeyVault, priorKeys PriorKeyLookup) (string, error) {
+func resolveAgentKey(ctx context.Context, a *LoadedAgent, tenantID string, newEnabled bool, vault *secrets.SecretStore, priorKeys PriorKeyLookup) (string, error) {
 	var vaultErr error
 	authoritativeAbsent := false
 	if vault != nil {

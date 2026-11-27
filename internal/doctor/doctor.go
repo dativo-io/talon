@@ -731,7 +731,7 @@ func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string
 	// through a mode=ro connection — no access-log row, no counter, no file
 	// created. A missing vault is a nil vault: the dry-run then names the
 	// key that is not stored.
-	secStore, secErr := openReadOnlyVault(cfg)
+	secStore, secErr := secrets.OpenReadOnly(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if secErr != nil && !errors.Is(secErr, secrets.ErrVaultAbsent) {
 		return pol.Agent.Name, pol.Agent.Key.SecretName, fmt.Errorf("cannot open secrets vault: %w", secErr)
 	}
@@ -767,7 +767,7 @@ func gatewayIdentityPreflightDir(ctx context.Context, cfg *config.Config) (agent
 		return "", "", fmt.Errorf("no %s found under agents_dir %s — gateway mode requires at least one keyed agent (#267)", agentcatalog.AgentConfigFilename, cfg.AgentsDir)
 	}
 	fleet := fmt.Sprintf("%d agent(s) under %s", len(scan.Agents), cfg.AgentsDir)
-	secStore, secErr := openReadOnlyVault(cfg)
+	secStore, secErr := secrets.OpenReadOnly(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if secErr != nil && !errors.Is(secErr, secrets.ErrVaultAbsent) {
 		return fleet, "", fmt.Errorf("cannot open secrets vault: %w", secErr)
 	}
@@ -849,7 +849,7 @@ func checkGatewaySecrets(ctx context.Context, gwCfg *gateway.GatewayConfig) []Ch
 	if err != nil {
 		return results
 	}
-	secStore, secErr := openReadOnlyVault(cfg)
+	secStore, secErr := secrets.OpenReadOnly(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if secStore != nil {
 		defer secStore.Close()
 	}
