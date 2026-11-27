@@ -14,7 +14,7 @@ import (
 // printed as it is; anything else is single-quoted, an embedded ' written as
 // '\”. ok is false for a value with a control or format character (an escape
 // sequence, a newline, a bidi override): printed raw it would also reach the
-// terminal, so the caller prints no command for it (unprintableNameFix).
+// terminal, so no command is printed for it (unprintableNameFix).
 func shellWord(s string) (word string, ok bool) {
 	if strings.IndexFunc(s, func(r rune) bool { return !unicode.IsGraphic(r) }) >= 0 {
 		return "", false
@@ -50,19 +50,19 @@ func shellPlain(r rune) bool {
 // be printed safely; the message beside it shows the name escaped.
 const unprintableNameFix = "The configured secret name contains control or format characters (shown escaped above): correct secret_name in the file, then run talon doctor again"
 
-// storeKeyCommand is the copy-paste command that stores a secret from the
-// environment variable env (the value on stdin): a use case's key scoped to
-// its tenant and agent, a provider key (no agent) unscoped.
-func storeKeyCommand(env, name, tenant, agent string) (string, bool) {
+// storeKeyFix is a fix that stores a secret: lead, then the copy-paste
+// command (the value on stdin, from the environment) — a use case's key
+// scoped to its tenant and agent, a provider key (no agent) unscoped. A name
+// that cannot be printed safely gets no command.
+func storeKeyFix(lead, name, tenant, agent string) string {
 	n, ok1 := shellWord(name)
 	tn, ok2 := shellWord(tenant)
 	ag, ok3 := shellWord(agent)
 	if !ok1 || !ok2 || !ok3 {
-		return "", false
+		return unprintableNameFix
 	}
-	cmd := fmt.Sprintf("printf '%%s' \"$%s\" | talon secrets set %s", env, n)
-	if agent != "" {
-		cmd += " --tenant " + tn + " --agent " + ag
+	if agent == "" {
+		return fmt.Sprintf("%sprintf '%%s' \"$VALUE\" | talon secrets set %s", lead, n)
 	}
-	return cmd, true
+	return fmt.Sprintf("%sprintf '%%s' \"$VALUE\" | talon secrets set %s --tenant %s --agent %s", lead, n, tn, ag)
 }

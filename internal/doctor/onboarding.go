@@ -93,22 +93,21 @@ const (
 	restoreKeyFix = "Restore the TALON_SECRETS_KEY the secret was stored with (talon.env or the service environment); do not re-set the secret: that replaces it. If the key is right, the entry is damaged: restore the vault from a backup"
 )
 
+// errEmptyKey: the stored key is empty once trimmed. The runtime trims too
+// and refuses such a key (gateway.resolveAgentKey).
+var errEmptyKey = errors.New("the stored key is empty")
+
 // secretProblem explains why a secret does not resolve for tenant/agent
 // and how to fix that cause — never by printing a value, and never advising
 // a re-set for a secret that exists but does not decrypt.
 func secretProblem(err error, name, tenantID, agentID string) (msg, fix string) {
-	setCmd, printable := storeKeyCommand("VALUE", name, tenantID, agentID)
-	store := func(lead string) string {
-		if !printable {
-			return unprintableNameFix
-		}
-		return lead + setCmd
-	}
 	switch {
 	case errors.Is(err, secrets.ErrVaultAbsent):
-		return fmt.Sprintf("secret %q is not stored: no secrets vault exists yet", name), store("Store it: ")
+		return fmt.Sprintf("secret %q is not stored: no secrets vault exists yet", name), storeKeyFix("Store it: ", name, tenantID, agentID)
 	case errors.Is(err, secrets.ErrSecretNotFound):
-		return fmt.Sprintf("secret %q is not in the vault", name), store("Store it (or correct the name in the file): ")
+		return fmt.Sprintf("secret %q is not in the vault", name), storeKeyFix("Store it (or correct the name in the file): ", name, tenantID, agentID)
+	case errors.Is(err, errEmptyKey):
+		return fmt.Sprintf("secret %q is empty", name), storeKeyFix("Replace it: ", name, tenantID, agentID)
 	case errors.Is(err, secrets.ErrSecretAccessDenied):
 		return fmt.Sprintf("secret %q exists but its ACL does not allow tenant %q, agent %q", name, tenantID, agentID), aclFix
 	case errors.Is(err, secrets.ErrSecretUndecryptable):
@@ -122,19 +121,19 @@ func secretProblem(err error, name, tenantID, agentID string) (msg, fix string) 
 // useCases returns the AI use cases serve would load, sorted by name: the
 // fleet under agents_dir, or the single default policy.
 func useCases(ctx context.Context, cfg *config.Config) ([]agentcatalog.CatalogAgent, error) {
-	if cfg.AgentsDir == "" {
-		pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
+	if cfg.AgentsDir != "" {
+		scan, err := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
 		if err != nil {
 			return nil, err
 		}
-		return []agentcatalog.CatalogAgent{{Name: pol.Agent.Name, TenantID: pol.Agent.TenantID, Path: cfg.DefaultPolicy, Policy: pol}}, nil
+		sort.Slice(scan.Agents, func(i, j int) bool { return scan.Agents[i].Name < scan.Agents[j].Name })
+		return scan.Agents, nil
 	}
-	scan, err := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
+	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(scan.Agents, func(i, j int) bool { return scan.Agents[i].Name < scan.Agents[j].Name })
-	return scan.Agents, nil
+	return []agentcatalog.CatalogAgent{{Name: pol.Agent.Name, TenantID: pol.Agent.TenantID, Path: cfg.DefaultPolicy, Policy: pol}}, nil
 }
 
 func tenantOf(t string) string {
@@ -167,29 +166,19 @@ func checkUseCaseKeys(ctx context.Context, cfg *config.Config, agents []agentcat
 			continue
 		}
 		secretName, tenant := a.Policy.Agent.Key.SecretName, tenantOf(a.TenantID)
-		var getErr error
-		var empty bool
-		switch vault {
-		case nil:
-			getErr = vaultErr
-		default:
-			s, err := vault.Get(ctx, secretName, tenant, a.Name)
-			getErr = err
-			empty = err == nil && strings.TrimSpace(string(s.Value)) == "" // as the runtime reads it (gateway.resolveAgentKey)
-		}
-		switch {
-		case getErr != nil:
-			msg, fix := secretProblem(getErr, secretName, tenant, a.Name)
-			out = append(out, CheckResult{Name: name, Category: "use_cases", Status: "fail", Message: a.Name + ": key " + msg, Fix: fix})
-		case empty:
-			fix := unprintableNameFix
-			if cmd, ok := storeKeyCommand("NEW_KEY", secretName, tenant, a.Name); ok {
-				fix = "Replace it: " + cmd
+		err := vaultErr
+		if vault != nil {
+			var s *secrets.Secret
+			if s, err = vault.Get(ctx, secretName, tenant, a.Name); err == nil && strings.TrimSpace(string(s.Value)) == "" {
+				err = errEmptyKey
 			}
-			out = append(out, CheckResult{Name: name, Category: "use_cases", Status: "fail", Message: fmt.Sprintf("%s: key secret %q is empty", a.Name, secretName), Fix: fix})
-		default:
-			out = append(out, CheckResult{Name: name, Category: "use_cases", Status: "pass", Message: fmt.Sprintf("%s (tenant %s): key secret %q resolves (value not shown)", a.Name, tenant, secretName)})
 		}
+		if err != nil {
+			msg, fix := secretProblem(err, secretName, tenant, a.Name)
+			out = append(out, CheckResult{Name: name, Category: "use_cases", Status: "fail", Message: a.Name + ": key " + msg, Fix: fix})
+			continue
+		}
+		out = append(out, CheckResult{Name: name, Category: "use_cases", Status: "pass", Message: fmt.Sprintf("%s (tenant %s): key secret %q resolves (value not shown)", a.Name, tenant, secretName)})
 	}
 	return out
 }
