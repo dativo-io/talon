@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -22,6 +23,21 @@ func shellWord(s string) (word string, ok bool) {
 		return s, true
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'", true
+}
+
+// printable escapes every control or format character of s as %q would (an
+// escape sequence, a newline, a bidi override): no configured name, and no
+// error text that quotes one, reaches the operator's terminal raw.
+func printable(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsGraphic(r) {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))
+	}
+	return b.String()
 }
 
 // shellPlain reports a character no POSIX shell treats specially anywhere in

@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/viper"
@@ -149,7 +150,7 @@ func TestCheckVaultKey_ProvesTheKeyDecryptsTheVault(t *testing.T) {
 	assert.Equal(t, "fail", bad.Status)
 	assert.Contains(t, bad.Message, "decrypts none of the 2")
 	assert.Contains(t, bad.Fix, "Restore")
-	assert.Contains(t, bad.Fix, "Do not re-set")
+	assert.Contains(t, bad.Fix, "do not re-set")
 	assert.Equal(t, before, vaultFingerprint(t, cfg), "verification reads only")
 }
 
@@ -717,4 +718,91 @@ func TestGatewayFixes_QuoteTheSecretName(t *testing.T) {
 	w, _ := shellWord(name)
 	assert.Contains(t, res[0].Fix, "talon secrets set "+w)
 	assert.NotContains(t, res[0].Fix, "set "+name)
+}
+
+// One cause, one fix, in the WHOLE report (review of #592, defects 1 and 2).
+// Every line of a doctor run, not one check's lines, is held to three rules:
+// no line advises `talon secrets set` for a secret that exists (ACL-denied
+// or undecryptable: setting it again replaces it); a command stores only the
+// secret that is missing, its name one shell word and the value on stdin;
+// no control or format character of a configured name reaches the terminal.
+func TestRun_WholeReport_OneCauseOneFix(t *testing.T) {
+	const metachar = "k; touch pwned $(id) `id` && x"
+	const control = "esc\x1b[31mRED\x1b[0m\nnewline"
+	otherKey := func(cfg *config.Config) *config.Config {
+		c := *cfg
+		c.SecretsKey = strings.Repeat("w", 32)
+		return &c
+	}
+	keyName := func(t *testing.T, agentsDir, yamlScalar string) {
+		t.Helper()
+		y := "agent:\n  name: hr-copilot\n  version: \"1.0.0\"\n  key:\n    secret_name: " + yamlScalar + "\npolicies:\n  cost_limits: {}\n"
+		require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "hr-copilot", "agent.talon.yaml"), []byte(y), 0o600))
+	}
+	for name, c := range map[string]struct {
+		setup   func(t *testing.T, cfg *config.Config, agentsDir string)
+		missing string   // the one secret that is not stored: the only name a command may store
+		oneFix  []string // checks that report the same entry: one wording
+	}{
+		"ACL-denied key, fleet under agents_dir": {setup: func(t *testing.T, cfg *config.Config, _ string) {
+			storeSecret(t, cfg, "hr-copilot-talon-key", keyHR, secrets.ACL{Agents: []string{"customer-support"}})
+		}},
+		"ACL-denied key, single agent.talon.yaml": {setup: func(t *testing.T, cfg *config.Config, agentsDir string) {
+			storeSecret(t, cfg, "hr-copilot-talon-key", keyHR, secrets.ACL{Agents: []string{"customer-support"}})
+			b, err := os.ReadFile(filepath.Join(agentsDir, "hr-copilot", "agent.talon.yaml"))
+			require.NoError(t, err)
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), b, 0o600))
+			t.Setenv("TALON_AGENTS_DIR", "")
+			t.Chdir(dir)
+		}},
+		"undecryptable vault (another TALON_SECRETS_KEY)": {setup: func(t *testing.T, _ *config.Config, _ string) {
+			t.Setenv("TALON_SECRETS_KEY", strings.Repeat("w", 32))
+		}, oneFix: []string{"secrets_key_decrypts_vault", "use_case_key:customer-support", "use_case_key:hr-copilot", "gateway_secrets_openai"}},
+		"one undecryptable entry": {setup: func(t *testing.T, cfg *config.Config, _ string) {
+			storeSecret(t, otherKey(cfg), "hr-copilot-talon-key", keyHR, secrets.ACL{})
+		}, oneFix: []string{"secrets_key_decrypts_vault", "use_case_key:hr-copilot"}},
+		"name with shell metacharacters, not stored": {setup: func(t *testing.T, _ *config.Config, agentsDir string) {
+			keyName(t, agentsDir, "'"+metachar+"'")
+		}, missing: metachar},
+		"name with shell metacharacters, its key is the admin key": {setup: func(t *testing.T, cfg *config.Config, agentsDir string) {
+			keyName(t, agentsDir, "'"+metachar+"'")
+			storeSecret(t, cfg, metachar, keyHR, secrets.ACL{})
+			t.Setenv("TALON_ADMIN_KEY", keyHR)
+		}},
+		"name with ESC and a newline, undecryptable": {setup: func(t *testing.T, cfg *config.Config, agentsDir string) {
+			keyName(t, agentsDir, `"esc\x1b[31mRED\x1b[0m\nnewline"`)
+			storeSecret(t, otherKey(cfg), control, keyHR, secrets.ACL{})
+		}, oneFix: []string{"secrets_key_decrypts_vault", "use_case_key:hr-copilot"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, agentsDir := onboardingFleet(t)
+			storeSecret(t, cfg, "customer-support-talon-key", keySupport, secrets.ACL{})
+			storeSecret(t, cfg, "hr-copilot-talon-key", keyHR, secrets.ACL{})
+			storeSecret(t, cfg, "openai-api-key", "sk-provider-0123456789", secrets.ACL{})
+			gw := filepath.Join(t.TempDir(), "talon.config.yaml")
+			require.NoError(t, os.WriteFile(gw, []byte("gateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      secret_name: \"openai-api-key\"\n      base_url: \"http://127.0.0.1:9\"\n"), 0o600))
+			c.setup(t, cfg, agentsDir)
+
+			report := Run(context.Background(), Options{GatewayConfigPath: gw, SkipUpstream: true})
+			got := byName(report.Checks)
+			require.Equal(t, "fail", got["gateway_agent_identity"].Status, got["gateway_agent_identity"].Message)
+			assert.Contains(t, got["gateway_agent_identity"].Fix, "use_case_key", "the key's fix is stated once, on its own line")
+			word, _ := shellWord(c.missing)
+			for _, r := range report.Checks {
+				text := r.Name + ": " + r.Message + " → " + r.Fix
+				assert.Negative(t, strings.IndexFunc(text, func(r rune) bool { return !unicode.IsGraphic(r) }), "a control or format character is printed raw: %q", text)
+				parts := strings.Split(text, "talon secrets set")
+				for i, after := range parts[1:] {
+					require.NotEmpty(t, c.missing, "talon secrets set is advised although every secret exists: %s", text)
+					assert.True(t, strings.HasSuffix(parts[i], `" | `), "the value comes from stdin, never an argument: %s", text)
+					assert.True(t, strings.HasPrefix(after, " "+word+" "), "the name is one shell word: %s", text)
+				}
+			}
+			for _, n := range c.oneFix {
+				assert.Equal(t, got[c.oneFix[0]].Fix, got[n].Fix, "%s and %s report the same entry: one fix", c.oneFix[0], n)
+			}
+			assertNoSecretValue(t, report.Checks, keySupport, keyHR, "sk-provider-0123456789")
+		})
+	}
 }

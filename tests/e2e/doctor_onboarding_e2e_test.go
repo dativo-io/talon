@@ -223,6 +223,16 @@ gateway:
 				t.Fatalf("%s: %q %q %q", name, st, msg, fix)
 			}
 		}
+		// The whole report, not three checks: every secret exists, so no line
+		// may advise setting one (the identity dry-run fails here too).
+		if st, _, _, _ := r.check("gateway_agent_identity"); st != "fail" {
+			t.Fatalf("gateway_agent_identity: %q", st)
+		}
+		for _, c := range r.Checks {
+			if strings.Contains(c.Message+c.Fix, "talon secrets set") {
+				t.Fatalf("%s advises setting a secret that exists: %q → %q", c.Name, c.Message, c.Fix)
+			}
+		}
 		if after := storeDigest(t, dir); after != before {
 			t.Fatalf("doctor changed the stores: %s → %s", before, after)
 		}

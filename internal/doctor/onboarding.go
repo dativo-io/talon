@@ -75,16 +75,20 @@ func checkVaultKey(ctx context.Context, cfg *config.Config) CheckResult {
 		return CheckResult{
 			Name: "secrets_key_decrypts_vault", Category: "config", Status: "fail",
 			Message: fmt.Sprintf("TALON_SECRETS_KEY decrypts none of the %d secret(s) in the vault: it is not the key they were stored with", rep.Entries),
-			Fix:     "Restore the TALON_SECRETS_KEY the vault was created with (talon.env or the service environment). Do not re-set the secrets: that replaces them",
+			Fix:     restoreKeyFix,
 		}
 	default:
 		return CheckResult{
 			Name: "secrets_key_decrypts_vault", Category: "config", Status: "fail",
-			Message: fmt.Sprintf("%d of %d secret(s) do not decrypt with TALON_SECRETS_KEY: %v", n, rep.Entries, rep.Undecryptable),
-			Fix:     "Those entries were stored under another key or are damaged: restore the original key, or replace each named secret with talon secrets set",
+			Message: fmt.Sprintf("%d of %d secret(s) do not decrypt with TALON_SECRETS_KEY (stored under another key, or damaged): %q", n, rep.Entries, rep.Undecryptable),
+			Fix:     restoreKeyFix,
 		}
 	}
 }
+
+// restoreKeyFix is the one fix for a secret that exists but does not decrypt,
+// on every line that reports it: setting it again would replace it.
+const restoreKeyFix = "Restore the TALON_SECRETS_KEY the secret was stored with (talon.env or the service environment); do not re-set the secret: that replaces it. If the key is right, the entry is damaged: restore the vault from a backup"
 
 // secretProblem explains why a secret does not resolve for tenant/agent
 // and how to fix that cause — never by printing a value, and never advising
@@ -107,7 +111,7 @@ func secretProblem(err error, name, tenantID, agentID string) (msg, fix string) 
 			"Review the stored secret ACL and the intended tenant/use-case binding. Have an authorized operator correct the ACL or binding; do not re-set the secret to bypass an access denial: setting it again replaces both its value and its ACL"
 	case errors.Is(err, secrets.ErrSecretUndecryptable):
 		return fmt.Sprintf("secret %q exists but cannot be decrypted with TALON_SECRETS_KEY (it was stored under another key, or the entry is damaged)", name),
-			"Restore the original TALON_SECRETS_KEY; do not re-set the secret (that replaces it). If the key is right, the entry is damaged: restore the vault from a backup"
+			restoreKeyFix
 	default:
 		return fmt.Sprintf("secret %q cannot be read: %v", name, err), "Check the vault file and TALON_SECRETS_KEY"
 	}

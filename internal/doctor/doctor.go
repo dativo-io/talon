@@ -87,9 +87,12 @@ func Run(ctx context.Context, opts Options) *Report {
 	return report
 }
 
-// summarize counts the checks and sets the worst status.
+// summarize makes every check printable, counts the checks and sets the
+// worst status.
 func (report *Report) summarize() {
-	for _, c := range report.Checks {
+	for i := range report.Checks {
+		c := &report.Checks[i]
+		c.Name, c.Message, c.Fix = printable(c.Name), printable(c.Message), printable(c.Fix)
 		switch c.Status {
 		case "pass":
 			report.Summary.Pass++
@@ -720,7 +723,7 @@ func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string
 		return "", "", fmt.Errorf("no agent policy loaded (%v) — gateway mode requires at least one keyed agent: create agent.talon.yaml with agent.key.secret_name", err)
 	}
 	if pol.Agent.Key == nil || pol.Agent.Key.SecretName == "" {
-		return pol.Agent.Name, "", fmt.Errorf("agent %q has no key binding — gateway startup will refuse; add agent.key.secret_name to agent.talon.yaml and run: talon secrets set <name> <key>", pol.Agent.Name)
+		return pol.Agent.Name, "", fmt.Errorf("agent %q has no key binding — gateway startup will refuse", pol.Agent.Name)
 	}
 	// Same strict unknown-field check gateway startup runs (#266 review round
 	// 4): a typo that silently drops a control must fail the preflight too.
@@ -785,25 +788,13 @@ func gatewayIdentityPreflightDir(ctx context.Context, cfg *config.Config) (agent
 // doctor must never bless a gateway that cannot start (review on #279).
 func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
 	agentName, secretName, err := GatewayIdentityPreflight(ctx)
-	dirMode := false
-	if cfg, cfgErr := config.Load(); cfgErr == nil && cfg.AgentsDir != "" {
-		dirMode = true
-	}
 	if err != nil {
-		fix := "Create agent.talon.yaml with agent.key.secret_name and mint the key: talon secrets set <name> <key>"
-		switch {
-		case secretName != "":
-			fix = unprintableNameFix
-			if w, ok := shellWord(secretName); ok {
-				fix = fmt.Sprintf("Run: talon secrets set %s <agent-key>", w)
-			}
-		case dirMode:
-			fix = "Fix the file named in the error: every agent.talon.yaml under agents_dir must validate, carry a unique agent.name, and bind a minted key (talon secrets set <name> <key>)"
-		}
 		return CheckResult{
 			Name: "gateway_agent_identity", Category: "gateway", Status: "fail",
 			Message: err.Error(),
-			Fix:     fix,
+			// One cause, one fix: a key that does not resolve is fixed where
+			// its use_case_key line says, never by a second advice here.
+			Fix: "Fix the cause named here. A key that does not resolve has its own use_case_key line above, with the fix for that cause; a use case without a key binding needs agent.key.secret_name in its file and that key in the vault (talon agents add writes both for a new use case)",
 		}
 	}
 	message := fmt.Sprintf("Agent %q key binding resolves (%s)", agentName, secretName)
