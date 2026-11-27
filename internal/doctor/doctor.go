@@ -71,9 +71,11 @@ func Run(ctx context.Context, opts Options) *Report {
 		return report
 	}
 	report.Checks = append(report.Checks, checkConfig()...)
+	// The use cases are loaded once per run, for every check that reads them.
+	var agents []agentcatalog.CatalogAgent
 	if cfg, err := config.Load(); err == nil {
-		// The use cases are loaded once per run, for every check that reads them.
-		agents, agentsErr := useCases(ctx, cfg)
+		var agentsErr error
+		agents, agentsErr = useCases(ctx, cfg)
 		report.Checks = append(report.Checks, checkTriggers(cfg, agents, agentsErr, opts.GatewayConfigPath != ""))
 		report.Checks = append(report.Checks, checkUseCaseKeys(ctx, cfg, agents)...)
 		if !opts.SkipUpstream {
@@ -81,7 +83,7 @@ func Run(ctx context.Context, opts Options) *Report {
 		}
 	}
 	if opts.GatewayConfigPath != "" {
-		report.Checks = append(report.Checks, checkGateway(ctx, opts)...)
+		report.Checks = append(report.Checks, checkGateway(ctx, opts, agents)...)
 	}
 	report.Checks = append(report.Checks, checkSystem()...)
 	report.summarize()
@@ -661,15 +663,19 @@ func checkCache(cfg *config.Config) CheckResult {
 	}
 }
 
-func checkGateway(ctx context.Context, opts Options) []CheckResult {
+func checkGateway(ctx context.Context, opts Options, agents []agentcatalog.CatalogAgent) []CheckResult {
 	var results []CheckResult
 
 	gwCfg, err := gateway.LoadGatewayConfig(opts.GatewayConfigPath)
 	if err != nil {
+		fix := "Check YAML syntax in " + opts.GatewayConfigPath
+		if errors.Is(err, os.ErrNotExist) {
+			fix = "The file named with --gateway-config does not exist: check the path"
+		}
 		return []CheckResult{{
 			Name: "gateway_config_valid", Category: "gateway", Status: "fail",
 			Message: fmt.Sprintf("Invalid config: %v", err),
-			Fix:     "Check YAML syntax in " + opts.GatewayConfigPath,
+			Fix:     fix,
 		}}
 	}
 	results = append(results, CheckResult{
@@ -686,7 +692,7 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 	if !opts.SkipUpstream {
 		results = append(results, checkGatewayUpstreams(ctx, gwCfg)...)
 	}
-	results = append(results, checkGatewaySecrets(ctx, gwCfg)...)
+	results = append(results, checkGatewaySecrets(ctx, gwCfg, agents)...)
 	return results
 }
 
@@ -824,15 +830,18 @@ func checkGatewayUpstreams(ctx context.Context, cfg *gateway.GatewayConfig) []Ch
 	return results
 }
 
-func checkGatewaySecrets(ctx context.Context, gwCfg *gateway.GatewayConfig) []CheckResult {
+// checkGatewaySecrets reads each provider key the way the gateway does on a
+// request: as the requesting use case (its tenant and name), ACL-checked.
+// One result per provider names the use cases that cannot read it.
+func checkGatewaySecrets(ctx context.Context, gwCfg *gateway.GatewayConfig, agents []agentcatalog.CatalogAgent) []CheckResult {
 	var results []CheckResult
 	cfg, err := config.Load()
 	if err != nil {
 		return results
 	}
-	secStore, secErr := secrets.OpenReadOnly(cfg.SecretsDBPath(), cfg.SecretsKey)
-	if secStore != nil {
-		defer secStore.Close()
+	vault, vaultErr := secrets.OpenReadOnly(cfg.SecretsDBPath(), cfg.SecretsKey)
+	if vault != nil {
+		defer vault.Close()
 	}
 
 	for name := range gwCfg.Providers {
@@ -840,29 +849,38 @@ func checkGatewaySecrets(ctx context.Context, gwCfg *gateway.GatewayConfig) []Ch
 		if !prov.Enabled || prov.SecretName == "" {
 			continue
 		}
-		getErr := secErr
-		if secStore != nil {
-			_, getErr = secStore.Get(ctx, prov.SecretName, "default", "*")
-		}
-		if getErr != nil {
-			msg, fix := secretProblem(getErr, prov.SecretName, "default", "*")
-			if errors.Is(getErr, secrets.ErrSecretNotFound) || errors.Is(getErr, secrets.ErrVaultAbsent) {
-				fix = unprintableNameFix
-				if w, ok := shellWord(prov.SecretName); ok {
-					fix = fmt.Sprintf("Store the provider key (the value on stdin): printf '%%s' \"$PROVIDER_KEY\" | talon secrets set %s", w)
-				}
+		var denied []string
+		var problem error // anything but an ACL denial is the same for every use case
+		for i := range agents {
+			getErr := vaultErr
+			if vault != nil {
+				_, getErr = vault.Get(ctx, prov.SecretName, tenantOf(agents[i].TenantID), agents[i].Name)
 			}
-			results = append(results, CheckResult{
-				Name: "gateway_secrets_" + name, Category: "gateway", Status: "fail",
-				Message: fmt.Sprintf("Provider %s: %s", name, msg),
-				Fix:     fix,
-			})
-		} else {
-			results = append(results, CheckResult{
-				Name: "gateway_secrets_" + name, Category: "gateway", Status: "pass",
-				Message: fmt.Sprintf("Secret %q present for %s", prov.SecretName, name),
-			})
+			if errors.Is(getErr, secrets.ErrSecretAccessDenied) {
+				denied = append(denied, agents[i].Name)
+			} else if getErr != nil {
+				problem = getErr
+				break
+			}
 		}
+		res := CheckResult{Name: "gateway_secrets_" + name, Category: "gateway", Status: "fail"}
+		switch {
+		case len(agents) == 0:
+			res.Status, res.Message = "warn", fmt.Sprintf("Provider %s: secret %q not checked: the gateway reads it as the requesting use case, and no use case is loaded (see gateway_agent_identity)", name, prov.SecretName)
+		case problem != nil:
+			res.Message, res.Fix = secretProblem(problem, prov.SecretName, "", "")
+			res.Message = fmt.Sprintf("Provider %s: %s", name, res.Message)
+		case len(denied) > 0:
+			list := strings.Join(denied[:min(len(denied), 5)], ", ")
+			if len(denied) > 5 {
+				list += ", …"
+			}
+			res.Message = fmt.Sprintf("Provider %s: secret %q exists but its ACL does not allow %d of %d use case(s): %s — their requests to this provider fail", name, prov.SecretName, len(denied), len(agents), list)
+			res.Fix = aclFix
+		default:
+			res.Status, res.Message = "pass", fmt.Sprintf("Secret %q for %s is readable by every use case (%d)", prov.SecretName, name, len(agents))
+		}
+		results = append(results, res)
 	}
 	return results
 }

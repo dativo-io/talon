@@ -244,6 +244,12 @@ func TestRun_InvalidGatewayConfig(t *testing.T) {
 		}
 	}
 	assert.True(t, found)
+
+	// A file that does not exist is not a YAML problem: the fix names the cause.
+	missing := byName(Run(ctx, Options{GatewayConfigPath: filepath.Join(dir, "nope.yaml"), SkipUpstream: true}).Checks)["gateway_config_valid"]
+	assert.Equal(t, "fail", missing.Status)
+	assert.Contains(t, missing.Fix, "does not exist")
+	assert.NotContains(t, missing.Fix, "YAML")
 }
 
 // TestDoctorGatewaySovereigntyFromGatewayConfig_WhenOperatorSovereigntyEmpty is

@@ -215,6 +215,16 @@ func TestCheckUseCaseKeys_OneVerdictPerUseCase(t *testing.T) {
 		}
 		assertNoSecretValue(t, res, keySupport, keyHR)
 	})
+	t.Run("a whitespace-only key is empty, as the runtime reads it", func(t *testing.T) {
+		cfg, _ := onboardingFleet(t)
+		storeSecret(t, cfg, "customer-support-talon-key", keySupport, secrets.ACL{})
+		storeSecret(t, cfg, "hr-copilot-talon-key", "  \n", secrets.ACL{})
+		hr := byName(checkUseCaseKeys(context.Background(), cfg, fleet(t, cfg)))["use_case_key:hr-copilot"]
+		assert.Equal(t, "fail", hr.Status, hr.Message)
+		assert.Contains(t, hr.Message, "empty")
+		_, _, err := GatewayIdentityPreflight(context.Background())
+		assert.ErrorContains(t, err, "empty value", "the identity dry-run talon serve runs refuses the same key")
+	})
 	t.Run("no vault at all is reported, and not created", func(t *testing.T) {
 		cfg, _ := onboardingFleet(t)
 		res := checkUseCaseKeys(context.Background(), cfg, fleet(t, cfg))
@@ -280,6 +290,94 @@ func TestCheckActionSources_DiscoversLikeServe(t *testing.T) {
 	got = byName(checkActionSources(context.Background(), cfg, fleet(t, cfg)))["action_source:customer-support/crm"]
 	assert.Equal(t, "fail", got.Status)
 	assert.Contains(t, got.Message, "talon serve will not start")
+}
+
+// Doctor gives a source the time talon serve gives it (the source's own
+// timeout, action.SourceTimeout, applied by the same Discover): only that
+// timeout means "talon serve will not start". When doctor's own deadline
+// ends first, the source was not checked, and doctor says no more than that
+// (review of #592: doctor capped every source at 5 s, serve allows 15 s by
+// default and up to 2 min).
+func TestCheckActionSources_OnlyTheSourcesOwnTimeoutIsAFailure(t *testing.T) {
+	cfg, agentsDir := onboardingFleet(t)
+	release := make(chan struct{})
+	silent := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer silent.Close()
+	defer close(release)
+	setSource := func(timeout string) {
+		p := filepath.Join(agentsDir, "customer-support", "agent.talon.yaml")
+		b, err := os.ReadFile(p)
+		require.NoError(t, err)
+		y := strings.Split(string(b), "actions:")[0] + "actions:\n  sources:\n    crm:\n      type: mcp\n      url: \"" + silent.URL + "\"\n" + timeout + "  definitions:\n    lookup_ticket:\n      source: crm\n      upstream_name: ticket.lookup\n      read_only: true\n      review: {fields: [ticket_id]}\n"
+		require.NoError(t, os.WriteFile(p, []byte(y), 0o600))
+	}
+
+	setSource("      timeout: 50ms\n")
+	got := byName(checkActionSources(context.Background(), cfg, fleet(t, cfg)))["action_source:customer-support/crm"]
+	assert.Equal(t, "fail", got.Status, got.Message)
+	assert.Contains(t, got.Message, "timeout")
+	assert.Contains(t, got.Message, "talon serve will not start")
+
+	setSource("") // the default: talon serve waits 15 s for this source
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	got = byName(checkActionSources(ctx, cfg, fleet(t, cfg)))["action_source:customer-support/crm"]
+	assert.Equal(t, "warn", got.Status, got.Message)
+	assert.Contains(t, got.Message, "not checked")
+	assert.NotContains(t, got.Message, "talon serve will not start", "doctor ran out of time, not the source")
+}
+
+// The gateway reads a provider key as the requesting use case (its tenant
+// and name, ACL-checked on every request). Doctor reads it the same way,
+// once per use case, and names the ones that cannot (review of #592, defect
+// 5: it read the key as tenant "default", agent "*", an identity no request
+// has, so a key scoped to every use case failed and a key scoped to one
+// named nobody).
+func TestCheckGatewaySecrets_ReadsTheKeyAsEachUseCase(t *testing.T) {
+	gw := &gateway.GatewayConfig{Providers: map[string]gateway.ProviderConfig{"openai": {Enabled: true, SecretName: "openai-api-key"}}}
+	var many []agentcatalog.CatalogAgent
+	for i := 1; i <= 8; i++ {
+		many = append(many, agentcatalog.CatalogAgent{Name: fmt.Sprintf("uc-%d", i)})
+	}
+	for name, c := range map[string]struct {
+		acl             secrets.ACL
+		agents          []agentcatalog.CatalogAgent // nil: the two registered use cases
+		status          string
+		names, unnamed  []string
+		noUseCaseLoaded bool
+	}{
+		"scoped to every use case":             {acl: secrets.ACL{Tenants: []string{"default"}, Agents: []string{"customer-support", "hr-copilot"}}, status: "pass"},
+		"unscoped":                             {status: "pass"},
+		"scoped to one use case":               {acl: secrets.ACL{Agents: []string{"customer-support"}}, status: "fail", names: []string{"1 of 2", "hr-copilot"}, unnamed: []string{"customer-support"}},
+		"more use cases than one line names":   {acl: secrets.ACL{Agents: []string{"uc-1"}}, agents: many, status: "fail", names: []string{"7 of 8", "uc-2", "uc-6"}, unnamed: []string{"uc-1", "uc-7", "uc-8"}},
+		"no use case loaded: nothing reads it": {status: "warn", names: []string{"not checked"}, noUseCaseLoaded: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, _ := onboardingFleet(t)
+			storeSecret(t, cfg, "openai-api-key", "sk-provider-0123456789", c.acl)
+			agents := c.agents
+			if agents == nil && !c.noUseCaseLoaded {
+				agents = fleet(t, cfg)
+			}
+			res := checkGatewaySecrets(context.Background(), gw, agents)
+			require.Len(t, res, 1)
+			assert.Equal(t, c.status, res[0].Status, res[0].Message)
+			for _, n := range c.names {
+				assert.Contains(t, res[0].Message, n)
+			}
+			for _, n := range c.unnamed {
+				assert.NotContains(t, res[0].Message, n)
+			}
+			assert.NotContains(t, res[0].Message, `agent "*"`, "no request has that identity")
+			assert.NotContains(t, res[0].Fix, "talon secrets set", "the key exists: setting it again replaces it and its ACL")
+			assertNoSecretValue(t, res, "sk-provider-0123456789")
+		})
+	}
 }
 
 // treeSnapshot records every entry under root: path, type, mode, size and
@@ -719,10 +817,10 @@ func TestCheckUseCaseKeys_FixCommandsKeepSecretNameOneShellWord(t *testing.T) {
 // The two older fixes that print a secret name use the same rendering.
 func TestGatewayFixes_QuoteTheSecretName(t *testing.T) {
 	const name = "openai key; touch pwned"
-	_, _ = onboardingFleet(t)
+	cfg, _ := onboardingFleet(t)
 	res := checkGatewaySecrets(context.Background(), &gateway.GatewayConfig{Providers: map[string]gateway.ProviderConfig{
 		"openai": {Enabled: true, SecretName: name},
-	}})
+	}}, fleet(t, cfg))
 	require.Len(t, res, 1)
 	w, _ := shellWord(name)
 	assert.Contains(t, res[0].Fix, "talon secrets set "+w)

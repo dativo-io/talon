@@ -50,8 +50,9 @@ func shellPlain(r rune) bool {
 // be printed safely; the message beside it shows the name escaped.
 const unprintableNameFix = "The configured secret name contains control or format characters (shown escaped above): correct secret_name in the file, then run talon doctor again"
 
-// storeKeyCommand is the copy-paste command that stores a use case's key,
-// read from the environment variable env, scoped to tenant and agent.
+// storeKeyCommand is the copy-paste command that stores a secret from the
+// environment variable env (the value on stdin): a use case's key scoped to
+// its tenant and agent, a provider key (no agent) unscoped.
 func storeKeyCommand(env, name, tenant, agent string) (string, bool) {
 	n, ok1 := shellWord(name)
 	tn, ok2 := shellWord(tenant)
@@ -59,5 +60,9 @@ func storeKeyCommand(env, name, tenant, agent string) (string, bool) {
 	if !ok1 || !ok2 || !ok3 {
 		return "", false
 	}
-	return fmt.Sprintf("printf '%%s' \"$%s\" | talon secrets set %s --tenant %s --agent %s", env, n, tn, ag), true
+	cmd := fmt.Sprintf("printf '%%s' \"$%s\" | talon secrets set %s", env, n)
+	if agent != "" {
+		cmd += " --tenant " + tn + " --agent " + ag
+	}
+	return cmd, true
 }

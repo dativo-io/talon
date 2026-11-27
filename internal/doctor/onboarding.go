@@ -9,8 +9,8 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 	"syscall"
-	"time"
 
 	"github.com/spf13/viper"
 
@@ -86,9 +86,12 @@ func checkVaultKey(ctx context.Context, cfg *config.Config) CheckResult {
 	}
 }
 
-// restoreKeyFix is the one fix for a secret that exists but does not decrypt,
-// on every line that reports it: setting it again would replace it.
-const restoreKeyFix = "Restore the TALON_SECRETS_KEY the secret was stored with (talon.env or the service environment); do not re-set the secret: that replaces it. If the key is right, the entry is damaged: restore the vault from a backup"
+// The one fix for a secret that exists but cannot be read, on every line that
+// reports it: setting it again would replace it (and its ACL).
+const (
+	aclFix        = "Review the stored secret ACL and the intended tenant/use-case binding. Have an authorized operator correct the ACL or binding; do not re-set the secret to bypass an access denial: setting it again replaces both its value and its ACL"
+	restoreKeyFix = "Restore the TALON_SECRETS_KEY the secret was stored with (talon.env or the service environment); do not re-set the secret: that replaces it. If the key is right, the entry is damaged: restore the vault from a backup"
+)
 
 // secretProblem explains why a secret does not resolve for tenant/agent
 // and how to fix that cause — never by printing a value, and never advising
@@ -107,8 +110,7 @@ func secretProblem(err error, name, tenantID, agentID string) (msg, fix string) 
 	case errors.Is(err, secrets.ErrSecretNotFound):
 		return fmt.Sprintf("secret %q is not in the vault", name), store("Store it (or correct the name in the file): ")
 	case errors.Is(err, secrets.ErrSecretAccessDenied):
-		return fmt.Sprintf("secret %q exists but its ACL does not allow tenant %q, agent %q", name, tenantID, agentID),
-			"Review the stored secret ACL and the intended tenant/use-case binding. Have an authorized operator correct the ACL or binding; do not re-set the secret to bypass an access denial: setting it again replaces both its value and its ACL"
+		return fmt.Sprintf("secret %q exists but its ACL does not allow tenant %q, agent %q", name, tenantID, agentID), aclFix
 	case errors.Is(err, secrets.ErrSecretUndecryptable):
 		return fmt.Sprintf("secret %q exists but cannot be decrypted with TALON_SECRETS_KEY (it was stored under another key, or the entry is damaged)", name),
 			restoreKeyFix
@@ -173,7 +175,7 @@ func checkUseCaseKeys(ctx context.Context, cfg *config.Config, agents []agentcat
 		default:
 			s, err := vault.Get(ctx, secretName, tenant, a.Name)
 			getErr = err
-			empty = err == nil && len(s.Value) == 0
+			empty = err == nil && strings.TrimSpace(string(s.Value)) == "" // as the runtime reads it (gateway.resolveAgentKey)
 		}
 		switch {
 		case getErr != nil:
@@ -255,12 +257,10 @@ func transportProblem(err error) string {
 
 var httpStatusRe = regexp.MustCompile(`HTTP (\d{3})`)
 
-// discoverTimeout bounds one source's discovery in doctor.
-const discoverTimeout = 5 * time.Second
-
 // checkActionSources runs the discovery talon serve runs at startup for
-// every trusted MCP action source a use case declares (#431): a source that
-// cannot be discovered stops serve from starting, so doctor says so first.
+// every trusted MCP action source a use case declares (#431), with the same
+// timeout (the source's own, applied by Discover): a source that cannot be
+// discovered stops serve from starting, so doctor says so first.
 // Discovery is read-only (server/discover, tools/list); the source's
 // credential is read from the vault read-only and never printed.
 func checkActionSources(ctx context.Context, cfg *config.Config, agents []agentcatalog.CatalogAgent) []CheckResult {
@@ -287,9 +287,16 @@ func checkActionSources(ctx context.Context, cfg *config.Config, agents []agentc
 				continue
 			}
 			name := fmt.Sprintf("action_source:%s/%s", a.Name, id)
-			dctx, cancel := context.WithTimeout(ctx, discoverTimeout)
-			snap, derr := d.Discover(dctx, tenantOf(a.TenantID), a.Name, id, src)
-			cancel()
+			snap, derr := d.Discover(ctx, tenantOf(a.TenantID), a.Name, id, src)
+			if derr != nil && ctx.Err() != nil {
+				// Doctor's own deadline ended, not the source's timeout:
+				// talon serve would still wait for this source.
+				out = append(out, CheckResult{
+					Name: name, Category: "use_cases", Status: "warn",
+					Message: fmt.Sprintf("MCP source %s of %s: not checked: talon doctor ran out of time before the source's own timeout", id, a.Name),
+				})
+				continue
+			}
 			if derr != nil {
 				out = append(out, CheckResult{
 					Name: name, Category: "use_cases", Status: "fail",
