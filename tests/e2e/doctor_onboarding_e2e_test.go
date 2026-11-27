@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // #575: an engineer connecting two existing applications to one Talon
@@ -54,10 +53,12 @@ func (r doctorReport) check(name string) (status, message, fix string, ok bool) 
 }
 
 // storeDigest is the installation's whole tree: every path, type, mode,
-// size and content digest. SQLite's own sidecar files of a WAL-mode store
-// are left out — the -shm index (created by any connection, read-only
-// included) and an EMPTY -wal (removed when the last connection closes);
-// neither holds data.
+// size and content digest. Doctor changes no stored data: it creates no
+// directory or store, changes no stored record, secret or schema, and prints
+// no key or secret value. Beside an existing evidence store in WAL mode,
+// SQLite itself may leave an `evidence.db-shm` index file and an empty
+// `evidence.db-wal`; they hold no stored data, and the stores' own files are
+// byte-identical afterwards. Those two are the only entries left out.
 func storeDigest(t *testing.T, dir string) string {
 	t.Helper()
 	var b strings.Builder
@@ -72,7 +73,7 @@ func storeDigest(t *testing.T, dir string) string {
 			fmt.Fprintf(&b, "%s link %s\n", rel, target)
 		case fi.IsDir():
 			fmt.Fprintf(&b, "%s dir %s\n", rel, fi.Mode())
-		case strings.HasSuffix(p, "-shm") || (strings.HasSuffix(p, "-wal") && fi.Size() == 0):
+		case fi.Name() == "evidence.db-shm" || (fi.Name() == "evidence.db-wal" && fi.Size() == 0):
 		default:
 			data, rerr := os.ReadFile(p)
 			if rerr != nil {
@@ -127,8 +128,9 @@ gateway:
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, stderr, code := RunTalon(t, dir, nil, "secrets", "set", "openai-api-key", "sk-provider-e2e-doctor-0000"); code != 0 {
-		t.Fatalf("provider secret: %s", stderr)
+	// The provider key on stdin, as the guide stores it: never an argument.
+	if out, code := (&onboarding{t: t, dir: dir, cfgPath: cfgPath}).talonStdin("sk-provider-e2e-doctor-0000", "secrets", "set", "openai-api-key"); code != 0 {
+		t.Fatalf("provider secret: %s", out)
 	}
 	var keys []string
 	for _, app := range [][]string{{"customer-support", "support-engineering", "AI customer support assistant"}, {"hr-copilot", "people-ops", "HR policy assistant"}} {
@@ -240,7 +242,6 @@ gateway:
 
 	t.Run("the provider endpoint is unreachable", func(t *testing.T) {
 		provider.Close()
-		time.Sleep(50 * time.Millisecond)
 		r, raw := runDoctor(t, dir, nil)
 		noKeys(t, raw)
 		if st, msg, _, _ := r.check("gateway_upstream_openai"); st != "fail" || !strings.Contains(msg, "connection refused") {

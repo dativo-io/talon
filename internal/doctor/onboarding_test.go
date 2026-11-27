@@ -381,11 +381,13 @@ func TestCheckGatewaySecrets_ReadsTheKeyAsEachUseCase(t *testing.T) {
 }
 
 // treeSnapshot records every entry under root: path, type, mode, size and
-// content digest (symlink targets for links). SQLite's own sidecar files of
-// a WAL-mode database are left out: the -shm shared-memory index (SQLite
-// creates it for ANY connection, read-only included) and an EMPTY -wal file
-// (removed when the last connection closes). Neither holds data; every
-// database file and every other file is compared byte for byte.
+// content digest (symlink targets for links). Doctor changes no stored data:
+// it creates no directory or store, changes no stored record, secret or
+// schema, and prints no key or secret value. Beside an existing evidence
+// store in WAL mode, SQLite itself may leave an `evidence.db-shm` index file
+// and an empty `evidence.db-wal`; they hold no stored data, and the stores'
+// own files are byte-identical afterwards. Those two are the only entries
+// left out; every other file is compared byte for byte.
 func treeSnapshot(t *testing.T, root string) map[string]string {
 	t.Helper()
 	snap := map[string]string{}
@@ -401,7 +403,7 @@ func treeSnapshot(t *testing.T, root string) map[string]string {
 		case fi.IsDir():
 			snap[rel] = "dir " + fi.Mode().String()
 		default:
-			if strings.HasSuffix(p, "-shm") || (strings.HasSuffix(p, "-wal") && fi.Size() == 0) {
+			if fi.Name() == "evidence.db-shm" || (fi.Name() == "evidence.db-wal" && fi.Size() == 0) {
 				return nil
 			}
 			b, rerr := os.ReadFile(p)
