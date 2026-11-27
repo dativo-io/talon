@@ -67,16 +67,17 @@ func Run(ctx context.Context, opts Options) *Report {
 		// Every other check would read the same file and fail for the same
 		// reason, or worse, judge the configless defaults instead (#575).
 		report.Checks = append(report.Checks, configLoadFailure(err))
-		report.Checks = append(report.Checks, checkSystem()...)
 		report.summarize()
 		return report
 	}
 	report.Checks = append(report.Checks, checkConfig()...)
-	report.Checks = append(report.Checks, checkTriggers(ctx, opts.GatewayConfigPath != ""))
 	if cfg, err := config.Load(); err == nil {
-		report.Checks = append(report.Checks, checkUseCaseKeys(ctx, cfg)...)
+		// The use cases are loaded once per run, for every check that reads them.
+		agents, agentsErr := useCases(ctx, cfg)
+		report.Checks = append(report.Checks, checkTriggers(cfg, agents, agentsErr, opts.GatewayConfigPath != ""))
+		report.Checks = append(report.Checks, checkUseCaseKeys(ctx, cfg, agents)...)
 		if !opts.SkipUpstream {
-			report.Checks = append(report.Checks, checkActionSources(ctx, cfg)...)
+			report.Checks = append(report.Checks, checkActionSources(ctx, cfg, agents)...)
 		}
 	}
 	if opts.GatewayConfigPath != "" {
@@ -136,40 +137,29 @@ func checkConfig() []CheckResult {
 }
 
 // checkTriggers applies the trigger definition rules serve enforces at
-// startup (#479) to the agents doctor can see: the fleet under agents_dir, or
-// the default policy file. The gateway rule (no triggers at all) is applied
-// exactly when doctor is checking a gateway config — the one case where it
-// knows a gateway will be served; otherwise only the definition rules
-// (secret_name present, require_approval unset) are checked. Whether the
+// startup (#479) to the use cases doctor can see (useCases): the fleet under
+// agents_dir, or the default policy file. The gateway rule (no triggers at
+// all) is applied exactly when doctor is checking a gateway config — the one
+// case where it knows a gateway will be served; otherwise only the definition
+// rules (secret_name present, require_approval unset) are checked. Whether the
 // vault actually holds each secret is resolved by serve at startup, not here.
-func checkTriggers(ctx context.Context, gatewayChecked bool) CheckResult {
+func checkTriggers(cfg *config.Config, agents []agentcatalog.CatalogAgent, agentsErr error, gatewayChecked bool) CheckResult {
 	const name = "triggers_serveable"
-	cfg, err := config.Load()
-	if err != nil {
-		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("not checked: %v", err)}
-	}
-	var policies []*policy.Policy
-	var scope string
+	scope := cfg.DefaultPolicy
 	switch {
-	case cfg.AgentsDir != "":
-		scan, scanErr := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
-		if scanErr != nil {
-			return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("not checked: agents_dir %s does not scan cleanly (%v)", cfg.AgentsDir, scanErr), Fix: "Run 'talon validate' for the per-file causes"}
-		}
-		for i := range scan.Agents {
-			policies = append(policies, scan.Agents[i].Policy)
-		}
-		scope = fmt.Sprintf("%d agent(s) under %s", len(policies), cfg.AgentsDir)
-	default:
+	case agentsErr != nil && cfg.AgentsDir != "":
+		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("not checked: agents_dir %s does not scan cleanly (%v)", cfg.AgentsDir, agentsErr), Fix: "Run 'talon validate' for the per-file causes"}
+	case agentsErr != nil:
 		if _, statErr := os.Stat(cfg.DefaultPolicy); statErr != nil {
 			return CheckResult{Name: name, Category: "config", Status: "pass", Message: "no agent policy to check (see policy_valid)"}
 		}
-		pol, loadErr := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
-		if loadErr != nil {
-			return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("not checked: %s does not load (see policy_valid)", cfg.DefaultPolicy)}
-		}
-		policies = []*policy.Policy{pol}
-		scope = cfg.DefaultPolicy
+		return CheckResult{Name: name, Category: "config", Status: "warn", Message: fmt.Sprintf("not checked: %s does not load (see policy_valid)", cfg.DefaultPolicy)}
+	case cfg.AgentsDir != "":
+		scope = fmt.Sprintf("%d agent(s) under %s", len(agents), cfg.AgentsDir)
+	}
+	policies := make([]*policy.Policy, len(agents))
+	for i := range agents {
+		policies[i] = agents[i].Policy
 	}
 	schedules, webhooks := 0, 0
 	for _, pol := range policies {
@@ -519,8 +509,8 @@ func checkRegistrations(cfg *config.Config) CheckResult {
 
 // checkRecoveryHold reports whether this installation runs on a restored
 // backup that has not been resumed (#465). It says what the hold covers:
-// the dispatch of governed actions through the Action Gateway. It does not
-// hold LLM gateway or MCP proxy traffic, and the message says so.
+// every governed action dispatched through the Action Gateway, over HTTP and
+// MCP. It does not hold LLM gateway requests, and the message says so.
 func checkRecoveryHold(cfg *config.Config) CheckResult {
 	const name = "recovery_hold"
 	res := CheckResult{Name: name, Category: "config", Status: "pass"}

@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
@@ -67,6 +68,14 @@ func storeSecret(t *testing.T, cfg *config.Config, name, value string, acl secre
 	require.NoError(t, err)
 	defer store.Close()
 	require.NoError(t, store.Set(context.Background(), name, []byte(value), acl))
+}
+
+// fleet is what Run loads once and hands to every check of the use cases.
+func fleet(t *testing.T, cfg *config.Config) []agentcatalog.CatalogAgent {
+	t.Helper()
+	agents, err := useCases(context.Background(), cfg)
+	require.NoError(t, err)
+	return agents
 }
 
 func byName(results []CheckResult) map[string]CheckResult {
@@ -163,7 +172,7 @@ func TestCheckUseCaseKeys_OneVerdictPerUseCase(t *testing.T) {
 		storeSecret(t, cfg, "customer-support-talon-key", keySupport, secrets.ACL{})
 		storeSecret(t, cfg, "hr-copilot-talon-key", keyHR, secrets.ACL{})
 		before := vaultFingerprint(t, cfg)
-		res := checkUseCaseKeys(context.Background(), cfg)
+		res := checkUseCaseKeys(context.Background(), cfg, fleet(t, cfg))
 		got := byName(res)
 		assert.Equal(t, "pass", got["use_case_key:customer-support"].Status)
 		assert.Equal(t, "pass", got["use_case_key:hr-copilot"].Status)
@@ -173,7 +182,7 @@ func TestCheckUseCaseKeys_OneVerdictPerUseCase(t *testing.T) {
 	t.Run("the second key is missing", func(t *testing.T) {
 		cfg, _ := onboardingFleet(t)
 		storeSecret(t, cfg, "customer-support-talon-key", keySupport, secrets.ACL{})
-		got := byName(checkUseCaseKeys(context.Background(), cfg))
+		got := byName(checkUseCaseKeys(context.Background(), cfg, fleet(t, cfg)))
 		assert.Equal(t, "pass", got["use_case_key:customer-support"].Status)
 		hr := got["use_case_key:hr-copilot"]
 		assert.Equal(t, "fail", hr.Status)
@@ -184,7 +193,7 @@ func TestCheckUseCaseKeys_OneVerdictPerUseCase(t *testing.T) {
 		cfg, _ := onboardingFleet(t)
 		storeSecret(t, cfg, "customer-support-talon-key", keySupport, secrets.ACL{})
 		storeSecret(t, cfg, "hr-copilot-talon-key", keyHR, secrets.ACL{Agents: []string{"customer-support"}})
-		hr := byName(checkUseCaseKeys(context.Background(), cfg))["use_case_key:hr-copilot"]
+		hr := byName(checkUseCaseKeys(context.Background(), cfg, fleet(t, cfg)))["use_case_key:hr-copilot"]
 		assert.Equal(t, "fail", hr.Status)
 		assert.Contains(t, hr.Message, "ACL")
 		assert.Contains(t, hr.Fix, "Review the stored secret ACL")
@@ -197,7 +206,7 @@ func TestCheckUseCaseKeys_OneVerdictPerUseCase(t *testing.T) {
 		storeSecret(t, cfg, "hr-copilot-talon-key", keyHR, secrets.ACL{})
 		wrong := *cfg
 		wrong.SecretsKey = strings.Repeat("w", 32)
-		res := checkUseCaseKeys(context.Background(), &wrong)
+		res := checkUseCaseKeys(context.Background(), &wrong, fleet(t, cfg))
 		for _, name := range []string{"use_case_key:customer-support", "use_case_key:hr-copilot"} {
 			r := byName(res)[name]
 			assert.Equal(t, "fail", r.Status, name)
@@ -208,7 +217,7 @@ func TestCheckUseCaseKeys_OneVerdictPerUseCase(t *testing.T) {
 	})
 	t.Run("no vault at all is reported, and not created", func(t *testing.T) {
 		cfg, _ := onboardingFleet(t)
-		res := checkUseCaseKeys(context.Background(), cfg)
+		res := checkUseCaseKeys(context.Background(), cfg, fleet(t, cfg))
 		assert.Equal(t, "fail", byName(res)["use_case_key:hr-copilot"].Status)
 		_, err := os.Stat(cfg.SecretsDBPath())
 		assert.True(t, errors.Is(err, os.ErrNotExist), "doctor never creates a vault")
@@ -263,12 +272,12 @@ func TestCheckActionSources_DiscoversLikeServe(t *testing.T) {
 		require.NoError(t, os.WriteFile(p, []byte(y), 0o600))
 	}
 	appendSource(up.URL)
-	got := byName(checkActionSources(context.Background(), cfg))["action_source:customer-support/crm"]
+	got := byName(checkActionSources(context.Background(), cfg, fleet(t, cfg)))["action_source:customer-support/crm"]
 	assert.Equal(t, "pass", got.Status, got.Message)
 	assert.Contains(t, got.Message, "1 tool(s)")
 
 	appendSource(closed)
-	got = byName(checkActionSources(context.Background(), cfg))["action_source:customer-support/crm"]
+	got = byName(checkActionSources(context.Background(), cfg, fleet(t, cfg)))["action_source:customer-support/crm"]
 	assert.Equal(t, "fail", got.Status)
 	assert.Contains(t, got.Message, "talon serve will not start")
 }
@@ -459,7 +468,7 @@ func TestCheckActionSources_NeverPrintsUpstreamText(t *testing.T) {
 			y := strings.Split(string(b), "actions:")[0] + "actions:\n  sources:\n    crm:\n      type: mcp\n      url: \"" + srv.URL + "\"\n      auth:\n        secret_name: crm-mcp-token\n  definitions:\n    lookup_ticket:\n      source: crm\n      upstream_name: ticket.lookup\n      read_only: true\n      review: {fields: [ticket_id]}\n"
 			require.NoError(t, os.WriteFile(p, []byte(y), 0o600))
 
-			res := checkActionSources(context.Background(), cfg)
+			res := checkActionSources(context.Background(), cfg, fleet(t, cfg))
 			got := byName(res)["action_source:customer-support/crm"]
 			require.Equal(t, "fail", got.Status)
 			assertNoSecretValue(t, res, token)
@@ -557,7 +566,7 @@ func TestCheckActionSources_NeverPrintsCredentialBearingSourceURL(t *testing.T) 
 		t.Run(c.name, func(t *testing.T) {
 			setSource(c.url)
 			before := hits.Load()
-			got := byName(checkActionSources(context.Background(), cfg))["action_source:customer-support/crm"]
+			got := byName(checkActionSources(context.Background(), cfg, fleet(t, cfg)))["action_source:customer-support/crm"]
 			if c.noRequest {
 				assert.Equal(t, before, hits.Load(), "the credential-bearing URL was never sent")
 			}
@@ -677,7 +686,7 @@ func TestCheckUseCaseKeys_FixCommandsKeepSecretNameOneShellWord(t *testing.T) {
 		cfg, agentsDir := onboardingFleet(t)
 		p := filepath.Join(agentsDir, "hr-copilot", "agent.talon.yaml")
 		require.NoError(t, os.WriteFile(p, []byte("agent:\n  name: hr-copilot\n  version: \"1.0.0\"\n  key:\n    secret_name: \"key\\x1b[31mred\"\npolicies:\n  cost_limits: {}\n"), 0o600))
-		got := byName(checkUseCaseKeys(context.Background(), cfg))["use_case_key:hr-copilot"]
+		got := byName(checkUseCaseKeys(context.Background(), cfg, fleet(t, cfg)))["use_case_key:hr-copilot"]
 		require.Equal(t, "fail", got.Status, got.Message)
 		assert.Equal(t, unprintableNameFix, got.Fix)
 		assert.NotContains(t, got.Message+got.Fix, "\x1b", "no raw escape byte reaches the terminal")
@@ -694,12 +703,12 @@ func TestCheckUseCaseKeys_FixCommandsKeepSecretNameOneShellWord(t *testing.T) {
 			require.NoError(t, os.WriteFile(p, []byte("agent:\n  name: hr-copilot\n  version: \"1.0.0\"\n  key:\n    secret_name: "+yamlName+"\npolicies:\n  cost_limits: {}\n"), 0o600))
 			storeSecret(t, cfg, "customer-support-talon-key", keySupport, secrets.ACL{})
 
-			missing := byName(checkUseCaseKeys(context.Background(), cfg))["use_case_key:hr-copilot"]
+			missing := byName(checkUseCaseKeys(context.Background(), cfg, fleet(t, cfg)))["use_case_key:hr-copilot"]
 			require.Equal(t, "fail", missing.Status, missing.Message)
 			assert.Equal(t, []string{"secrets", "set", name, "--tenant", "default", "--agent", "hr-copilot"}, argv(t, missing.Fix))
 
 			storeSecret(t, cfg, name, "", secrets.ACL{})
-			empty := byName(checkUseCaseKeys(context.Background(), cfg))["use_case_key:hr-copilot"]
+			empty := byName(checkUseCaseKeys(context.Background(), cfg, fleet(t, cfg)))["use_case_key:hr-copilot"]
 			require.Equal(t, "fail", empty.Status, empty.Message)
 			require.Contains(t, empty.Message, "empty")
 			assert.Equal(t, []string{"secrets", "set", name, "--tenant", "default", "--agent", "hr-copilot"}, argv(t, empty.Fix))

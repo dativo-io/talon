@@ -117,21 +117,22 @@ func secretProblem(err error, name, tenantID, agentID string) (msg, fix string) 
 	}
 }
 
-// useCases returns the AI use cases serve would load: the fleet under
-// agents_dir, or the single default policy.
+// useCases returns the AI use cases serve would load, sorted by name: the
+// fleet under agents_dir, or the single default policy.
 func useCases(ctx context.Context, cfg *config.Config) ([]agentcatalog.CatalogAgent, error) {
-	if cfg.AgentsDir != "" {
-		scan, err := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
+	if cfg.AgentsDir == "" {
+		pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
 		if err != nil {
 			return nil, err
 		}
-		return scan.Agents, nil
+		return []agentcatalog.CatalogAgent{{Name: pol.Agent.Name, TenantID: pol.Agent.TenantID, Path: cfg.DefaultPolicy, Policy: pol}}, nil
 	}
-	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
+	scan, err := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
 	if err != nil {
-		return nil, nil //nolint:nilerr // no single policy file is a configless installation; policy_valid reports it
+		return nil, err
 	}
-	return []agentcatalog.CatalogAgent{{Name: pol.Agent.Name, TenantID: pol.Agent.TenantID, Path: cfg.DefaultPolicy, Policy: pol}}, nil
+	sort.Slice(scan.Agents, func(i, j int) bool { return scan.Agents[i].Name < scan.Agents[j].Name })
+	return scan.Agents, nil
 }
 
 func tenantOf(t string) string {
@@ -143,17 +144,13 @@ func tenantOf(t string) string {
 
 // checkUseCaseKeys reports, per AI use case, whether its active key resolves
 // — so with two applications the one that cannot authenticate is named, and
-// a problem with the first never hides the second.
-func checkUseCaseKeys(ctx context.Context, cfg *config.Config) []CheckResult {
-	agents, err := useCases(ctx, cfg)
-	if err != nil || len(agents) == 0 {
-		return nil // the identity / policy checks report an unreadable fleet
-	}
+// a problem with the first never hides the second. No use case, no line: the
+// identity / policy checks report an unreadable fleet.
+func checkUseCaseKeys(ctx context.Context, cfg *config.Config, agents []agentcatalog.CatalogAgent) []CheckResult {
 	vault, vaultErr := secrets.OpenReadOnly(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if vault != nil {
 		defer vault.Close()
 	}
-	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
 	out := make([]CheckResult, 0, len(agents))
 	for _, a := range agents {
 		name := "use_case_key:" + a.Name
@@ -266,11 +263,7 @@ const discoverTimeout = 5 * time.Second
 // cannot be discovered stops serve from starting, so doctor says so first.
 // Discovery is read-only (server/discover, tools/list); the source's
 // credential is read from the vault read-only and never printed.
-func checkActionSources(ctx context.Context, cfg *config.Config) []CheckResult {
-	agents, err := useCases(ctx, cfg)
-	if err != nil {
-		return nil
-	}
+func checkActionSources(ctx context.Context, cfg *config.Config, agents []agentcatalog.CatalogAgent) []CheckResult {
 	vault, _ := secrets.OpenReadOnly(cfg.SecretsDBPath(), cfg.SecretsKey)
 	var getter mcpsource.SecretGetter
 	if vault != nil {
@@ -279,7 +272,6 @@ func checkActionSources(ctx context.Context, cfg *config.Config) []CheckResult {
 	}
 	d := mcpsource.New(getter)
 	var out []CheckResult
-	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
 	for _, a := range agents {
 		if a.Policy == nil || a.Policy.Actions == nil {
 			continue
