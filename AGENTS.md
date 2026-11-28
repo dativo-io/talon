@@ -9,7 +9,7 @@ Before changing code, establish the relevant source of truth:
 
 1. Explicit task instructions.
 2. Current code and tests for shipped behavior.
-3. The current GitHub issue and #265 for active product/architecture direction.
+3. The current GitHub issue, #265 and its linked release trackers for approved OSS engineering scope; public ADRs and contract references for technical design.
 4. README.md, ROADMAP.md, LIMITATIONS.md, CONTRIBUTING.md, and docs/** for public product truth.
 5. Historical issue text, demos, generated artifacts, and agent memory only as supporting context.
 
@@ -29,6 +29,14 @@ Preserve these boundaries unless an active issue explicitly changes them:
 - External runtimes own workflow/agent-loop lifecycle unless Talon explicitly owns a transition.
 - Talon is not a generic orchestrator, workflow engine, router optimizer, observability suite, GRC platform, IdP, vector DB, or universal memory layer.
 - Parked work is not an implicit dependency.
+
+## Public OSS information boundary
+
+This repository is for the independently deployable open-source product. Keep issues, PRs, branch names, commits, documentation and examples focused on public user problems, technical rationale, observable behavior, supported contracts, tests, limitations and approved OSS engineering scope. Do not include confidential business plans, commercial terms, customer research, competitive strategy, internal portfolio decisions or private repository dependencies. Never require private access to understand or implement an OSS issue.
+
+Maintain the canonical governance implementation and supported standalone defaults. Prefer existing standard protocols and narrowly scoped provider contracts when a concrete integration needs them. Preserve governance guarantees and verify the actual replacement implementation before claiming compatibility. No speculative framework, broad public Go SDK, arbitrary in-process plugin execution or blanket provider refactor. Public interfaces do not imply support for every provider. Keep existing supported functionality working.
+
+Use the current release tracker for acceptance; do not expand frozen scope or activate gated work without the recorded approval. External customer adoption and commercial activity are not release gates.
 
 ## Investigate before editing
 
